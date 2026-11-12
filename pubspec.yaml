@@ -1,0 +1,34 @@
+name: quiz_master2
+description: "quiz-master2: Windows personal smart wrong-question notebook (Flutter + SQLite)"
+publish_to: "none"
+# Flutter 3.47.9 (Dart 3.13.7) locked — see docs/decision-log.md #0.
+version: 0.1.0+1
+
+environment:
+  sdk: ">=3.13.0 <4.0.0"
+  flutter: ">=3.47.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  # Windows desktop SQLite (sqflite_common_ffi works on Windows; plain
+  # sqflite is mobile-only). path is used to build quiz-master2.db path.
+  sqflite_common_ffi: ^2.3.6
+  path: ^1.9.1
+  # File picker for PDF/JPG/PNG import on Windows.
+  file_picker: ^8.0.0
+  # ONNX Runtime for Windows is wired through lib/services/yolo_onnx_service.dart.
+  # The Dart `onnxruntime` package version is NOT pinned here on purpose:
+  # its Windows build must be verified against Flutter 3.47.9 on Win11
+  # (see docs/decision-log.md #D-07). Until then the service runs in
+  # placeholder mode and returns a whole-question box covering the page.
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^5.0.0
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/models/
