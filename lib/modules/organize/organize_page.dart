@@ -1,104 +1,77 @@
-import 'dart:math' as math;
-
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
-import 'package:quiz_master2/data/demo_data.dart';
-import 'package:quiz_master2/data/repository.dart';
-import 'package:quiz_master2/models/models.dart';
-import 'package:quiz_master2/widgets/widgets.dart';
 
-/// 整理工作台（F 分段折叠式）
-///
-/// 定稿口径：
-/// - 整个工作台是一个固定高度盒子（880，窄屏 720），盒内滚动，
-///   队列 + 整题图 + 表单都在盒内，滚动条在盒子右边缘；外层页面不滚动。
-/// - 待整理队列：左列固定高度滚动容器（>3 道时出容器边框 + 滚动条），
-///   行显示标题 / 学科 / 试卷来源 / 待补充数量；当前题蓝色左边框；
-///   上方搜索框只搜标题 / 学科 / 试卷；排序下拉默认时间降序。
-/// - 上一题 / 下一题按当前排序循环切换，切换后队列自动滚动定位；
-///   切换题目先自动保存当前表单，不丢已填内容；确认整理后按当前排序进下一题。
-/// - 整题图点击弹出居中大图覆盖层（点图 / 遮罩 / Esc 关闭，滚轮缩放从 1.5 倍起，
-///   支持拖动平移）；二层框高亮以文字标注保持可见。
-/// - 表单字段顺序固定：学科（只读）→ 文件夹 → 试卷 → 知识点 → 错误类型
-///   → 标签 → 答案 → 解析 → 备注；只有学科 + 文件夹必填，其余选填，未填显示“待补充”。
-/// - 底部大按钮“确认整理，去下一道”；缺文件夹只拦下该题；确认后首次复习为
-///   确认后 1 天（nextReview = 明天，reviewCount = 0），间隔 1/3/7/14 由复习模块推进。
-/// - 批量整理：队列行复选框，勾选状态切换题目时保留；批量栏支持批量加标签、
-///   批量加入文件夹、批量确认、批量删除（删除先确认“删了就没了，确定吗”）。
-/// - 整理中可删题（先确认再删）；不能回修框（无“回修框”按钮）。
-/// - 初始待整理队列取 repo.all() 中 isOrganized == false 且未归档的题。
+import '../../data/repository.dart';
+import '../../models/models.dart';
+import '../../theme/app_theme.dart';
+import '../../widgets/widgets.dart';
+
+/// 整理工作台 H 布局：左图右表，整页滚动，无固定高度容器。
+/// 队列藏在左上角“队列”按钮后，点开弹出 D 极简式队列层。
+/// 表单里不显示学科（导入时已定，不可改）。
 class OrganizePage extends StatefulWidget {
-  const OrganizePage({super.key, required this.repo});
+  const OrganizePage({
+    super.key,
+    required this.repo,
+    required this.onOpenDetail,
+    required this.onGoReview,
+  });
 
   final QuestionRepository repo;
+  final Future<void> Function(Question q, List<String> orderIds) onOpenDetail;
+  final VoidCallback onGoReview;
 
   @override
   State<OrganizePage> createState() => _OrganizePageState();
 }
 
-/// 排序方式：短名，无括号说明，默认时间降序。
-enum _SortMode { timeDesc, timeAsc, subjectAsc, subjectDesc }
-
-extension on _SortMode {
-  String get label => switch (this) {
-        _SortMode.timeDesc => '时间降序',
-        _SortMode.timeAsc => '时间升序',
-        _SortMode.subjectAsc => '学科首字母升序',
-        _SortMode.subjectDesc => '学科首字母降序',
-      };
-}
-
-/// 学科首字母（拼音首字母，用于学科排序）：数学 S / 英语 Y / 政治 Z。
-const _subjectInitials = {'math': 'S', 'english': 'Y', 'politics': 'Z'};
-
 class _OrganizePageState extends State<OrganizePage> {
+  List<Question> _queue = [];
+  int _index = 0;
+  String _sort = 'timeDesc';
   bool _loading = true;
 
-  /// 待整理队列（主列表，未排序、未过滤）。
-  List<Question> _queue = [];
+  List<Folder> _folders = [];
+  List<Exam> _exams = [];
+  List<KnowledgePoint> _kps = [];
+  List<String> _allTags = [];
+  List<String> _customTypesAll = [];
 
-  /// 当前正在整理的题 id。
-  String? _currentId;
-
-  /// 批量勾选的题 id：切换题目时保留。
-  final Set<String> _selectedIds = {};
-
-  _SortMode _sortMode = _SortMode.timeDesc;
-  String _search = '';
-
-  /// 本地可扩充的预置数据（新建文件夹 / 试卷 / 标签只存在本次会话的内存里，
-  /// 题目本身的挂载关系随题目保存进库）。
-  List<String> _folders = [...presetFolders];
-  List<Exam> _exams = demoExams();
-  List<String> _allTags = [...presetTags];
-  List<KnowledgePoint> _knowledgePoints = demoKnowledgePoints();
-
-  // ---- 当前题的表单状态 ----
-  Set<String> _selectedFolders = {};
-  String? _selectedExamId;
-  Set<String> _selectedKpIds = {};
-  Set<String> _selectedErrorTypes = {};
-  List<String> _customErrorTypes = [];
-  Set<String> _selectedTags = {};
+  // 表单状态（当前题）。
+  List<String> _folderIds = [];
+  String? _examId;
+  List<String> _kpIds = [];
+  List<String> _errorTypes = [];
+  List<String> _customTypes = [];
+  List<String> _tags = [];
   final _answerCtrl = TextEditingController();
   final _explanationCtrl = TextEditingController();
   final _notesCtrl = TextEditingController();
-  final _customErrorCtrl = TextEditingController();
-  final _searchCtrl = TextEditingController();
+  final _customTypeCtrl = TextEditingController();
+  final _newTagCtrl = TextEditingController();
 
-  final _boxScrollController = ScrollController();
-  final _queueScrollController = ScrollController();
+  // 各段默认开合：文件夹、修框切片展开，其余折起。
+  bool _folderOpen = true;
+  bool _slicesOpen = true;
+  bool _sourceOpen = false;
+  bool _classifyOpen = false;
+  bool _answerOpen = false;
 
-  /// 待补充清单点击定位用：文件夹字段的锚点。
-  final _folderFieldKey = GlobalKey();
-  final _knowledgeFieldKey = GlobalKey();
-  final _errorFieldKey = GlobalKey();
-  final _tagFieldKey = GlobalKey();
+  Question? get _current =>
+      _queue.isEmpty ? null : _queue[_index.clamp(0, _queue.length - 1)];
+
+  List<String> get _orderIds => _queue.map((q) => q.id).toList();
+
+  /// 学科首字母：数学 S / 英语 Y / 政治 Z。
+  static String _subjectInitial(String subjectId) => switch (subjectId) {
+        'english' => 'Y',
+        'politics' => 'Z',
+        _ => 'S',
+      };
 
   @override
   void initState() {
     super.initState();
-    _load();
+    _refresh();
   }
 
   @override
@@ -106,276 +79,153 @@ class _OrganizePageState extends State<OrganizePage> {
     _answerCtrl.dispose();
     _explanationCtrl.dispose();
     _notesCtrl.dispose();
-    _customErrorCtrl.dispose();
-    _searchCtrl.dispose();
-    _boxScrollController.dispose();
-    _queueScrollController.dispose();
+    _customTypeCtrl.dispose();
+    _newTagCtrl.dispose();
     super.dispose();
   }
 
-  // ---------- 数据加载 ----------
+  void _sortQueue() {
+    switch (_sort) {
+      case 'timeAsc':
+        _queue.sort((a, b) => a.createdAt.compareTo(b.createdAt));
+      case 'subjectAsc':
+        _queue.sort((a, b) {
+          final c = _subjectInitial(a.subjectId)
+              .compareTo(_subjectInitial(b.subjectId));
+          return c != 0 ? c : b.createdAt.compareTo(a.createdAt);
+        });
+      case 'subjectDesc':
+        _queue.sort((a, b) {
+          final c = _subjectInitial(b.subjectId)
+              .compareTo(_subjectInitial(a.subjectId));
+          return c != 0 ? c : b.createdAt.compareTo(a.createdAt);
+        });
+      case 'timeDesc':
+      default:
+        _queue.sort((a, b) => b.createdAt.compareTo(a.createdAt));
+    }
+  }
 
-  Future<void> _load() async {
-    // 待整理 = 未确认整理且未归档。确认整理会把 isOrganized 置 true，
-    // 复习次数不动（首次复习为确认后 1 天），所以队列不能用 reviewCount 区分。
+  Future<void> _refresh() async {
     final all = await widget.repo.all();
-    final queue =
+    final pending =
         all.where((q) => !q.isOrganized && !q.isArchived).toList();
+    final exams = await widget.repo.exams();
+    final kps = await widget.repo.knowledgePoints();
+    final tags = await widget.repo.tags();
+    final customs = <String>{};
+    for (final q in all) {
+      customs.addAll(q.customErrorTypes);
+    }
     if (!mounted) return;
     setState(() {
-      _queue = queue;
+      _queue = pending;
+      _sortQueue();
+      if (_index >= _queue.length) _index = _queue.isEmpty ? 0 : _queue.length - 1;
+      _exams = exams;
+      _kps = kps;
+      _allTags = tags;
+      _customTypesAll = customs.toList();
       _loading = false;
-      // 题目上已有的文件夹若不在预置里，也收进可选列表，避免 chips 丢项。
-      for (final q in queue) {
-        for (final f in q.folderIds) {
-          if (!_folders.contains(f)) _folders.add(f);
-        }
-        for (final t in q.tags) {
-          if (!_allTags.contains(t)) _allTags.add(t);
-        }
-      }
     });
-    if (_queue.isNotEmpty) _switchTo(_orderedQueue.first.id);
+    await _loadFolders();
+    _loadForm();
   }
 
-  // ---------- 派生列表 ----------
-
-  Question? get _current {
-    if (_currentId == null) return null;
-    for (final q in _queue) {
-      if (q.id == _currentId) return q;
-    }
-    return null;
+  Future<void> _loadFolders() async {
+    final current = _current;
+    if (current == null) return;
+    final folders =
+        await widget.repo.folders(subjectId: current.subjectId);
+    if (!mounted) return;
+    setState(() => _folders = folders);
   }
 
-  /// 按当前排序排好的队列（不过滤搜索）。
-  List<Question> get _orderedQueue {
-    final list = [..._queue];
-    switch (_sortMode) {
-      case _SortMode.timeDesc:
-        list.sort((a, b) => b.createdAt.compareTo(a.createdAt));
-      case _SortMode.timeAsc:
-        list.sort((a, b) => a.createdAt.compareTo(b.createdAt));
-      case _SortMode.subjectAsc:
-        list.sort(_bySubjectAsc);
-      case _SortMode.subjectDesc:
-        list.sort((a, b) => _bySubjectAsc(b, a));
-    }
-    return list;
+  void _loadForm() {
+    final q = _current;
+    if (q == null) return;
+    setState(() {
+      _folderIds = List.of(q.folderIds);
+      _examId = q.examId;
+      _kpIds = List.of(q.knowledgePointIds);
+      _errorTypes = List.of(q.errorTypes);
+      _customTypes = List.of(q.customErrorTypes);
+      _tags = List.of(q.tags);
+      _answerCtrl.text = q.answer ?? '';
+      _explanationCtrl.text = q.explanation ?? '';
+      _notesCtrl.text = q.notes ?? '';
+    });
   }
 
-  int _bySubjectAsc(Question a, Question b) {
-    final ia = _subjectInitials[a.subjectId] ?? Subject.byId(a.subjectId).name;
-    final ib = _subjectInitials[b.subjectId] ?? Subject.byId(b.subjectId).name;
-    final c = ia.compareTo(ib);
-    if (c != 0) return c;
-    // 同学科内按时间降序，保持稳定。
-    return b.createdAt.compareTo(a.createdAt);
-  }
-
-  /// 搜索过滤后的队列：只搜标题 / 学科 / 试卷，不搜题干。
-  List<Question> get _displayedQueue {
-    final ordered = _orderedQueue;
-    final q = _search.trim();
-    if (q.isEmpty) return ordered;
-    return ordered.where((question) {
-      final examName = _examName(question.examId);
-      return question.title.contains(q) ||
-          Subject.byId(question.subjectId).name.contains(q) ||
-          examName.contains(q);
-    }).toList();
-  }
-
-  String _examName(String? examId) {
-    if (examId == null) return '';
-    for (final e in _exams) {
-      if (e.id == examId) return e.name;
-    }
-    return '';
-  }
-
-  /// 待补充数量：只统计必填项（学科 + 文件夹）。学科导入时已定，恒为已填，
-  /// 所以实际只看文件夹：缺文件夹计 1 项。
-  int _pendingCount(Question q) => q.folderIds.isEmpty ? 1 : 0;
-
-  String _pendingLabel(Question q) =>
-      _pendingCount(q) == 0 ? '必填已齐' : '待补充 1 项：文件夹';
-
-  // ---------- 表单保存 / 载入 ----------
-
-  /// 把当前表单状态拼成一道完整题目（直接构造，不用 copyWith，
-  /// 以便试卷可从“已选”改回“不选”）。
-  Question _buildUpdatedQuestion(Question base) {
-    final fixedSelected =
-        _selectedErrorTypes.where(ErrorTypes.fixed.contains).toList();
-    final customSelected =
-        _selectedErrorTypes.where(_customErrorTypes.contains).toList();
-    return Question(
-      id: base.id,
-      title: base.title,
-      subjectId: base.subjectId, // 学科只读：导入时选错自担，不可改。
-      folderIds: _selectedFolders.toList(),
-      examId: _selectedExamId,
-      knowledgePointIds: _selectedKpIds.toList(),
-      errorTypes: fixedSelected,
-      customErrorTypes: [..._customErrorTypes, ...customSelected]
-          .toSet()
-          .toList(),
-      tags: _selectedTags.toList(),
-      answer: _answerCtrl.text.trim().isEmpty ? null : _answerCtrl.text.trim(),
-      explanation: _explanationCtrl.text.trim().isEmpty
-          ? null
-          : _explanationCtrl.text.trim(),
-      notes: _notesCtrl.text.trim().isEmpty ? null : _notesCtrl.text.trim(),
-      reviewStatus: base.reviewStatus,
-      reviewCount: base.reviewCount,
-      isOrganized: base.isOrganized,
-      // 演示标记必须带上：直接构造时漏掉会默认 false，整理保存后
-      // 该题就不再算演示题，“清空演示数据”删不掉它（D-23）。
-      isDemo: base.isDemo,
-      nextReview: base.nextReview,
-      overdueDays: base.overdueDays,
-      isFavorite: base.isFavorite,
-      isArchived: base.isArchived,
-      createdAt: base.createdAt,
-      sliceKind: base.sliceKind,
-      sliceText: base.sliceText,
+  Question _formQuestion(Question q, {bool organized = false}) {
+    final answer = _answerCtrl.text.trim();
+    final explanation = _explanationCtrl.text.trim();
+    final notes = _notesCtrl.text.trim();
+    return q.copyWith(
+      folderIds: _folderIds,
+      examId: _examId,
+      knowledgePointIds: _kpIds,
+      errorTypes: _errorTypes,
+      customErrorTypes: _customTypes,
+      tags: _tags,
+      answer: answer.isEmpty ? null : answer,
+      explanation: explanation.isEmpty ? null : explanation,
+      notes: notes.isEmpty ? null : notes,
+      clearAnswer: answer.isEmpty,
+      clearExplanation: explanation.isEmpty,
+      clearNotes: notes.isEmpty,
+      isOrganized: organized ? true : q.isOrganized,
     );
   }
 
-  /// 保存当前表单到库，并同步回队列（不改变复习状态与下次复习时间）。
-  Future<void> _saveCurrentForm() async {
-    final current = _current;
-    if (current == null) return;
-    final updated = _buildUpdatedQuestion(current);
+  /// 切题自动保存。
+  Future<void> _saveCurrent() async {
+    final q = _current;
+    if (q == null) return;
+    final updated = _formQuestion(q);
     await widget.repo.save(updated);
+    await widget.repo.syncCauseRecords(updated);
+  }
+
+  Future<void> _goTo(int next) async {
+    if (next < 0 || next >= _queue.length || next == _index) return;
+    await _saveCurrent();
+    final currentId = _current?.id;
     if (!mounted) return;
-    setState(() {
-      final i = _queue.indexWhere((q) => q.id == current.id);
-      if (i >= 0) _queue[i] = updated;
-    });
+    setState(() => _index = next);
+    await _loadFolders();
+    _loadForm();
+    // 换题后若学科变了，文件夹列表已重载；表单按新题重填。
+    if (currentId == _current?.id) return;
   }
 
-  void _loadForm(Question q) {
-    _selectedFolders = q.folderIds.toSet();
-    _selectedExamId = q.examId;
-    _selectedKpIds = q.knowledgePointIds.toSet();
-    _customErrorTypes = [...q.customErrorTypes];
-    _selectedErrorTypes = {...q.errorTypes, ...q.customErrorTypes};
-    _selectedTags = q.tags.toSet();
-    _answerCtrl.text = q.answer ?? '';
-    _explanationCtrl.text = q.explanation ?? '';
-    _notesCtrl.text = q.notes ?? '';
-    _customErrorCtrl.clear();
-  }
-
-  // ---------- 切换题目 ----------
-
-  Future<void> _switchTo(String id) async {
-    if (id == _currentId) return;
-    // 切换题目先保存当前表单，不丢已填内容。
-    await _saveCurrentForm();
-    if (!mounted) return;
-    final target = _queue.firstWhere((q) => q.id == id);
-    setState(() {
-      _currentId = id;
-      _loadForm(target);
-    });
-    _scrollQueueToCurrent();
-  }
-
-  /// 切换后队列自动滚动定位当前题（行高约 64，jumpTo 近似实现）。
-  void _scrollQueueToCurrent() {
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!_queueScrollController.hasClients || _currentId == null) return;
-      final list = _displayedQueue;
-      final index = list.indexWhere((q) => q.id == _currentId);
-      if (index < 0) return;
-      const rowHeight = 64.0;
-      final offset = index * rowHeight;
-      final max = _queueScrollController.position.maxScrollExtent;
-      _queueScrollController.jumpTo(offset.clamp(0.0, max));
-    });
-  }
-
-  /// 上一题 / 下一题：按当前排序顺序切换，循环。
-  Future<void> _move(int delta) async {
-    final list =
-        _displayedQueue.any((q) => q.id == _currentId) ? _displayedQueue : _orderedQueue;
-    if (list.isEmpty) return;
-    var index = list.indexWhere((q) => q.id == _currentId);
-    if (index < 0) index = 0;
-    final next = list[(index + delta) % list.length];
-    await _switchTo(next.id);
-  }
-
-  // ---------- 确认整理 ----------
-
-  DateTime _tomorrow() {
-    final now = DateTime.now();
-    return DateTime(now.year, now.month, now.day + 1);
-  }
-
-  /// 确认整理当前题：缺文件夹只拦下该题；确认后首次复习为确认后 1 天，
-  /// reviewCount = 0，间隔 1/3/7/14 由复习模块推进。
   Future<void> _confirmCurrent() async {
-    final current = _current;
-    if (current == null) return;
-    if (_selectedFolders.isEmpty) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('先选个文件夹再确认吧，这道题还留在队列里')),
-      );
-      _scrollToField(_folderFieldKey);
+    final q = _current;
+    if (q == null) return;
+    if (_folderIds.isEmpty) {
+      _snack('先选文件夹');
+      setState(() => _folderOpen = true);
       return;
     }
-    final updated = _buildUpdatedQuestion(current).copyWith(
-      reviewCount: 0,
-      isOrganized: true,
-      nextReview: _tomorrow(),
-      reviewStatus: ReviewStatus.inReview,
-      overdueDays: 0,
-    );
+    final updated = _formQuestion(q, organized: true);
     await widget.repo.save(updated);
-    if (!mounted) return;
-    // 按当前排序进下一题：取确认前排序里当前题的下一道。
-    final ordered = _orderedQueue;
-    final index = ordered.indexWhere((q) => q.id == current.id);
-    final rest = ordered.where((q) => q.id != current.id).toList();
-    String? nextId;
-    if (rest.isNotEmpty) {
-      nextId = index >= 0 && index < rest.length
-          ? rest[index].id
-          : rest.first.id;
-    }
-    setState(() {
-      _queue.removeWhere((q) => q.id == current.id);
-      _selectedIds.remove(current.id);
-      _currentId = null;
-    });
-    if (nextId != null) {
-      final next = _queue.firstWhere((q) => q.id == nextId);
-      setState(() {
-        _currentId = nextId;
-        _loadForm(next);
-      });
-      _scrollQueueToCurrent();
-    }
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('「${current.title}」已整理，去下一道')),
-      );
-    }
+    await widget.repo.syncCauseRecords(updated);
+    await widget.repo.saveRecentTask(
+      kind: 'organize',
+      subjectId: q.subjectId,
+      title: q.title,
+    );
+    await _refresh();
   }
 
-  // ---------- 删除 ----------
-
-  Future<void> _deleteQuestion(Question q) async {
+  Future<void> _deleteCurrent() async {
+    final q = _current;
+    if (q == null) return;
     final ok = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('删除这道题？'),
-        content: const Text('删了就没了，确定吗'),
+        title: const Text('删除这道题'),
+        content: const Text('删了就没了，确定吗？'),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(ctx).pop(false),
@@ -388,263 +238,755 @@ class _OrganizePageState extends State<OrganizePage> {
         ],
       ),
     );
-    if (ok != true) return;
-    final wasCurrent = q.id == _currentId;
-    final ordered = _orderedQueue;
-    final index = ordered.indexWhere((e) => e.id == q.id);
-    await widget.repo.delete(q);
-    if (!mounted) return;
-    final rest = ordered.where((e) => e.id != q.id).toList();
-    setState(() {
-      _queue.removeWhere((e) => e.id == q.id);
-      _selectedIds.remove(q.id);
-      if (wasCurrent) _currentId = null;
-    });
-    if (wasCurrent && rest.isNotEmpty) {
-      final next = rest[index < rest.length ? index : 0];
-      setState(() {
-        _currentId = next.id;
-        _loadForm(next);
-      });
-      _scrollQueueToCurrent();
-    }
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('已删除「${q.title}」')),
-      );
+    if (ok == true) {
+      await widget.repo.delete(q);
+      await _refresh();
     }
   }
 
-  // ---------- 批量整理 ----------
+  Future<void> _openDetail() async {
+    final q = _current;
+    if (q == null) return;
+    await _saveCurrent();
+    await widget.onOpenDetail(q, _orderIds);
+    await _refresh();
+  }
+
+  Future<void> _addFolder() async {
+    final q = _current;
+    if (q == null) return;
+    final nameCtrl = TextEditingController();
+    final name = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('添加新文件夹'),
+        content: TextField(
+          controller: nameCtrl,
+          autofocus: true,
+          decoration: const InputDecoration(hintText: '文件夹名'),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () =>
+                Navigator.of(ctx).pop(nameCtrl.text.trim()),
+            child: const Text('添加'),
+          ),
+        ],
+      ),
+    );
+    if (name == null || name.isEmpty) return;
+    if (_folders.any((f) => f.name == name)) {
+      _snack('已经有了');
+      return;
+    }
+    final folder = Folder(
+      id: 'folder-${DateTime.now().millisecondsSinceEpoch}',
+      name: name,
+      subjectId: q.subjectId,
+      sortOrder: _folders.length,
+    );
+    await widget.repo.saveFolder(folder);
+    await _loadFolders();
+    setState(() {
+      if (!_folderIds.contains(folder.id)) _folderIds.add(folder.id);
+    });
+  }
+
+  Future<void> _addExam() async {
+    final nameCtrl = TextEditingController();
+    final name = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('添加试卷'),
+        content: TextField(
+          controller: nameCtrl,
+          autofocus: true,
+          decoration: const InputDecoration(hintText: '试卷名'),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () =>
+                Navigator.of(ctx).pop(nameCtrl.text.trim()),
+            child: const Text('添加'),
+          ),
+        ],
+      ),
+    );
+    if (name == null || name.isEmpty) return;
+    final exam = Exam(
+      id: 'exam-${DateTime.now().millisecondsSinceEpoch}',
+      name: name,
+    );
+    await widget.repo.addExam(exam);
+    setState(() {
+      _exams = [..._exams, exam];
+      _examId = exam.id;
+    });
+  }
+
+  Future<void> _openQueue() async {
+    if (_queue.isEmpty) return;
+    final jumped = await showDialog<String>(
+      context: context,
+      builder: (_) => _QueuePopup(
+        repo: widget.repo,
+        questions: List.of(_queue),
+        currentId: _current?.id,
+      ),
+    );
+    // 弹出层关闭即清空勾选（勾选状态只活在弹出层内）。
+    await _refresh();
+    if (jumped != null) {
+      final idx = _queue.indexWhere((q) => q.id == jumped);
+      if (idx >= 0 && mounted) {
+        await _goTo(idx);
+      }
+    }
+  }
+
+  void _snack(String message) {
+    ScaffoldMessenger.of(context)
+        .showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final q = _current;
+    return Scaffold(
+      backgroundColor: Colors.transparent,
+      body: _loading
+          ? const Center(child: CircularProgressIndicator())
+          : q == null
+              ? EmptyState(
+                  message: '都整理完了，去复习吧',
+                  actionLabel: '去复习',
+                  onAction: widget.onGoReview,
+                )
+              : SingleChildScrollView(
+                  padding: const EdgeInsets.fromLTRB(28, 20, 28, 32),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      // 顶栏：队列按钮（左上）+ 排序 + 上一道 / 下一道。
+                      Row(
+                        children: [
+                          FilledButton.icon(
+                            onPressed: _openQueue,
+                            icon: const Icon(Icons.list_outlined, size: 18),
+                            label: Text('队列 · 还剩 ${_queue.length} 道'),
+                          ),
+                          const Spacer(),
+                          DropdownButton<String>(
+                            value: _sort,
+                            items: const [
+                              DropdownMenuItem(
+                                  value: 'timeDesc',
+                                  child: Text('时间 新→旧')),
+                              DropdownMenuItem(
+                                  value: 'timeAsc',
+                                  child: Text('时间 旧→新')),
+                              DropdownMenuItem(
+                                  value: 'subjectAsc',
+                                  child: Text('学科首字母 A→Z')),
+                              DropdownMenuItem(
+                                  value: 'subjectDesc',
+                                  child: Text('学科首字母 Z→A')),
+                            ],
+                            onChanged: (v) async {
+                              if (v == null) return;
+                              await _saveCurrent();
+                              setState(() {
+                                _sort = v;
+                                _sortQueue();
+                                _index = 0;
+                              });
+                              _loadForm();
+                            },
+                          ),
+                          const SizedBox(width: 12),
+                          OutlinedButton(
+                            onPressed:
+                                _index > 0 ? () => _goTo(_index - 1) : null,
+                            child: const Text('上一道'),
+                          ),
+                          const SizedBox(width: 8),
+                          OutlinedButton(
+                            onPressed: _index < _queue.length - 1
+                                ? () => _goTo(_index + 1)
+                                : null,
+                            child: const Text('下一道'),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 16),
+                      Text(
+                        '第 ${_index + 1} / ${_queue.length} 道',
+                        style: Theme.of(context).textTheme.bodySmall,
+                      ),
+                      const SizedBox(height: 8),
+                      // H 布局：左图右表。
+                      Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Expanded(
+                            flex: 5,
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                QuestionSlice(
+                                  question: q,
+                                  maxHeight: 480,
+                                  // 预览定稿：点图弹出大居中放大浮层（1.5× 起始、滚轮缩放），
+                                  // 不是进详情；进详情走下面的「进详情改」按钮。
+                                  onTap: () =>
+                                      showQuestionZoomDialog(context, q),
+                                ),
+                                const SizedBox(height: 8),
+                                Text(q.title,
+                                    style: const TextStyle(
+                                        fontWeight: FontWeight.w700)),
+                                const SizedBox(height: 4),
+                                SubjectLabel(subjectId: q.subjectId),
+                                const SizedBox(height: 12),
+                                OutlinedButton(
+                                  onPressed: _openDetail,
+                                  child: const Text('进详情改'),
+                                ),
+                              ],
+                            ),
+                          ),
+                          const SizedBox(width: 24),
+                          Expanded(
+                            flex: 6,
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.stretch,
+                              children: [
+                                _section(
+                                  title: '文件夹（归类）',
+                                  requiredMark: true,
+                                  open: _folderOpen,
+                                  onToggle: () => setState(
+                                      () => _folderOpen = !_folderOpen),
+                                  child: _folderSection(),
+                                ),
+                                _section(
+                                  title: '修框切片',
+                                  open: _slicesOpen,
+                                  onToggle: () => setState(
+                                      () => _slicesOpen = !_slicesOpen),
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      QuestionSlice(
+                                          question: q, maxHeight: 200),
+                                      const SizedBox(height: 8),
+                                      const Text('整题切片 · 1 张',
+                                          style: TextStyle(fontSize: 13)),
+                                    ],
+                                  ),
+                                ),
+                                _section(
+                                  title: '来源（试卷）',
+                                  open: _sourceOpen,
+                                  onToggle: () => setState(
+                                      () => _sourceOpen = !_sourceOpen),
+                                  child: _examDropdown(),
+                                ),
+                                _section(
+                                  title: '分类补充',
+                                  open: _classifyOpen,
+                                  onToggle: () => setState(() =>
+                                      _classifyOpen = !_classifyOpen),
+                                  child: _classifySection(),
+                                ),
+                                _section(
+                                  title: '答案 · 解析 · 笔记',
+                                  open: _answerOpen,
+                                  onToggle: () => setState(
+                                      () => _answerOpen = !_answerOpen),
+                                  child: _answerSection(),
+                                ),
+                                const SizedBox(height: 16),
+                                FilledButton(
+                                  onPressed: _confirmCurrent,
+                                  child: const Text('确认整理'),
+                                ),
+                                const SizedBox(height: 8),
+                                OutlinedButton(
+                                  onPressed: _deleteCurrent,
+                                  child: const Text('删除这道题'),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+    );
+  }
+
+  Widget _section({
+    required String title,
+    bool requiredMark = false,
+    required bool open,
+    required VoidCallback onToggle,
+    required Widget child,
+  }) {
+    return Card(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          InkWell(
+            onTap: onToggle,
+            borderRadius: BorderRadius.circular(AppTheme.radius),
+            child: Padding(
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+              child: Row(
+                children: [
+                  Text(title,
+                      style: const TextStyle(
+                          fontSize: 15, fontWeight: FontWeight.w700)),
+                  if (requiredMark) ...[
+                    const SizedBox(width: 6),
+                    const Text('*',
+                        style: TextStyle(color: Colors.red, fontSize: 15)),
+                  ],
+                  const Spacer(),
+                  Icon(open
+                      ? Icons.keyboard_arrow_up
+                      : Icons.keyboard_arrow_down),
+                ],
+              ),
+            ),
+          ),
+          if (open)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+              child: child,
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _folderSection() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        if (_folderIds.isNotEmpty)
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: _folderIds.map((id) {
+              final folder = _folders.firstWhere(
+                (f) => f.id == id,
+                orElse: () => Folder(
+                    id: id, name: '已删文件夹', subjectId: _current!.subjectId),
+              );
+              return InputChip(
+                label: Text(folder.name),
+                onDeleted: () =>
+                    setState(() => _folderIds.remove(id)),
+              );
+            }).toList(),
+          ),
+        if (_folderIds.isNotEmpty) const SizedBox(height: 8),
+        DropdownButton<String>(
+          value: null,
+          hint: const Text('选择文件夹'),
+          isExpanded: true,
+          items: [
+            ..._folders.map((f) => DropdownMenuItem(
+                  value: f.id,
+                  child: Text(f.name),
+                )),
+            const DropdownMenuItem(
+              value: '__add__',
+              child: Text('＋ 添加新文件夹…'),
+            ),
+          ],
+          onChanged: (v) {
+            if (v == null) return;
+            if (v == '__add__') {
+              _addFolder();
+              return;
+            }
+            setState(() {
+              if (!_folderIds.contains(v)) _folderIds.add(v);
+            });
+          },
+        ),
+        const SizedBox(height: 4),
+        const Text('只列本科的文件夹。', style: TextStyle(fontSize: 12)),
+      ],
+    );
+  }
+
+  Widget _examDropdown() {
+    return DropdownButton<String>(
+      value: _examId,
+      hint: const Text('选择试卷（可选）'),
+      isExpanded: true,
+      items: [
+        ..._exams.map((e) => DropdownMenuItem(
+              value: e.id,
+              child: Text(e.name),
+            )),
+        const DropdownMenuItem(
+          value: '__add__',
+          child: Text('＋ 添加试卷…'),
+        ),
+      ],
+      onChanged: (v) {
+        if (v == null) return;
+        if (v == '__add__') {
+          _addExam();
+          return;
+        }
+        setState(() => _examId = v);
+      },
+    );
+  }
+
+  Widget _classifySection() {
+    final subjectKps =
+        _kps.where((k) => k.subjectId == _current?.subjectId).toList();
+    final chapters = <String>[];
+    for (final k in subjectKps) {
+      if (!chapters.contains(k.chapter)) chapters.add(k.chapter);
+    }
+    final customOptions = {..._customTypesAll, ..._customTypes}.toList();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text('知识点', style: TextStyle(fontWeight: FontWeight.w700)),
+        const SizedBox(height: 8),
+        if (subjectKps.isEmpty)
+          const Text('这科还没知识点，去学科管理添加。',
+              style: TextStyle(fontSize: 13)),
+        for (final chapter in chapters) ...[
+          Text(chapter, style: const TextStyle(fontSize: 13)),
+          const SizedBox(height: 4),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: subjectKps
+                .where((k) => k.chapter == chapter)
+                .map((k) => FilterChip(
+                      label: Text(k.name),
+                      selected: _kpIds.contains(k.id),
+                      onSelected: (on) => setState(() {
+                        if (on) {
+                          _kpIds.add(k.id);
+                        } else {
+                          _kpIds.remove(k.id);
+                        }
+                      }),
+                    ))
+                .toList(),
+          ),
+          const SizedBox(height: 8),
+        ],
+        const Divider(),
+        const Text('错误类型', style: TextStyle(fontWeight: FontWeight.w700)),
+        const SizedBox(height: 8),
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: [
+            ...ErrorTypes.fixed.map((t) => FilterChip(
+                  label: Text(t),
+                  selected: _errorTypes.contains(t),
+                  onSelected: (on) => setState(() {
+                    if (on) {
+                      _errorTypes.add(t);
+                    } else {
+                      _errorTypes.remove(t);
+                    }
+                  }),
+                )),
+            ...customOptions.map((t) => FilterChip(
+                  label: Text(t),
+                  selected: _customTypes.contains(t),
+                  onSelected: (on) => setState(() {
+                    if (on) {
+                      _customTypes.add(t);
+                    } else {
+                      _customTypes.remove(t);
+                    }
+                  }),
+                )),
+          ],
+        ),
+        const SizedBox(height: 8),
+        Row(
+          children: [
+            Expanded(
+              child: TextField(
+                controller: _customTypeCtrl,
+                decoration:
+                    const InputDecoration(hintText: '自定义错误类型'),
+              ),
+            ),
+            const SizedBox(width: 8),
+            OutlinedButton(
+              onPressed: () {
+                final name = _customTypeCtrl.text.trim();
+                if (name.isEmpty) return;
+                setState(() {
+                  if (!_customTypes.contains(name)) _customTypes.add(name);
+                  if (!_customTypesAll.contains(name)) {
+                    _customTypesAll.add(name);
+                  }
+                  _customTypeCtrl.clear();
+                });
+              },
+              child: const Text('添加'),
+            ),
+          ],
+        ),
+        const Divider(),
+        const Text('标签', style: TextStyle(fontWeight: FontWeight.w700)),
+        const SizedBox(height: 8),
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: [
+            for (final t in ['易错', '常考', '需重做'])
+              FilterChip(
+                label: Text(t),
+                selected: _tags.contains(t),
+                onSelected: (on) => setState(() {
+                  if (on) {
+                    _tags.add(t);
+                  } else {
+                    _tags.remove(t);
+                  }
+                }),
+              ),
+            for (final t in _allTags.where((t) =>
+                !['易错', '常考', '需重做'].contains(t)))
+              FilterChip(
+                label: Text(t),
+                selected: _tags.contains(t),
+                onSelected: (on) => setState(() {
+                  if (on) {
+                    _tags.add(t);
+                  } else {
+                    _tags.remove(t);
+                  }
+                }),
+              ),
+          ],
+        ),
+        const SizedBox(height: 8),
+        Row(
+          children: [
+            Expanded(
+              child: TextField(
+                controller: _newTagCtrl,
+                decoration: const InputDecoration(hintText: '新标签'),
+              ),
+            ),
+            const SizedBox(width: 8),
+            OutlinedButton(
+              onPressed: () async {
+                final name = _newTagCtrl.text.trim();
+                if (name.isEmpty) return;
+                await widget.repo.addTag(name);
+                setState(() {
+                  if (!_tags.contains(name)) _tags.add(name);
+                  if (!_allTags.contains(name)) _allTags.add(name);
+                  _newTagCtrl.clear();
+                });
+              },
+              child: const Text('添加'),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+
+  Widget _answerSection() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text('答案', style: TextStyle(fontWeight: FontWeight.w700)),
+        const SizedBox(height: 4),
+        TextField(
+          controller: _answerCtrl,
+          maxLines: 3,
+          decoration: const InputDecoration(
+            hintText: '待补充',
+            border: OutlineInputBorder(),
+          ),
+        ),
+        const SizedBox(height: 12),
+        const Text('解析', style: TextStyle(fontWeight: FontWeight.w700)),
+        const SizedBox(height: 4),
+        TextField(
+          controller: _explanationCtrl,
+          maxLines: 3,
+          decoration: const InputDecoration(
+            hintText: '待补充',
+            border: OutlineInputBorder(),
+          ),
+        ),
+        const SizedBox(height: 12),
+        const Text('笔记', style: TextStyle(fontWeight: FontWeight.w700)),
+        const SizedBox(height: 4),
+        TextField(
+          controller: _notesCtrl,
+          maxLines: 3,
+          decoration: const InputDecoration(
+            hintText: '待补充',
+            border: OutlineInputBorder(),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+/// D 极简式队列弹出层：一行一道题（勾选框 + 题名 + 删除按钮），
+/// 详情只在点中那道题时在下面展开一行；
+/// 批量区是底部悬浮条，勾了题才出现。
+/// 关闭弹出层即清空勾选（勾选状态只活在本层内）。
+class _QueuePopup extends StatefulWidget {
+  const _QueuePopup({
+    required this.repo,
+    required this.questions,
+    required this.currentId,
+  });
+
+  final QuestionRepository repo;
+  final List<Question> questions;
+  final String? currentId;
+
+  @override
+  State<_QueuePopup> createState() => _QueuePopupState();
+}
+
+class _QueuePopupState extends State<_QueuePopup> {
+  final _selected = <String>{};
+  String? _expandedId;
+  List<Question> _questions = [];
+  List<Folder> _allFolders = [];
+  List<String> _allTags = [];
+  String? _batchFolderId;
+
+  @override
+  void initState() {
+    super.initState();
+    _questions = List.of(widget.questions);
+    _loadMeta();
+  }
+
+  Future<void> _loadMeta() async {
+    final folders = await widget.repo.folders();
+    final tags = await widget.repo.tags();
+    if (!mounted) return;
+    setState(() {
+      _allFolders = folders;
+      _allTags = tags;
+    });
+  }
+
+  List<Question> get _selectedQuestions =>
+      _questions.where((q) => _selected.contains(q.id)).toList();
+
+  void _snack(String message) {
+    ScaffoldMessenger.of(context)
+        .showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  String _sliceKindLabel(String kind) => switch (kind) {
+        'chart' => '图表题',
+        'function' => '函数题',
+        'timeline' => '时间轴',
+        'limit' => '极限题',
+        _ => '材料题',
+      };
+
+  String _dateText(DateTime d) => '${d.year}-${d.month}-${d.day}';
+
+  Future<String?> _examName(String? examId) async {
+    if (examId == null) return null;
+    final exams = await widget.repo.exams();
+    return exams
+        .firstWhere((e) => e.id == examId,
+            orElse: () => Exam(id: examId, name: '未知试卷'))
+        .name;
+  }
+
+  Future<void> _deleteOne(Question q) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('删除这道题'),
+        content: const Text('删了就没了，确定吗？'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('删除'),
+          ),
+        ],
+      ),
+    );
+    if (ok == true) {
+      await widget.repo.delete(q);
+      setState(() {
+        _questions.removeWhere((x) => x.id == q.id);
+        _selected.remove(q.id);
+      });
+    }
+  }
 
   Future<void> _batchAddTags() async {
-    if (_selectedIds.isEmpty) return;
-    final picked = await _pickChipsDialog(
-      title: '批量加标签',
-      options: _allTags,
-      initial: const {},
-      allowCreateLabel: '＋ 新建标签',
-      onCreate: (name) async {
-        setState(() => _allTags.add(name));
-      },
-    );
-    if (picked == null || picked.isEmpty) return;
-    await _saveCurrentForm();
-    if (!mounted) return;
-    for (final id in _selectedIds.toList()) {
-      final q = _queue.firstWhere((e) => e.id == id);
-      final merged = {...q.tags, ...picked}.toList();
-      final updated = q.copyWith(tags: merged);
-      await widget.repo.save(updated);
-      final i = _queue.indexWhere((e) => e.id == id);
-      if (i >= 0) _queue[i] = updated;
-    }
-    if (!mounted) return;
-    setState(() {});
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('已给 ${_selectedIds.length} 道题加上标签')),
-    );
-  }
-
-  Future<void> _batchAddFolders() async {
-    if (_selectedIds.isEmpty) return;
-    final picked = await _pickChipsDialog(
-      title: '批量加入文件夹',
-      options: _folders,
-      initial: const {},
-      allowCreateLabel: '＋ 添加新文件夹…',
-      onCreate: (name) async {
-        setState(() => _folders.add(name));
-      },
-    );
-    if (picked == null || picked.isEmpty) return;
-    await _saveCurrentForm();
-    if (!mounted) return;
-    for (final id in _selectedIds.toList()) {
-      final q = _queue.firstWhere((e) => e.id == id);
-      final merged = {...q.folderIds, ...picked}.toList();
-      final updated = q.copyWith(folderIds: merged);
-      await widget.repo.save(updated);
-      final i = _queue.indexWhere((e) => e.id == id);
-      if (i >= 0) _queue[i] = updated;
-      // 若正在整理的那道在其中，同步表单状态。
-      if (id == _currentId) {
-        setState(() => _selectedFolders = merged.toSet());
-      }
-    }
-    if (!mounted) return;
-    setState(() {});
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('已把 ${_selectedIds.length} 道题加入文件夹')),
-    );
-  }
-
-  /// 批量确认：缺文件夹的题跳过并提示，留在队列里。
-  Future<void> _batchConfirm() async {
-    if (_selectedIds.isEmpty) return;
-    await _saveCurrentForm();
-    if (!mounted) return;
-    var skipped = 0;
-    var done = 0;
-    final confirmedIds = <String>[];
-    for (final id in _selectedIds.toList()) {
-      final q = _queue.firstWhere((e) => e.id == id);
-      if (q.folderIds.isEmpty) {
-        skipped++;
-        continue;
-      }
-      final updated = q.copyWith(
-        reviewCount: 0,
-        nextReview: _tomorrow(),
-        reviewStatus: ReviewStatus.inReview,
-        overdueDays: 0,
-      );
-      await widget.repo.save(updated);
-      confirmedIds.add(id);
-      done++;
-    }
-    if (!mounted) return;
-    setState(() {
-      _queue.removeWhere((q) => confirmedIds.contains(q.id));
-      _selectedIds.removeAll(confirmedIds);
-      if (_currentId != null && confirmedIds.contains(_currentId)) {
-        _currentId = null;
-        if (_queue.isNotEmpty) {
-          final next = _orderedQueue.first;
-          _currentId = next.id;
-          _loadForm(next);
-        }
-      }
-    });
-    _scrollQueueToCurrent();
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(skipped > 0
-            ? '已确认 $done 道；有 $skipped 道没选文件夹，已跳过，留在队列里'
-            : '已批量确认 $done 道'),
-      ),
-    );
-  }
-
-  Future<void> _batchDelete() async {
-    if (_selectedIds.isEmpty) return;
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: Text('删除选中的 ${_selectedIds.length} 道题？'),
-        content: const Text('删了就没了，确定吗'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(false),
-            child: const Text('取消'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.of(ctx).pop(true),
-            child: const Text('删除'),
-          ),
-        ],
-      ),
-    );
-    if (ok != true) return;
-    final ids = _selectedIds.toList();
-    final wasCurrentDeleted = _currentId != null && ids.contains(_currentId);
-    for (final id in ids) {
-      final q = _queue.firstWhere((e) => e.id == id);
-      await widget.repo.delete(q);
-    }
-    if (!mounted) return;
-    setState(() {
-      _queue.removeWhere((q) => ids.contains(q.id));
-      _selectedIds.clear();
-      if (wasCurrentDeleted) {
-        _currentId = null;
-        if (_queue.isNotEmpty) {
-          final next = _orderedQueue.first;
-          _currentId = next.id;
-          _loadForm(next);
-        }
-      }
-    });
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('已删除 ${ids.length} 道题')),
-    );
-  }
-
-  // ---------- 通用选择弹窗 ----------
-
-  /// 多选 chips 弹窗（批量加标签 / 批量加入文件夹共用），可现场新建一项。
-  Future<Set<String>?> _pickChipsDialog({
-    required String title,
-    required List<String> options,
-    required Set<String> initial,
-    required String allowCreateLabel,
-    required Future<void> Function(String name) onCreate,
-  }) async {
-    final picked = {...initial};
-    final nameCtrl = TextEditingController();
-    var localOptions = [...options];
+    final picked = <String>{};
     final result = await showDialog<Set<String>>(
       context: context,
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setDialogState) => AlertDialog(
-          title: Text(title),
-          content: SingleChildScrollView(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Wrap(
-                  spacing: 8,
-                  runSpacing: 8,
-                  children: [
-                    for (final opt in localOptions)
-                      FilterChip(
-                        label: Text(opt),
-                        selected: picked.contains(opt),
-                        onSelected: (v) => setDialogState(() {
-                          if (v) {
-                            picked.add(opt);
-                          } else {
-                            picked.remove(opt);
-                          }
-                        }),
-                      ),
-                  ],
+          title: const Text('批量打标签'),
+          content: Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              for (final t in ['易错', '常考', '需重做', ..._allTags])
+                FilterChip(
+                  label: Text(t),
+                  selected: picked.contains(t),
+                  onSelected: (on) => setDialogState(() {
+                    if (on) {
+                      picked.add(t);
+                    } else {
+                      picked.remove(t);
+                    }
+                  }),
                 ),
-                const SizedBox(height: 12),
-                Row(
-                  children: [
-                    Expanded(
-                      child: TextField(
-                        controller: nameCtrl,
-                        decoration:
-                            InputDecoration(labelText: allowCreateLabel),
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    TextButton(
-                      onPressed: () async {
-                        final name = nameCtrl.text.trim();
-                        if (name.isEmpty) return;
-                        await onCreate(name);
-                        setDialogState(() {
-                          if (!localOptions.contains(name)) {
-                            localOptions.add(name);
-                          }
-                          picked.add(name);
-                          nameCtrl.clear();
-                        });
-                      },
-                      child: const Text('新建'),
-                    ),
-                  ],
-                ),
-              ],
-            ),
+            ],
           ),
           actions: [
             TextButton(
-              onPressed: () => Navigator.of(ctx).pop(null),
+              onPressed: () => Navigator.of(ctx).pop(),
               child: const Text('取消'),
             ),
             FilledButton(
@@ -655,854 +997,266 @@ class _OrganizePageState extends State<OrganizePage> {
         ),
       ),
     );
-    nameCtrl.dispose();
-    return result;
+    if (result == null || result.isEmpty) return;
+    for (final q in _selectedQuestions) {
+      final tags = {...q.tags, ...result}.toList();
+      await widget.repo.save(q.copyWith(tags: tags));
+    }
+    _snack('已打标签');
   }
 
-  // ---------- 新建文件夹 / 试卷 / 标签 ----------
-
-  Future<void> _addFolder() async {
-    final name = await _askText(title: '添加新文件夹', label: '文件夹名');
-    if (name == null || name.isEmpty) return;
+  Future<void> _batchAddFolder() async {
+    final folderId = _batchFolderId;
+    if (folderId == null) {
+      _snack('先选文件夹');
+      return;
+    }
+    final folder =
+        _allFolders.firstWhere((f) => f.id == folderId);
+    var applied = 0;
+    var skipped = 0;
+    for (final q in _selectedQuestions) {
+      if (q.subjectId != folder.subjectId) {
+        skipped++;
+        continue;
+      }
+      if (!q.folderIds.contains(folderId)) {
+        await widget.repo
+            .save(q.copyWith(folderIds: [...q.folderIds, folderId]));
+      }
+      applied++;
+    }
     setState(() {
-      if (!_folders.contains(name)) _folders.add(name);
-      _selectedFolders = {..._selectedFolders, name};
+      _questions = _questions.map((q) {
+        if (_selected.contains(q.id) &&
+            q.subjectId == folder.subjectId &&
+            !q.folderIds.contains(folderId)) {
+          return q.copyWith(folderIds: [...q.folderIds, folderId]);
+        }
+        return q;
+      }).toList();
     });
+    _snack(skipped > 0 ? '已加入 $applied 道，$skipped 道不是本科，跳过' : '已加入文件夹');
   }
 
-  Future<void> _addExam() async {
-    final nameCtrl = TextEditingController();
-    DateTime? date;
-    final name = await showDialog<String>(
-      context: context,
-      builder: (ctx) => StatefulBuilder(
-        builder: (ctx, setDialogState) => AlertDialog(
-          title: const Text('添加新试卷'),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              TextField(
-                controller: nameCtrl,
-                autofocus: true,
-                decoration: const InputDecoration(labelText: '试卷名'),
-              ),
-              const SizedBox(height: 12),
-              Row(
-                children: [
-                  Text(date == null
-                      ? '日期：未选'
-                      : '日期：${date!.year}-${date!.month}-${date!.day}'),
-                  const Spacer(),
-                  TextButton(
-                    onPressed: () async {
-                      final picked = await showDatePicker(
-                        context: ctx,
-                        initialDate: DateTime.now(),
-                        firstDate: DateTime(2000),
-                        lastDate: DateTime(2100),
-                      );
-                      if (picked != null) {
-                        setDialogState(() => date = picked);
-                      }
-                    },
-                    child: const Text('选择日期'),
-                  ),
-                ],
-              ),
-            ],
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(ctx).pop(null),
-              child: const Text('取消'),
-            ),
-            FilledButton(
-              onPressed: () =>
-                  Navigator.of(ctx).pop(nameCtrl.text.trim()),
-              child: const Text('添加'),
-            ),
-          ],
-        ),
-      ),
-    );
-    nameCtrl.dispose();
-    if (name == null || name.isEmpty) return;
-    final exam = Exam(
-      id: 'exam-${DateTime.now().millisecondsSinceEpoch}',
-      name: name,
-      date: date,
-    );
-    setState(() {
-      _exams = [..._exams, exam];
-      _selectedExamId = exam.id;
-    });
+  /// 批量确认：只拦住缺文件夹的题并提示，其余照常确认。
+  /// 确认后关闭弹出层，父页刷新并进下一道。
+  Future<void> _batchConfirm() async {
+    final blocked =
+        _selectedQuestions.where((q) => q.folderIds.isEmpty).toList();
+    final ok = _selectedQuestions
+        .where((q) => q.folderIds.isNotEmpty)
+        .toList();
+    for (final q in ok) {
+      await widget.repo.save(q.copyWith(isOrganized: true));
+    }
+    if (blocked.isNotEmpty) {
+      _snack('有 ${blocked.length} 道题没选文件夹，先补上');
+    }
+    if (!mounted) return;
+    Navigator.of(context).pop();
   }
 
-  Future<void> _addTag() async {
-    final name = await _askText(title: '新建标签', label: '标签名');
-    if (name == null || name.isEmpty) return;
-    setState(() {
-      if (!_allTags.contains(name)) _allTags.add(name);
-      _selectedTags = {..._selectedTags, name};
-    });
-  }
-
-  Future<String?> _askText({required String title, required String label}) {
-    final ctrl = TextEditingController();
-    return showDialog<String>(
+  Future<void> _batchDelete() async {
+    final ok = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: Text(title),
-        content: TextField(
-          controller: ctrl,
-          autofocus: true,
-          decoration: InputDecoration(labelText: label),
-        ),
+        title: const Text('批量删除'),
+        content: Text('删了就没了，确定吗？（${_selected.length} 道题）'),
         actions: [
           TextButton(
-            onPressed: () => Navigator.of(ctx).pop(null),
+            onPressed: () => Navigator.of(ctx).pop(false),
             child: const Text('取消'),
           ),
           FilledButton(
-            onPressed: () => Navigator.of(ctx).pop(ctrl.text.trim()),
-            child: const Text('确定'),
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('删除'),
           ),
         ],
       ),
-    ).whenComplete(ctrl.dispose);
-  }
-
-  // ---------- 大图覆盖层 ----------
-
-  /// 整题图大图覆盖层：Dialog，点图 / 遮罩 / Esc 关闭；
-  /// 滚轮缩放从 1.5 倍起，支持拖动平移；二层框高亮以文字标注保持可见。
-  void _showZoomDialog(Question q) {
-    final controller = TransformationController()
-      ..value = Matrix4.diagonal3Values(1.5, 1.5, 1.0);
-    showDialog<void>(
-      context: context,
-      barrierDismissible: true,
-      builder: (ctx) => Focus(
-        autofocus: true,
-        onKeyEvent: (node, event) {
-          if (event is KeyDownEvent &&
-              event.logicalKey == LogicalKeyboardKey.escape) {
-            Navigator.of(ctx).pop();
-            return KeyEventResult.handled;
-          }
-          return KeyEventResult.ignored;
-        },
-        child: Dialog(
-          insetPadding: const EdgeInsets.all(32),
-          child: GestureDetector(
-            onTap: () => Navigator.of(ctx).pop(),
-            child: Container(
-              padding: const EdgeInsets.all(16),
-              constraints: const BoxConstraints(maxWidth: 860),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Row(
-                    children: [
-                      Expanded(
-                        child: Text(q.title,
-                            style: Theme.of(context).textTheme.titleMedium),
-                      ),
-                      IconButton(
-                        icon: const Icon(Icons.close),
-                        tooltip: '关闭',
-                        onPressed: () => Navigator.of(ctx).pop(),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 8),
-                  SizedBox(
-                    height: 520,
-                    child: InteractiveViewer(
-                      transformationController: controller,
-                      minScale: 1.5,
-                      maxScale: 4.0,
-                      panEnabled: true,
-                      scaleEnabled: true,
-                      child: QuestionSlice(question: q, maxHeight: 520),
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  const Wrap(
-                    spacing: 8,
-                    children: [
-                      InfoChip(label: '题干高亮'),
-                      InfoChip(label: '选项高亮'),
-                      InfoChip(label: '配图高亮'),
-                    ],
-                  ),
-                  const SizedBox(height: 4),
-                  const Text(
-                    '滚轮缩放（1.5 倍起），拖动平移；点图 / 遮罩 / Esc 关闭',
-                    style: TextStyle(fontSize: 12, color: Colors.grey),
-                  ),
-                ],
-              ),
-            ),
-          ),
-        ),
-      ),
-    ).whenComplete(controller.dispose);
-  }
-
-  void _scrollToField(GlobalKey key) {
-    final ctx = key.currentContext;
-    if (ctx != null) {
-      Scrollable.ensureVisible(ctx,
-          duration: const Duration(milliseconds: 300));
+    );
+    if (ok == true) {
+      for (final q in _selectedQuestions) {
+        await widget.repo.delete(q);
+      }
+      setState(() {
+        _questions.removeWhere((q) => _selected.contains(q.id));
+        _selected.clear();
+      });
     }
   }
-
-  void _goReview() {
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('复习模块尚未实现')),
-    );
-  }
-
-  // ---------- 构建 ----------
 
   @override
   Widget build(BuildContext context) {
-    final isNarrow = MediaQuery.of(context).size.width < 900;
-    // 盒子默认 880（窄屏 720），窗口矮时按可用高度收小，保证确认按钮
-    // 在窗口内可达（默认 1280×720 窗口约剩 636 高）；不低于 320。
-    final availableHeight = MediaQuery.of(context).size.height - 84;
-    final boxHeight = math.min(
-        isNarrow ? 720.0 : 880.0, math.max(320.0, availableHeight));
-    final current = _current;
-
-    return Padding(
-      padding: const EdgeInsets.all(16),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Text('整理工作台',
-                  style: Theme.of(context).textTheme.titleLarge),
-              const SizedBox(width: 12),
-              if (!_loading) Text('待整理 ${_queue.length} 道'),
-              const Spacer(),
-              IconButton(
-                icon: const Icon(Icons.chevron_left),
-                tooltip: '上一题',
-                onPressed: _queue.length > 1 ? () => _move(-1) : null,
-              ),
-              IconButton(
-                icon: const Icon(Icons.chevron_right),
-                tooltip: '下一题',
-                onPressed: _queue.length > 1 ? () => _move(1) : null,
-              ),
-              IconButton(
-                icon: const Icon(Icons.delete_outline),
-                tooltip: '删除这道题',
-                onPressed:
-                    current == null ? null : () => _deleteQuestion(current),
-              ),
-            ],
-          ),
-          const SizedBox(height: 12),
-          // 固定高度盒子：盒内滚动，滚动条在盒子右边缘；外层页面不滚动。
-          SizedBox(
-            height: boxHeight,
-            child: Container(
-              decoration: BoxDecoration(
-                color: Theme.of(context).colorScheme.surface,
-                border: Border.all(
-                    color: Theme.of(context).dividerColor),
-                borderRadius: BorderRadius.circular(12),
-              ),
-              child: Scrollbar(
-                controller: _boxScrollController,
-                thumbVisibility: true,
-                child: SingleChildScrollView(
-                  controller: _boxScrollController,
-                  padding: const EdgeInsets.all(16),
-                  child: _loading
-                      ? const SizedBox(
-                          height: 400,
-                          child: Center(child: CircularProgressIndicator()),
-                        )
-                      : _queue.isEmpty
-                          ? SizedBox(
-                              height: boxHeight - 64,
-                              child: EmptyState(
-                                message: '都整理完了，去复习吧',
-                                actionLabel: '去复习',
-                                onAction: _goReview,
-                              ),
-                            )
-                          : isNarrow
-                              ? Column(
-                                  crossAxisAlignment:
-                                      CrossAxisAlignment.stretch,
-                                  children: [
-                                    _buildQueuePanel(),
-                                    const SizedBox(height: 16),
-                                    _buildDetailColumn(current),
-                                  ],
-                                )
-                              : Row(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    SizedBox(
-                                      width: 320,
-                                      child: _buildQueuePanel(),
-                                    ),
-                                    const SizedBox(width: 16),
-                                    Expanded(
-                                      child: _buildDetailColumn(current),
-                                    ),
-                                  ],
-                                ),
-                ),
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  // ---------- 队列面板（左列） ----------
-
-  Widget _buildQueuePanel() {
-    final displayed = _displayedQueue;
-    final showBorder = displayed.length > 3;
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        TextField(
-          controller: _searchCtrl,
-          decoration: const InputDecoration(
-            hintText: '搜索标题 / 学科 / 试卷',
-            prefixIcon: Icon(Icons.search),
-            border: OutlineInputBorder(),
-            isDense: true,
-          ),
-          onChanged: (v) => setState(() => _search = v),
-        ),
-        const SizedBox(height: 8),
-        Row(
+    return Dialog(
+      insetPadding: const EdgeInsets.all(24),
+      child: Container(
+        width: 620,
+        height: 560,
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('待整理队列（${displayed.length}）'),
-            const Spacer(),
-            // 排序下拉：短名无括号说明，宽度不超过队列列宽。
-            SizedBox(
-              width: 168,
-              child: DropdownButton<_SortMode>(
-                value: _sortMode,
-                isExpanded: true,
-                underline: const SizedBox.shrink(),
-                items: [
-                  for (final m in _SortMode.values)
-                    DropdownMenuItem(value: m, child: Text(m.label)),
-                ],
-                onChanged: (m) {
-                  if (m == null) return;
-                  setState(() => _sortMode = m);
-                  _scrollQueueToCurrent();
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    '队列 · 还剩 ${_questions.length} 道',
+                    style: const TextStyle(
+                        fontSize: 16, fontWeight: FontWeight.w700),
+                  ),
+                ),
+                IconButton(
+                  tooltip: '关闭',
+                  icon: const Icon(Icons.close),
+                  onPressed: () => Navigator.of(context).pop(),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Expanded(
+              child: ListView.builder(
+                itemCount: _questions.length,
+                itemBuilder: (ctx, i) {
+                  final q = _questions[i];
+                  final expanded = _expandedId == q.id;
+                  final isCurrent = q.id == widget.currentId;
+                  return Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          Checkbox(
+                            value: _selected.contains(q.id),
+                            onChanged: (on) => setState(() {
+                              if (on == true) {
+                                _selected.add(q.id);
+                              } else {
+                                _selected.remove(q.id);
+                              }
+                            }),
+                          ),
+                          Expanded(
+                            child: InkWell(
+                              onTap: () => setState(() {
+                                _expandedId = expanded ? null : q.id;
+                              }),
+                              child: Padding(
+                                padding:
+                                    const EdgeInsets.symmetric(vertical: 8),
+                                child: Text(
+                                  q.title,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: TextStyle(
+                                    fontWeight: isCurrent
+                                        ? FontWeight.w800
+                                        : FontWeight.normal,
+                                    color: isCurrent
+                                        ? AppTheme.accent
+                                        : null,
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ),
+                          IconButton(
+                            tooltip: '删除',
+                            icon: const Icon(Icons.delete_outline, size: 20),
+                            onPressed: () => _deleteOne(q),
+                          ),
+                        ],
+                      ),
+                      if (expanded)
+                        FutureBuilder<String?>(
+                          future: _examName(q.examId),
+                          builder: (ctx, snap) {
+                            final exam = snap.data ?? '未选试卷';
+                            return Padding(
+                              padding: const EdgeInsets.fromLTRB(48, 0, 8, 8),
+                              child: Text(
+                                '${Subject.byId(q.subjectId).name} · '
+                                '${_sliceKindLabel(q.sliceKind)} · '
+                                '${_dateText(q.createdAt)} · $exam · '
+                                '${q.folderIds.isEmpty ? '缺文件夹' : '已选文件夹'}',
+                                style: Theme.of(context).textTheme.bodySmall,
+                              ),
+                            );
+                          },
+                        ),
+                      if (expanded)
+                        Row(
+                          children: [
+                            const SizedBox(width: 48),
+                            TextButton(
+                              onPressed: () =>
+                                  Navigator.of(context).pop(q.id),
+                              child: const Text('去整理这道'),
+                            ),
+                          ],
+                        ),
+                      const Divider(height: 1),
+                    ],
+                  );
                 },
               ),
             ),
-          ],
-        ),
-        const SizedBox(height: 8),
-        // 固定高度滚动容器：>3 道时出容器边框 + 滚动条。
-        Container(
-          height: 264,
-          decoration: showBorder
-              ? BoxDecoration(
-                  border: Border.all(color: Theme.of(context).dividerColor),
-                  borderRadius: BorderRadius.circular(8),
-                )
-              : null,
-          child: displayed.isEmpty
-              ? const Center(child: Text('没找到这道题，换个词试试'))
-              : Scrollbar(
-                  controller: _queueScrollController,
-                  thumbVisibility: displayed.length > 3,
-                  child: ListView.builder(
-                    controller: _queueScrollController,
-                    itemCount: displayed.length,
-                    itemBuilder: (ctx, i) {
-                      final q = displayed[i];
-                      final isCurrent = q.id == _currentId;
-                      final checked = _selectedIds.contains(q.id);
-                      return InkWell(
-                        onTap: () => _switchTo(q.id),
-                        child: Container(
-                          height: 64,
-                          decoration: BoxDecoration(
-                            border: Border(
-                              left: BorderSide(
-                                color: isCurrent
-                                    ? Theme.of(context).colorScheme.primary
-                                    : Colors.transparent,
-                                width: 3,
-                              ),
-                            ),
-                            color: isCurrent
-                                ? Theme.of(context)
-                                    .colorScheme
-                                    .primary
-                                    .withValues(alpha: 0.08)
-                                : null,
-                          ),
-                          padding:
-                              const EdgeInsets.symmetric(horizontal: 8),
-                          child: Row(
-                            children: [
-                              Checkbox(
-                                value: checked,
-                                onChanged: (v) => setState(() {
-                                  if (v == true) {
-                                    _selectedIds.add(q.id);
-                                  } else {
-                                    _selectedIds.remove(q.id);
-                                  }
-                                }),
-                              ),
-                              Expanded(
-                                child: Column(
-                                  mainAxisAlignment: MainAxisAlignment.center,
-                                  crossAxisAlignment:
-                                      CrossAxisAlignment.start,
-                                  children: [
-                                    Text(
-                                      q.title,
-                                      maxLines: 1,
-                                      overflow: TextOverflow.ellipsis,
-                                      style: TextStyle(
-                                        fontWeight: isCurrent
-                                            ? FontWeight.w700
-                                            : FontWeight.w500,
-                                      ),
-                                    ),
-                                    const SizedBox(height: 2),
-                                    Text(
-                                      '${Subject.byId(q.subjectId).name} · ${_examName(q.examId).isEmpty ? '未指定试卷' : _examName(q.examId)} · ${_pendingLabel(q)}',
-                                      maxLines: 1,
-                                      overflow: TextOverflow.ellipsis,
-                                      style: Theme.of(context)
-                                          .textTheme
-                                          .bodySmall,
-                                    ),
-                                  ],
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                      );
-                    },
-                  ),
+            // 底部悬浮批量条：勾了题才出现。
+            if (_selected.isNotEmpty)
+              Container(
+                margin: const EdgeInsets.only(top: 8),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                decoration: BoxDecoration(
+                  color: AppTheme.lightFocusCard,
+                  borderRadius: BorderRadius.circular(10),
                 ),
-        ),
-        // 批量栏：有勾选时出现；勾选状态切换题目时保留。
-        if (_selectedIds.isNotEmpty) ...[
-          const SizedBox(height: 8),
-          Wrap(
-            spacing: 8,
-            runSpacing: 8,
-            children: [
-              OutlinedButton(
-                onPressed: _batchAddTags,
-                child: Text('批量加标签（${_selectedIds.length}）'),
-              ),
-              OutlinedButton(
-                onPressed: _batchAddFolders,
-                child: const Text('批量加入文件夹'),
-              ),
-              FilledButton(
-                onPressed: _batchConfirm,
-                child: const Text('批量确认'),
-              ),
-              OutlinedButton(
-                onPressed: _batchDelete,
-                child: const Text('批量删除'),
-              ),
-            ],
-          ),
-        ],
-      ],
-    );
-  }
-
-  // ---------- 右侧：整题图 + 表单 ----------
-
-  Widget _buildDetailColumn(Question? current) {
-    if (current == null) {
-      return EmptyState(
-        message: '都整理完了，去复习吧',
-        actionLabel: '去复习',
-        onAction: _goReview,
-      );
-    }
-    final pendingFolder = _selectedFolders.isEmpty;
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        // 待补充清单：可点击定位到对应字段。
-        if (pendingFolder)
-          Align(
-            alignment: Alignment.centerLeft,
-            child: ActionChip(
-              label: const Text('待补充 1 项：文件夹（点我定位）'),
-              onPressed: () => _scrollToField(_folderFieldKey),
-            ),
-          ),
-        if (pendingFolder) const SizedBox(height: 12),
-        // 整题图。
-        QuestionSlice(
-          question: current,
-          maxHeight: 260,
-          onTap: () => _showZoomDialog(current),
-        ),
-        const SizedBox(height: 4),
-        const Row(
-          children: [
-            InfoChip(label: '题干高亮'),
-            SizedBox(width: 6),
-            InfoChip(label: '选项高亮'),
-            SizedBox(width: 6),
-            InfoChip(label: '配图高亮'),
-            SizedBox(width: 8),
-            Expanded(
-              child: Text('点图放大查看，二层框高亮保持可见',
-                  style: TextStyle(fontSize: 12, color: Colors.grey)),
-            ),
-          ],
-        ),
-        const SizedBox(height: 16),
-        _buildForm(current),
-        const SizedBox(height: 16),
-        // 底部大按钮。
-        FilledButton(
-          onPressed: _confirmCurrent,
-          style: FilledButton.styleFrom(
-            padding: const EdgeInsets.symmetric(vertical: 16),
-            textStyle:
-                const TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
-          ),
-          child: const Text('确认整理，去下一道'),
-        ),
-        const SizedBox(height: 8),
-        Row(
-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-          children: [
-            TextButton.icon(
-              onPressed: () => _move(-1),
-              icon: const Icon(Icons.chevron_left),
-              label: const Text('上一题'),
-            ),
-            TextButton.icon(
-              onPressed: () => _move(1),
-              icon: const Icon(Icons.chevron_right),
-              label: const Text('下一题'),
-            ),
-          ],
-        ),
-      ],
-    );
-  }
-
-  // ---------- 整理表单 ----------
-
-  Widget _buildForm(Question q) {
-    final subject = Subject.byId(q.subjectId);
-    final kps = _knowledgePoints
-        .where((kp) => kp.subjectId == q.subjectId)
-        .toList();
-    final chapters = <String>[];
-    for (final kp in kps) {
-      if (!chapters.contains(kp.chapter)) chapters.add(kp.chapter);
-    }
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        // 1. 学科（只读显示，不可改，导入时选错自担）。
-        _sectionTitle('学科'),
-        Row(
-          children: [
-            SubjectLabel(subjectId: q.subjectId),
-            const SizedBox(width: 8),
-            Text(subject.name,
-                style: const TextStyle(fontWeight: FontWeight.w700)),
-            const SizedBox(width: 8),
-            const Expanded(
-              child: Text('导入时已选定，不可更改',
-                  style: TextStyle(fontSize: 12, color: Colors.grey)),
-            ),
-          ],
-        ),
-        const SizedBox(height: 16),
-
-        // 2. 文件夹（归类，多选）。
-        _sectionTitle('文件夹（归类）', key: _folderFieldKey),
-        Wrap(
-          spacing: 8,
-          runSpacing: 8,
-          children: [
-            for (final f in _folders)
-              FilterChip(
-                label: Text(f),
-                selected: _selectedFolders.contains(f),
-                onSelected: (v) => setState(() {
-                  if (v) {
-                    _selectedFolders.add(f);
-                  } else {
-                    _selectedFolders.remove(f);
-                  }
-                }),
-              ),
-            ActionChip(
-              label: const Text('＋ 添加新文件夹…'),
-              onPressed: _addFolder,
-            ),
-          ],
-        ),
-        if (_selectedFolders.isEmpty)
-          const Padding(
-            padding: EdgeInsets.only(top: 4),
-            child: Text('待补充：必填，请选个文件夹',
-                style: TextStyle(fontSize: 12, color: Colors.red)),
-          ),
-        const SizedBox(height: 16),
-
-        // 3. 试卷（来源，下拉）。
-        _sectionTitle('试卷（来源）'),
-        DropdownButtonFormField<String?>(
-          value: _selectedExamId,
-          isExpanded: true,
-          decoration: const InputDecoration(border: OutlineInputBorder()),
-          items: [
-            const DropdownMenuItem<String?>(
-              value: null,
-              child: Text('不选试卷'),
-            ),
-            for (final e in _exams)
-              DropdownMenuItem<String?>(
-                value: e.id,
-                child: Text(e.name),
-              ),
-            const DropdownMenuItem<String?>(
-              value: '__add__',
-              child: Text('＋ 添加新试卷…'),
-            ),
-          ],
-          onChanged: (v) async {
-            if (v == '__add__') {
-              await _addExam();
-              return;
-            }
-            setState(() => _selectedExamId = v);
-          },
-        ),
-        if (_selectedExamId == null)
-          const Padding(
-            padding: EdgeInsets.only(top: 4),
-            child: Text('待补充：选填，可不选',
-                style: TextStyle(fontSize: 12, color: Colors.grey)),
-          ),
-        const SizedBox(height: 16),
-
-        // 4. 知识点（学科 → 章节 → 知识点预置树，展开式多选）。
-        _sectionTitle('知识点（已选 ${_selectedKpIds.length} 个）',
-            key: _knowledgeFieldKey),
-        if (kps.isEmpty)
-          const Text('该学科暂无预置知识点，去学科管理添加',
-              style: TextStyle(fontSize: 12, color: Colors.grey))
-        else
-          for (final chapter in chapters)
-            ExpansionTile(
-              title: Text(chapter),
-              subtitle: Text(
-                  '已选 ${kps.where((kp) => kp.chapter == chapter && _selectedKpIds.contains(kp.id)).length} 个'),
-              children: [
-                for (final kp
-                    in kps.where((e) => e.chapter == chapter))
-                  CheckboxListTile(
-                    dense: true,
-                    title: Text(kp.name),
-                    value: _selectedKpIds.contains(kp.id),
-                    onChanged: (v) => setState(() {
-                      if (v == true) {
-                        _selectedKpIds.add(kp.id);
-                      } else {
-                        _selectedKpIds.remove(kp.id);
-                      }
-                    }),
-                  ),
-              ],
-            ),
-        const Text('树里没有的知识点不能在这里新建，去学科管理添加',
-            style: TextStyle(fontSize: 12, color: Colors.grey)),
-        if (_selectedKpIds.isEmpty)
-          const Padding(
-            padding: EdgeInsets.only(top: 4),
-            child: Text('待补充：选填，可不选',
-                style: TextStyle(fontSize: 12, color: Colors.grey)),
-          ),
-        const SizedBox(height: 16),
-
-        // 5. 错误类型（固定枚举 + 自定义，多选；选中显示为可点叉移除的 chips）。
-        _sectionTitle('错误类型', key: _errorFieldKey),
-        Wrap(
-          spacing: 8,
-          runSpacing: 8,
-          children: [
-            for (final t in ErrorTypes.fixed)
-              FilterChip(
-                label: Text(t),
-                selected: _selectedErrorTypes.contains(t),
-                onSelected: (v) => setState(() {
-                  if (v) {
-                    _selectedErrorTypes.add(t);
-                  } else {
-                    _selectedErrorTypes.remove(t);
-                  }
-                }),
-              ),
-            for (final t in _customErrorTypes)
-              InputChip(
-                label: Text(t),
-                selected: _selectedErrorTypes.contains(t),
-                onSelected: (v) => setState(() {
-                  if (v) {
-                    _selectedErrorTypes.add(t);
-                  } else {
-                    _selectedErrorTypes.remove(t);
-                  }
-                }),
-                onDeleted: () => setState(() {
-                  _customErrorTypes.remove(t);
-                  _selectedErrorTypes.remove(t);
-                }),
-              ),
-          ],
-        ),
-        const SizedBox(height: 8),
-        Row(
-          children: [
-            Expanded(
-              child: TextField(
-                controller: _customErrorCtrl,
-                decoration: const InputDecoration(
-                  labelText: '自定义错误类型（只跟本题）',
-                  border: OutlineInputBorder(),
-                  isDense: true,
+                child: Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  crossAxisAlignment: WrapCrossAlignment.center,
+                  children: [
+                    Text('已选 ${_selected.length} 道',
+                        style: const TextStyle(fontWeight: FontWeight.w700)),
+                    OutlinedButton(
+                      onPressed: _batchAddTags,
+                      child: const Text('批量打标签'),
+                    ),
+                    DropdownButton<String>(
+                      value: _batchFolderId,
+                      hint: const Text('选文件夹'),
+                      items: _allFolders
+                          .map((f) => DropdownMenuItem(
+                                value: f.id,
+                                child: Text(
+                                    '${Subject.byId(f.subjectId).name} · ${f.name}'),
+                              ))
+                          .toList(),
+                      onChanged: (v) =>
+                          setState(() => _batchFolderId = v),
+                    ),
+                    OutlinedButton(
+                      onPressed: _batchAddFolder,
+                      child: const Text('加入该文件夹'),
+                    ),
+                    FilledButton(
+                      onPressed: _batchConfirm,
+                      child: const Text('确认整理'),
+                    ),
+                    OutlinedButton(
+                      onPressed: _batchDelete,
+                      child: const Text('删除'),
+                    ),
+                    TextButton(
+                      onPressed: () => setState(() => _selected.clear()),
+                      child: const Text('取消'),
+                    ),
+                  ],
                 ),
-                onSubmitted: (_) => _addCustomErrorType(),
               ),
-            ),
-            const SizedBox(width: 8),
-            OutlinedButton(
-              onPressed: _addCustomErrorType,
-              child: const Text('添加'),
-            ),
           ],
         ),
-        if (_selectedErrorTypes.isEmpty)
-          const Padding(
-            padding: EdgeInsets.only(top: 4),
-            child: Text('待补充：选填，可不选',
-                style: TextStyle(fontSize: 12, color: Colors.grey)),
-          ),
-        const SizedBox(height: 16),
-
-        // 6. 标签（不限量，预置可点选，新建即选中）。
-        _sectionTitle('标签', key: _tagFieldKey),
-        Wrap(
-          spacing: 8,
-          runSpacing: 8,
-          children: [
-            for (final t in _allTags)
-              FilterChip(
-                label: Text(t),
-                selected: _selectedTags.contains(t),
-                onSelected: (v) => setState(() {
-                  if (v) {
-                    _selectedTags.add(t);
-                  } else {
-                    _selectedTags.remove(t);
-                  }
-                }),
-              ),
-            ActionChip(
-              label: const Text('＋ 新建标签'),
-              onPressed: _addTag,
-            ),
-          ],
-        ),
-        if (_selectedTags.isEmpty)
-          const Padding(
-            padding: EdgeInsets.only(top: 4),
-            child: Text('待补充：选填，可不选',
-                style: TextStyle(fontSize: 12, color: Colors.grey)),
-          ),
-        const SizedBox(height: 16),
-
-        // 7. 答案。
-        _sectionTitle('答案'),
-        TextField(
-          controller: _answerCtrl,
-          decoration: const InputDecoration(
-            hintText: '待补充',
-            border: OutlineInputBorder(),
-          ),
-        ),
-        const SizedBox(height: 16),
-
-        // 8. 解析（可空）。
-        _sectionTitle('解析'),
-        TextField(
-          controller: _explanationCtrl,
-          maxLines: 4,
-          decoration: const InputDecoration(
-            hintText: '待补充（可空）',
-            border: OutlineInputBorder(),
-          ),
-        ),
-        const SizedBox(height: 16),
-
-        // 9. 备注（与答案 / 解析分开，多行，可空）。
-        _sectionTitle('备注'),
-        TextField(
-          controller: _notesCtrl,
-          maxLines: 3,
-          decoration: const InputDecoration(
-            hintText: '待补充（可空）',
-            border: OutlineInputBorder(),
-          ),
-        ),
-      ],
-    );
-  }
-
-  void _addCustomErrorType() {
-    final name = _customErrorCtrl.text.trim();
-    if (name.isEmpty) return;
-    setState(() {
-      if (!_customErrorTypes.contains(name)) {
-        _customErrorTypes.add(name);
-      }
-      _selectedErrorTypes.add(name);
-      _customErrorCtrl.clear();
-    });
-  }
-
-  Widget _sectionTitle(String text, {Key? key}) {
-    return Padding(
-      key: key,
-      padding: const EdgeInsets.only(bottom: 8),
-      child: Text(text,
-          style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w700)),
+      ),
     );
   }
 }

@@ -1,69 +1,213 @@
 import '../data/database.dart';
 import '../models/models.dart';
 
-/// 仓库：各页面模块共用的查询口径（首页计数、错题本筛选、整理队列）。
+/// 仓库：各页面模块共用的查询口径（首页计数、错题本筛选、整理队列、复习）。
 /// 不直接读其他模块的状态，只读数据层。
+/// v2：旧翻卡 + 1/3/7/14 天间隔已废弃；复习是治错因模型。
 class QuestionRepository {
   QuestionRepository(this._db);
   final AppDatabase _db;
+
+  AppDatabase get db => _db;
 
   Future<List<Question>> all({bool includeArchived = false}) async {
     final list = await _db.allQuestions();
     return list.where((q) => includeArchived || !q.isArchived).toList();
   }
 
-  /// 今日到期（含逾期）：复习中且下次复习 <= 今天。
-  /// D-27 已确认（2026-11-12，用户决定）：首页只数已整理完的题
-  /// （isOrganized），没整理完的题不计入首页今日到期 / 逾期 / 各科三数，
-  /// 与错题本封面（只数已整理题）统一口径。
-  Future<List<Question>> dueToday() async {
-    final list = await all();
-    final now = DateTime.now();
-    final today = DateTime(now.year, now.month, now.day);
-    // 今日到期 = 已整理 + 未归档 + 复习中 + 有明确复习排程
-    // （nextReview 非空且已到期，或已逾期）。刚导入、还没整理确认的题
-    // nextReview 为空、无排程，不算到期（D-26）；演示数据里待整理题
-    // 自带排程日期，D-27 起也不再计入——干净演示数据下首页今日到期
-    // 由 7 道变为 3 道（数学 2→1、英语 3→2、政治 2→0，逾期仍 2 道），
-    // 这是按用户决定统一口径的结果，不是 bug。
-    return list
-        .where((q) =>
-            q.isOrganized &&
-            !q.isArchived &&
-            q.reviewStatus == ReviewStatus.inReview &&
-            (q.overdueDays > 0 ||
-                (q.nextReview != null && !q.nextReview!.isAfter(today))))
-        .toList();
+  Future<Question?> questionById(String id) => _db.questionById(id);
+
+  Future<List<({String result, DateTime reviewedAt})>> reviewHistory(
+          String questionId) =>
+      _db.reviewHistory(questionId);
+
+  // ---------- 错因复习模型 ----------
+
+  Future<List<CauseRecord>> causeRecords() => _db.allCauseRecords();
+
+  Future<List<CauseRecord>> causeRecordsFor(String questionId) =>
+      _db.causeRecordsForQuestion(questionId);
+
+  Future<void> saveCauseRecord(CauseRecord r) => _db.upsertCauseRecord(r);
+
+  /// 手动加入 / 取消加入复习：加入时给这道题建解决记录（每个错因一条）；
+  /// 取消后记录保留，再加入时接着治。错因是空的题加不进复习，返回 false。
+  Future<bool> setReviewJoined(Question q, bool joined) async {
+    final causes = q.allCauses;
+    if (joined && causes.isEmpty) return false;
+    await _db.upsertQuestion(q.copyWith(reviewJoined: joined));
+    if (joined) await _db.ensureCauseRecords(q);
+    return true;
   }
 
-  /// 各科三数：今日到期 / 复习中 / 已掌握（不显示总题数）。
-  /// D-27 已确认：三数都只数已整理完的题（isOrganized）。
-  Future<Map<String, (int due, int inReview, int mastered)>> subjectCounts() async {
-    final list = await all();
+  /// 同步某题的解决记录与它当前的错因：删掉已不在错因里的记录，
+  /// 给新加的错因补一条待解决记录（仅已加入复习的题）。
+  Future<void> syncCauseRecords(Question q) async {
+    if (!q.reviewJoined) return;
+    final causes = q.allCauses.toSet();
+    final records = await _db.allCauseRecords();
+    for (final r in records) {
+      if (r.questionId == q.id && !causes.contains(r.cause)) {
+        await _db.deleteCauseRecord(r.questionId, r.cause);
+      }
+    }
+    await _db.ensureCauseRecords(q);
+  }
+
+  /// 要复习的题：手动加入复习、已整理、至少一个错因还没解决
+  /// （待解决 / 解决中）或到了复查时间。数题不数错因。
+  Future<List<Question>> dueToday() async {
+    final questions = await all(includeArchived: true);
+    final records = await _db.allCauseRecords();
+    final byQ = <String, List<CauseRecord>>{};
+    for (final r in records) {
+      (byQ[r.questionId] ??= []).add(r);
+    }
+    return questions.where((q) {
+      if (!q.reviewJoined || !q.isOrganized) return false;
+      final rs = byQ[q.id] ?? const <CauseRecord>[];
+      return rs.any(
+          (r) => r.status != CauseStatus.solved || r.isRecheckDue);
+    }).toList();
+  }
+
+  /// 首页焦点卡与导航速览同一口径（homeRevCounts）：每科要复习的题数
+  /// （手动加入、未解决，含到复查时间的题；数题不数错因）。
+  Future<Map<String, int>> homeRevCounts() async {
     final due = await dueToday();
-    final map = <String, (int, int, int)>{};
+    final map = <String, int>{};
     for (final s in Subject.all) {
-      final qs =
-          list.where((q) => q.subjectId == s.id && q.isOrganized);
-      map[s.id] = (
-        due.where((q) => q.subjectId == s.id).length,
-        qs.where((q) => q.reviewStatus == ReviewStatus.inReview).length,
-        qs.where((q) => q.reviewStatus == ReviewStatus.mastered).length,
-      );
+      map[s.id] = due.where((q) => q.subjectId == s.id).length;
     }
     return map;
   }
 
+  /// 各科三数：要复习 / 待复查 / 已解决（不显示总题数）。
+  /// 一道题可同时计入要复习与待复查（不同错因状态不同）。
+  Future<Map<String, (int toReview, int toRecheck, int solved)>>
+      subjectCounts() async {
+    final questions = await all(includeArchived: true);
+    final records = await _db.allCauseRecords();
+    final byQ = <String, List<CauseRecord>>{};
+    for (final r in records) {
+      (byQ[r.questionId] ??= []).add(r);
+    }
+    final map = <String, (int, int, int)>{};
+    for (final s in Subject.all) {
+      var toReview = 0;
+      var toRecheck = 0;
+      var solved = 0;
+      for (final q in questions) {
+        if (q.subjectId != s.id || !q.reviewJoined || !q.isOrganized) {
+          continue;
+        }
+        final rs = byQ[q.id] ?? const <CauseRecord>[];
+        if (rs.isEmpty) continue;
+        if (rs.any((r) => r.status != CauseStatus.solved)) toReview++;
+        if (rs.any((r) => r.isRecheckDue)) toRecheck++;
+        if (rs.every((r) => r.status == CauseStatus.solved) &&
+            !rs.any((r) => r.isRecheckDue)) {
+          solved++;
+        }
+      }
+      map[s.id] = (toReview, toRecheck, solved);
+    }
+    return map;
+  }
+
+  /// 自查一个错因：result 是 'solved' / 'unsolved' / 'unsure'。
+  /// - 已解决：solvedCount + 1；满 cureChecks 次 → 已解决，复查日 =
+  ///   今天 + recheckIntervalDays 天；不满 → 解决中（复查日清掉）。
+  /// - 未解决：solvedCount 清 0 → 解决中，复查日清掉（复查不过，
+  ///   回到解决中重新治，旧复查日作废）。
+  /// - 不确定：不算，不改记录。
+  Future<CauseRecord> recordSelfCheck(
+    CauseRecord r,
+    String result, {
+    int cureChecks = 2,
+    int recheckIntervalDays = 7,
+  }) async {
+    if (result == 'unsure') return r;
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    late CauseRecord updated;
+    if (result == 'solved') {
+      final count = r.solvedCount + 1;
+      if (count >= cureChecks) {
+        updated = r.copyWith(
+          status: CauseStatus.solved,
+          solvedCount: count,
+          lastCheck: now,
+          recheckDate: today.add(Duration(days: recheckIntervalDays)),
+        );
+      } else {
+        updated = r.copyWith(
+          status: CauseStatus.inProgress,
+          solvedCount: count,
+          lastCheck: now,
+          clearRecheckDate: true,
+        );
+      }
+    } else {
+      updated = r.copyWith(
+        status: CauseStatus.inProgress,
+        solvedCount: 0,
+        lastCheck: now,
+        clearRecheckDate: true,
+      );
+    }
+    await _db.upsertCauseRecord(updated);
+    await _db.addCauseCheckHistory(
+        questionId: r.questionId, result: result);
+    final q = await _db.questionById(r.questionId);
+    if (q != null) {
+      await _db.upsertQuestion(q.copyWith(reviewCount: q.reviewCount + 1));
+    }
+    return updated;
+  }
+
+  /// 写补救：内容保存进该错因的补救历史（带日期），下次复习可见。
+  /// 空内容不保存。
+  Future<CauseRecord> saveRemedy(CauseRecord r, String text) async {
+    final trimmed = text.trim();
+    if (trimmed.isEmpty) return r;
+    final now = DateTime.now();
+    final entry = '${now.year}-${now.month}-${now.day}：$trimmed';
+    final updated = r.copyWith(remedyHistory: [entry, ...r.remedyHistory]);
+    await _db.upsertCauseRecord(updated);
+    return updated;
+  }
+
+  Future<ReviewSessionState?> reviewState() => _db.loadReviewState();
+
+  Future<void> saveReviewState(
+          {required List<String> queue, required int position}) =>
+      _db.saveReviewState(queue: queue, position: position);
+
+  Future<void> clearReviewState() => _db.clearReviewState();
+
   Future<void> toggleFavorite(Question q) async =>
       _db.upsertQuestion(q.copyWith(isFavorite: !q.isFavorite));
 
-  /// 待整理题数（左导航整理角标，D-04）：未确认整理且未归档。
+  /// 待整理题数（左导航整理角标）：未确认整理且未归档。
   Future<int> pendingOrganizeCount() async {
     final list = await all();
     return list.where((q) => !q.isOrganized && !q.isArchived).length;
   }
 
-  /// D-01：最近任务读写（表 recent_tasks，单行）。
+  /// 待整理题数（按学科）。
+  Future<Map<String, int>> pendingOrganizeBySubject() async {
+    final list = await all();
+    final map = <String, int>{};
+    for (final s in Subject.all) {
+      map[s.id] = list
+          .where((q) =>
+              q.subjectId == s.id && !q.isOrganized && !q.isArchived)
+          .length;
+    }
+    return map;
+  }
+
   Future<({String kind, String subjectId, String title})?> recentTask() =>
       _db.recentTask();
 
@@ -73,7 +217,6 @@ class QuestionRepository {
           required String title}) =>
       _db.saveRecentTask(kind: kind, subjectId: subjectId, title: title);
 
-  /// D-11：一键清空演示数据，返回删掉的题数。
   Future<int> clearDemoData() => _db.clearDemoData();
 
   Future<int> demoQuestionCount() => _db.demoQuestionCount();
@@ -85,24 +228,63 @@ class QuestionRepository {
 
   Future<void> delete(Question q) async => _db.deleteQuestion(q.id);
 
-  /// 复习自评：会 / 不会。两次答对 → 已掌握，答错 → 回到复习中；
-  /// 间隔 1 / 3 / 7 / 14 天（按复习次数推进）。
-  Future<Question> applyReviewResult(Question q, bool correct) async {
-    const intervals = [1, 3, 7, 14];
-    final count = correct ? q.reviewCount + 1 : 0;
-    final status =
-        count >= 2 ? ReviewStatus.mastered : ReviewStatus.inReview;
-    final next = status == ReviewStatus.mastered
-        ? null
-        : DateTime.now().add(
-            Duration(days: intervals[count.clamp(0, intervals.length - 1)]));
-    final updated = q.copyWith(
-      reviewCount: count,
-      reviewStatus: status,
-      nextReview: next,
-      overdueDays: 0,
-    );
-    await _db.upsertQuestion(updated);
-    return updated;
-  }
+  // ---------- 学科 / 文件夹 / 标签 / 试卷 / 知识点 / 设置 ----------
+
+  Future<List<Subject>> subjects() => _db.allSubjects();
+
+  Future<void> saveSubject(Subject s) => _db.upsertSubject(s);
+
+  Future<void> deleteSubject(String id) => _db.deleteSubject(id);
+
+  Future<List<Folder>> folders({String? subjectId}) =>
+      _db.allFolders(subjectId: subjectId);
+
+  Future<void> saveFolder(Folder f) => _db.upsertFolder(f);
+
+  Future<int> deleteFolder(Folder f) => _db.deleteFolder(f);
+
+  Future<List<String>> tags() => _db.allTags();
+
+  Future<void> addTag(String name) => _db.insertTag(name);
+
+  Future<void> renameTag(String oldName, String newName) =>
+      _db.renameTag(oldName, newName);
+
+  Future<void> deleteTag(String name) => _db.deleteTag(name);
+
+  Future<List<Exam>> exams() => _db.allExams();
+
+  Future<void> addExam(Exam e) => _db.insertExam(e);
+
+  Future<void> renameExam(String id, String newName) =>
+      _db.renameExam(id, newName);
+
+  Future<void> deleteExam(String id) => _db.deleteExam(id);
+
+  Future<List<KnowledgePoint>> knowledgePoints() =>
+      _db.allKnowledgePoints();
+
+  Future<void> addKnowledgePoint(KnowledgePoint kp) =>
+      _db.insertKnowledgePoint(kp);
+
+  Future<void> renameKnowledgePoint(String id, String newName) =>
+      _db.renameKnowledgePoint(id, newName);
+
+  Future<void> deleteKnowledgePoint(String id) =>
+      _db.deleteKnowledgePoint(id);
+
+  Future<AppSettings> settings() => _db.loadSettings();
+
+  Future<void> saveSettings(AppSettings s) => _db.saveSettings(s);
+
+  Future<List<CollectTask>> collectTasks() => _db.allCollectTasks();
+
+  Future<void> saveCollectTask(CollectTask t) => _db.upsertCollectTask(t);
+
+  Future<void> deleteCollectTask(String id) => _db.deleteCollectTask(id);
+
+  Future<String> exportBackupJson() => _db.exportBackupJson();
+
+  Future<void> setCustomDataDirectory(String dir) =>
+      _db.setCustomDataDirectory(dir);
 }

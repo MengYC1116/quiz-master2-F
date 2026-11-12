@@ -1,3 +1,4 @@
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 
 import '../models/models.dart';
@@ -358,6 +359,71 @@ class InfoChip extends StatelessWidget {
       child: Text(label, style: const TextStyle(fontSize: 12)),
     );
   }
+}
+
+/// 题目图放大浮层（共享；整理工作台、题目详情都用它）：
+/// 点图弹出大居中浮层，1.5× 起始，滚轮缩放，＋/－按钮，点背景/Esc/✕ 关闭。
+/// InteractiveViewer 居中放图，不会像旧版固定偏移那样把右边文字截掉。
+Future<void> showQuestionZoomDialog(
+    BuildContext context, Question question) {
+  final controller = TransformationController()
+    ..value = Matrix4.diagonal3Values(1.5, 1.5, 1);
+  return showDialog<void>(
+    context: context,
+    builder: (ctx) => Dialog(
+      child: SizedBox(
+        width: 720,
+        height: 540,
+        child: Column(
+          children: [
+            Row(
+              children: [
+                const Expanded(
+                  child: Padding(
+                    padding: EdgeInsets.all(12),
+                    child: Text('题目图',
+                        style: TextStyle(fontWeight: FontWeight.w700)),
+                  ),
+                ),
+                IconButton(
+                  icon: const Icon(Icons.zoom_in),
+                  onPressed: () => controller.value *=
+                      Matrix4.diagonal3Values(1.25, 1.25, 1),
+                ),
+                IconButton(
+                  icon: const Icon(Icons.zoom_out),
+                  onPressed: () => controller.value *=
+                      Matrix4.diagonal3Values(0.8, 0.8, 1),
+                ),
+                IconButton(
+                  icon: const Icon(Icons.close),
+                  onPressed: () => Navigator.of(ctx).pop(),
+                ),
+              ],
+            ),
+            Expanded(
+              child: Listener(
+                onPointerSignal: (e) {
+                  if (e is PointerScrollEvent) {
+                    final s = e.scrollDelta.dy < 0 ? 1.12 : 0.9;
+                    controller.value *= Matrix4.diagonal3Values(s, s, 1);
+                  }
+                },
+                child: InteractiveViewer(
+                  transformationController: controller,
+                  minScale: 0.5,
+                  maxScale: 5,
+                  child: Center(
+                    child: QuestionSlice(question: question, maxHeight: 480),
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    ),
+  );
 }
 
 /// 空状态：小伙伴 + 文案 + 可选按钮。

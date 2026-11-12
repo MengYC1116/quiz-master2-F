@@ -1,48 +1,64 @@
-# quiz-master2
+# quiz-master2 v2 — Flutter + SQLite
 
-Windows 个人智能错题本（Flutter + SQLite，先做 Windows，后做 Android）。
+Windows 个人智能错题本（大学个人用），1:1 复刻主预览
+`quiz-master2-quan-xin-she-ji-yu-lan` 的 9 个页面。
 
-- Flutter **3.47.9**（Dart **3.13.7**，最新稳定版，2026-10-29 发布，见 `docs/decision-log.md` 第 0 条）
-- SQLite 文件：`%LOCALAPPDATA%\quiz-master2\quiz-master2.db`（D-05 已确认改口径；安装目录只放程序，切片图也放同一数据目录）
-- YOLO：已转 ONNX（`best.onnx` 约 37 MB），用 onnxruntime 接；本仓库先用占位模型写，见 `lib/services/yolo_onnx_service.dart`
-- 打包：`.exe` 安装包（Win11）
-- 只实现 4 个已确认模块：首页、收集中心、整理工作台、错题本。题目详情、复习、学习报告、学科管理 & 设置未实现（见 `docs/decision-log.md`）。
+## 从 0 重写（v2，2026-11-12）
 
-## 在 Win11 本地运行
+旧项目 `~/workspace/quiz-master2-F/` 已完整备份到
+`~/workspace/quiz-master2-F-old-20261112/`（不动）。本目录是全新项目，
+9 个模块按当前预览定稿重写，不 patch 旧代码。
 
-1. 安装 Flutter **3.47.9** 稳定版（`flutter --version` 应显示 3.47.9 / Dart 3.13.7），勾选 Windows Desktop 开发（含 Visual Studio 2022 + C++ 桌面开发工作负载）。
-2. `flutter doctor` 确认 Windows 一栏无缺项。
-3. 在项目根目录：
-   ```bat
-   flutter pub get
-   flutter analyze
-   flutter run -d windows
-   ```
-4. 打包：
-   ```bat
-   flutter build windows --release
-   ```
-   产物在 `build\windows\x64\runner\Release\`，再用 Inno Setup 打成 `.exe` 安装包（D-12 已确认：要桌面快捷方式和开始菜单项；安装目录只放程序，数据目录见上）。
-5. 首次运行会自动建库并写入演示数据：数学 / 英语 / 政治各 3 道大学题，共 9 道。
+## 环境
 
-## 模块边界（一个页面一个模块）
+- Flutter 3.47.9 / Dart 3.13.7（锁定）
+- 依赖：`sqflite_common_ffi ^2.3.6`、`path ^1.9.1`、
+  `file_picker ^8.0.0`、`flutter_lints ^5.0.0`
+- onnxruntime 的 Dart 包版本故意不 pin：须在 Win11 上验证后再定
+  （decision-log D-07）；在此之前 YOLO 以占位模式运行。
 
-| 页面 | 路由 | 文件 |
-|---|---|---|
-| 首页 | `/home` | `lib/modules/home/home_page.dart` |
-| 收集中心 | `/collect` | `lib/modules/collect/collect_page.dart` |
-| 整理工作台 | `/organize` | `lib/modules/organize/organize_page.dart` |
-| 错题本 | `/wrongbook` | `lib/modules/wrongbook/wrongbook_page.dart` |
+## 运行（Linux 验证）
 
-模块之间只靠题目 ID、学科 ID 联系；一道题在数据层只存一份（`lib/data/`）。
-详细边界见 `docs/quiz-master2-mo-kuai-bian-jie-hua-fen.md`；
-写代码时需要用户确认、但未停下等确认的事项见 `docs/decision-log.md`。
+```sh
+flutter pub get
+flutter analyze
+flutter build linux --release
+```
 
-## 目录
+Windows（用户电脑 Win11）：
 
-- `lib/main.dart` 入口；`lib/app.dart` 路由 + 左导航外壳
-- `lib/theme/` 年轻学习伙伴感主题（亮色默认，深色冷灰 #1E2228）
-- `lib/models/` 数据模型；`lib/data/` SQLite + 仓库 + 演示数据
-- `lib/services/` YOLO ONNX（占位）+ 导入服务
-- `lib/modules/` 4 个页面模块
-- `assets/models/` 占位 ONNX 模型说明（真模型 `best.onnx` 由用户提供后替换）
+```sh
+flutter pub get
+flutter analyze
+flutter run -d windows
+flutter build windows --release
+```
+
+数据库 `quiz-master2.db` 在 `%LOCALAPPDATA%\quiz-master2`；
+Linux 验证时在 `~/.local/share/quiz-master2/`。
+
+## 结构
+
+```
+lib/
+  main.dart            入口
+  app.dart             外壳：左导航 + 9 路由
+  theme/app_theme.dart 年轻学习伙伴感（亮色 / 深色冷灰）
+  models/models.dart   学科/错因/题目/文件夹/设置等模型
+  data/
+    database.dart      SQLite（v2 全新 schema，version 1）
+    repository.dart    各页共用查询口径
+    demo_data.dart     演示数据：数学/英语/政治各 3 道大学题
+    badge_notifier.dart 角标刷新通知
+  services/
+    yolo_onnx_service.dart  两层 YOLO（占位：一页一个整题框）
+    import_service.dart     PDF/JPG/PNG 导入（50MB/20MB）
+  widgets/widgets.dart      整题切片 / 小伙伴形象 / 纸纹微点
+  modules/
+    home/ collect/ organize/ wrongbook/ detail/
+    review/ report/ subjects/ settings/
+```
+
+## 决策日志
+
+见 `docs/decision-log.md`（v2 从 D-00 起重新记）。

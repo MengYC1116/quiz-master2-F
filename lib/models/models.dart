@@ -1,34 +1,178 @@
 import 'package:flutter/material.dart';
 
 /// 学科：初始三科，顺序固定 数学 / 英语 / 政治（大学阶段）。
+/// 封面样式 + 封面颜色存在 subjects 表里（v2 新增，学科管理页可改）。
 class Subject {
-  const Subject({
+  Subject({
     required this.id,
     required this.name,
     required this.color,
     required this.icon,
+    this.coverStyle = 'plain',
+    this.coverColor = 'blue',
   });
   final String id;
   final String name;
   final Color color;
   final String icon; // 单字图标，如 数 / 英 / 政
+  final String coverStyle; // 6 种封面样式之一
+  final String coverColor; // 7 种预设色之一
 
-  static const math = Subject(
-      id: 'math', name: '数学', color: Color(0xFF2F7CF6), icon: '数');
-  static const english = Subject(
-      id: 'english', name: '英语', color: Color(0xFF1F9D66), icon: '英');
-  static const politics = Subject(
-      id: 'politics', name: '政治', color: Color(0xFFE0524D), icon: '政');
-  static const all = [math, english, politics];
+  static final math = Subject(
+      id: 'math', name: '数学', color: const Color(0xFF2F7CF6), icon: '数');
+  static final english = Subject(
+      id: 'english', name: '英语', color: const Color(0xFF1F9D66), icon: '英');
+  static final politics = Subject(
+      id: 'politics', name: '政治', color: const Color(0xFFE0524D), icon: '政');
+  static List<Subject> get all => [math, english, politics];
   static Subject byId(String id) =>
       all.firstWhere((s) => s.id == id, orElse: () => math);
+
+  Subject copyWith({
+    String? name,
+    Color? color,
+    String? coverStyle,
+    String? coverColor,
+  }) =>
+      Subject(
+        id: id,
+        name: name ?? this.name,
+        color: color ?? this.color,
+        icon: icon,
+        coverStyle: coverStyle ?? this.coverStyle,
+        coverColor: coverColor ?? this.coverColor,
+      );
 }
 
-/// 复习状态。已掌握默认不在错题本显示。
-enum ReviewStatus { inReview, mastered }
+/// 错题本封面 6 种样式（学科管理页按学科换）。
+class CoverStyles {
+  static const all = ['plain', 'lines', 'dots', 'grid', 'diagonal', 'double'];
+  static const labels = {
+    'plain': '纯色折角',
+    'lines': '横线纹',
+    'dots': '圆点',
+    'grid': '方格纹',
+    'diagonal': '斜纹',
+    'double': '双线框',
+  };
+}
 
-extension ReviewStatusLabel on ReviewStatus {
-  String get label => this == ReviewStatus.mastered ? '已掌握' : '复习中';
+/// 封面 7 种预设色（只预设这 7 种，不自定义取色）。
+class CoverColors {
+  static const all = [
+    'blue',
+    'green',
+    'red',
+    'purple',
+    'orange',
+    'yellow',
+    'grey'
+  ];
+  static const labels = {
+    'blue': '蓝',
+    'green': '绿',
+    'red': '红',
+    'purple': '紫',
+    'orange': '橙',
+    'yellow': '黄',
+    'grey': '灰',
+  };
+  static const hex = {
+    'blue': Color(0xFF2F7CF6),
+    'green': Color(0xFF1F9D66),
+    'red': Color(0xFFE0524D),
+    'purple': Color(0xFF7C5CFC),
+    'orange': Color(0xFFF08A1D),
+    'yellow': Color(0xFFE8B800),
+    'grey': Color(0xFF8A94A6),
+  };
+  static Color of(String key) => hex[key] ?? hex['blue']!;
+}
+
+/// 错因解决状态（v2 复习模型，旧 1/3/7/14 与翻卡已废弃）。
+/// 待解决 → 解决中（至少一次自查“已解决”，未满两次）→ 已解决
+/// （同一错因在同一道题上两次自查“已解决”）；已解决满复查间隔
+/// （默认 7 天）自动回来复查，复查不过打回解决中。
+enum CauseStatus { pending, inProgress, solved }
+
+extension CauseStatusLabel on CauseStatus {
+  String get label => switch (this) {
+        CauseStatus.pending => '待解决',
+        CauseStatus.inProgress => '解决中',
+        CauseStatus.solved => '已解决',
+      };
+}
+
+/// “题 × 错因”解决记录：复习按错因治，一道题的每个错因各一条记录。
+class CauseRecord {
+  const CauseRecord({
+    required this.questionId,
+    required this.cause,
+    required this.subjectId,
+    this.status = CauseStatus.pending,
+    this.solvedCount = 0,
+    this.lastCheck,
+    this.recheckDate,
+    this.remedyHistory = const [],
+    required this.joinedAt,
+  });
+
+  final String questionId;
+  final String cause;
+  final String subjectId;
+  final CauseStatus status;
+  final int solvedCount; // 同一错因同一道题自查“已解决”的累计次数
+  final DateTime? lastCheck;
+  final DateTime? recheckDate;
+  final List<String> remedyHistory; // 每次写补救的内容（带日期），新→旧
+  final DateTime joinedAt; // 加入复习的时间，列表按它排
+
+  /// 是否到了复查时间：已解决且复查日 ≤ 今天。
+  bool get isRecheckDue {
+    if (status != CauseStatus.solved || recheckDate == null) return false;
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final d = DateTime(
+        recheckDate!.year, recheckDate!.month, recheckDate!.day);
+    return !d.isAfter(today);
+  }
+
+  CauseRecord copyWith({
+    CauseStatus? status,
+    int? solvedCount,
+    DateTime? lastCheck,
+    DateTime? recheckDate,
+    List<String>? remedyHistory,
+    DateTime? joinedAt,
+    bool clearRecheckDate = false,
+  }) {
+    return CauseRecord(
+      questionId: questionId,
+      cause: cause,
+      subjectId: subjectId,
+      status: status ?? this.status,
+      solvedCount: solvedCount ?? this.solvedCount,
+      lastCheck: lastCheck ?? this.lastCheck,
+      recheckDate:
+          clearRecheckDate ? null : (recheckDate ?? this.recheckDate),
+      remedyHistory: remedyHistory ?? this.remedyHistory,
+      joinedAt: joinedAt ?? this.joinedAt,
+    );
+  }
+}
+
+/// 复习会话断点（单行，id = 1）：暂停时存下队列与位置，
+/// 下次进复习页从断的那个错因继续。
+class ReviewSessionState {
+  const ReviewSessionState({
+    required this.queue,
+    required this.position,
+    required this.updatedAt,
+  });
+  // 队列项 "questionId|cause"，按解决顺序排。
+  final List<String> queue;
+  final int position;
+  final DateTime updatedAt;
 }
 
 /// 错误类型：固定枚举 + 自定义（自定义只跟本题，下次可选，不进全局枚举）。
@@ -48,6 +192,23 @@ class KnowledgePoint {
   final String subjectId;
   final String chapter;
   final String name;
+}
+
+/// 文件夹：按学科分（v2），每科一套，预置 试卷 / 平时作业 / 模拟卷；
+/// 同一科不能重名；子文件夹只一层（parentId 为空 = 顶层文件夹）。
+class Folder {
+  const Folder({
+    required this.id,
+    required this.name,
+    required this.subjectId,
+    this.parentId,
+    this.sortOrder = 0,
+  });
+  final String id;
+  final String name;
+  final String subjectId;
+  final String? parentId;
+  final int sortOrder;
 }
 
 /// 试卷（来源）：独立实体，一张试卷 → 多道题。
@@ -74,16 +235,15 @@ class Question {
     this.answer,
     this.explanation,
     this.notes,
-    this.reviewStatus = ReviewStatus.inReview,
     this.reviewCount = 0,
     this.isOrganized = false,
     this.isDemo = false,
-    this.nextReview,
-    this.overdueDays = 0,
     this.isFavorite = false,
     this.isArchived = false,
+    // 手动加入复习（治错因）：加入后复习页按错因治；取消后记录保留，
+    // 再加入可续接。未整理与无错因的题加不进复习。
+    this.reviewJoined = false,
     required this.createdAt,
-    // 整题图切片的演示形态：chart / timeline / material / function / limit
     this.sliceKind = 'material',
     // 题干切片文字（演示用；真实数据是图片切片，无 OCR）
     this.sliceText = '',
@@ -101,41 +261,18 @@ class Question {
   final String? answer;
   final String? explanation;
   final String? notes;
-  final ReviewStatus reviewStatus;
   final int reviewCount;
-  /// 是否已在整理工作台确认过。确认后首次复习为次日；待整理队列只看
-  /// 此标记，不看 reviewCount（确认不改 reviewCount，旧口径会把已确认
-  /// 的题在重进页面后又放回队列）。
-  final bool isOrganized;
-  /// 演示题标记（D-11）：首次建库写入的 9 道演示题为 true，真实导入的题
-  /// 为 false；“清空演示数据”只删 is_demo = 1 的题。
-  final bool isDemo;
-  final DateTime? nextReview;
-  final int overdueDays;
+  final bool isOrganized; // 是否已在整理工作台确认过
+  final bool isDemo; // 演示题标记，“清空演示数据”只删 is_demo = 1 的题
   final bool isFavorite;
   final bool isArchived;
+  final bool reviewJoined;
   final DateTime createdAt;
   final String sliceKind;
   final String sliceText;
 
-  bool get isDueToday =>
-      reviewStatus == ReviewStatus.inReview &&
-      (nextReview == null ||
-          !nextReview!.isAfter(DateTime.now().add(const Duration(days: 1))));
-  bool get isOverdue => overdueDays > 0;
-
-  /// 下次复习文案：下次复习 11-12 / 逾期 N 天 / 今天到期。
-  String get nextReviewLabel {
-    if (overdueDays > 0) return '逾期 $overdueDays 天';
-    if (nextReview == null) return '待补充';
-    final now = DateTime.now();
-    if (nextReview!.year == now.year &&
-        nextReview!.month == now.month &&
-        nextReview!.day == now.day) {
-      return '下次复习 今天';
-    }
-    return '下次复习 ${nextReview!.month}-${nextReview!.day}';
-  }
+  /// 全部错因（固定枚举 + 自定义）。
+  List<String> get allCauses => [...errorTypes, ...customErrorTypes];
 
   Question copyWith({
     List<String>? folderIds,
@@ -147,36 +284,38 @@ class Question {
     String? answer,
     String? explanation,
     String? notes,
-    ReviewStatus? reviewStatus,
     int? reviewCount,
     bool? isOrganized,
     bool? isDemo,
-    DateTime? nextReview,
-    int? overdueDays,
     bool? isFavorite,
     bool? isArchived,
+    bool? reviewJoined,
+    // 传 null 表示“保持原值”；要把字段清空时用这些标志（整理/详情页
+    // 把答案、解析、笔记清空后保存必须真正清掉，不能留旧值）。
+    bool clearExamId = false,
+    bool clearAnswer = false,
+    bool clearExplanation = false,
+    bool clearNotes = false,
   }) {
     return Question(
       id: id,
       title: title,
       subjectId: subjectId,
       folderIds: folderIds ?? this.folderIds,
-      examId: examId ?? this.examId,
+      examId: clearExamId ? null : (examId ?? this.examId),
       knowledgePointIds: knowledgePointIds ?? this.knowledgePointIds,
       errorTypes: errorTypes ?? this.errorTypes,
       customErrorTypes: customErrorTypes ?? this.customErrorTypes,
       tags: tags ?? this.tags,
-      answer: answer ?? this.answer,
-      explanation: explanation ?? this.explanation,
-      notes: notes ?? this.notes,
-      reviewStatus: reviewStatus ?? this.reviewStatus,
+      answer: clearAnswer ? null : (answer ?? this.answer),
+      explanation: clearExplanation ? null : (explanation ?? this.explanation),
+      notes: clearNotes ? null : (notes ?? this.notes),
       reviewCount: reviewCount ?? this.reviewCount,
       isOrganized: isOrganized ?? this.isOrganized,
       isDemo: isDemo ?? this.isDemo,
-      nextReview: nextReview ?? this.nextReview,
-      overdueDays: overdueDays ?? this.overdueDays,
       isFavorite: isFavorite ?? this.isFavorite,
       isArchived: isArchived ?? this.isArchived,
+      reviewJoined: reviewJoined ?? this.reviewJoined,
       createdAt: createdAt,
       sliceKind: sliceKind,
       sliceText: sliceText,
@@ -185,7 +324,15 @@ class Question {
 }
 
 /// 收集任务：任务名 = 文件名 + 页 + 题号，不可改名。
-enum CollectStatus { queued, importing, needBox, boxing, pendingOrganize, failed, done }
+enum CollectStatus {
+  queued,
+  importing,
+  needBox,
+  boxing,
+  pendingOrganize,
+  failed,
+  done
+}
 
 extension CollectStatusLabel on CollectStatus {
   String get label => switch (this) {
@@ -210,6 +357,7 @@ class CollectTask {
     this.pageCount = 1,
     this.page = 1,
     this.error,
+    this.questionId,
   });
   final String id;
   final String name;
@@ -220,6 +368,7 @@ class CollectTask {
   final int pageCount;
   final int page;
   final String? error;
+  final String? questionId; // 修框确认后产出的题目 id（一对一）
 }
 
 /// 两层框：layer 1 整题框，layer 2 题干 / 选项 / 配图（只做辅助区，永不拆题）。
@@ -237,4 +386,126 @@ class QuestionBox {
   final int layer;
   final String type;
   final double x, y, w, h; // 相对页面的 0..1 坐标，钳制在页面范围内
+}
+
+/// 设置（settings 表 key/value 存取，见 AppSettings.defaults）。
+class AppSettings {
+  const AppSettings({
+    this.themeMode = 'system', // system / light / dark
+    this.fontSize = 'standard', // standard / large / extraLarge
+    this.greeting = '今天也要加油呀',
+    this.recheckIntervalDays = 7, // 3 / 7 / 14
+    this.cureChecks = 2, // 1 / 2 / 3
+    this.causesPerSession = 0, // 5 / 10 / 0=不限
+    this.skipLimit = 2, // 1 / 2
+    this.redoAnswerHidden = true,
+    this.notifyEnabled = true,
+    this.notifyTime = '20:00',
+    this.reviewSort = 'joinTime', // joinTime / subject
+    this.wrongbookView = 'large', // large / compact
+    this.pageSize = 10, // 10 / 20 / 30 / 40 / 50
+    this.wrongbookSort = 'new', // new / old / subject
+    this.startupPage = 'home', // home / last
+  });
+
+  final String themeMode;
+  final String fontSize;
+  final String greeting;
+  final int recheckIntervalDays;
+  final int cureChecks;
+  final int causesPerSession;
+  final int skipLimit;
+  final bool redoAnswerHidden;
+  final bool notifyEnabled;
+  final String notifyTime;
+  final String reviewSort;
+  final String wrongbookView;
+  final int pageSize;
+  final String wrongbookSort;
+  final String startupPage;
+
+  static const defaults = AppSettings();
+
+  Map<String, String> toMap() => {
+        'themeMode': themeMode,
+        'fontSize': fontSize,
+        'greeting': greeting,
+        'recheckIntervalDays': '$recheckIntervalDays',
+        'cureChecks': '$cureChecks',
+        'causesPerSession': '$causesPerSession',
+        'skipLimit': '$skipLimit',
+        'redoAnswerHidden': redoAnswerHidden ? '1' : '0',
+        'notifyEnabled': notifyEnabled ? '1' : '0',
+        'notifyTime': notifyTime,
+        'reviewSort': reviewSort,
+        'wrongbookView': wrongbookView,
+        'pageSize': '$pageSize',
+        'wrongbookSort': wrongbookSort,
+        'startupPage': startupPage,
+      };
+
+  static AppSettings fromMap(Map<String, String> m) {
+    int parseInt(String k, int d) => int.tryParse(m[k] ?? '') ?? d;
+    bool parseBool(String k, bool d) =>
+        m[k] == null ? d : m[k] == '1' || m[k] == 'true';
+    return AppSettings(
+      themeMode: m['themeMode'] ?? 'system',
+      fontSize: m['fontSize'] ?? 'standard',
+      greeting: m['greeting'] ?? '今天也要加油呀',
+      recheckIntervalDays: parseInt('recheckIntervalDays', 7),
+      cureChecks: parseInt('cureChecks', 2),
+      causesPerSession: parseInt('causesPerSession', 0),
+      skipLimit: parseInt('skipLimit', 2),
+      redoAnswerHidden: parseBool('redoAnswerHidden', true),
+      notifyEnabled: parseBool('notifyEnabled', true),
+      notifyTime: m['notifyTime'] ?? '20:00',
+      reviewSort: m['reviewSort'] ?? 'joinTime',
+      wrongbookView: m['wrongbookView'] ?? 'large',
+      pageSize: parseInt('pageSize', 10),
+      wrongbookSort: m['wrongbookSort'] ?? 'new',
+      startupPage: m['startupPage'] ?? 'home',
+    );
+  }
+
+  AppSettings copyWith({
+    String? themeMode,
+    String? fontSize,
+    String? greeting,
+    int? recheckIntervalDays,
+    int? cureChecks,
+    int? causesPerSession,
+    int? skipLimit,
+    bool? redoAnswerHidden,
+    bool? notifyEnabled,
+    String? notifyTime,
+    String? reviewSort,
+    String? wrongbookView,
+    int? pageSize,
+    String? wrongbookSort,
+    String? startupPage,
+  }) =>
+      AppSettings(
+        themeMode: themeMode ?? this.themeMode,
+        fontSize: fontSize ?? this.fontSize,
+        greeting: greeting ?? this.greeting,
+        recheckIntervalDays: recheckIntervalDays ?? this.recheckIntervalDays,
+        cureChecks: cureChecks ?? this.cureChecks,
+        causesPerSession: causesPerSession ?? this.causesPerSession,
+        skipLimit: skipLimit ?? this.skipLimit,
+        redoAnswerHidden: redoAnswerHidden ?? this.redoAnswerHidden,
+        notifyEnabled: notifyEnabled ?? this.notifyEnabled,
+        notifyTime: notifyTime ?? this.notifyTime,
+        reviewSort: reviewSort ?? this.reviewSort,
+        wrongbookView: wrongbookView ?? this.wrongbookView,
+        pageSize: pageSize ?? this.pageSize,
+        wrongbookSort: wrongbookSort ?? this.wrongbookSort,
+        startupPage: startupPage ?? this.startupPage,
+      );
+
+  /// 字体缩放倍率：标准 1.0 / 大 1.12 / 特大 1.25，标题、按钮、正文一起放。
+  double get fontScale => switch (fontSize) {
+        'large' => 1.12,
+        'extraLarge' => 1.25,
+        _ => 1.0,
+      };
 }
