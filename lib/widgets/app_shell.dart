@@ -327,13 +327,21 @@ class _NavItem extends StatelessWidget {
     final palette = DesignTokens.of(Theme.of(context).brightness);
     final scaled = DesignTokens.scaled(scale);
     final fg = selected ? palette.accentInk : palette.ink2;
+    // 选中态的四层 InkWell 反馈色全部取 accent 本身：HTML 里选中项的
+    // aria-current 规则优先于 :hover，悬停/点按时底色就是 accent 不变。
+    // 实测：导航后鼠标停在选中项上时，InkWell 遮罩会被画成不透明（黑 4%
+    // → 纯黑、白 10% → 纯白、透明 → 纯黑），只有用 accent 才能保证任何
+    // 渲染路径下都是蓝色；未选中项保持 surface 悬停。
     return Material(
       color: selected ? palette.accent : Colors.transparent,
       borderRadius: BorderRadius.circular(scaled.radius),
       clipBehavior: Clip.antiAlias,
       child: InkWell(
         onTap: () => onNavigate(item.route),
-        hoverColor: selected ? null : palette.surface,
+        hoverColor: selected ? palette.accent : palette.surface,
+        splashColor: selected ? palette.accent : null,
+        highlightColor: selected ? palette.accent : null,
+        focusColor: selected ? palette.accent : null,
         child: Container(
           padding: EdgeInsets.symmetric(
             horizontal: DesignTokens.navItemPaddingH * scale,
@@ -382,6 +390,7 @@ class _CollapsedNavItem extends StatelessWidget {
     final palette = DesignTokens.of(Theme.of(context).brightness);
     final scaled = DesignTokens.scaled(scale);
     final fg = selected ? palette.accentInk : palette.ink;
+    // 同 _NavItem：选中态四层反馈色全取 accent（见该处注释）。
     return Tooltip(
       message: item.label,
       child: Material(
@@ -390,7 +399,10 @@ class _CollapsedNavItem extends StatelessWidget {
         clipBehavior: Clip.antiAlias,
         child: InkWell(
           onTap: () => onNavigate(item.route),
-          hoverColor: selected ? null : palette.surface,
+          hoverColor: selected ? palette.accent : palette.surface,
+          splashColor: selected ? palette.accent : null,
+          highlightColor: selected ? palette.accent : null,
+          focusColor: selected ? palette.accent : null,
           child: SizedBox(
             width: 48 * scale,
             height: 48 * scale,

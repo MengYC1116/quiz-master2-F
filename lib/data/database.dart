@@ -492,7 +492,9 @@ class AppDatabase {
 
   Future<List<Subject>> allSubjects() async {
     final d = await db;
-    final rows = await d.query('subjects');
+    // 显式按插入顺序读：subjects 表没有 sort_order 列，顺序就是 rowid 顺序；
+    // 不写 orderBy 时 SQLite 不保证返回顺序，曾经因此出现过学科乱序。
+    final rows = await d.query('subjects', orderBy: 'rowid');
     return rows
         .map((r) => Subject(
               id: r['id'] as String,
@@ -514,13 +516,21 @@ class AppDatabase {
 
   Future<void> upsertSubject(Subject s) async {
     final d = await db;
-    await d.insert('subjects', {
+    final values = {
       'id': s.id,
       'name': s.name,
       'color': s.color.toARGB32(),
       'cover_style': s.coverStyle,
       'cover_color': s.coverColor,
-    }, conflictAlgorithm: ConflictAlgorithm.replace);
+    };
+    // 原地更新：ConflictAlgorithm.replace 是先删后插，会把这行顶到表尾，
+    // 导致学科顺序乱掉（点数学的封面，数学就跑到最下面）。已存在的行只
+    // UPDATE，rowid 不变，顺序就不会动；不存在时才 INSERT。
+    final updated = await d.update('subjects', values,
+        where: 'id = ?', whereArgs: [s.id]);
+    if (updated == 0) {
+      await d.insert('subjects', values);
+    }
     bumpBadgeVersion();
   }
 
