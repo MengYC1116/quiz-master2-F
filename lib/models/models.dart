@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import '../theme/design_tokens.dart';
+
 /// 学科：初始三科，顺序固定 数学 / 英语 / 政治（大学阶段）。
 /// 封面样式 + 封面颜色存在 subjects 表里（v2 新增，学科管理页可改）。
 class Subject {
@@ -19,11 +21,11 @@ class Subject {
   final String coverColor; // 7 种预设色之一
 
   static final math = Subject(
-      id: 'math', name: '数学', color: const Color(0xFF2F7CF6), icon: '数');
+      id: 'math', name: '数学', color: const Color(0xFF2E7CF6), icon: '数');
   static final english = Subject(
-      id: 'english', name: '英语', color: const Color(0xFF1F9D66), icon: '英');
+      id: 'english', name: '英语', color: const Color(0xFF00A884), icon: '英');
   static final politics = Subject(
-      id: 'politics', name: '政治', color: const Color(0xFFE0524D), icon: '政');
+      id: 'politics', name: '政治', color: const Color(0xFFEF4444), icon: '政');
   static List<Subject> get all => [math, english, politics];
   static Subject byId(String id) =>
       all.firstWhere((s) => s.id == id, orElse: () => math);
@@ -77,14 +79,18 @@ class CoverColors {
     'yellow': '黄',
     'grey': '灰',
   };
+  // 封面 7 预设色（HTML 附录 A / 学科管理封面块）。
+  // 注意封面蓝 #2F7CF6 与学科蓝 #2E7CF6 不是同一个值，不要合并。
+  // 值与 lib/theme/design_tokens.dart 的 CoverTokens.colors 保持一致
+  //（R2 统一收口到一处）；只做表现层取值，不改 Schema。
   static const hex = {
     'blue': Color(0xFF2F7CF6),
     'green': Color(0xFF1F9D66),
     'red': Color(0xFFE0524D),
-    'purple': Color(0xFF7C5CFC),
-    'orange': Color(0xFFF08A1D),
-    'yellow': Color(0xFFE8B800),
-    'grey': Color(0xFF8A94A6),
+    'purple': Color(0xFF7C4DDB),
+    'orange': Color(0xFFED7D31),
+    'yellow': Color(0xFFD9A404),
+    'grey': Color(0xFF64748F),
   };
   static Color of(String key) => hex[key] ?? hex['blue']!;
 }
@@ -502,10 +508,10 @@ class AppSettings {
         startupPage: startupPage ?? this.startupPage,
       );
 
-  /// 字体缩放倍率：标准 1.0 / 大 1.12 / 特大 1.25，标题、按钮、正文一起放。
-  double get fontScale => switch (fontSize) {
-        'large' => 1.12,
-        'extraLarge' => 1.25,
-        _ => 1.0,
-      };
+  /// 字体缩放倍率（D4）：标准 1.00 / 大 1.15 / 特大 1.30，标题、按钮、
+  /// 正文一起放。唯一映射入口（与 lib/theme/design_tokens.dart 的
+  /// FontScale.factorFor 保持一致）；不要在别处再写 1.12 / 1.25 旧值。
+  /// 只改缩放因子映射，不改设置存储结构（fontSize 仍是
+  /// standard / large / extraLarge 三档字符串）与业务语义。
+  double get fontScale => FontScale.factorFor(fontSize);
 }

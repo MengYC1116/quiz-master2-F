@@ -9,25 +9,60 @@ import '../../data/badge_notifier.dart';
 import '../../data/database.dart';
 import '../../data/repository.dart';
 import '../../models/models.dart';
-import '../../theme/app_theme.dart';
+import '../../theme/design_tokens.dart';
+import '../../widgets/uikit.dart';
 
 /// 设置：分段折叠式五组（外观 / 复习 / 错题本 / 数据 / 启动与关于），
 /// 默认全折起，一次只展开一个。每项标题 + 一句短说明 + 选项，简洁直接。
 /// 改设置后调 onSettingsChanged 保存并刷新主题 / 字体。
+///
+/// 结构与文案以 HTML 原型 `viewSettings()` 为准（R0 附录 A）：
+/// 外观三段 + 问候语（保存/恢复默认，留空保存不生效）；复习含加入方式
+/// 说明行、复查间隔/自查次数/每轮错因数/跳过次数/重做答案默认/通知
+/// 开关 + 提醒时间/复习列表排序；错题本默认视图/排序/每页数量；
+/// 数据备份/恢复（恢复先选文件再内联确认，含备份题数与当前题数）、
+/// 数据库位置（改后提示重启才生效）、缓存清理（先预览临时文件数 +
+/// 缩略图数 + 约多少 MB，再确认）、清除演示数据；启动页 + 关于
+/// （版本 v0.1.0、作者 Meng（个人项目）、更新说明）。
+/// 不做的项不出现：首页显示内容开关、封面计数牌开关、导入文件大小、
+/// 整理台默认排序（与 HTML psub 的“不做”清单一致）。
 class SettingsPage extends StatefulWidget {
   const SettingsPage({
     super.key,
     required this.repo,
     required this.settings,
     required this.onSettingsChanged,
+    this.loadFailed = false,
   });
 
   final QuestionRepository repo;
   final AppSettings settings;
   final Future<void> Function(AppSettings s) onSettingsChanged;
 
+  /// 设置读取失败时由 app 传入：显示错误横幅，已显示默认设置。
+  final bool loadFailed;
+
   @override
   State<SettingsPage> createState() => _SettingsPageState();
+}
+
+class _CachePreview {
+  const _CachePreview({
+    required this.tempCount,
+    required this.thumbCount,
+    required this.failedCount,
+    required this.bytes,
+    required this.items,
+  });
+
+  final int tempCount;
+  final int thumbCount;
+  final int failedCount;
+  final int bytes;
+  final List<FileSystemEntity> items;
+
+  int get totalCount => tempCount + thumbCount + failedCount;
+  String get mb => (bytes / (1024 * 1024)).toStringAsFixed(1);
 }
 
 class _SettingsPageState extends State<SettingsPage> {
@@ -35,12 +70,51 @@ class _SettingsPageState extends State<SettingsPage> {
   late AppSettings _s;
   final _greetingController = TextEditingController();
   bool _busy = false;
+  bool _errorDismissed = false;
+  bool _dbPendingRestart = false;
+  int _questionCount = 0;
+
+  // 恢复：选好的备份文件（未确认前只记着，不动库）。
+  String? _restoreFileName;
+  Map<String, dynamic>? _restoreData;
+
+  // 缓存清理：只在打开数据组时扫描一次；清理完显示释放量，可重新扫描。
+  _CachePreview? _cachePreview;
+  bool _cacheScanned = false;
+  String? _cacheCleanedMb;
+
+  // 清空演示数据：内联确认。
+  bool _confirmClearDemo = false;
+  int _demoCountForConfirm = 0;
+
+  Future<void> _askClearDemo() async {
+    final count = await widget.repo.demoQuestionCount();
+    if (count == 0) {
+      _snack('没有演示数据');
+      return;
+    }
+    setState(() {
+      _demoCountForConfirm = count;
+      _confirmClearDemo = true;
+    });
+  }
 
   @override
   void initState() {
     super.initState();
     _s = widget.settings;
     _greetingController.text = _s.greeting;
+    _loadQuestionCount();
+  }
+
+  Future<void> _loadQuestionCount() async {
+    try {
+      final list = await widget.repo.all(includeArchived: true);
+      if (!mounted) return;
+      setState(() => _questionCount = list.length);
+    } catch (_) {
+      // 计数拿不到不影响设置页本身；恢复确认里只写备份题数。
+    }
   }
 
   @override
@@ -64,7 +138,10 @@ class _SettingsPageState extends State<SettingsPage> {
   }
 
   void _toggleGroup(String key) {
-    setState(() => _openGroup = _openGroup == key ? null : key);
+    setState(() {
+      _openGroup = _openGroup == key ? null : key;
+      if (_openGroup == 'data' && !_cacheScanned) _scanCache();
+    });
   }
 
   void _snack(String message) {
@@ -73,29 +150,24 @@ class _SettingsPageState extends State<SettingsPage> {
         .showSnackBar(SnackBar(content: Text(message)));
   }
 
-  Future<bool> _confirm(String title, String message,
-      {String confirmLabel = '确定'}) async {
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Text(title),
-        content: Text(message),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(false),
-            child: const Text('取消'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.of(context).pop(true),
-            child: Text(confirmLabel),
-          ),
-        ],
-      ),
-    );
-    return ok ?? false;
+  // ---------- 问候语 ----------
+
+  Future<void> _saveGreeting() async {
+    final text = _greetingController.text.trim();
+    if (text.isEmpty) {
+      _snack('留空保存不生效');
+      return;
+    }
+    await _apply(_s.copyWith(greeting: text));
+    _snack('问候语已保存');
   }
 
-  // ---------- 数据 ----------
+  Future<void> _resetGreeting() async {
+    _greetingController.text = '今天也要加油呀';
+    await _apply(_s.copyWith(greeting: '今天也要加油呀'));
+  }
+
+  // ---------- 数据：备份 / 恢复 ----------
 
   Future<void> _backup() async {
     setState(() => _busy = true);
@@ -123,7 +195,7 @@ class _SettingsPageState extends State<SettingsPage> {
     'settings',
   ];
 
-  Future<void> _restore() async {
+  Future<void> _pickRestoreFile() async {
     final result = await FilePicker.platform.pickFiles(
       dialogTitle: '选择备份文件',
       type: FileType.custom,
@@ -144,10 +216,20 @@ class _SettingsPageState extends State<SettingsPage> {
       _snack('这个文件不是 quiz-master2 的备份，恢复不了');
       return;
     }
-    final ok = await _confirm('恢复备份', '恢复会覆盖当前题库，确定吗？',
-        confirmLabel: '恢复');
-    if (!ok) return;
-    setState(() => _busy = true);
+    setState(() {
+      _restoreFileName = result!.files.single.name;
+      _restoreData = data;
+    });
+  }
+
+  Future<void> _confirmRestore() async {
+    final data = _restoreData;
+    if (data == null) return;
+    setState(() {
+      _busy = true;
+      _restoreData = null;
+      _restoreFileName = null;
+    });
     try {
       final db = await widget.repo.db.db;
       await db.transaction((txn) async {
@@ -182,6 +264,7 @@ class _SettingsPageState extends State<SettingsPage> {
       bumpBadgeVersion();
       final restored = await widget.repo.settings();
       await _apply(restored);
+      await _loadQuestionCount();
       _snack('已恢复备份');
     } finally {
       if (mounted) setState(() => _busy = false);
@@ -201,56 +284,111 @@ class _SettingsPageState extends State<SettingsPage> {
     if (dir == null) return;
     await widget.repo.setCustomDataDirectory(dir);
     if (!mounted) return;
-    await showDialog<void>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('已保存新位置'),
-        content: Text('新位置：$dir\n重启后生效。'),
-        actions: [
-          FilledButton(
-            onPressed: () => Navigator.of(context).pop(),
-            child: const Text('知道了'),
-          ),
-        ],
-      ),
+    setState(() => _dbPendingRestart = true);
+    _snack('新位置已保存，重启后生效');
+  }
+
+  // ---------- 数据：缓存清理 ----------
+
+  /// 缓存清理预览：临时文件 + 缩略图缓存 + 失败导入残留，不动题目数据。
+  /// 递归扫数据目录下名字含 cache / thumb / tmp 的目录与 .tmp / .cache
+  /// 文件，按类计数并合计字节数（HTML 预览口径，不照搬演示数字）。
+  _CachePreview _scanCacheSync() {
+    final dir = Directory(AppDatabase.dataDirectoryPath());
+    var tempCount = 0;
+    var thumbCount = 0;
+    var failedCount = 0;
+    var bytes = 0;
+    final items = <FileSystemEntity>[];
+    if (!dir.existsSync()) {
+      return const _CachePreview(
+          tempCount: 0,
+          thumbCount: 0,
+          failedCount: 0,
+          bytes: 0,
+          items: []);
+    }
+    void add(FileSystemEntity e, String kind) {
+      items.add(e);
+      if (e is File) {
+        try {
+          bytes += e.lengthSync();
+        } catch (_) {}
+      } else if (e is Directory) {
+        try {
+          for (final f in e.listSync(recursive: true)) {
+            if (f is File) bytes += f.lengthSync();
+          }
+        } catch (_) {}
+      }
+      switch (kind) {
+        case 'thumb':
+          thumbCount++;
+        case 'failed':
+          failedCount++;
+        default:
+          tempCount++;
+      }
+    }
+
+    void walk(Directory d, {bool insideCacheDir = false}) {
+      List<FileSystemEntity> entries;
+      try {
+        entries = d.listSync();
+      } catch (_) {
+        return;
+      }
+      for (final e in entries) {
+        final name = e.path.split(Platform.pathSeparator).last;
+        if (name == 'quiz-master2.db') continue;
+        final lower = name.toLowerCase();
+        if (lower.contains('failed') || lower.contains('import-error')) {
+          add(e, 'failed');
+          continue;
+        }
+        if (e is Directory &&
+            (lower.contains('cache') ||
+                lower.contains('thumb') ||
+                lower.contains('tmp'))) {
+          // 目录整体计入：缩略图目录计缩略图，其余计临时文件。
+          add(e, lower.contains('thumb') ? 'thumb' : 'temp');
+          continue;
+        }
+        if (e is File) {
+          if (lower.startsWith('thumb')) {
+            add(e, 'thumb');
+          } else if (lower.endsWith('.tmp') || lower.endsWith('.cache')) {
+            add(e, 'temp');
+          } else if (insideCacheDir) {
+            add(e, 'temp');
+          }
+        }
+      }
+    }
+
+    walk(dir);
+    return _CachePreview(
+      tempCount: tempCount,
+      thumbCount: thumbCount,
+      failedCount: failedCount,
+      bytes: bytes,
+      items: items,
     );
   }
 
-  /// 缓存清理预览：临时文件 + 缩略图缓存 + 失败导入残留，不动题目数据。
-  List<FileSystemEntity> _cacheCandidates() {
-    final dir = Directory(AppDatabase.dataDirectoryPath());
-    if (!dir.existsSync()) return const [];
-    final out = <FileSystemEntity>[];
-    for (final e in dir.listSync()) {
-      final name = e.path.split(Platform.pathSeparator).last;
-      if (name == 'quiz-master2.db') continue;
-      final lower = name.toLowerCase();
-      if (e is Directory &&
-          (lower.contains('cache') ||
-              lower.contains('thumb') ||
-              lower.contains('tmp'))) {
-        out.add(e);
-      } else if (e is File &&
-          (lower.endsWith('.tmp') ||
-              lower.endsWith('.cache') ||
-              lower.startsWith('thumb'))) {
-        out.add(e);
-      }
-    }
-    return out;
+  void _scanCache() {
+    setState(() {
+      _cachePreview = _scanCacheSync();
+      _cacheScanned = true;
+      _cacheCleanedMb = null;
+    });
   }
 
   Future<void> _clearCache() async {
-    final candidates = _cacheCandidates();
-    final ok = await _confirm(
-      '清理缓存',
-      candidates.isEmpty
-          ? '没有可清理的缓存。只清理临时文件、缩略图缓存和失败导入残留，不动题目数据。'
-          : '将清理 ${candidates.length} 项（临时文件、缩略图缓存、失败导入残留），不动题目数据。确定吗？',
-    );
-    if (!ok) return;
+    final preview = _cachePreview;
+    if (preview == null) return;
     var deleted = 0;
-    for (final e in candidates) {
+    for (final e in preview.items) {
       try {
         if (e is Directory) {
           await e.delete(recursive: true);
@@ -262,18 +400,17 @@ class _SettingsPageState extends State<SettingsPage> {
         // 单个删不掉就跳过，不中断。
       }
     }
+    setState(() {
+      _cacheCleanedMb = preview.mb;
+      _cachePreview = _scanCacheSync();
+    });
     _snack(deleted == 0 ? '没有可清理的缓存' : '已清理 $deleted 项缓存');
   }
 
   Future<void> _clearDemo() async {
-    final count = await widget.repo.demoQuestionCount();
-    if (count == 0) {
-      _snack('没有演示数据');
-      return;
-    }
-    final ok = await _confirm('清空演示数据', '会删掉 $count 道演示题，确定吗？');
-    if (!ok) return;
     final n = await widget.repo.clearDemoData();
+    setState(() => _confirmClearDemo = false);
+    await _loadQuestionCount();
     _snack('已清空 $n 道演示题');
   }
 
@@ -297,101 +434,198 @@ class _SettingsPageState extends State<SettingsPage> {
 
   @override
   Widget build(BuildContext context) {
+    final scale = qmScaleOf(context);
     return SingleChildScrollView(
-      padding: const EdgeInsets.fromLTRB(24, 20, 24, 24),
+      padding: EdgeInsets.zero,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text('设置', style: Theme.of(context).textTheme.headlineMedium),
-          const SizedBox(height: 16),
-          _group(key: 'appearance', title: '外观', child: _buildAppearance()),
-          _group(key: 'review', title: '复习', child: _buildReview()),
-          _group(key: 'wrongbook', title: '错题本', child: _buildWrongbook()),
-          _group(key: 'data', title: '数据', child: _buildData()),
-          _group(key: 'startup', title: '启动与关于', child: _buildStartup()),
-        ],
-      ),
-    );
-  }
-
-  Widget _group(
-      {required String key, required String title, required Widget child}) {
-    final open = _openGroup == key;
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 12),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          InkWell(
-            onTap: () => _toggleGroup(key),
-            borderRadius: BorderRadius.circular(10),
-            child: Padding(
-              padding: const EdgeInsets.symmetric(vertical: 8),
-              child: Row(
-                children: [
-                  Text(title,
-                      style: const TextStyle(
-                          fontSize: 17, fontWeight: FontWeight.w700)),
-                  const Spacer(),
-                  Icon(open
-                      ? Icons.keyboard_arrow_up
-                      : Icons.keyboard_arrow_down),
-                ],
-              ),
+          Text('设置', style: Theme.of(context).textTheme.titleLarge),
+          SizedBox(height: 14 * scale),
+          if (widget.loadFailed && !_errorDismissed)
+            QmBanner(
+              tone: QmBannerTone.error,
+              message: '设置读取失败，已显示默认设置。修改前请先重启应用。',
+              onDismiss: () => setState(() => _errorDismissed = true),
             ),
+          QmFoldSection(
+            title: '外观',
+            expanded: _openGroup == 'appearance',
+            onToggle: () => _toggleGroup('appearance'),
+            child: _buildAppearance(),
           ),
-          if (open) ...[
-            const Divider(height: 1),
-            const SizedBox(height: 8),
-            child,
-          ],
+          SizedBox(height: R10Tokens.settingsGroupGap * scale),
+          QmFoldSection(
+            title: '复习',
+            expanded: _openGroup == 'review',
+            onToggle: () => _toggleGroup('review'),
+            child: _buildReview(),
+          ),
+          SizedBox(height: R10Tokens.settingsGroupGap * scale),
+          QmFoldSection(
+            title: '错题本',
+            expanded: _openGroup == 'wrongbook',
+            onToggle: () => _toggleGroup('wrongbook'),
+            child: _buildWrongbook(),
+          ),
+          SizedBox(height: R10Tokens.settingsGroupGap * scale),
+          QmFoldSection(
+            title: '数据',
+            expanded: _openGroup == 'data',
+            onToggle: () => _toggleGroup('data'),
+            child: _buildData(),
+          ),
+          SizedBox(height: R10Tokens.settingsGroupGap * scale),
+          QmFoldSection(
+            title: '启动与关于',
+            expanded: _openGroup == 'startup',
+            onToggle: () => _toggleGroup('startup'),
+            child: _buildStartup(),
+          ),
         ],
       ),
     );
   }
 
-  Widget _row(String title, String desc, Widget control) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 8),
-      child: Row(
+  /// 内联确认框（HTML `.confirmbox`；与学科管理页、详情页同款）。
+  Widget _confirmBox({
+    required String title,
+    required String detail,
+    required String confirmLabel,
+    required VoidCallback onConfirm,
+    required VoidCallback onCancel,
+  }) {
+    final palette = DesignTokens.of(Theme.of(context).brightness);
+    final scale = qmScaleOf(context);
+    return Container(
+      margin: EdgeInsets.only(top: 10 * scale),
+      padding: EdgeInsets.symmetric(
+        horizontal: DesignTokens.detailConfirmPaddingH * scale,
+        vertical: DesignTokens.detailConfirmPaddingV * scale,
+      ),
+      decoration: BoxDecoration(
+        color: palette.errBg,
+        border: Border.all(color: palette.errLine),
+        borderRadius: BorderRadius.circular(
+          DesignTokens.scaled(scale).radius,
+        ),
+      ),
+      child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
+          Text.rich(
+            TextSpan(
+              style: TextStyle(
+                fontSize: DesignTokens.bannerFontSize,
+                color: palette.errInk,
+                height: DesignTokens.bodyLineHeight,
+              ),
               children: [
-                Text(title,
-                    style: const TextStyle(
-                        fontSize: 15, fontWeight: FontWeight.w700)),
-                const SizedBox(height: 2),
-                Text(desc, style: Theme.of(context).textTheme.bodySmall),
+                TextSpan(
+                  text: title,
+                  style: const TextStyle(fontWeight: FontWeight.w700),
+                ),
+                if (detail.isNotEmpty) TextSpan(text: detail),
               ],
             ),
           ),
-          const SizedBox(width: 16),
-          control,
+          SizedBox(height: 8 * scale),
+          Wrap(
+            spacing: 8 * scale,
+            runSpacing: 8 * scale,
+            children: [
+              QmButton(
+                label: confirmLabel,
+                size: QmButtonSize.small,
+                onPressed: onConfirm,
+              ),
+              QmButton(
+                label: '取消',
+                variant: QmButtonVariant.plain,
+                size: QmButtonSize.small,
+                onPressed: onCancel,
+              ),
+            ],
+          ),
         ],
+      ),
+    );
+  }
+
+  /// 设置行：标题 + 一行短说明 + 右侧控件；窄屏时控件换到下一行。
+  Widget _row(String title, String desc, Widget control) {
+    final scale = qmScaleOf(context);
+    final palette = DesignTokens.of(Theme.of(context).brightness);
+    final text = Expanded(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(title,
+              style: const TextStyle(
+                  fontSize: R10Tokens.settingsRowTitleFontSize,
+                  fontWeight: FontWeight.w700)),
+          SizedBox(height: 2 * scale),
+          Text(desc,
+              style: TextStyle(
+                  fontSize: R10Tokens.settingsRowDescFontSize,
+                  color: palette.muted)),
+        ],
+      ),
+    );
+    return Padding(
+      padding: EdgeInsets.symmetric(vertical: 8 * scale),
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          if (constraints.maxWidth < 700 * scale) {
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(children: [text]),
+                SizedBox(height: 8 * scale),
+                control,
+              ],
+            );
+          }
+          return Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              text,
+              SizedBox(width: 16 * scale),
+              control,
+            ],
+          );
+        },
       ),
     );
   }
 
   Widget _segmented<T>({
     required T value,
-    required List<({T value, String label})> options,
+    required List<QmSegmentOption<T>> options,
     required ValueChanged<T> onChanged,
   }) {
-    return SegmentedButton<T>(
-      segments: [
-        for (final o in options)
-          ButtonSegment(value: o.value, label: Text(o.label)),
-      ],
-      selected: {value},
-      onSelectionChanged: (v) => onChanged(v.first),
+    return QmSegmented<T>(
+      options: options,
+      value: value,
+      onChanged: onChanged,
+    );
+  }
+
+  Widget _noteText(String text) {
+    final palette = DesignTokens.of(Theme.of(context).brightness);
+    return Text(
+      text,
+      style: TextStyle(
+        fontSize: R10Tokens.settingsRowDescFontSize,
+        color: palette.muted,
+      ),
     );
   }
 
   Widget _buildAppearance() {
+    final scale = qmScaleOf(context);
     return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         _row(
           '主题',
@@ -399,9 +633,9 @@ class _SettingsPageState extends State<SettingsPage> {
           _segmented<String>(
             value: _s.themeMode,
             options: const [
-              (value: 'system', label: '跟随系统'),
-              (value: 'light', label: '浅色'),
-              (value: 'dark', label: '深色'),
+              QmSegmentOption(value: 'system', label: '跟随系统'),
+              QmSegmentOption(value: 'light', label: '浅色'),
+              QmSegmentOption(value: 'dark', label: '深色'),
             ],
             onChanged: (v) => _apply(_s.copyWith(themeMode: v)),
           ),
@@ -412,46 +646,45 @@ class _SettingsPageState extends State<SettingsPage> {
           _segmented<String>(
             value: _s.fontSize,
             options: const [
-              (value: 'standard', label: '标准'),
-              (value: 'large', label: '大'),
-              (value: 'extraLarge', label: '特大'),
+              QmSegmentOption(value: 'standard', label: '标准'),
+              QmSegmentOption(value: 'large', label: '大'),
+              QmSegmentOption(value: 'extraLarge', label: '特大'),
             ],
             onChanged: (v) => _apply(_s.copyWith(fontSize: v)),
           ),
         ),
         _row(
           '首页问候语',
-          '首页顶部显示的一句话。',
+          '首页顶部显示的一句话，最长 40 字。',
           SizedBox(
-            width: 280,
+            width: 400 * scale,
             child: Row(
               children: [
                 Expanded(
-                  child: TextField(
+                  child: QmTextField(
                     controller: _greetingController,
-                    decoration: const InputDecoration(
-                      border: OutlineInputBorder(),
-                      isDense: true,
-                    ),
-                    onSubmitted: (v) {
-                      final text =
-                          v.trim().isEmpty ? '今天也要加油呀' : v.trim();
-                      _apply(_s.copyWith(greeting: text));
-                    },
+                    maxLength: 40,
+                    onSubmitted: (_) => _saveGreeting(),
                   ),
                 ),
-                const SizedBox(width: 8),
-                TextButton(
-                  onPressed: () {
-                    _greetingController.text = '今天也要加油呀';
-                    _apply(_s.copyWith(greeting: '今天也要加油呀'));
-                  },
-                  child: const Text('恢复默认'),
+                SizedBox(width: 8 * scale),
+                QmButton(
+                  label: '保存问候语',
+                  size: QmButtonSize.small,
+                  onPressed: _saveGreeting,
+                ),
+                SizedBox(width: 8 * scale),
+                QmButton(
+                  label: '恢复默认',
+                  variant: QmButtonVariant.plain,
+                  size: QmButtonSize.small,
+                  onPressed: _resetGreeting,
                 ),
               ],
             ),
           ),
         ),
+        _noteText('首页现在显示的是：「${_s.greeting}」'),
       ],
     );
   }
@@ -460,98 +693,103 @@ class _SettingsPageState extends State<SettingsPage> {
     return Column(
       children: [
         _row(
+          '加入方式',
+          '手动加入：在题目详情点「加入复习」。',
+          const SizedBox.shrink(),
+        ),
+        _row(
           '复查间隔',
-          '错因解决后，几天后回来复查。',
+          '错因解决后，隔几天复查。',
           _segmented<int>(
             value: _s.recheckIntervalDays,
             options: const [
-              (value: 3, label: '3 天'),
-              (value: 7, label: '7 天'),
-              (value: 14, label: '14 天'),
+              QmSegmentOption(value: 3, label: '3 天'),
+              QmSegmentOption(value: 7, label: '7 天'),
+              QmSegmentOption(value: 14, label: '14 天'),
             ],
             onChanged: (v) => _apply(_s.copyWith(recheckIntervalDays: v)),
           ),
         ),
         _row(
           '几次自查算已解决',
-          '同一错因在同一道题上自查“已解决”几次才算解决。',
+          '同一错因、同一道题，自查几次算已解决。',
           _segmented<int>(
             value: _s.cureChecks,
             options: const [
-              (value: 1, label: '1 次'),
-              (value: 2, label: '2 次'),
-              (value: 3, label: '3 次'),
+              QmSegmentOption(value: 1, label: '1 次'),
+              QmSegmentOption(value: 2, label: '2 次'),
+              QmSegmentOption(value: 3, label: '3 次'),
             ],
             onChanged: (v) => _apply(_s.copyWith(cureChecks: v)),
           ),
         ),
         _row(
           '每次复习解决几个错因',
-          '到数量后出本轮复习总结。',
+          '一次解决几个，解决完出总结。',
           _segmented<int>(
             value: _s.causesPerSession,
             options: const [
-              (value: 5, label: '5 个'),
-              (value: 10, label: '10 个'),
-              (value: 0, label: '不限'),
+              QmSegmentOption(value: 5, label: '5 个'),
+              QmSegmentOption(value: 10, label: '10 个'),
+              QmSegmentOption(value: 0, label: '不限'),
             ],
             onChanged: (v) => _apply(_s.copyWith(causesPerSession: v)),
           ),
         ),
         _row(
           '跳过几次留到下次',
-          '第一次跳过移到队尾，再跳过就留到下次。',
+          '第一次跳过放队尾，达到次数留到下次。',
           _segmented<int>(
             value: _s.skipLimit,
             options: const [
-              (value: 1, label: '1 次'),
-              (value: 2, label: '2 次'),
+              QmSegmentOption(value: 1, label: '1 次'),
+              QmSegmentOption(value: 2, label: '2 次'),
             ],
             onChanged: (v) => _apply(_s.copyWith(skipLimit: v)),
           ),
         ),
         _row(
           '重做时答案默认',
-          '重做那步，答案先藏着还是直接显示。',
+          '重做时答案藏着还是显示。',
           _segmented<bool>(
-            value: !_s.redoAnswerHidden,
+            value: _s.redoAnswerHidden,
             options: const [
-              (value: false, label: '藏着'),
-              (value: true, label: '显示'),
+              QmSegmentOption(value: true, label: '默认藏着'),
+              QmSegmentOption(value: false, label: '默认显示'),
             ],
-            onChanged: (v) => _apply(_s.copyWith(redoAnswerHidden: !v)),
+            onChanged: (v) => _apply(_s.copyWith(redoAnswerHidden: v)),
           ),
         ),
         _row(
           '通知提醒',
-          '到复查时间时提醒你。',
-          Switch(
+          '到复查时间时提醒，关了就不提醒。',
+          _segmented<bool>(
             value: _s.notifyEnabled,
+            options: const [
+              QmSegmentOption(value: true, label: '开'),
+              QmSegmentOption(value: false, label: '关'),
+            ],
             onChanged: (v) => _apply(_s.copyWith(notifyEnabled: v)),
           ),
         ),
         _row(
           '提醒时间',
-          '每天在这个时间提醒。',
-          OutlinedButton(
+          '到复查那天，几点提醒。',
+          QmButton(
+            label: _s.notifyTime,
+            variant: QmButtonVariant.secondary,
+            size: QmButtonSize.small,
             onPressed: _s.notifyEnabled ? _pickNotifyTime : null,
-            style: OutlinedButton.styleFrom(
-              foregroundColor: AppTheme.accent,
-              side: const BorderSide(color: AppTheme.accent),
-              shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(10)),
-            ),
-            child: Text(_s.notifyTime),
           ),
         ),
         _row(
           '复习列表默认排序',
-          '打开复习页时先按什么排。',
+          '列表先按什么排。',
           _segmented<String>(
             value: _s.reviewSort,
             options: const [
-              (value: 'joinTime', label: '按加入时间'),
-              (value: 'subject', label: '按学科'),
+              QmSegmentOption(value: 'joinTime', label: '按加入时间'),
+              QmSegmentOption(value: 'subject', label: '按学科'),
             ],
             onChanged: (v) => _apply(_s.copyWith(reviewSort: v)),
           ),
@@ -569,8 +807,8 @@ class _SettingsPageState extends State<SettingsPage> {
           _segmented<String>(
             value: _s.wrongbookView,
             options: const [
-              (value: 'large', label: '大卡片'),
-              (value: 'compact', label: '紧凑列表'),
+              QmSegmentOption(value: 'large', label: '大卡片'),
+              QmSegmentOption(value: 'compact', label: '紧凑列表'),
             ],
             onChanged: (v) => _apply(_s.copyWith(wrongbookView: v)),
           ),
@@ -581,9 +819,9 @@ class _SettingsPageState extends State<SettingsPage> {
           _segmented<String>(
             value: _s.wrongbookSort,
             options: const [
-              (value: 'new', label: '时间新 → 旧'),
-              (value: 'old', label: '时间旧 → 新'),
-              (value: 'subject', label: '学科首字母'),
+              QmSegmentOption(value: 'new', label: '时间新 → 旧'),
+              QmSegmentOption(value: 'old', label: '时间旧 → 新'),
+              QmSegmentOption(value: 'subject', label: '学科首字母'),
             ],
             onChanged: (v) => _apply(_s.copyWith(wrongbookSort: v)),
           ),
@@ -594,11 +832,11 @@ class _SettingsPageState extends State<SettingsPage> {
           _segmented<int>(
             value: _s.pageSize,
             options: const [
-              (value: 10, label: '10'),
-              (value: 20, label: '20'),
-              (value: 30, label: '30'),
-              (value: 40, label: '40'),
-              (value: 50, label: '50'),
+              QmSegmentOption(value: 10, label: '10'),
+              QmSegmentOption(value: 20, label: '20'),
+              QmSegmentOption(value: 30, label: '30'),
+              QmSegmentOption(value: 40, label: '40'),
+              QmSegmentOption(value: 50, label: '50'),
             ],
             onChanged: (v) => _apply(_s.copyWith(pageSize: v)),
           ),
@@ -608,29 +846,49 @@ class _SettingsPageState extends State<SettingsPage> {
   }
 
   Widget _buildData() {
+    final scale = qmScaleOf(context);
+    final preview = _cachePreview;
+    final pendingQuestions =
+        (_restoreData?['questions'] as List?)?.length ?? 0;
     return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         _row(
           '备份',
-          '把题库导出为一个 JSON 文件。',
-          FilledButton(
+          '把题库导出为一个 JSON 文件，换电脑时用备份文件恢复。',
+          QmButton(
+            label: '备份题库',
+            size: QmButtonSize.small,
             onPressed: _busy ? null : _backup,
-            child: const Text('备份'),
           ),
         ),
         _row(
           '恢复',
-          '从备份文件恢复，会覆盖当前题库。',
-          FilledButton(
-            onPressed: _busy ? null : _restore,
-            child: const Text('恢复'),
+          '恢复会覆盖当前题库，选完文件先确认。',
+          QmButton(
+            label: '选择备份文件…',
+            variant: QmButtonVariant.secondary,
+            size: QmButtonSize.small,
+            onPressed: _busy ? null : _pickRestoreFile,
           ),
         ),
+        if (_restoreData != null)
+          _confirmBox(
+            title: '恢复会覆盖当前题库，确定吗？',
+            detail:
+                '将用备份文件「${_restoreFileName ?? '备份文件'}」（$pendingQuestions 道题）覆盖现在的题库（当前 $_questionCount 道题）：现在的题会被替换掉，覆盖后找不回来。确定恢复吗？',
+            confirmLabel: '确认恢复，覆盖当前题库',
+            onConfirm: _confirmRestore,
+            onCancel: () => setState(() {
+              _restoreData = null;
+              _restoreFileName = null;
+            }),
+          ),
         _row(
           '数据库位置',
-          '当前数据库文件的位置，改后重启才生效。',
+          '数据库文件 quiz-master2.db 就放在这个文件夹里，全部题和设置都存在里面。改完位置，要重启软件才生效。',
           SizedBox(
-            width: 300,
+            width: 320 * scale,
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.end,
               children: [
@@ -639,38 +897,92 @@ class _SettingsPageState extends State<SettingsPage> {
                   style: Theme.of(context).textTheme.bodySmall,
                   textAlign: TextAlign.right,
                 ),
-                const SizedBox(height: 6),
-                OutlinedButton(
+                SizedBox(height: 6 * scale),
+                QmButton(
+                  label: '改位置',
+                  variant: QmButtonVariant.secondary,
+                  size: QmButtonSize.small,
                   onPressed: _changeDbLocation,
-                  style: OutlinedButton.styleFrom(
-                    foregroundColor: AppTheme.accent,
-                    side: const BorderSide(color: AppTheme.accent),
-                    shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(10)),
-                  ),
-                  child: const Text('更改位置'),
                 ),
               ],
             ),
           ),
         ),
+        if (_dbPendingRestart)
+          _noteText('新位置已保存：要重启软件才生效——重启后才会改用新位置存数据库，重启前还是用现在这个位置。'),
         _row(
-          '缓存清理',
-          '清理临时文件、缩略图缓存和失败导入残留，不动题目数据。',
-          FilledButton(
-            onPressed: _clearCache,
-            child: const Text('清理缓存'),
+          '清理缓存',
+          preview == null
+              ? '正在扫描缓存…'
+              : _cacheCleanedMb != null
+                  ? '已清理完成，释放 ${_cacheCleanedMb!} MB，题目和数据未动。'
+                  : preview.totalCount == 0
+                      ? '现在没有可清理的缓存。'
+                      : '临时文件 ${preview.tempCount} 个、缩略图缓存 ${preview.thumbCount} 张，共约 ${preview.mb} MB；清理不影响题目和数据。',
+          QmButton(
+            label: _cacheCleanedMb != null ? '重新扫描' : '清理缓存',
+            size: QmButtonSize.small,
+            onPressed: preview == null
+                ? null
+                : _cacheCleanedMb != null
+                    ? _scanCache
+                    : preview.totalCount == 0
+                        ? null
+                        : () => _clearCache(),
           ),
         ),
+        if (preview != null &&
+            preview.totalCount > 0 &&
+            _cacheCleanedMb == null)
+          _noteText(preview.failedCount > 0
+              ? '其中含导入失败的残留文件 ${preview.failedCount} 个，缩略图之后用到时会自动重新生成。'
+              : '缩略图之后用到时会自动重新生成。'),
         _row(
-          '清空演示数据',
-          '只删演示题，你自己的题不动。',
-          FilledButton(
-            onPressed: _clearDemo,
-            child: const Text('清空演示数据'),
+          '演示数据',
+          '清空全部演示数据：数学 / 英语 / 政治三科的演示题会被删掉。这个入口只放在设置里，首页没有这个按钮。',
+          QmButton(
+            label: '清空演示数据',
+            variant: QmButtonVariant.danger,
+            size: QmButtonSize.small,
+            onPressed: _askClearDemo,
           ),
         ),
+        if (_confirmClearDemo)
+          _confirmBox(
+            title: '清空演示数据，确定吗？',
+            detail:
+                '三科共 $_demoCountForConfirm 道演示题会全部删掉，删了就没了，确定吗？',
+            confirmLabel: '确认清空',
+            onConfirm: _clearDemo,
+            onCancel: () => setState(() => _confirmClearDemo = false),
+          ),
       ],
+    );
+  }
+
+  Widget _kvRow(String label, String value) {
+    final scale = qmScaleOf(context);
+    final palette = DesignTokens.of(Theme.of(context).brightness);
+    return Padding(
+      padding: EdgeInsets.symmetric(vertical: 5 * scale),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: R10Tokens.kvLabelWidth * scale,
+            child: Text(label,
+                style: TextStyle(
+                    fontSize: R10Tokens.kvFontSize,
+                    fontWeight: FontWeight.w700,
+                    color: palette.ink)),
+          ),
+          Expanded(
+            child: Text(value,
+                style: TextStyle(
+                    fontSize: R10Tokens.kvFontSize, color: palette.ink2)),
+          ),
+        ],
+      ),
     );
   }
 
@@ -683,17 +995,21 @@ class _SettingsPageState extends State<SettingsPage> {
           _segmented<String>(
             value: _s.startupPage,
             options: const [
-              (value: 'home', label: '首页'),
-              (value: 'last', label: '上次停下的页面'),
+              QmSegmentOption(value: 'home', label: '首页'),
+              QmSegmentOption(value: 'last', label: '上次停下的页面'),
             ],
             onChanged: (v) => _apply(_s.copyWith(startupPage: v)),
           ),
         ),
         _row(
           '关于',
-          '版本 v0.1.0\n作者：Meng\nv0.1.0：全新 v2，第一版。',
+          '版本与更新说明。',
           const SizedBox.shrink(),
         ),
+        _kvRow('版本', 'quiz-master2 v0.1.0'),
+        _kvRow('作者', 'Meng（个人项目）'),
+        _kvRow('更新说明',
+            'v0.1.0：首个版本。错题收集 → 整理 → 按错因复习的主流程；学科管理定稿：学科 / 知识点树 / 标签 / 试卷可增删改，删学科删题，改名同步到题；文件夹只在错题本目录页管，删知识点 / 标签 / 试卷只让题上对应项变空（待补充）；主题默认跟随系统、可手动选亮 / 深，字体标准 / 大 / 特大三档；错题本目录页可增删改查文件夹，题可单个 / 批量移入其他文件夹。'),
       ],
     );
   }

@@ -273,6 +273,16 @@ class QuestionRepository {
   Future<void> deleteKnowledgePoint(String id) =>
       _db.deleteKnowledgePoint(id);
 
+  /// 章节改名 / 删除章节（R10 学科管理知识点树：章节行也有改名/删除，
+  /// 与 HTML `viewSubjects` 一致）。章节只随知识点存在，加章节须同时
+  /// 给第一个知识点——空章节没有可存的行（不改 Schema）。
+  Future<void> renameChapter(
+          String subjectId, String oldChapter, String newChapter) =>
+      _db.renameChapter(subjectId, oldChapter, newChapter);
+
+  Future<void> deleteChapter(String subjectId, String chapter) =>
+      _db.deleteChapter(subjectId, chapter);
+
   Future<AppSettings> settings() => _db.loadSettings();
 
   Future<void> saveSettings(AppSettings s) => _db.saveSettings(s);

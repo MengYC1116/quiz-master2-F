@@ -5,6 +5,7 @@ import '../data/database.dart';
 import '../data/repository.dart';
 import '../models/models.dart';
 import '../theme/app_theme.dart';
+import '../widgets/app_shell.dart';
 import 'modules/collect/collect_page.dart';
 import 'modules/detail/question_detail_page.dart';
 import 'modules/home/home_page.dart';
@@ -28,6 +29,7 @@ class QuizMasterApp extends StatefulWidget {
 class _QuizMasterAppState extends State<QuizMasterApp> {
   AppSettings _settings = AppSettings.defaults;
   bool _settingsLoaded = false;
+  bool _settingsLoadFailed = false;
   bool _collapsed = false;
   String _route = '/home';
   String? _subjectArg; // 带学科 ID 进错题本时直接打开对应那一本
@@ -59,12 +61,21 @@ class _QuizMasterAppState extends State<QuizMasterApp> {
   }
 
   Future<void> _loadSettings() async {
-    final s = await repo.settings();
-    if (!mounted) return;
-    setState(() {
-      _settings = s;
-      _settingsLoaded = true;
-    });
+    try {
+      final s = await repo.settings();
+      if (!mounted) return;
+      setState(() {
+        _settings = s;
+        _settingsLoaded = true;
+      });
+    } catch (_) {
+      // 设置读失败：用默认设置继续跑，设置页出错误横幅（HTML 错误态）。
+      if (!mounted) return;
+      setState(() {
+        _settingsLoadFailed = true;
+        _settingsLoaded = true;
+      });
+    }
   }
 
   Future<void> _updateSettings(AppSettings s) async {
@@ -101,17 +112,18 @@ class _QuizMasterAppState extends State<QuizMasterApp> {
         home: Scaffold(body: Center(child: CircularProgressIndicator())),
       );
     }
-    final scale = _settings.fontSize == 'large'
-        ? 1.12
-        : _settings.fontSize == 'extraLarge'
-            ? 1.25
-            : 1.0;
+    // 字号缩放（D4）：唯一来源是 AppSettings.fontScale（标准 1.00 /
+    // 大 1.15 / 特大 1.30，见 models.dart / FontScale）。
+    // 字号只在这里由 MediaQuery TextScaler 全局乘一次；ThemeData 的
+    // TextTheme 取基准值、不再乘，否则同一段文字会被缩放两次。
+    // 布局类尺寸（圆角 / 按钮内边距）由 AppTheme 按同一因子缩放。
+    final scale = _settings.fontScale;
     return MaterialApp(
       title: 'quiz-master2',
       debugShowCheckedModeBanner: false,
       navigatorKey: _navigatorKey,
-      theme: AppTheme.light(),
-      darkTheme: AppTheme.dark(),
+      theme: AppTheme.light(scale: scale),
+      darkTheme: AppTheme.dark(scale: scale),
       themeMode: _themeMode,
       builder: (context, child) {
         final media = MediaQuery.of(context);
@@ -121,254 +133,50 @@ class _QuizMasterAppState extends State<QuizMasterApp> {
         );
       },
       home: Builder(
-        builder: (context) => Scaffold(
-          body: Stack(
-            children: [
-              const Positioned.fill(child: PaperDots()),
-              Positioned.fill(
-                child: Row(
-                  children: [
-                    _buildNav(context),
-                    Expanded(child: _buildPage()),
-                  ],
+        builder: (context) {
+          final palette = DesignTokens.of(Theme.of(context).brightness);
+          final scaled = DesignTokens.scaled(scale);
+          return Scaffold(
+            body: Stack(
+              children: [
+                const Positioned.fill(child: PaperDots()),
+                Positioned.fill(
+                  child: Row(
+                    children: [
+                      _buildNav(context),
+                      // 内容区：HTML `.main` 底色 `--surface` + 内边距
+                      // `26px 30px`（`ScaledTokens.contentPadding`，按三档
+                      // 缩放 token 缩放）。九页主体仍带各自的旧内边距
+                      // （24–28px），过渡期总缩进偏大，R3–R10 逐页去掉
+                      // 页内边距后落到准确的 26/30（见 R2 报告）。
+                      Expanded(
+                        child: Container(
+                          color: palette.surface,
+                          padding: scaled.contentPadding,
+                          child: _buildPage(),
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
-              ),
-            ],
-          ),
-        ),
+              ],
+            ),
+          );
+        },
       ),
     );
   }
 
   Widget _buildNav(BuildContext context) {
-    final dark = Theme.of(context).brightness == Brightness.dark;
-    final navBackground =
-        dark ? AppTheme.darkNavBackground : AppTheme.lightNavBackground;
-    final selectedBackground =
-        dark ? AppTheme.darkNavSelected : AppTheme.lightNavSelected;
-    final items = [
-      ('/home', '首页', Icons.home_outlined, 0),
-      ('/collect', '收集中心', Icons.upload_file_outlined, _collectBadge),
-      ('/organize', '整理工作台', Icons.edit_note_outlined, _organizeBadge),
-      ('/wrongbook', '错题本', Icons.book_outlined, 0),
-      ('/review', '复习', Icons.school_outlined, 0),
-      ('/report', '学习报告', Icons.bar_chart_outlined, 0),
-      ('/subjects', '学科管理', Icons.folder_outlined, 0),
-      ('/settings', '设置', Icons.settings_outlined, 0),
-    ];
-    return Container(
-      width: _collapsed ? 64 : 216,
-      decoration: BoxDecoration(
-        color: navBackground,
-        border: Border(
-          right: BorderSide(
-              color: dark
-                  ? const Color(0xFF333B47)
-                  : AppTheme.lightLine),
-        ),
-      ),
-      child: Column(
-        crossAxisAlignment:
-            _collapsed ? CrossAxisAlignment.center : CrossAxisAlignment.start,
-        children: [
-          if (_collapsed)
-            Padding(
-              padding: const EdgeInsets.fromLTRB(0, 16, 0, 10),
-              child: IconButton(
-                tooltip: '展开导航',
-                icon: const Icon(Icons.chevron_right),
-                onPressed: () => setState(() => _collapsed = false),
-              ),
-            )
-          else
-            Padding(
-              padding: const EdgeInsets.fromLTRB(20, 16, 8, 10),
-              child: Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text('quiz-master2',
-                            style: TextStyle(
-                                fontSize: 17, fontWeight: FontWeight.w800)),
-                        SizedBox(height: 2),
-                        Text('个人智能错题本',
-                            style: TextStyle(fontSize: 11.5)),
-                      ],
-                    ),
-                  ),
-                  IconButton(
-                    tooltip: '折叠导航',
-                    icon: const Icon(Icons.chevron_left, size: 20),
-                    padding: EdgeInsets.zero,
-                    constraints: const BoxConstraints(),
-                    onPressed: () => setState(() => _collapsed = true),
-                  ),
-                ],
-              ),
-            ),
-          for (final (route, label, icon, badge) in items)
-            _collapsed
-                ? Padding(
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-                    child: Tooltip(
-                      message: label,
-                      child: Material(
-                        color: _route == route
-                            ? selectedBackground
-                            : Colors.transparent,
-                        borderRadius: BorderRadius.circular(10),
-                        child: InkWell(
-                          borderRadius: BorderRadius.circular(10),
-                          onTap: () => _go(route),
-                          child: SizedBox(
-                            width: 48,
-                            height: 48,
-                            child: Stack(
-                              clipBehavior: Clip.none,
-                              children: [
-                                Center(
-                                  child: Icon(icon,
-                                      color: _route == route
-                                          ? Colors.white
-                                          : Theme.of(context)
-                                              .colorScheme
-                                              .onSurface),
-                                ),
-                                if (badge > 0)
-                                  Positioned(
-                                    top: 6,
-                                    right: 4,
-                                    child: Container(
-                                      constraints: const BoxConstraints(
-                                          minWidth: 16, minHeight: 16),
-                                      padding: const EdgeInsets.symmetric(
-                                          horizontal: 4),
-                                      decoration: BoxDecoration(
-                                        color: _route == route
-                                            ? Colors.white
-                                            : AppTheme.accent,
-                                        borderRadius: BorderRadius.circular(8),
-                                      ),
-                                      alignment: Alignment.center,
-                                      child: Text(
-                                        '$badge',
-                                        style: TextStyle(
-                                          color: _route == route
-                                              ? selectedBackground
-                                              : Colors.white,
-                                          fontSize: 9,
-                                          fontWeight: FontWeight.w700,
-                                        ),
-                                      ),
-                                    ),
-                                  ),
-                              ],
-                            ),
-                          ),
-                        ),
-                      ),
-                    ),
-                  )
-                : Padding(
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-                    child: Material(
-                      color: _route == route
-                          ? selectedBackground
-                          : Colors.transparent,
-                      borderRadius: BorderRadius.circular(10),
-                      child: ListTile(
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(10),
-                        ),
-                        leading: Icon(icon,
-                            color: _route == route
-                                ? Colors.white
-                                : Theme.of(context).colorScheme.onSurface),
-                        title: Text(label,
-                            style: TextStyle(
-                                fontSize: 14,
-                                color: _route == route
-                                    ? Colors.white
-                                    : Theme.of(context)
-                                        .colorScheme
-                                        .onSurface,
-                                fontWeight: _route == route
-                                    ? FontWeight.w700
-                                    : FontWeight.normal)),
-                        trailing: (badge > 0)
-                            ? Container(
-                                padding: const EdgeInsets.symmetric(
-                                    horizontal: 7, vertical: 2),
-                                decoration: BoxDecoration(
-                                  color: _route == route
-                                      ? Colors.white
-                                      : AppTheme.accent,
-                                  borderRadius: BorderRadius.circular(10),
-                                ),
-                                child: Text(
-                                  '$badge',
-                                  style: TextStyle(
-                                    color: _route == route
-                                        ? selectedBackground
-                                        : Colors.white,
-                                    fontSize: 11,
-                                    fontWeight: FontWeight.w700,
-                                  ),
-                                ),
-                              )
-                            : null,
-                        onTap: () => _go(route),
-                      ),
-                    ),
-                  ),
-          const Spacer(),
-          // 学科速览：待整理 + 待复习（待复习与首页焦点卡同一口径
-          // homeRevCounts，数题不数错因，每次渲染刷新）。
-          if (!_collapsed) ...[
-            const Divider(height: 1),
-            const Padding(
-              padding: EdgeInsets.fromLTRB(20, 10, 8, 4),
-              child: Text('学科速览',
-                  style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700)),
-            ),
-            for (final s in Subject.all)
-              Padding(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 20, vertical: 3),
-                child: Row(
-                  children: [
-                    Container(
-                      width: 8,
-                      height: 8,
-                      decoration: BoxDecoration(
-                          color: s.color, shape: BoxShape.circle),
-                    ),
-                    const SizedBox(width: 8),
-                    Text(s.name, style: const TextStyle(fontSize: 13)),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: Text(
-                        '待整理 ${_navPending[s.id] ?? 0} · 待复习 ${_navRev[s.id] ?? 0}',
-                        style: const TextStyle(fontSize: 12),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            const SizedBox(height: 8),
-          ],
-          if (!_collapsed)
-            const Padding(
-              padding: EdgeInsets.all(12),
-              child: Text('设计演示数据', style: TextStyle(fontSize: 11)),
-            ),
-        ],
-      ),
+    return AppNavBar(
+      route: _route,
+      collapsed: _collapsed,
+      onNavigate: _go,
+      onToggleCollapsed: () => setState(() => _collapsed = !_collapsed),
+      collectBadge: _collectBadge,
+      organizeBadge: _organizeBadge,
+      navRev: _navRev,
+      navPending: _navPending,
     );
   }
 
@@ -393,22 +201,29 @@ class _QuizMasterAppState extends State<QuizMasterApp> {
     _refreshBadges();
   }
 
-  void _goWrongbookFiltered({String? cause, String? knowledgePointId}) {
+  void _goWrongbookFiltered({
+    String? subjectId,
+    String? cause,
+    String? knowledgePointId,
+  }) {
     setState(() {
       _route = '/wrongbook';
+      _subjectArg = subjectId;
       _reportCauseArg = cause;
       _reportKpArg = knowledgePointId;
     });
     _refreshBadges();
   }
 
-  Future<void> _openDetail(Question q, List<String> orderIds) async {
+  Future<void> _openDetail(Question q, List<String> orderIds,
+      {String sourceLabel = '错题本'}) async {
     await _navigatorKey.currentState?.push(
       MaterialPageRoute(
         builder: (_) => QuestionDetailPage(
           repo: repo,
           questionId: q.id,
           orderIds: orderIds,
+          sourceLabel: sourceLabel,
           onChanged: _refreshBadges,
         ),
       ),
@@ -423,8 +238,10 @@ class _QuizMasterAppState extends State<QuizMasterApp> {
       case '/organize':
         return OrganizePage(
           repo: repo,
-          onOpenDetail: _openDetail,
+          onOpenDetail: (q, ids) =>
+              _openDetail(q, ids, sourceLabel: '整理工作台'),
           onGoReview: () => _goReview(),
+          onGoCollect: () => _go('/collect'),
         );
       case '/wrongbook':
         return WrongbookPage(
@@ -433,14 +250,14 @@ class _QuizMasterAppState extends State<QuizMasterApp> {
           filterCause: _reportCauseArg,
           filterKnowledgePointId: _reportKpArg,
           onOpenHome: () => _go('/home'),
-          onOpenDetail: _openDetail,
+          onOpenDetail: (q, ids) => _openDetail(q, ids, sourceLabel: '错题本'),
           onGoReview: ({String? subjectId}) =>
               _goReview(subjectId: subjectId),
         );
       case '/review':
         return ReviewPage(
           repo: repo,
-          onOpenDetail: _openDetail,
+          onOpenDetail: (q, ids) => _openDetail(q, ids, sourceLabel: '复习'),
           initialSubjectId: _reviewSubjectArg,
           onGoWrongbook: () => _go('/wrongbook'),
         );
@@ -457,6 +274,7 @@ class _QuizMasterAppState extends State<QuizMasterApp> {
           repo: repo,
           settings: _settings,
           onSettingsChanged: _updateSettings,
+          loadFailed: _settingsLoadFailed,
         );
       case '/home':
       default:

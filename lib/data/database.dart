@@ -723,6 +723,41 @@ class AppDatabase {
     }
   }
 
+  /// 章节改名：只改 `knowledge_points.chapter` 的名字，题上挂的知识点
+  /// id 不变，题跟着改名。空章节存不下来（章节只随知识点存在），
+  /// 所以加章节仍须同时给第一个知识点（见 repository.addChapter）。
+  Future<void> renameChapter(
+      String subjectId, String oldChapter, String newChapter) async {
+    final d = await db;
+    await d.update('knowledge_points', {'chapter': newChapter},
+        where: 'subject_id = ? AND chapter = ?',
+        whereArgs: [subjectId, oldChapter]);
+  }
+
+  /// 删除章节：删掉该章节下全部知识点；题还在，只是这些知识点变空、
+  /// 成为待补充（与删知识点同一口径）。
+  Future<void> deleteChapter(String subjectId, String chapter) async {
+    final d = await db;
+    final rows = await d.query('knowledge_points',
+        columns: ['id'],
+        where: 'subject_id = ? AND chapter = ?',
+        whereArgs: [subjectId, chapter]);
+    final ids = rows.map((r) => r['id'] as String).toList();
+    await d.delete('knowledge_points',
+        where: 'subject_id = ? AND chapter = ?',
+        whereArgs: [subjectId, chapter]);
+    if (ids.isEmpty) return;
+    final qrows = await d.query('questions');
+    for (final row in qrows) {
+      final q = _fromRow(row);
+      final kept =
+          q.knowledgePointIds.where((e) => !ids.contains(e)).toList();
+      if (kept.length == q.knowledgePointIds.length) continue;
+      await d.update('questions', {'knowledge_ids': kept.join(',')},
+          where: 'id = ?', whereArgs: [q.id]);
+    }
+  }
+
   Future<void> upsertQuestion(Question q) async {
     final d = await db;
     await d.insert('questions', _toRow(q),
