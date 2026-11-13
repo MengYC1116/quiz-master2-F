@@ -272,7 +272,7 @@ class _OrganizePageState extends State<OrganizePage> {
     await widget.repo.save(updated);
     await widget.repo.syncCauseRecords(updated);
     await widget.repo.saveRecentTask(
-      kind: 'organize',
+      kind: '整理',
       subjectId: q.subjectId,
       title: q.title,
     );

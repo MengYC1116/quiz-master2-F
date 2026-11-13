@@ -125,6 +125,15 @@ const _stepLabels = ['① 看错因', '② 写补救', '③ 重做', '④ 自查
 
 class _ReviewPageState extends State<ReviewPage> {
   AppSettings _settings = AppSettings.defaults;
+  // 学科顺序表：读库 subjects（B2 补充；以前写死 Subject.all，
+  // 新学科在排序里无索引位、筛选下拉里也没有）。空库回退预设三科。
+  List<Subject> _subjects = Subject.all;
+  // 库里找学科：新学科用库里的名与色；找不到才回退 Subject.byId
+  //（数学兜底，只发生在数据不一致时）。
+  Subject _subjectOf(String id) => _subjects.firstWhere(
+        (s) => s.id == id,
+        orElse: () => Subject.byId(id),
+      );
   List<_CauseGroup> _groups = [];
   List<_CauseGroup> _curedGroups = [];
   List<Question> _notJoined = [];
@@ -171,6 +180,8 @@ class _ReviewPageState extends State<ReviewPage> {
 
   Future<void> _load() async {
     final settings = await widget.repo.settings();
+    final subjects = await widget.repo.subjects();
+    final subjectList = subjects.isEmpty ? Subject.all : subjects;
     final questions = await widget.repo.all(includeArchived: true);
     final records = await widget.repo.causeRecords();
     final byQ = <String, List<CauseRecord>>{};
@@ -183,7 +194,10 @@ class _ReviewPageState extends State<ReviewPage> {
     final notJoined = <Question>[];
     for (final q in questions) {
       if (!q.reviewJoined && !q.isArchived) notJoined.add(q);
-      if (!q.reviewJoined || !q.isOrganized) continue;
+      // B6：复习主列表排除已归档题（与 HTML `qInReview` 口径一致；
+      // 未加入列表上面一行已排除了归档）。归档题的解决记录保留在
+      // 库里（不删），取消归档后重新出现。
+      if (!q.reviewJoined || !q.isOrganized || q.isArchived) continue;
       final rs = byQ[q.id];
       if (rs == null || rs.isEmpty) continue;
       // 题内错因按题目本身的错因顺序排。
@@ -217,8 +231,8 @@ class _ReviewPageState extends State<ReviewPage> {
     int groupCompare(_CauseGroup a, _CauseGroup b) {
       if (settings.reviewSort == 'subject') {
         final order = {
-          for (var i = 0; i < Subject.all.length; i++)
-            Subject.all[i].id: i,
+          for (var i = 0; i < subjectList.length; i++)
+            subjectList[i].id: i,
         };
         final c = (order[a.subjectId] ?? 99)
             .compareTo(order[b.subjectId] ?? 99);
@@ -262,6 +276,7 @@ class _ReviewPageState extends State<ReviewPage> {
     if (!mounted) return;
     setState(() {
       _settings = settings;
+      _subjects = subjectList;
       _groups = sortedPending;
       _curedGroups = sortedCured;
       _notJoined = notJoined;
@@ -425,7 +440,7 @@ class _ReviewPageState extends State<ReviewPage> {
       }
       scopeLabel = _subjectFilter == null
           ? '全部待解决错因'
-          : '${Subject.byId(_subjectFilter!).name}这一科';
+          : '${_subjectOf(_subjectFilter!).name}这一科';
     }
     if (blocks.isEmpty) return;
     setState(() {
@@ -533,7 +548,8 @@ class _ReviewPageState extends State<ReviewPage> {
     final questions = await widget.repo.all(includeArchived: true);
     final joinedIds = {
       for (final q in questions)
-        if (q.reviewJoined && q.isOrganized) q.id,
+        // B6：与主列表同口径，已归档题不计入剩余（记录保留，取消归档回来）。
+        if (q.reviewJoined && q.isOrganized && !q.isArchived) q.id,
     };
     final remaining = records
         .where((r) =>
@@ -621,7 +637,7 @@ class _ReviewPageState extends State<ReviewPage> {
         // 不确定不算，不改记录；总结里留一行说明。
         _changes.add(_SessionChange(
           questionTitle: q.title,
-          subjectName: Subject.byId(q.subjectId).name,
+          subjectName: _subjectOf(q.subjectId).name,
           cause: cause,
           before: before,
           after: before,
@@ -636,6 +652,8 @@ class _ReviewPageState extends State<ReviewPage> {
           choice,
           cureChecks: _settings.cureChecks,
           recheckIntervalDays: _settings.recheckIntervalDays,
+          // 待定1：复查通过不加计数（HTML 口径）。
+          isRecheck: wasRecheck,
         );
       } catch (_) {
         if (!mounted) return;
@@ -658,7 +676,7 @@ class _ReviewPageState extends State<ReviewPage> {
       if (before != '已解决' && after == '已解决') _curedNow++;
       _changes.add(_SessionChange(
         questionTitle: q.title,
-        subjectName: Subject.byId(q.subjectId).name,
+        subjectName: _subjectOf(q.subjectId).name,
         cause: cause,
         before: before,
         after: after,
@@ -772,7 +790,7 @@ class _ReviewPageState extends State<ReviewPage> {
     final q = _questionOf(block.questionId);
     final cause = block.causes[resume.causeIndex];
     final subjectName =
-        q == null ? '' : Subject.byId(q.subjectId).name;
+        q == null ? '' : _subjectOf(q.subjectId).name;
     return Padding(
       padding: EdgeInsets.only(bottom: 14 * scale),
       child: _DetailBox(
@@ -882,7 +900,7 @@ class _ReviewPageState extends State<ReviewPage> {
               value: _subjectFilter ?? '全部',
               items: [
                 const DropdownMenuItem(value: '全部', child: Text('全部')),
-                for (final s in Subject.all)
+                for (final s in _subjects)
                   DropdownMenuItem(value: s.id, child: Text(s.name)),
               ],
               onChanged: (v) => setState(() {
@@ -937,7 +955,8 @@ class _ReviewPageState extends State<ReviewPage> {
   Widget _buildGroupRow(_CauseGroup g) {
     final scale = qmScaleOf(context);
     final palette = DesignTokens.of(Theme.of(context).brightness);
-    final subjectName = Subject.byId(g.subjectId).name;
+    final subject = _subjectOf(g.subjectId);
+    final subjectName = subject.name;
     final titles = g.items.map((it) => it.question.title).join('、');
     return Container(
       padding: EdgeInsets.symmetric(
@@ -960,6 +979,7 @@ class _ReviewPageState extends State<ReviewPage> {
               color: DesignTokens.subjectInk(
                 g.subjectId,
                 Theme.of(context).brightness,
+                subject.color,
               ),
             ),
           ),
@@ -1162,7 +1182,8 @@ class _ReviewPageState extends State<ReviewPage> {
     final palette = DesignTokens.of(Theme.of(context).brightness);
     final key = '${g.subjectId}|${g.cause}';
     final open = _openCuredKey == key;
-    final subjectName = Subject.byId(g.subjectId).name;
+    final subject = _subjectOf(g.subjectId);
+    final subjectName = subject.name;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -1190,6 +1211,7 @@ class _ReviewPageState extends State<ReviewPage> {
                     color: DesignTokens.subjectInk(
                       g.subjectId,
                       Theme.of(context).brightness,
+                      subject.color,
                     ),
                   ),
                 ),
@@ -1270,7 +1292,7 @@ class _ReviewPageState extends State<ReviewPage> {
 
   Widget _buildNotJoinedBox() {
     final titles = _notJoined
-        .map((q) => '${Subject.byId(q.subjectId).name}「${q.title}」')
+        .map((q) => '${_subjectOf(q.subjectId).name}「${q.title}」')
         .join('、');
     return _DetailBox(
       child: Column(
@@ -1302,7 +1324,7 @@ class _ReviewPageState extends State<ReviewPage> {
     if (_blocks.isEmpty || q == null) return _buildSummary();
     final block = _currentBlock;
     final record = _recordOf(block.questionId, _currentCause);
-    final subjectName = Subject.byId(q.subjectId).name;
+    final subjectName = _subjectOf(q.subjectId).name;
     return _centered(
       Column(
         crossAxisAlignment: CrossAxisAlignment.start,

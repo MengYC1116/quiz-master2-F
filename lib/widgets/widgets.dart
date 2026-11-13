@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 
@@ -407,7 +409,10 @@ class CompactSliceThumb extends StatelessWidget {
       height: 48,
       padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 4),
       decoration: BoxDecoration(
-        color: Colors.white, // 缩略图白底：深色模式下同样保留
+        // 纸面色取 token，与 QuestionSlice 一致：亮色 #FFFDF4 /
+        // 深色 #D8DCE2（D1，HTML `--paper`）。旧代码写死 Colors.white，
+        // 深色下仍是纯白（R11 §8.3），2026-11-13 修。
+        color: DesignTokens.of(Theme.of(context).brightness).paper,
         border: Border.all(
             color: dark ? AppTheme.darkPaperLine : AppTheme.lightPaperLine),
         borderRadius: BorderRadius.circular(8),
@@ -450,8 +455,19 @@ class DashedDivider extends StatelessWidget {
 /// 学科色（标签 / 圆点 / 数字用）：
 /// 亮色用学科本色，深色只用冷雾色（预览 dark --math-ink 等），
 /// 不出现大块亮色。
-Color subjectLabelColor(BuildContext context, String subjectId) {
+///
+/// [stored] 是库里存的学科色（`Subject.color`，S8A2 的 stored 思路）：
+/// 预设三科忽略它，仍走主题感知的固定色；新学科没有预设项，直接用
+/// 库里存的轮换色。不传则按 id 查表（旧行为）。
+Color subjectLabelColor(BuildContext context, String subjectId,
+    [Color? stored]) {
   final dark = Theme.of(context).brightness == Brightness.dark;
+  if (stored != null &&
+      subjectId != 'math' &&
+      subjectId != 'english' &&
+      subjectId != 'politics') {
+    return stored;
+  }
   if (!dark) return Subject.byId(subjectId).color;
   return switch (subjectId) {
     'english' => AppTheme.darkEnglishMist,
@@ -461,14 +477,19 @@ Color subjectLabelColor(BuildContext context, String subjectId) {
 }
 
 /// 学科小圆点 + 名称。
+///
+/// [subject] 是库里读到的学科对象（调用方从 `_subjects` 里找）：
+/// 传了就用它的名与存色，新学科不再显示成“数学”+数学色；
+/// 不传则走 `Subject.byId` 回退（预设三科旧行为不变）。
 class SubjectLabel extends StatelessWidget {
-  const SubjectLabel({super.key, required this.subjectId});
+  const SubjectLabel({super.key, required this.subjectId, this.subject});
   final String subjectId;
+  final Subject? subject;
 
   @override
   Widget build(BuildContext context) {
-    final s = Subject.byId(subjectId);
-    final color = subjectLabelColor(context, subjectId);
+    final s = subject ?? Subject.byId(subjectId);
+    final color = subjectLabelColor(context, subjectId, subject?.color);
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
@@ -523,12 +544,22 @@ class InfoChip extends StatelessWidget {
   }
 }
 
-/// 题目图放大浮层（共享；整理工作台、题目详情都用它）：
-/// 点图弹出大居中浮层，1.5× 起始，滚轮缩放，＋/－按钮，点图/点背景/
+/// 题目图放大浮层（共享；整理工作台、题目详情、复习都用它）：
+/// 点图弹出大居中浮层，滚轮缩放，＋/－按钮，点图/点背景/
 /// Esc/✕ 关闭。高亮区（若传 [visibleRegions]）跟着图一起缩放。
 /// [returnLabel] 是浮层提示里的返回地（默认“整理台”，详情页传“题目详情”）。
-/// 文字符号（D3），不用图标字体。InteractiveViewer 居中放图，不会像
-/// 旧版固定偏移那样把右边文字截掉。
+/// 文字符号（D3），不用图标字体。
+///
+/// 打开缩放 = min(1.5, fit)，fit 为纸面刚好完整装进视口的缩放
+/// （纸面封顶宽 680、内容高度；标准档 1280×720 下视口 900×~541，
+/// fit ≈ 1.32，徽标 132%）。HTML 原型是 fit×1.5、徽标恒 150%，但
+/// fit×1.5 在约束维度上必然溢出 50%（打开即裁切），故这里取
+/// min(1.5, fit)，保证打开即居中、无裁切——对 HTML 公式的有意偏离。
+/// 初始矩阵按视口尺寸算（M = T((1−s)·Vw/2,(1−s)·Vh/2)·S(s)）：
+/// InteractiveViewer 的 alignment 默认为 null，矩阵绕 child 原点
+/// (0,0) 应用，不是绕视口中心；旧代码用纸面尺寸算平移且假设中心
+/// 支点，只在纸面恰为 900×480 时近似成立（垂直 +15px、左右对称
+/// 裁切被误读为左移 60–80px）。见 S8A1-ZOOM-REPORT.md。
 Future<void> showQuestionZoomDialog(
   BuildContext context,
   Question question, {
@@ -563,30 +594,57 @@ class _ZoomDialog extends StatefulWidget {
 class _ZoomDialogState extends State<_ZoomDialog> {
   late final TransformationController _controller;
   final _paperKey = GlobalKey();
+  final _viewportKey = GlobalKey();
   bool _centered = false;
-  double _scale = 1.5;
+  double _scale = 1.0;
+  double _dialogScale = 1.0;
+  Size? _viewportSize;
+
+  /// 纸面封顶宽：HTML 规则 min(680px, 86%)，86% 取视口宽。
+  static double _paperWidth(double dialogScale) => math.min(
+      680.0, DesignTokens.organizeZoomWidth * dialogScale * 0.86);
+
+  /// fit：纸面刚好完整装进视口的缩放。
+  static double _fitFor(Size viewport, Size paper) =>
+      math.min(viewport.width / paper.width, viewport.height / paper.height);
 
   @override
   void initState() {
     super.initState();
-    _controller = TransformationController()
-      ..value = Matrix4.diagonal3Values(1.5, 1.5, 1);
+    _controller = TransformationController();
     _controller.addListener(_onTransform);
-    // 纯缩放矩阵以纸面左上角为原点，1.5× 会把纸面顶到视口左上、
+    // 初始矩阵由 _centerInitial 在首帧后按实测尺寸设置（见下）。
+    // 不预设 1.5×：InteractiveViewer 的 alignment 默认为 null，
+    // 矩阵绕 child 原点 (0,0) 应用；纯缩放矩阵会把纸面顶到左上、
     // 右边裁掉（HTML 的 paperbox 是 left:50%/top:50% 居中放）。
-    // 首帧后按纸面实测尺寸把变换改成绕纸面中心缩放（M = T·S，
-    // 平移量 -w/4、-h/4，中心点不动）。
     WidgetsBinding.instance.addPostFrameCallback((_) => _centerInitial());
   }
 
   void _centerInitial() {
     if (_centered || !mounted) return;
+    final viewport = _viewportKey.currentContext?.size;
     final size = _paperKey.currentContext?.size;
-    if (size == null || size.width <= 0 || size.height <= 0) return;
+    if (viewport == null ||
+        size == null ||
+        viewport.width <= 0 ||
+        viewport.height <= 0 ||
+        size.width <= 0 ||
+        size.height <= 0) {
+      // 尺寸未就绪：下一帧重试。
+      WidgetsBinding.instance.addPostFrameCallback((_) => _centerInitial());
+      return;
+    }
     _centered = true;
+    _viewportSize = viewport;
+    final s0 = math.min(1.5, _fitFor(viewport, size));
+    // 绕视口中心缩放：M = T((1−s0)·Vw/2,(1−s0)·Vh/2)·S(s0)，
+    // 平移量用视口尺寸（旧代码用纸面尺寸 −W/4、−H/4，只在纸面
+    // 恰为 900×480 时近似成立）。_scale 不预赋值，由 _onTransform
+    // 监听到矩阵变化后 setState 更新徽标。
     _controller.value = Matrix4.identity()
-      ..translateByDouble(-size.width / 4, -size.height / 4, 0, 1)
-      ..scaleByDouble(1.5, 1.5, 1, 1);
+      ..translateByDouble(
+          (1 - s0) * viewport.width / 2, (1 - s0) * viewport.height / 2, 0, 1)
+      ..scaleByDouble(s0, s0, 1, 1);
   }
 
   void _onTransform() {
@@ -602,13 +660,26 @@ class _ZoomDialogState extends State<_ZoomDialog> {
   }
 
   void _multiply(double factor) {
-    _controller.value *= Matrix4.diagonal3Values(factor, factor, 1);
+    // 绕视口中心缩放：M' = T(C)·S(f)·T(−C)·M。
+    // 旧代码右乘缩放矩阵，绕视口左上原点缩放，纸面往右下漂移。
+    final viewport = _viewportSize ??
+        Size(
+          DesignTokens.organizeZoomWidth * _dialogScale,
+          DesignTokens.organizeZoomHeight * _dialogScale - 50 * _dialogScale,
+        );
+    final c = Offset(viewport.width / 2, viewport.height / 2);
+    final m = Matrix4.identity()
+      ..translateByDouble(c.dx, c.dy, 0, 1)
+      ..scaleByDouble(factor, factor, 1, 1)
+      ..translateByDouble(-c.dx, -c.dy, 0, 1);
+    _controller.value = m * _controller.value;
   }
 
   @override
   Widget build(BuildContext context) {
     final palette = DesignTokens.of(Theme.of(context).brightness);
     final scale = qmScaleOf(context);
+    _dialogScale = scale;
     return Dialog(
       insetPadding: EdgeInsets.all(22 * scale),
       child: SizedBox(
@@ -683,6 +754,7 @@ class _ZoomDialogState extends State<_ZoomDialog> {
             ),
             Expanded(
               child: Container(
+                key: _viewportKey,
                 color: palette.surface2,
                 child: Listener(
                   onPointerSignal: (e) {
@@ -698,22 +770,27 @@ class _ZoomDialogState extends State<_ZoomDialog> {
                     child: Center(
                       child: GestureDetector(
                         onTap: () => Navigator.of(context).pop(),
-                        child: Stack(
-                          key: _paperKey,
-                          children: [
-                            QuestionSlice(
-                              question: widget.question,
-                              maxHeight: 480,
-                            ),
-                            Positioned.fill(
-                              child: IgnorePointer(
-                                child: QuestionRegionOverlays(
+                        child: SizedBox(
+                          width: _paperWidth(scale),
+                          child: IntrinsicHeight(
+                            child: Stack(
+                              key: _paperKey,
+                              children: [
+                                QuestionSlice(
                                   question: widget.question,
-                                  visible: widget.visibleRegions,
+                                  maxHeight: 480,
                                 ),
-                              ),
+                                Positioned.fill(
+                                  child: IgnorePointer(
+                                    child: QuestionRegionOverlays(
+                                      question: widget.question,
+                                      visible: widget.visibleRegions,
+                                    ),
+                                  ),
+                                ),
+                              ],
                             ),
-                          ],
+                          ),
                         ),
                       ),
                     ),

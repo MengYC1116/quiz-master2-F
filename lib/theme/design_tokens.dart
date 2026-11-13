@@ -328,7 +328,22 @@ class DesignTokens {
   // 亮色 = 学科本色；深色 = 冷雾色（--math/--eng/--pol）。
   // 标签文字在深色下用更亮的 --*-ink（见 [subjectInk]），与 HTML
   // `.subj-label` 的深色规则一致。
-  static Color subjectColor(String subjectId, Brightness brightness) {
+  //
+  // [stored] 是库里存的学科色（`Subject.color`，新学科由
+  // `_newSubjectColors` 轮换产生）。预设三科（math/english/
+  // politics）忽略它，仍走主题感知的固定色（深色下是雾色版）；
+  // 新学科没有预设项，直接用库里存的轮换色——v2 基线圆点就是
+  // 直接用 s.color。R1 改成按 id 查表后，新学科永远落到默认分支
+  // （数学蓝），轮换表写了库却不显示；2026-11-13 修回（见
+  // S8A2-SUBJECT-COLORS-REPORT.md）。
+  static Color subjectColor(String subjectId, Brightness brightness,
+      [Color? stored]) {
+    if (stored != null &&
+        subjectId != 'math' &&
+        subjectId != 'english' &&
+        subjectId != 'politics') {
+      return stored;
+    }
     final p = of(brightness);
     return switch (subjectId) {
       'english' => p.eng,
@@ -337,7 +352,17 @@ class DesignTokens {
     };
   }
 
-  static Color subjectInk(String subjectId, Brightness brightness) {
+  // [stored] 与 [subjectColor] 同理：预设三科忽略它，仍走主题感知的
+  // 固定色；新学科没有预设项，直接用库里存的轮换色作标题色
+  //（S8A2 圆点已是此做法；B2 把首页的标题色 / 底色一并补上）。
+  static Color subjectInk(String subjectId, Brightness brightness,
+      [Color? stored]) {
+    if (stored != null &&
+        subjectId != 'math' &&
+        subjectId != 'english' &&
+        subjectId != 'politics') {
+      return stored;
+    }
     final p = of(brightness);
     return switch (subjectId) {
       'english' => p.engInk,
@@ -346,7 +371,21 @@ class DesignTokens {
     };
   }
 
-  static Color subjectSoft(String subjectId, Brightness brightness) {
+  // 底色不用存色原值（大块饱和色太刺眼），而用存色调出的淡 tint：
+  // 亮色 = 白底混 12% 存色（数学蓝算出约 #E6EFFE，与 --math-soft
+  // #E1EDFF 同档）；深色 = 深灰底（#262B33，三科深色 soft 本就是
+  // 同一值）混 15% 存色，带一点本科的色调。预设三科仍走固定值。
+  static Color subjectSoft(String subjectId, Brightness brightness,
+      [Color? stored]) {
+    if (stored != null &&
+        subjectId != 'math' &&
+        subjectId != 'english' &&
+        subjectId != 'politics') {
+      if (brightness == Brightness.dark) {
+        return Color.lerp(const Color(0xFF262B33), stored, 0.15)!;
+      }
+      return Color.lerp(Colors.white, stored, 0.12)!;
+    }
     final p = of(brightness);
     return switch (subjectId) {
       'english' => p.engSoft,

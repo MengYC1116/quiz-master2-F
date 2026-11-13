@@ -33,9 +33,12 @@ class SubjectsPage extends StatefulWidget {
 
 const _presetFolders = ['试卷', '平时作业', '模拟卷'];
 const _newSubjectColors = [
-  Color(0xFF2F7CF6),
-  Color(0xFF1F9D66),
-  Color(0xFFE0524D),
+  // 与 Subject.all 的 R1 新值同步（2026-11-13 修）：新库上前三科
+  // 占掉新蓝/新绿/新红后，新学科轮到紫；老库三科仍是旧值（不迁移，
+  // Meng 已定），老库上新学科仍可能拿到与数学旧蓝相近的新蓝。
+  Color(0xFF2E7CF6),
+  Color(0xFF00A884),
+  Color(0xFFEF4444),
   Color(0xFF7C5CFC),
   Color(0xFFF08A1D),
 ];
@@ -273,6 +276,9 @@ class _SubjectsPageState extends State<SubjectsPage> {
       name: name,
       color: color,
       icon: name.isEmpty ? '学' : name[0],
+      // 新学科封面默认灰色（Meng 2026-11-12 定）。模型默认值仍是蓝，
+      // 只在这里显式传 grey，不动模型默认值，避免影响其他构造点。
+      coverColor: 'grey',
     );
     await widget.repo.saveSubject(subject);
     // 新学科自动获得预置文件夹。
@@ -617,7 +623,7 @@ class _SubjectsPageState extends State<SubjectsPage> {
                     height: R10Tokens.subjectDotSize * scale,
                     decoration: BoxDecoration(
                       color: DesignTokens.subjectColor(
-                          s.id, Theme.of(context).brightness),
+                          s.id, Theme.of(context).brightness, s.color),
                       shape: BoxShape.circle,
                     ),
                   ),
@@ -637,7 +643,7 @@ class _SubjectsPageState extends State<SubjectsPage> {
                     height: R10Tokens.subjectDotSize * scale,
                     decoration: BoxDecoration(
                       color: DesignTokens.subjectColor(
-                          s.id, Theme.of(context).brightness),
+                          s.id, Theme.of(context).brightness, s.color),
                       shape: BoxShape.circle,
                     ),
                   ),
@@ -712,7 +718,7 @@ class _SubjectsPageState extends State<SubjectsPage> {
                 height: 8 * scale,
                 decoration: BoxDecoration(
                   color: DesignTokens.subjectColor(
-                      s.id, Theme.of(context).brightness),
+                      s.id, Theme.of(context).brightness, s.color),
                   shape: BoxShape.circle,
                 ),
               ),
@@ -832,6 +838,7 @@ class _SubjectsPageState extends State<SubjectsPage> {
               QmChip(
                 label: s.name,
                 subjectId: s.id,
+                storedColor: s.color,
                 selected: subjectId == s.id,
                 onTap: () => setState(() {
                   _kpSubjectId = s.id;

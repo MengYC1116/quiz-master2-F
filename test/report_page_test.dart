@@ -67,13 +67,19 @@ class FakeReportRepo extends QuestionRepository {
     required this.kps,
     this.history = const {},
     this.throwOnLoad = false,
-  }) : super(AppDatabase.instance);
+    List<Subject>? subjects,
+  })  : subjectsValue = subjects ?? Subject.all,
+        super(AppDatabase.instance);
 
   List<Question> questions;
   List<CauseRecord> records;
   List<KnowledgePoint> kps;
   Map<String, List<({String result, DateTime reviewedAt})>> history;
   bool throwOnLoad;
+  List<Subject> subjectsValue;
+
+  @override
+  Future<List<Subject>> subjects() async => List.of(subjectsValue);
 
   @override
   Future<List<Question>> all({bool includeArchived = false}) async {
@@ -273,6 +279,68 @@ void main() {
         findsOneWidget,
       );
     });
+  });
+
+  group('待解决按范围过滤（S8 B1）', () {
+    String pendingValue(WidgetTester tester) =>
+        (tester.widget(find.byKey(const ValueKey('report-core-pending')))
+                as Text)
+            .data!;
+    String solvedValue(WidgetTester tester) =>
+        (tester.widget(find.byKey(const ValueKey('report-core-solved')))
+                as Text)
+            .data!;
+
+    // A 待解决·今天（本周/本月/全部都进）；B 解决中·上周日（只进本月/
+    // 全部，本周一是 1 号时不存在该档）；C 待解决·40 天前（只进全部）；
+    // D 待解决·从未自查（lastCheck 为空，三档都进）；E 已解决·今天（不进待解决）。
+    FakeReportRepo rangeRepo() {
+      final today = _today;
+      final monday = today.subtract(Duration(days: today.weekday - 1));
+      final inMonthOutWeek =
+          monday.day > 1 ? monday.subtract(const Duration(days: 1)) : null;
+      final questions = [
+        tq('qA', '题 A', errorTypes: ['概念不清']),
+        tq('qB', '题 B', errorTypes: ['方法不会']),
+        tq('qC', '题 C', errorTypes: ['计算错误']),
+        tq('qD', '题 D', errorTypes: ['审题失误']),
+        tq('qE', '题 E', errorTypes: ['概念不清']),
+      ];
+      final records = [
+        trec('qA', '概念不清', lastCheck: today),
+        if (inMonthOutWeek != null)
+          trec('qB', '方法不会',
+              status: CauseStatus.inProgress,
+              solvedCount: 1,
+              lastCheck: inMonthOutWeek),
+        trec('qC', '计算错误',
+            lastCheck: today.subtract(const Duration(days: 40))),
+        trec('qD', '审题失误'),
+        trec('qE', '概念不清',
+            status: CauseStatus.solved, solvedCount: 2, lastCheck: today),
+      ];
+      return FakeReportRepo(questions: questions, records: records, kps: []);
+    }
+
+    testWidgets('本周 2 · 本月 2/3 · 全部 3/4，已解决恒为 1', (tester) async {
+      final today = _today;
+      final monday = today.subtract(Duration(days: today.weekday - 1));
+      final hasInMonthOutWeek = monday.day > 1;
+      final repo = rangeRepo();
+      await pumpReport(tester, repo: repo);
+      // 默认本周：A + D。
+      expect(pendingValue(tester), '2');
+      expect(solvedValue(tester), '1');
+      await tapSegment(tester, '本月');
+      // 本月：A + B（若存在）+ D。
+      expect(pendingValue(tester), hasInMonthOutWeek ? '3' : '2');
+      expect(solvedValue(tester), '1');
+      await tapSegment(tester, '全部');
+      // 全部：A + B（若存在）+ C + D。
+      expect(pendingValue(tester), hasInMonthOutWeek ? '4' : '3');
+      expect(solvedValue(tester), '1');
+    });
+
   });
 
   group('弱点', () {

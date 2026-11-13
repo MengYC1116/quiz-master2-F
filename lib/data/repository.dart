@@ -73,10 +73,15 @@ class QuestionRepository {
 
   /// 首页焦点卡与导航速览同一口径（homeRevCounts）：每科要复习的题数
   /// （手动加入、未解决，含到复查时间的题；数题不数错因）。
+  ///
+  /// 键按库里的 subjects 表取（B2：新增学科也要有计数键；以前按
+  /// `Subject.all` 初始化，新学科的键缺失，首页 `?? 0` 会把有题
+  /// 的新学科显示成 0）。口径本身不变，只改键的来源。
   Future<Map<String, int>> homeRevCounts() async {
     final due = await dueToday();
+    final subjects = await this.subjects();
     final map = <String, int>{};
-    for (final s in Subject.all) {
+    for (final s in subjects) {
       map[s.id] = due.where((q) => q.subjectId == s.id).length;
     }
     return map;
@@ -84,16 +89,22 @@ class QuestionRepository {
 
   /// 各科三数：要复习 / 待复查 / 已解决（不显示总题数）。
   /// 一道题可同时计入要复习与待复查（不同错因状态不同）。
+  ///
+  /// 键按库里的 subjects 表取（B2 补充：新增学科也要有计数键；以前按
+  /// `Subject.all` 初始化，新学科的键缺失，错题本封面三数会显示 0）。
+  /// 口径本身不变，只改键的来源。记录走仓库方法 `causeRecords()`
+  ///（与 `_db.allCauseRecords()` 同义），便于单测覆盖。
   Future<Map<String, (int toReview, int toRecheck, int solved)>>
       subjectCounts() async {
     final questions = await all(includeArchived: true);
-    final records = await _db.allCauseRecords();
+    final records = await causeRecords();
     final byQ = <String, List<CauseRecord>>{};
     for (final r in records) {
       (byQ[r.questionId] ??= []).add(r);
     }
+    final subjects = await this.subjects();
     final map = <String, (int, int, int)>{};
-    for (final s in Subject.all) {
+    for (final s in subjects) {
       var toReview = 0;
       var toRecheck = 0;
       var solved = 0;
@@ -121,19 +132,26 @@ class QuestionRepository {
   /// - 未解决：solvedCount 清 0 → 解决中，复查日清掉（复查不过，
   ///   回到解决中重新治，旧复查日作废）。
   /// - 不确定：不算，不改记录。
+  /// - 复查（[isRecheck] 为 true，即这条记录已是已解决且到了复查
+  ///   时间）：复查通过不加计数（HTML 口径）——solvedCount 已满
+  ///   治愈次数，只顺延复查日；否则一次复查通过会把它加到
+  ///   cureChecks + 1。复查不过仍按“未解决”走（清 0 打回解决中）。
+  /// 报告的复查通过率另外按 review_history 算，不读 solvedCount，
+  ///   不受影响。
   Future<CauseRecord> recordSelfCheck(
     CauseRecord r,
     String result, {
     int cureChecks = 2,
     int recheckIntervalDays = 7,
+    bool isRecheck = false,
   }) async {
     if (result == 'unsure') return r;
     final now = DateTime.now();
     final today = DateTime(now.year, now.month, now.day);
     late CauseRecord updated;
     if (result == 'solved') {
-      final count = r.solvedCount + 1;
-      if (count >= cureChecks) {
+      final count = isRecheck ? r.solvedCount : r.solvedCount + 1;
+      if (isRecheck || count >= cureChecks) {
         updated = r.copyWith(
           status: CauseStatus.solved,
           solvedCount: count,
@@ -195,11 +213,13 @@ class QuestionRepository {
     return list.where((q) => !q.isOrganized && !q.isArchived).length;
   }
 
-  /// 待整理题数（按学科）。
+  /// 待整理题数（按学科）。键按库里的 subjects 表取（B2：与
+  /// [homeRevCounts] 同理，新学科也要有计数键；口径本身不变）。
   Future<Map<String, int>> pendingOrganizeBySubject() async {
     final list = await all();
+    final subjects = await this.subjects();
     final map = <String, int>{};
-    for (final s in Subject.all) {
+    for (final s in subjects) {
       map[s.id] = list
           .where((q) =>
               q.subjectId == s.id && !q.isOrganized && !q.isArchived)
@@ -287,6 +307,11 @@ class QuestionRepository {
 
   Future<void> saveSettings(AppSettings s) => _db.saveSettings(s);
 
+  /// B3：上次停留的路由（复用 settings 表 key `lastRoute`，见 database.dart）。
+  Future<String?> lastRoute() => _db.loadLastRoute();
+
+  Future<void> saveLastRoute(String route) => _db.saveLastRoute(route);
+
   Future<List<CollectTask>> collectTasks() => _db.allCollectTasks();
 
   Future<void> saveCollectTask(CollectTask t) => _db.upsertCollectTask(t);
@@ -294,6 +319,43 @@ class QuestionRepository {
   Future<void> deleteCollectTask(String id) => _db.deleteCollectTask(id);
 
   Future<String> exportBackupJson() => _db.exportBackupJson();
+
+  /// B4.2：恢复备份（整体覆盖，见 database.dart）。
+  Future<void> importBackupJson(Map<String, dynamic> data) =>
+      _db.importBackupJson(data);
+
+  /// B4.1：到了复查时间的错因数（已解决且复查日 ≤ 今天，数错因
+  /// 不数题）。口径与 dueToday 一致：只算已加入复习、已整理的题
+  /// （已归档的题仍算，与 dueToday 相同）。
+  Future<int> recheckDueCauseCount() async {
+    final questions = await all(includeArchived: true);
+    final joined = {
+      for (final q in questions)
+        if (q.reviewJoined && q.isOrganized) q.id
+    };
+    final records = await causeRecords();
+    return records
+        .where((r) => joined.contains(r.questionId) && r.isRecheckDue)
+        .length;
+  }
+
+  /// B4.1：今天是否已弹过复查提醒（settings 表 key，见 database.dart）。
+  Future<String?> lastRecheckReminderDate() =>
+      _db.loadLastRecheckReminderDate();
+
+  Future<void> saveLastRecheckReminderDate(String date) =>
+      _db.saveLastRecheckReminderDate(date);
+
+  /// 待定3：首页备份失败横幅的标志（settings 表 key，见 database.dart）。
+  Future<bool> backupFailed() => _db.loadBackupFailed();
+
+  Future<void> setBackupFailed(bool failed) =>
+      _db.saveBackupFailed(failed);
+
+  /// B4.3：切换数据库位置并迁移旧库（见 database.dart）。
+  Future<DbMigrationOutcome> migrateToDirectory(String dir,
+          {bool overwrite = false}) =>
+      _db.migrateToDirectory(dir, overwrite: overwrite);
 
   Future<void> setCustomDataDirectory(String dir) =>
       _db.setCustomDataDirectory(dir);

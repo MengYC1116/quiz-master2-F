@@ -51,12 +51,19 @@ class FakeWrongbookRepo extends QuestionRepository {
     List<String> tagList = const [],
     List<CauseRecord> records = const [],
     this.counts = const {},
+    List<Subject>? subjects,
   })  : questions = List.of(questions),
         folderList = List.of(folderList),
         examList = List.of(examList),
         kpList = List.of(kpList),
         tagList = List.of(tagList),
         records = List.of(records),
+        subjectsValue = subjects ??
+            [
+              Subject.math.copyWith(coverColor: 'green'),
+              Subject.english,
+              Subject.politics,
+            ],
         super(AppDatabase.instance);
 
   List<Question> questions;
@@ -66,6 +73,7 @@ class FakeWrongbookRepo extends QuestionRepository {
   List<String> tagList;
   List<CauseRecord> records;
   Map<String, (int, int, int)> counts;
+  List<Subject> subjectsValue;
 
   final List<Question> saved = [];
   final List<String> deletedIds = [];
@@ -75,11 +83,7 @@ class FakeWrongbookRepo extends QuestionRepository {
   final List<(String, bool)> archivedChanges = [];
 
   @override
-  Future<List<Subject>> subjects() async => [
-        Subject.math.copyWith(coverColor: 'green'),
-        Subject.english,
-        Subject.politics,
-      ];
+  Future<List<Subject>> subjects() async => List.of(subjectsValue);
 
   @override
   Future<List<Question>> all({bool includeArchived = false}) async =>
@@ -382,6 +386,16 @@ Future<void> openMathListCompact(WidgetTester tester) async {
   await openMathList(tester);
   await tester.tap(find.text('紧凑列表'));
   await tester.pumpAndSettle();
+}
+
+/// 紧凑列表第一个缩略图的纸面色（根 Container 的 BoxDecoration.color）。
+Color _thumbPaperColor(WidgetTester tester) {
+  final container = tester.widget<Container>(find
+      .descendant(
+          of: find.byType(CompactSliceThumb).first,
+          matching: find.byType(Container))
+      .first);
+  return (container.decoration as BoxDecoration).color!;
 }
 
 void main() {
@@ -711,6 +725,19 @@ void main() {
       expect(find.text('下次复查 —'), findsNWidgets(3)); // 无复查日期
     });
 
+    testWidgets('紧凑列表缩略图：亮色纸面 #FFFDF4、深色纸面 #D8DCE2，与大卡片一致',
+        (tester) async {
+      // S8A2（A2 项）：旧代码写死 Colors.white，深色下仍是纯白；
+      // 改后与 QuestionSlice 同取 palette.paper。
+      await pumpWrongbook(tester);
+      await openMathListCompact(tester);
+      expect(find.byType(CompactSliceThumb), findsNWidgets(3));
+      expect(_thumbPaperColor(tester), const Color(0xFFFFFDF4));
+      await pumpWrongbook(tester, brightness: Brightness.dark);
+      await openMathListCompact(tester);
+      expect(_thumbPaperColor(tester), const Color(0xFFD8DCE2));
+    });
+
     testWidgets('点紧凑行收藏星切换收藏', (tester) async {
       final repo = threeSubjectRepo();
       await pumpWrongbook(tester, repo: repo);
@@ -948,6 +975,74 @@ void main() {
       );
       await tester.pumpAndSettle();
       expect(find.text('12'), findsOneWidget);
+    });
+
+    testWidgets('S8A6 大库 54 道：五档页数与末页题数', (tester) async {
+      // 与真机大库同口径：数学已整理 54 道；标题按时间倒序排，
+      // 分页题 53 最新、分页题 0 最旧。
+      // 用紧凑列表跑矩阵：大卡片不渲染题名文字（只有序号圆盘），
+      // 紧凑行是 Column 全量构建、题名是普通 Text，可直接断言；
+      // 大卡片五档已由真机截图覆盖（见 S8A6 报告）。
+      final now = DateTime.now();
+      final repo = FakeWrongbookRepo(
+        questions: [
+          for (var i = 0; i < 54; i++)
+            wbq('p$i', '分页题 $i',
+                folderIds: const ['f1'],
+                errorTypes: const ['概念不清'],
+                createdAt: now.subtract(Duration(hours: 54 - i))),
+        ],
+        folderList: const [
+          Folder(id: 'f1', name: '试卷', subjectId: 'math', sortOrder: 0),
+        ],
+        counts: const {'math': (0, 0, 0)},
+      );
+      await pumpWrongbook(tester, repo: repo, initialSubjectId: 'math');
+      await tester.tap(find.text('全部题目'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('紧凑列表'));
+      await tester.pumpAndSettle();
+      // 每档：每页数 → 总页数 / 末页首题 / 上一页首题（不在末页）。
+      const cases = [
+        (10, 6, '分页题 3', '分页题 4'),
+        (20, 3, '分页题 13', '分页题 14'),
+        (30, 2, '分页题 23', '分页题 24'),
+        (40, 2, '分页题 13', '分页题 14'),
+        (50, 2, '分页题 3', '分页题 4'),
+      ];
+      for (final (size, pages, first, before) in cases) {
+        // 切档：按 value 选菜单项（不用 find.text，序号圆盘里也有 '10'）。
+        // 菜单打开时 value==size 的 DropdownMenuItem 有两个：按钮上显示
+        // 的当前值（40×34）与菜单里的项（62×48），后者在树里居后，
+        // 取 .last 才是菜单项。先 ensureVisible 下拉按钮：分页器在长列
+        // 表底部，不先滚出来 tap 会落空、菜单打不开，后续点到的就是
+        // 菜单遮罩而不是分页按钮。
+        await tester.ensureVisible(find.byType(DropdownButton<int>));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byType(DropdownButton<int>));
+        await tester.pumpAndSettle();
+        final item = find
+            .byWidgetPredicate(
+                (w) => w is DropdownMenuItem<int> && w.value == size)
+            .last;
+        await tester.ensureVisible(item);
+        await tester.pumpAndSettle();
+        await tester.tap(item);
+        await tester.pumpAndSettle();
+        expect(find.text('共 54 道 · 第 1 / $pages 页'), findsOneWidget);
+        // 翻到末页：点 (pages - 1) 次下一页。
+        for (var p = 1; p < pages; p++) {
+          await tester.ensureVisible(find.text('下一页'));
+          await tester.pumpAndSettle();
+          await tester.tap(find.text('下一页'));
+          await tester.pumpAndSettle();
+        }
+        expect(find.text('共 54 道 · 第 $pages / $pages 页'), findsOneWidget);
+        // 末页首题与最末题都在；上一页首题不在本页。
+        expect(find.text(first), findsOneWidget);
+        expect(find.text('分页题 0'), findsOneWidget);
+        expect(find.text(before), findsNothing);
+      }
     });
   });
 

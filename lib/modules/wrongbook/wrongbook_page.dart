@@ -46,6 +46,12 @@ enum _DropKind { into, promote }
 class _WrongbookPageState extends State<WrongbookPage> {
   bool _loading = true;
   List<Subject> _subjects = Subject.all;
+  // 库里找学科：新学科用库里的名与色；找不到才回退 Subject.byId
+  //（数学兜底，只发生在数据不一致时）。
+  Subject _subjectOf(String id) => _subjects.firstWhere(
+        (s) => s.id == id,
+        orElse: () => Subject.byId(id),
+      );
   List<Question> _questions = [];
   List<Folder> _folders = [];
   List<Exam> _exams = [];
@@ -277,7 +283,7 @@ class _WrongbookPageState extends State<WrongbookPage> {
   /// 搜索只查元数据，永不搜题干（HTML `nbFiltered` 的 haystack）：
   /// 题名 / 学科 / 文件夹 / 标签 / 试卷 / 收集日期 / 知识点 / 错误类型。
   String _searchHaystack(Question q) {
-    final subject = Subject.byId(q.subjectId).name;
+    final subject = _subjectOf(q.subjectId).name;
     final folderNames = q.folderIds
         .map(
           (id) => _folders
@@ -971,7 +977,7 @@ class _WrongbookPageState extends State<WrongbookPage> {
   Widget _openBookFrame({required String subjectId, required Widget child}) {
     final scale = qmScaleOf(context);
     final palette = DesignTokens.of(Theme.of(context).brightness);
-    final subject = Subject.byId(subjectId);
+    final subject = _subjectOf(subjectId);
     final cover = CoverTokens.of(subject.coverColor);
     return Container(
       padding: EdgeInsets.all(DesignTokens.openPadding * scale),
@@ -1444,7 +1450,7 @@ class _WrongbookPageState extends State<WrongbookPage> {
 
   Widget _buildDirectory() {
     final subjectId = _subjectId!;
-    final subject = Subject.byId(subjectId);
+    final subject = _subjectOf(subjectId);
     final tops = _topFolders(subjectId);
     final kw = _folderSearch.trim().toLowerCase();
     final visibleTops = kw.isEmpty
@@ -1657,7 +1663,7 @@ class _WrongbookPageState extends State<WrongbookPage> {
     final only = _folderDeleteCount(f.id);
     final multi = _folderDeleteMultiCount(f.id);
     final kidN = _subFolders(f.id).length;
-    final subject = Subject.byId(f.subjectId);
+    final subject = _subjectOf(f.subjectId);
     return Container(
       margin: EdgeInsets.only(top: 12 * scale),
       padding: EdgeInsets.all(14 * scale),
@@ -2100,7 +2106,7 @@ class _WrongbookPageState extends State<WrongbookPage> {
     final start = page * _pageSize;
     final items = all.skip(start).take(_pageSize).toList();
     final orderIds = all.map((q) => q.id).toList();
-    final subject = _subjectId == null ? null : Subject.byId(_subjectId!);
+    final subject = _subjectId == null ? null : _subjectOf(_subjectId!);
     final folder = _folderId == null
         ? null
         : _folders.firstWhere(
@@ -3013,11 +3019,17 @@ class _WrongbookPageState extends State<WrongbookPage> {
   }
 
   /// 紧凑行 / 归档行明细行（HTML `.nb-prow .d`）：学科名着学科色
-  ///（纸面取浅色档），其余取纸面次级色。
+  ///（纸面取浅色档），其余取纸面次级色。学科取库里的 `_subjects`
+  ///（B2 补充；以前 `Subject.byId` 未知 id 回退到数学名 +
+  /// `subjectInk` 不传存色落到数学色）。
   Widget _prowMetaLine(Question q) {
     final palette = DesignTokens.of(Theme.of(context).brightness);
-    final subject = Subject.byId(q.subjectId);
-    final subjectInk = DesignTokens.subjectInk(q.subjectId, Brightness.light);
+    final subject = _subjects.firstWhere(
+      (s) => s.id == q.subjectId,
+      orElse: () => Subject.byId(q.subjectId),
+    );
+    final subjectInk =
+        DesignTokens.subjectInk(q.subjectId, Brightness.light, subject.color);
     return RichText(
       maxLines: 1,
       overflow: TextOverflow.ellipsis,

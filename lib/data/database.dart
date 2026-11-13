@@ -8,6 +8,24 @@ import '../models/models.dart';
 import 'badge_notifier.dart';
 import 'demo_data.dart';
 
+/// B4.3：数据库位置迁移的结果。
+enum DbMigrationOutcome {
+  /// 旧库已复制到新位置，标记文件已更新。
+  migrated,
+
+  /// 旧位置没有库文件（全新安装等），只写了标记文件。
+  noSourceDb,
+
+  /// 新位置已有库文件且未指定覆盖，什么都没动。
+  targetExists,
+
+  /// 复制或写标记失败，旧库与旧标记原地不动。
+  failed,
+
+  /// 新位置就是当前位置，不用动。
+  sameLocation,
+}
+
 /// v2 全新数据库（version 1，无迁移历史；旧库不兼容，v2 首次建库即此结构）。
 /// - Win11：`%LOCALAPPDATA%\quiz-master2\quiz-master2.db`；
 ///   切片图也放同一数据目录；安装目录只放程序。
@@ -47,6 +65,82 @@ class AppDatabase {
     await markerDir.create(recursive: true);
     await File(p.join(def, 'db_location.txt')).writeAsString(dir);
     await saveSetting('databaseLocation', dir);
+  }
+
+  /// B4.3：新位置是否已有库文件（设置页切换前问“覆盖 / 保留”用）。
+  static bool databaseExistsAt(String dir) =>
+      File(p.join(dir, 'quiz-master2.db')).existsSync();
+
+  /// B4.3：把旧库文件复制到新位置（纯文件操作，可单测，不碰标记文件）。
+  /// - 旧库不存在 → 无可迁移，返回 true（调用方只写标记即可）；
+  /// - 目标已有库且 `overwrite` 为 false → 不动任何文件，返回 false；
+  /// - 复制失败 → 返回 false（旧库原地不动）。
+  /// 除主库文件外，-wal / -shm 若存在也一并复制（ffi 默认 journal
+  /// 下一般没有，有则说明上次未正常关闭，带上才不丢数据）。
+  static Future<bool> copyDatabaseFileTo(String sourcePath, String targetDir,
+      {bool overwrite = false}) async {
+    final target = File(p.join(targetDir, 'quiz-master2.db'));
+    if (!overwrite && target.existsSync()) return false;
+    final targetExisted = target.existsSync();
+    final source = File(sourcePath);
+    if (!source.existsSync()) return true;
+    try {
+      await Directory(targetDir).create(recursive: true);
+      await source.copy(target.path);
+      for (final suffix in ['-wal', '-shm']) {
+        final side = File('$sourcePath$suffix');
+        if (side.existsSync()) {
+          await side.copy('$targetDir${p.separator}quiz-master2.db$suffix');
+        }
+      }
+      return true;
+    } catch (_) {
+      // 复制中途失败：只删本次新建的目标文件，不留坏库；覆盖模式下
+      // 目标原先就有文件时不动它（删了就是丢用户数据）。
+      try {
+        if (!targetExisted && target.existsSync()) await target.delete();
+      } catch (_) {}
+      return false;
+    }
+  }
+
+  /// B4.3：切换数据库位置并迁移旧库。
+  /// 顺序：先关当前库 → 复制旧库文件 → 写标记文件（标记是位置的
+  /// 唯一依据；写标记前失败，旧库与旧标记都原地不动）。
+  /// 复制成功后把 `databaseLocation` 写进新库（新库已存在，打开不
+  /// 会触发建库播种；写失败也不影响——标记文件才是依据）。
+  /// 调用方：目标已有库时先问用户，`overwrite` 按用户选择传。
+  Future<DbMigrationOutcome> migrateToDirectory(String dir,
+      {bool overwrite = false}) async {
+    final currentDir = p.dirname(dbPathUsed ??
+        p.join(dataDirectoryPath(), 'quiz-master2.db'));
+    final sourcePath = p.join(currentDir, 'quiz-master2.db');
+    if (p.equals(p.normalize(currentDir), p.normalize(dir))) {
+      return DbMigrationOutcome.sameLocation;
+    }
+    if (!overwrite && databaseExistsAt(dir)) {
+      return DbMigrationOutcome.targetExists;
+    }
+    final hadSource = File(sourcePath).existsSync();
+    try {
+      await _db?.close();
+    } catch (_) {}
+    _db = null;
+    final ok = await copyDatabaseFileTo(sourcePath, dir, overwrite: overwrite);
+    if (!ok) return DbMigrationOutcome.failed;
+    final def = _defaultDataDirectoryPath();
+    try {
+      await Directory(def).create(recursive: true);
+      await File(p.join(def, 'db_location.txt')).writeAsString(dir);
+    } catch (_) {
+      return DbMigrationOutcome.failed;
+    }
+    try {
+      await saveSetting('databaseLocation', dir);
+    } catch (_) {}
+    return hadSource
+        ? DbMigrationOutcome.migrated
+        : DbMigrationOutcome.noSourceDb;
   }
 
   static String _defaultDataDirectoryPath() {
@@ -782,13 +876,23 @@ class AppDatabase {
     bumpBadgeVersion();
   }
 
+  /// B7：最近任务 kind 归一化（纯函数，便于单测）。
+  /// 写入点现已统一写中文 '整理' / '收集'；库里已有的旧英文值
+  /// 'organize' / 'collect' 在读出时映射成中文显示，不丢数据、
+  /// 不改库。未知值原样返回（首页再按默认“复习”处理）。
+  static String normalizeRecentKind(String kind) => switch (kind) {
+        'organize' => '整理',
+        'collect' => '收集',
+        _ => kind,
+      };
+
   Future<({String kind, String subjectId, String title})?> recentTask() async {
     final d = await db;
     final rows = await d.query('recent_tasks', where: 'id = 1', limit: 1);
     if (rows.isEmpty) return null;
     final r = rows.first;
     return (
-      kind: r['kind'] as String,
+      kind: normalizeRecentKind(r['kind'] as String),
       subjectId: r['subject_id'] as String,
       title: r['title'] as String,
     );
@@ -897,23 +1001,140 @@ class AppDatabase {
     }
   }
 
-  /// 备份：把题库导出为 JSON 文本（恢复时校验后整体覆盖）。
-  Future<String> exportBackupJson() async {
+  /// B3：上次停留的路由（启动页“上次停下的页面”用）。
+  /// 复用 settings 表的 key/value（key `lastRoute`），不新开表、不加
+  /// 字段、不碰 Schema；与 AppSettings.toMap 无关——saveSettings
+  /// 只写已知键，不会误删它；loadSettings 的 fromMap 忽略未知键。
+  static const String lastRouteKey = 'lastRoute';
+
+  Future<String?> loadLastRoute() async {
     final d = await db;
+    final rows = await d.query('settings',
+        columns: ['value'], where: 'key = ?', whereArgs: [lastRouteKey]);
+    if (rows.isEmpty) return null;
+    return rows.first['value'] as String?;
+  }
+
+  Future<void> saveLastRoute(String route) async =>
+      saveSetting(lastRouteKey, route);
+
+  /// B4.1：今天是否已弹过复查提醒（`yyyy-MM-dd`，一天一次）。
+  /// 与 lastRoute 同一做法：复用 settings 表 key/value，不新开表。
+  static const String lastRecheckReminderKey = 'lastRecheckReminderDate';
+
+  Future<String?> loadLastRecheckReminderDate() async {
+    final d = await db;
+    final rows = await d.query('settings',
+        columns: ['value'],
+        where: 'key = ?',
+        whereArgs: [lastRecheckReminderKey]);
+    if (rows.isEmpty) return null;
+    return rows.first['value'] as String?;
+  }
+
+  Future<void> saveLastRecheckReminderDate(String date) async =>
+      saveSetting(lastRecheckReminderKey, date);
+
+  /// 待定3：手动备份失败标志（首页红色横幅用）。
+  /// 与 lastRoute 同一做法：复用 settings 表 key/value，不新开表、
+  /// 不改 Schema。'1' = 有一次备份失败待提示，'0' / 无行 = 没有。
+  /// 置标志：设置页 `_backup` 失败时；清标志：首页横幅点“知道了”，
+  /// 或下一次备份成功时。
+  static const String backupFailedKey = 'backupFailed';
+
+  /// 待定3：读标志（可单测版，直接对传入的库句柄读，不碰单例）。
+  static Future<bool> loadBackupFailedFrom(Database db) async {
+    final rows = await db.query('settings',
+        columns: ['value'],
+        where: 'key = ?',
+        whereArgs: [backupFailedKey]);
+    if (rows.isEmpty) return false;
+    return (rows.first['value'] as String?) == '1';
+  }
+
+  /// 待定3：写标志（可单测版）。
+  static Future<void> saveBackupFailedInto(Database db, bool failed) async {
+    await db.insert('settings', {
+      'key': backupFailedKey,
+      'value': failed ? '1' : '0',
+    }, conflictAlgorithm: ConflictAlgorithm.replace);
+  }
+
+  Future<bool> loadBackupFailed() async => loadBackupFailedFrom(await db);
+
+  Future<void> saveBackupFailed(bool failed) async =>
+      saveBackupFailedInto(await db, failed);
+
+  /// B4.2：备份表清单（导出与恢复共用；恢复只插这里的表）。
+  /// v2 共 12 张表：原 8 张 + B4.2 补的 collect_tasks /
+  /// review_state / review_history / recent_tasks。
+  static const List<String> backupTables = [
+    'subjects',
+    'questions',
+    'folders',
+    'tags',
+    'exams',
+    'knowledge_points',
+    'cause_records',
+    'collect_tasks',
+    'review_state',
+    'review_history',
+    'recent_tasks',
+    'settings',
+  ];
+
+  /// 备份：把题库导出为 JSON 文本（恢复时校验后整体覆盖）。
+  Future<String> exportBackupJson() async =>
+      exportBackupJsonFrom(await db);
+
+  /// B4.2：导出（可单测版）：直接对传入的库句柄导出，不碰单例。
+  static Future<String> exportBackupJsonFrom(Database db) async {
     final out = <String, dynamic>{};
-    for (final t in [
-      'subjects',
-      'questions',
-      'folders',
-      'tags',
-      'exams',
-      'knowledge_points',
-      'cause_records',
-      'settings',
-    ]) {
-      out[t] = await d.query(t);
+    for (final t in backupTables) {
+      out[t] = await db.query(t);
     }
     return _jsonEncode(out);
+  }
+
+  /// B4.2：恢复：整体覆盖——先清 12 张表（备份清单 + collect_tasks
+  /// 也要清干净，否则旧收集任务会在恢复后残留），再把备份里的行
+  /// 按备份表清单插回去（旧备份里没有的新表键直接跳过）。
+  Future<void> importBackupJson(Map<String, dynamic> data) async =>
+      importBackupJsonInto(await db, data);
+
+  /// B4.2：恢复（可单测版）。
+  static Future<void> importBackupJsonInto(
+      Database db, Map<String, dynamic> data) async {
+    await db.transaction((txn) async {
+      for (final t in [
+        'cause_records',
+        'collect_tasks',
+        'review_state',
+        'review_history',
+        'recent_tasks',
+        'questions',
+        'folders',
+        'tags',
+        'exams',
+        'knowledge_points',
+        'subjects',
+        'settings',
+      ]) {
+        await txn.delete(t);
+      }
+      for (final t in backupTables) {
+        final rows = data[t];
+        if (rows is! List) continue;
+        for (final row in rows) {
+          if (row is! Map) continue;
+          await txn.insert(
+            t,
+            Map<String, Object?>.from(row),
+            conflictAlgorithm: ConflictAlgorithm.replace,
+          );
+        }
+      }
+    });
   }
 
   static String _jsonEncode(Map<String, dynamic> v) {

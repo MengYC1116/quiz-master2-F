@@ -477,7 +477,8 @@ class QmButton extends StatelessWidget {
 /// - 选中：accent 填充 + accent-ink 字（HTML
 ///   `.chip[aria-pressed="true"]`）；传 [subjectId] 时选中填充改用
 ///   学科色（HTML `.fchip.subj-math[aria-pressed="true"]` 等，
-///   深色下选中字色为 #1E2228，即深色底色）。
+///   深色下选中字色为 #1E2228，即深色底色）。传 [storedColor] 时
+///   新学科用库里存的色，预设三科仍走主题固定色。
 /// - 可删除（[onDelete] 非空）：`.err-sel-chip` 形态——accent-soft 底 +
 ///   accent 边 + accent-text 字，尾部带 ` ✕`；悬停变 err-bg / err-line /
 ///   err-ink。只传 [onDelete] 不传 [onTap] 时整片点按即删除；两者都传
@@ -491,6 +492,7 @@ class QmChip extends StatelessWidget {
     this.onTap,
     this.onDelete,
     this.subjectId,
+    this.storedColor,
     this.focusNode,
     this.semanticLabel,
     this.displayOnly = false,
@@ -511,6 +513,11 @@ class QmChip extends StatelessWidget {
   /// 学科 id（`math` / `english` / `politics`）：选中态用学科色填充。
   /// 不传则选中态用 accent 填充。
   final String? subjectId;
+
+  /// 库里存的学科色（`Subject.color`，S8A2 的 stored 思路）：
+  /// 预设三科忽略它，仍走主题固定色；新学科用它填充，选中态不再
+  /// 落到数学色。不传则按 id 查表（旧行为）。
+  final Color? storedColor;
   final FocusNode? focusNode;
   final String? semanticLabel;
 
@@ -529,7 +536,7 @@ class QmChip extends StatelessWidget {
 
     final fill = subjectId == null
         ? palette.accent
-        : DesignTokens.subjectColor(subjectId!, brightness);
+        : DesignTokens.subjectColor(subjectId!, brightness, storedColor);
     // HTML 深色下学科选中芯片的字色是 #1E2228（深色底色），见
     // `:root[data-theme="dark"] .fchip.subj-*[aria-pressed="true"]`。
     final selectedFg = subjectId == null
@@ -553,7 +560,7 @@ class QmChip extends StatelessWidget {
     if (displayOnly) {
       final fill = subjectId == null
           ? palette.accent
-          : DesignTokens.subjectColor(subjectId!, brightness);
+          : DesignTokens.subjectColor(subjectId!, brightness, storedColor);
       final bg = selected ? fill : palette.surface;
       final fg = selected ? selectedFg : palette.ink2;
       final border = selected ? fill : palette.lineStrong;
@@ -1267,6 +1274,41 @@ class QmBanner extends StatelessWidget {
           QmGlyphs.info,
         ),
     };
+    final glyphWidget = Padding(
+      padding: EdgeInsets.only(top: 1 * scale),
+      child: QmGlyph(glyph, size: 15, color: fg),
+    );
+    final textWidget = Text.rich(
+      TextSpan(
+        style: TextStyle(
+          fontSize: DesignTokens.bannerFontSize,
+          color: fg,
+          height: DesignTokens.bodyLineHeight,
+        ),
+        children: [
+          if (title != null)
+            TextSpan(
+              text: title,
+              style: const TextStyle(fontWeight: FontWeight.w700),
+            ),
+          TextSpan(text: message),
+        ],
+      ),
+    );
+    final buttonWidgets = <Widget>[
+      for (final action in actions)
+        _BannerButton(
+          label: action.label,
+          onPressed: action.onPressed,
+          color: fg,
+        ),
+      if (onDismiss != null)
+        _BannerButton(
+          label: dismissLabel,
+          onPressed: onDismiss!,
+          color: fg,
+        ),
+    ];
     return Container(
       margin: margin ?? EdgeInsets.only(bottom: 18 * scale),
       padding: EdgeInsets.symmetric(
@@ -1280,58 +1322,111 @@ class QmBanner extends StatelessWidget {
           DesignTokens.scaled(scale).radius,
         ),
       ),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Padding(
-            padding: EdgeInsets.only(top: 1 * scale),
-            child: QmGlyph(glyph, size: 15, color: fg),
-          ),
-          SizedBox(width: 10 * scale),
-          Expanded(
-            child: Text.rich(
-              TextSpan(
-                style: TextStyle(
-                  fontSize: DesignTokens.bannerFontSize,
-                  color: fg,
-                  height: DesignTokens.bodyLineHeight,
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          // 一行能否放下整条横幅（图标 + 按钮 + 至少 48px 正文）：
+          // Row 给非 flex 子节点无限宽约束，按钮区的 Wrap 在 Row 里永远
+          // 不换行，窄宽下会直接溢出；放不下时改走上下两行（正文在上、
+          // 按钮另起一行右对齐），Column 给子节点紧宽度约束，Wrap 在
+          // 那里才能正常换行。按钮文本宽用 TextPainter 实测，不估算。
+          final fits = _bannerFitsOneLine(
+            context,
+            constraints.maxWidth,
+            scale,
+            buttonWidgets.length,
+            [
+              for (final action in actions) action.label,
+              if (onDismiss != null) dismissLabel,
+            ],
+          );
+          if (fits) {
+            return Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                glyphWidget,
+                SizedBox(width: 10 * scale),
+                Expanded(child: textWidget),
+                SizedBox(width: 10 * scale),
+                Wrap(
+                  spacing: 6 * scale,
+                  runSpacing: 6 * scale,
+                  alignment: WrapAlignment.end,
+                  children: buttonWidgets,
                 ),
+              ],
+            );
+          }
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  if (title != null)
-                    TextSpan(
-                      text: title,
-                      style: const TextStyle(fontWeight: FontWeight.w700),
-                    ),
-                  TextSpan(text: message),
+                  glyphWidget,
+                  SizedBox(width: 10 * scale),
+                  Expanded(child: textWidget),
                 ],
               ),
-            ),
-          ),
-          SizedBox(width: 10 * scale),
-          ...[
-            for (final action in actions)
-              Padding(
-                padding: EdgeInsets.only(left: 6 * scale),
-                child: _BannerButton(
-                  label: action.label,
-                  onPressed: action.onPressed,
-                  color: fg,
+              if (buttonWidgets.isNotEmpty) ...[
+                SizedBox(height: 8 * scale),
+                Wrap(
+                  spacing: 6 * scale,
+                  runSpacing: 6 * scale,
+                  alignment: WrapAlignment.end,
+                  children: buttonWidgets,
                 ),
-              ),
-            if (onDismiss != null)
-              Padding(
-                padding: EdgeInsets.only(left: 6 * scale),
-                child: _BannerButton(
-                  label: dismissLabel,
-                  onPressed: onDismiss!,
-                  color: fg,
-                ),
-              ),
-          ],
-        ],
+              ],
+            ],
+          );
+        },
       ),
     );
   }
+}
+
+/// 横幅一行布局是否放得下：图标 + 间隙 + 按钮区 + 内边距 + 至少 48px 正文。
+bool _bannerFitsOneLine(
+  BuildContext context,
+  double maxWidth,
+  double scale,
+  int buttonCount,
+  List<String> labels,
+) {
+  if (!maxWidth.isFinite) return true;
+  final scaler = MediaQuery.textScalerOf(context);
+  final dir = Directionality.of(context);
+  double textWidth(String text, double fontSize, FontWeight weight) {
+    final painter = TextPainter(
+      text: TextSpan(
+        text: text,
+        style: TextStyle(fontSize: fontSize, fontWeight: weight),
+      ),
+      textScaler: scaler,
+      textDirection: dir,
+    )..layout();
+    return painter.width;
+  }
+
+  var buttonsWidth = 0.0;
+  for (final label in labels) {
+    // 文本宽 + 横向内边距 + 8px 余量（按钮外圈 2px 焦点边框等实测占位）。
+    buttonsWidth += textWidth(
+          label,
+          DesignTokens.captionFontSize,
+          FontWeight.w700,
+        ) +
+        2 * DesignTokens.bannerButtonPaddingH * scale +
+        8;
+  }
+  if (buttonCount > 1) {
+    buttonsWidth += (buttonCount - 1) * 6 * scale;
+  }
+  final needed = 2 * DesignTokens.bannerPaddingH * scale +
+      textWidth('⚠', 15, FontWeight.w400) +
+      2 * 10 * scale +
+      buttonsWidth +
+      48;
+  return needed <= maxWidth;
 }
 
 /// 横幅内的小按钮（HTML `.banner button`：currentColor 细边、radius 10）。

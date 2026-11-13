@@ -61,6 +61,7 @@ class AppNavBar extends StatelessWidget {
     this.organizeBadge = 0,
     this.navRev = const {},
     this.navPending = const {},
+    this.subjects,
   });
 
   /// 当前路由（`/home` 等 9 路由之一；详情页不进导航，停留在来源页）。
@@ -78,6 +79,13 @@ class AppNavBar extends StatelessWidget {
   /// 学科速览：每科待复习数（`homeRevCounts` 口径）与待整理数。
   final Map<String, int> navRev;
   final Map<String, int> navPending;
+
+  /// 学科速览的学科来源：库里的 subjects 表（调用方 `app.dart` 从
+  /// `repo.subjects()` 读，入库顺序）。B2：速览最多显示前 5 科；
+  /// 传入空列表时不显示任何行；null = 未传，沿用预设三科（兼容旧
+  /// 调用与纯展示测试）。圆点色已在 S8A2 修为存色回退
+  ///（`subjectColor` 的 stored 参数），新学科不落到数学色。
+  final List<Subject>? subjects;
 
   @override
   Widget build(BuildContext context) {
@@ -211,7 +219,10 @@ class AppNavBar extends StatelessWidget {
                       ),
                     ),
                   ),
-                  for (final s in Subject.all)
+                  // B2：学科速览按入库顺序最多显示前 5 科（Meng 定）；
+                  // 不足 5 科全显示；超过 5 科只显示前 5，不加“还有 N 科”
+                  // 提示（现有设计无此提示）。
+                  for (final s in (subjects ?? Subject.all).take(5))
                     _SubjectRow(
                       subject: s,
                       pending: navPending[s.id] ?? 0,
@@ -496,6 +507,7 @@ class _SubjectRowState extends State<_SubjectRow> {
     final dotColor = DesignTokens.subjectColor(
       widget.subject.id,
       Theme.of(context).brightness,
+      widget.subject.color,
     );
     return MouseRegion(
       onEnter: (_) => setState(() => _hovered = true),

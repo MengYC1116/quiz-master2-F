@@ -56,6 +56,9 @@ class FakeOrganizeRepo extends QuestionRepository {
   final List<String> deletedIds = [];
   final List<Folder> savedFolders = [];
 
+  /// B7：最近一次 saveRecentTask 记下的 kind（应为中文 '整理'）。
+  String? lastRecentKind;
+
   @override
   Future<List<Question>> all({bool includeArchived = false}) async =>
       List.of(questions);
@@ -116,7 +119,9 @@ class FakeOrganizeRepo extends QuestionRepository {
     required String kind,
     required String subjectId,
     required String title,
-  }) async {}
+  }) async {
+    lastRecentKind = kind;
+  }
 }
 
 FakeOrganizeRepo threeQuestionRepo() => FakeOrganizeRepo(
@@ -285,6 +290,18 @@ void main() {
       expect(find.text('还剩 2 道'), findsOneWidget);
     });
 
+    testWidgets('B7：确认整理后最近任务 kind 记中文“整理”', (tester) async {
+      final repo = threeQuestionRepo();
+      await pumpOrganize(tester, repo: repo);
+      await tester.tap(find.text('试卷').first);
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(find.text('确认整理，去下一道'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('确认整理，去下一道'));
+      await tester.pumpAndSettle();
+      expect(repo.lastRecentKind, '整理');
+    });
+
     testWidgets('切题自动保存：填了答案再点下一道，答案已落库',
         (tester) async {
       final repo = threeQuestionRepo();
@@ -329,13 +346,29 @@ void main() {
       expect(tester.widget<Checkbox>(toggles.first).value, isFalse);
     });
 
-    testWidgets('放大浮层：点图弹出 1.5×、带比例 pill，关闭回到整理台',
+    testWidgets('放大浮层：点图弹出、纸面居中完整可见、带比例 pill，关闭回到整理台',
         (tester) async {
       await pumpOrganize(tester);
       await tester.tap(find.byType(QuestionSlice));
       await tester.pumpAndSettle();
       expect(find.text('整题图 · 放大查看'), findsOneWidget);
-      expect(find.text('150%'), findsOneWidget);
+      // S8A1：初始缩放不再是写死的 1.5×，而是 min(1.5, fit)。
+      // 1280×720 下视口 900 宽、纸面封顶 680 宽，fit=900/680≈1.32，
+      // 徽标 132%。纸面渲染中心须与视口中心重合（±3px），且整张
+      // 纸面在视口内（无裁切）。
+      expect(find.text('132%'), findsOneWidget);
+      final paperRect = tester.getRect(find.descendant(
+          of: find.byType(Dialog), matching: find.byType(QuestionSlice)));
+      final viewerRect = tester.getRect(find.byType(InteractiveViewer));
+      final viewerCenter = tester.getCenter(find.byType(InteractiveViewer));
+      expect((paperRect.center.dx - viewerCenter.dx).abs(), lessThan(3));
+      expect((paperRect.center.dy - viewerCenter.dy).abs(), lessThan(3));
+      // 整张纸面在视口内（无裁切；Rect.contains 右/下边是开区间，
+      // 渲染宽恰等于视口宽时会贴边，故用 ±1px 容差逐边比）。
+      expect(paperRect.left, greaterThanOrEqualTo(viewerRect.left - 1));
+      expect(paperRect.right, lessThanOrEqualTo(viewerRect.right + 1));
+      expect(paperRect.top, greaterThanOrEqualTo(viewerRect.top - 1));
+      expect(paperRect.bottom, lessThanOrEqualTo(viewerRect.bottom + 1));
       await tester.tap(find.text('关闭 ×'));
       await tester.pumpAndSettle();
       expect(find.text('整题图 · 放大查看'), findsNothing);

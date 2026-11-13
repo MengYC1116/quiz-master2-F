@@ -72,6 +72,13 @@ class FakeRepo extends QuestionRepository {
     title: '函数极限',
   );
 
+  /// B2：首页改读库后，_load 会调 subjects()；测试里用内存列表，
+  /// 不碰真实数据库。
+  List<Subject> subjectsList = Subject.all;
+
+  @override
+  Future<List<Subject>> subjects() async => subjectsList;
+
   @override
   Future<Map<String, int>> homeRevCounts() async => rev;
 
@@ -96,6 +103,7 @@ Future<void> pumpHome(
   Brightness brightness = Brightness.light,
   double scale = 1.0,
   bool showBackupError = false,
+  void Function()? onBackupErrorDismissed,
   void Function()? onGoCollect,
   void Function()? onGoOrganize,
   void Function(String)? onGoWrongbook,
@@ -125,6 +133,7 @@ Future<void> pumpHome(
                 onGoWrongbook: onGoWrongbook ?? (_) {},
                 onGoReview: onGoReview ?? () {},
                 showBackupError: showBackupError,
+                onBackupErrorDismissed: onBackupErrorDismissed,
               ),
             ),
           );
@@ -273,6 +282,20 @@ void main() {
       expect(banner.tone, QmBannerTone.error);
       await tester.tap(find.text('知道了'));
       await tester.pumpAndSettle();
+      expect(find.text(HomePage.backupFailedMessage), findsNothing);
+    });
+
+    testWidgets('待定3：点「知道了」调 onBackupErrorDismissed（应用层清标志）',
+        (tester) async {
+      var dismissed = 0;
+      await pumpHome(
+        tester,
+        showBackupError: true,
+        onBackupErrorDismissed: () => dismissed++,
+      );
+      await tester.tap(find.text('知道了'));
+      await tester.pumpAndSettle();
+      expect(dismissed, 1);
       expect(find.text(HomePage.backupFailedMessage), findsNothing);
     });
 

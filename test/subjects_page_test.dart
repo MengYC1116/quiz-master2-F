@@ -313,6 +313,20 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.text('物理'), findsOneWidget);
       expect(find.text('0 道题'), findsOneWidget);
+      // 新学科：圆点轮换到紫（新蓝/新绿/新红已被三科占掉），封面默认灰。
+      final added = repo.subjectsList.last;
+      expect(added.name, '物理');
+      expect(added.color, const Color(0xFF7C5CFC));
+      expect(added.coverColor, 'grey');
+      // 列表里新学科的圆点必须真画成紫色（R1 前圆点直接读 s.color；
+      // R1 改成按 id 查表后新学科永远是数学蓝，2026-11-13 修回）。
+      expect(
+          find.byWidgetPredicate((w) =>
+              w is Container &&
+              w.decoration is BoxDecoration &&
+              (w.decoration as BoxDecoration).color ==
+                  const Color(0xFF7C5CFC)),
+          findsOneWidget);
       expect(repo.savedFolders.map((f) => f.name),
           containsAll(['试卷', '平时作业', '模拟卷']));
       expect(repo.savedFolders.every((f) => f.subjectId.startsWith('subject-')),

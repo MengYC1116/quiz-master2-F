@@ -16,10 +16,14 @@ import '../../widgets/uikit.dart';
 /// 对应学科那本并按该错因 / 知识点筛好。
 ///
 /// 口径（与 HTML 的对照见 R9-REPORT §6）：
-/// - 三个核心数沿用基线 `report_page.dart` 的算式，不动：已解决按
-///   `lastCheck` 在范围内计；待解决不按范围过滤（R0 §6-B-1，待裁决）；
-///   复查通过率按范围内已判定的自查记录计（`review_history` 无复查
-///   备注字段，以全部已判定记录为近似）。
+/// - 三个核心数按同一时间范围（本周/本月/全部）过滤：已解决按
+///   `lastCheck` 在范围内计；待解决同样按 `lastCheck` 在范围内计
+///   （S8 B1，Meng 2026-11-13 裁决，原 R0 §6-B-1）；复查通过率按
+///   范围内已判定的自查记录计（`review_history` 无复查备注字段，
+///   以全部已判定记录为近似）。
+/// - `lastCheck` 是近似代理：模型无“治愈日期”/“待解决起始日”字段，
+///   `lastCheck` 是最近一次自查时间；从未自查的错因 `lastCheck` 为
+///   空，与已解决数同一分支，视为在范围内、计入所有范围。
 /// - 弱点与学科分布按所选范围内收集的题目算（HTML `qsIn` / QDATE 口径，
 ///   以题目 `createdAt` 为收集日期）：错因行只含未解决的错因，无记录
 ///   的错因默认待解决；知识点行排除全部错因已解决的题。
@@ -74,6 +78,16 @@ class _ReportPageState extends State<ReportPage> {
   List<CauseRecord> _records = [];
   List<Question> _questions = [];
   List<KnowledgePoint> _knowledgePoints = [];
+  // 学科表：读库 subjects（B2 补充；以前写死 Subject.all，新学科
+  // 弱点定位不到、分布里不出现、弱点行颜色落到数学色）。
+  // 空库回退预设三科。
+  List<Subject> _subjects = Subject.all;
+  // 库里找学科：新学科用库里的名与色；找不到才回退 Subject.byId
+  //（数学兜底，只发生在数据不一致时）。
+  Subject _subjectOf(String id) => _subjects.firstWhere(
+        (s) => s.id == id,
+        orElse: () => Subject.byId(id),
+      );
   List<({String result, DateTime reviewedAt})> _history = [];
   AppSettings _settings = AppSettings.defaults;
 
@@ -117,6 +131,7 @@ class _ReportPageState extends State<ReportPage> {
       final records = await widget.repo.causeRecords();
       final questions = await widget.repo.all(includeArchived: true);
       final kps = await widget.repo.knowledgePoints();
+      final subjects = await widget.repo.subjects();
       final settings = await widget.repo.settings();
       final history = <({String result, DateTime reviewedAt})>[];
       for (final q in questions) {
@@ -127,6 +142,7 @@ class _ReportPageState extends State<ReportPage> {
         _records = records;
         _questions = questions;
         _knowledgePoints = kps;
+        _subjects = subjects.isEmpty ? Subject.all : subjects;
         _settings = settings;
         _history = history;
         _loading = false;
@@ -156,7 +172,7 @@ class _ReportPageState extends State<ReportPage> {
   }
 
   int _subjectOrder(String subjectId) {
-    final i = Subject.all.indexWhere((s) => s.id == subjectId);
+    final i = _subjects.indexWhere((s) => s.id == subjectId);
     return i < 0 ? 99 : i;
   }
 
@@ -259,7 +275,9 @@ class _ReportPageState extends State<ReportPage> {
       );
     }
 
-    // 三个核心数（沿用基线算式，见类注释）。
+    // 三个核心数：同一范围、同一字段口径（S8 B1）。
+    // 已解决 / 待解决都按错因记录的 lastCheck 过滤（为空视为在范围内）；
+    // 复查通过率按自查记录的 reviewedAt 过滤。
     final solvedCount = _records
         .where(
           (r) =>
@@ -267,8 +285,13 @@ class _ReportPageState extends State<ReportPage> {
               (r.lastCheck == null || _inRange(r.lastCheck!)),
         )
         .length;
-    final pendingCount =
-        _records.where((r) => r.status != CauseStatus.solved).length;
+    final pendingCount = _records
+        .where(
+          (r) =>
+              r.status != CauseStatus.solved &&
+              (r.lastCheck == null || _inRange(r.lastCheck!)),
+        )
+        .length;
     final rangedHistory =
         _history.where((h) => _inRange(h.reviewedAt)).toList();
     final judged =
@@ -282,7 +305,7 @@ class _ReportPageState extends State<ReportPage> {
     final kpTop = _kpGroups(qsIn);
     final nextSentence = causeTop.isEmpty
         ? '这段时间没有待解决的错因，先去复习页把到期的复查做完。'
-        : '先解决${Subject.byId(causeTop.first.subjectId).name}的${causeTop.first.key}。';
+        : '先解决${_subjectOf(causeTop.first.subjectId).name}的${causeTop.first.key}。';
 
     final wide = MediaQuery.sizeOf(context).width >
         DesignTokens.organizeGridBreakpoint;
@@ -430,13 +453,13 @@ class _ReportPageState extends State<ReportPage> {
           SizedBox(height: DesignTokens.reportSectionMarginTop * scale),
           _sectionTitle('错在哪个学科（只按学科看）', palette),
           SizedBox(height: DesignTokens.reportSectionMarginBottom * scale),
-          for (var i = 0; i < Subject.all.length; i++)
+          for (var i = 0; i < _subjects.length; i++)
             _distRow(
               palette,
               scale,
-              subject: Subject.all[i],
-              count: qsIn.where((q) => q.subjectId == Subject.all[i].id).length,
-              last: i == Subject.all.length - 1,
+              subject: _subjects[i],
+              count: qsIn.where((q) => q.subjectId == _subjects[i].id).length,
+              last: i == _subjects.length - 1,
             ),
         ],
       ),
@@ -607,9 +630,15 @@ class _ReportPageState extends State<ReportPage> {
     required VoidCallback onTap,
     required bool isKp,
   }) {
-    final subjectName = Subject.byId(group.subjectId).name;
+    // 弱点行学科名与颜色取库里的学科（B2 补充）：新学科以前走
+    // Subject.byId 回退到数学名 + subjectInk 不传存色落到数学色。
+    final subject = _subjects.firstWhere(
+      (s) => s.id == group.subjectId,
+      orElse: () => Subject.byId(group.subjectId),
+    );
+    final subjectName = subject.name;
     final subjectColor =
-        DesignTokens.subjectInk(group.subjectId, brightness);
+        DesignTokens.subjectInk(group.subjectId, brightness, subject.color);
     final title = isKp ? _kpName(group.key) : group.key;
     final detail = isKp
         ? '$subjectName${(_kpOf(group.key)?.chapter.isNotEmpty ?? false) ? ' › ${_kpOf(group.key)!.chapter}' : ''} · ${group.titles.join('、')}'

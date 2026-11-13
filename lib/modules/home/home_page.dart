@@ -9,8 +9,9 @@
 // - 焦点大卡片：整卡可点去复习；卡内“要复习 N 道”（46px/800）+
 //   “待解决 X 道 · 复查 Y 道”；下半部“继续上次”条（小伙伴 +
 //   文字 +「继续上次」主按钮，按钮点按不触发整卡去复习）。
-// - 下方 4 格：快速收集 + 三科各一格，每格“要复习 N 道 · 待整理 M 道”
-//   +「错题本」「去复习」按钮。
+// - 下方格子：快速收集 + 每个学科各一格，每格“要复习 N 道 · 待整理 M 道”
+//   +「错题本」「去复习」按钮；学科按库里的 subjects 表全部显示
+//   （B2，入库顺序），超过一行按列数分行。
 // - 空状态：无要复习时卡片变中性样式，文案“今天没有要复习的，明天再来吧”。
 // - 错误态：顶部红色横幅（手动备份失败，见 [showBackupError]）。
 //
@@ -44,7 +45,7 @@ import '../../theme/app_theme.dart';
 import '../../widgets/uikit.dart';
 
 /// 首页：问候 + 焦点大卡片（要复习的数量）+ 继续上次 + 快速收集 +
-/// 各学科要复习 / 待整理概览，学科顺序固定数学 / 英语 / 政治。
+/// 各学科要复习 / 待整理概览，学科按库里的 subjects 表显示（入库顺序）。
 class HomePage extends StatefulWidget {
   const HomePage({
     super.key,
@@ -55,6 +56,7 @@ class HomePage extends StatefulWidget {
     required this.onGoWrongbook,
     required this.onGoReview,
     this.showBackupError = false,
+    this.onBackupErrorDismissed,
   });
 
   final QuestionRepository repo;
@@ -65,11 +67,15 @@ class HomePage extends StatefulWidget {
   final VoidCallback onGoReview;
 
   /// 手动备份失败时显示顶部红色横幅（HTML 首页错误态文案）。
-  /// 基线里没有“设置页备份失败 → 首页横幅”的跨页通道（设置页
-  /// `_backup` 失败时无任何状态外传），所以这里只留开关：调用方
-  /// 在确认备份失败后传 true 即可触发；平时为 false，不显示。
-  /// 接线方式见 R3 报告未解决问题。
+  /// 待定3 已接线：设置页 `_backup` 失败时把标志写进库（settings 表
+  /// `backupFailed` 键），应用启动时读标志、经 `app.dart` 传进来；
+  /// 点“知道了”时除本地隐藏外，还经 [onBackupErrorDismissed] 回
+  /// 到应用层清除标志（只靠本地 `_errorDismissed` 的话，切页回来
+  /// 状态重建、横幅会再出现）。
   final bool showBackupError;
+
+  /// 点横幅“知道了”时调用：应用层清除库里的备份失败标志。
+  final VoidCallback? onBackupErrorDismissed;
 
   /// HTML 首页错误态横幅文案（原型 `viewHome` 的 `errBanner` 原文）。
   static const String backupFailedMessage =
@@ -83,6 +89,7 @@ class HomePage extends StatefulWidget {
 class _HomePageState extends State<HomePage> {
   Map<String, int>? _revCounts;
   Map<String, int>? _pendingCounts;
+  List<Subject> _subjects = Subject.all;
   int _duePending = 0;
   int _dueRecheck = 0;
   ({String kind, String subjectId, String title})? _recent;
@@ -102,6 +109,9 @@ class _HomePageState extends State<HomePage> {
       widget.repo.recentTask(),
       widget.repo.dueToday(),
       widget.repo.causeRecords(),
+      // B2：学科格按库里的 subjects 表显示全部学科（入库顺序），
+      // 不再写死 Subject.all 三科。
+      widget.repo.subjects(),
     ]);
     if (!mounted) return;
     final due = results[3] as List<Question>;
@@ -126,6 +136,8 @@ class _HomePageState extends State<HomePage> {
       _revCounts = results[0] as Map<String, int>;
       _pendingCounts = results[1] as Map<String, int>;
       _recent = results[2] as ({String kind, String subjectId, String title})?;
+      final subjects = results[5] as List<Subject>;
+      _subjects = subjects.isEmpty ? Subject.all : subjects;
       _duePending = pending;
       _dueRecheck = recheck;
       _loading = false;
@@ -192,7 +204,10 @@ class _HomePageState extends State<HomePage> {
             QmBanner(
               tone: QmBannerTone.error,
               message: HomePage.backupFailedMessage,
-              onDismiss: () => setState(() => _errorDismissed = true),
+              onDismiss: () {
+                setState(() => _errorDismissed = true);
+                widget.onBackupErrorDismissed?.call();
+              },
             ),
           // 焦点大卡片 layout C。
           if (_loading)
@@ -227,6 +242,7 @@ class _HomePageState extends State<HomePage> {
             _BottomGrid(
               scale: scale,
               palette: palette,
+              subjects: _subjects,
               revCounts: _revCounts ?? const {},
               pendingCounts: _pendingCounts ?? const {},
               onGoCollect: widget.onGoCollect,
@@ -507,12 +523,15 @@ class _BuddyWithSay extends StatelessWidget {
   }
 }
 
-/// 下方 4 格：快速收集 + 三科各一格（HTML `.c-bottom` 4 列，
-/// ≤900px 变 2 列、≤560px 变 1 列）。
+/// 下方格子：快速收集 + 每个学科各一格（HTML `.c-bottom` 4 列，
+/// ≤900px 变 2 列、≤560px 变 1 列）。学科按库里的 subjects 表全部显示
+///（B2，入库顺序）；格子超过一列能放的个数时按列数分行，不挤在一行、
+/// 不丢（以前写死 4 格：4 列单行、2 列固定取前 4 格）。
 class _BottomGrid extends StatelessWidget {
   const _BottomGrid({
     required this.scale,
     required this.palette,
+    required this.subjects,
     required this.revCounts,
     required this.pendingCounts,
     required this.onGoCollect,
@@ -522,6 +541,9 @@ class _BottomGrid extends StatelessWidget {
 
   final double scale;
   final AppPalette palette;
+
+  /// 库里的全部学科（入库顺序）；为空时调用方已回退到 Subject.all。
+  final List<Subject> subjects;
   final Map<String, int> revCounts;
   final Map<String, int> pendingCounts;
   final VoidCallback onGoCollect;
@@ -548,13 +570,18 @@ class _BottomGrid extends StatelessWidget {
           ),
         ],
       ),
-      for (final s in Subject.all)
+      for (final s in subjects)
         _MiniCell(
           scale: scale,
           palette: palette,
           title: s.name,
-          titleColor: DesignTokens.subjectInk(s.id, Theme.of(context).brightness),
-          background: DesignTokens.subjectSoft(s.id, Theme.of(context).brightness),
+          // B2：新学科的标题色 / 底色走库里存的 Subject.color
+          //（subjectInk / subjectSoft 的 stored 回退），不落到数学色；
+          // 预设三科传了存色也仍走主题固定色。
+          titleColor: DesignTokens.subjectInk(
+              s.id, Theme.of(context).brightness, s.color),
+          background: DesignTokens.subjectSoft(
+              s.id, Theme.of(context).brightness, s.color),
           description:
               '要复习 ${revCounts[s.id] ?? 0} 道 · 待整理 ${pendingCounts[s.id] ?? 0} 道',
           actions: [
@@ -577,46 +604,42 @@ class _BottomGrid extends StatelessWidget {
       builder: (context, constraints) {
         final width = constraints.maxWidth;
         final columns = width > 900 ? 4 : (width > 560 ? 2 : 1);
-        if (columns == 4) {
+        if (columns > 1) {
           // IntrinsicHeight：本页在纵向滚动视图里（高无界），Row 不能直接
           // 用 CrossAxisAlignment.stretch，须先由 IntrinsicHeight 定高，
-          // 再让四格等高拉伸（HTML .c-bottom align-items:stretch）。
-          return IntrinsicHeight(
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                for (var i = 0; i < minis.length; i++) ...[
-                  if (i > 0) SizedBox(width: DesignTokens.miniGap * scale),
-                  Expanded(child: minis[i]),
-                ],
-              ],
-            ),
-          );
-        }
-        if (columns == 2) {
+          // 再让同行各格等高拉伸（HTML .c-bottom align-items:stretch）。
+          // 格子按列数分行：4 格时与以前完全一致（4 列一行 / 2 列两行）；
+          // 学科多了（B2：1 + N 格）就多出一行，不挤、不丢。
+          final rows = <List<Widget>>[];
+          for (var start = 0; start < minis.length; start += columns) {
+            rows.add(minis.sublist(
+                start,
+                start + columns > minis.length
+                    ? minis.length
+                    : start + columns));
+          }
           return Column(
             children: [
-              IntrinsicHeight(
-                child: Row(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    Expanded(child: minis[0]),
-                    SizedBox(width: DesignTokens.miniGap * scale),
-                    Expanded(child: minis[1]),
-                  ],
+              for (var r = 0; r < rows.length; r++) ...[
+                if (r > 0) SizedBox(height: DesignTokens.miniGap * scale),
+                IntrinsicHeight(
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      for (var i = 0; i < rows[r].length; i++) ...[
+                        if (i > 0)
+                          SizedBox(width: DesignTokens.miniGap * scale),
+                        Expanded(child: rows[r][i]),
+                      ],
+                      // 末行不满时用空白 Expanded 补齐列数，保持各格同宽。
+                      for (var i = rows[r].length; i < columns; i++) ...[
+                        SizedBox(width: DesignTokens.miniGap * scale),
+                        const Expanded(child: SizedBox()),
+                      ],
+                    ],
+                  ),
                 ),
-              ),
-              SizedBox(height: DesignTokens.miniGap * scale),
-              IntrinsicHeight(
-                child: Row(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    Expanded(child: minis[2]),
-                    SizedBox(width: DesignTokens.miniGap * scale),
-                    Expanded(child: minis[3]),
-                  ],
-                ),
-              ),
+              ],
             ],
           );
         }

@@ -68,6 +68,15 @@ class _PendingImport {
 
 class _CollectPageState extends State<CollectPage> {
   List<CollectTask> _tasks = [];
+  // 导入学科下拉框：读库 subjects（B2 补充；以前写死 Subject.all，
+  // 新学科选不到、无法导入）。空库回退预设三科。
+  List<Subject> _subjects = Subject.all;
+  // 库里找学科：新学科用库里的名与色；找不到才回退 Subject.byId
+  //（数学兜底，只发生在数据不一致时）。
+  Subject _subjectOf(String id) => _subjects.firstWhere(
+        (s) => s.id == id,
+        orElse: () => Subject.byId(id),
+      );
   String? _selectedSubjectId; // 每次导入都选，默认“请选择学科”
   bool _picking = false;
   bool _noSubjectWarning = false;
@@ -92,8 +101,12 @@ class _CollectPageState extends State<CollectPage> {
 
   Future<void> _load() async {
     final tasks = await widget.repo.collectTasks();
+    final subjects = await widget.repo.subjects();
     if (!mounted) return;
-    setState(() => _tasks = tasks);
+    setState(() {
+      _tasks = tasks;
+      _subjects = subjects.isEmpty ? Subject.all : subjects;
+    });
   }
 
   void _snack(String message) {
@@ -129,7 +142,7 @@ class _CollectPageState extends State<CollectPage> {
           if (hint != null) oversizeHints.add(hint);
         } catch (_) {}
       }
-      // 重复文件 / 超限均为黄色横幅：用户选“仍要导入”才继续，
+      // 重复文件 / 超限均为黄色横幅：用户选“仍然再导一份”才继续，
       // 选“不导了”则整批取消；两种警告都不是失败。
       if (duplicateNames.isNotEmpty || oversizeHints.isNotEmpty) {
         if (!mounted) return;
@@ -197,7 +210,7 @@ class _CollectPageState extends State<CollectPage> {
       }
     }
     await widget.repo.saveRecentTask(
-      kind: 'collect',
+      kind: '收集',
       subjectId: subjectId,
       title: paths.map((p) => File(p).uri.pathSegments.last).join('、'),
     );
@@ -278,7 +291,7 @@ class _CollectPageState extends State<CollectPage> {
         fileName: task.fileName,
         page: task.page,
         pageCount: task.pageCount,
-        subjectName: Subject.byId(task.subjectId).name,
+        subjectName: _subjectOf(task.subjectId).name,
         initialBoxes: boxes,
       ),
     );
@@ -329,7 +342,7 @@ class _CollectPageState extends State<CollectPage> {
     }
     await widget.repo.deleteCollectTask(task.id);
     await widget.repo.saveRecentTask(
-      kind: 'collect',
+      kind: '收集',
       subjectId: task.subjectId,
       title: task.fileName,
     );
@@ -419,11 +432,11 @@ class _CollectPageState extends State<CollectPage> {
                       '${_pendingImport!.oversizeHints.join(' ')}可以先压缩再重新选，也可以仍要导入，大文件检测会慢一些。',
                   actions: [
                     QmBannerAction(
-                      label: '仍要导入',
+                      label: '仍然再导一份',
                       onPressed: _confirmPendingImport,
                     ),
                     QmBannerAction(
-                      label: '先不导',
+                      label: '不导了',
                       onPressed: _discardPendingImport,
                     ),
                   ],
@@ -574,7 +587,7 @@ class _CollectPageState extends State<CollectPage> {
                   ),
                   icon: QmGlyph(QmGlyphs.chevronDown, color: palette.muted),
                   hint: Text('请选择学科', style: TextStyle(color: palette.muted)),
-                  items: Subject.all
+                  items: _subjects
                       .map(
                         (s) =>
                             DropdownMenuItem(value: s.id, child: Text(s.name)),
@@ -700,7 +713,7 @@ class _CollectPageState extends State<CollectPage> {
   }
 
   Widget _taskRow(CollectTask task, double scale, AppPalette palette) {
-    final subject = Subject.byId(task.subjectId);
+    final subject = _subjectOf(task.subjectId);
     final isLast = _shownTasks.last == task;
     final row = Padding(
       padding: EdgeInsets.symmetric(
@@ -719,7 +732,8 @@ class _CollectPageState extends State<CollectPage> {
                   children: [
                     Row(
                       children: [
-                        SubjectLabel(subjectId: task.subjectId),
+                        SubjectLabel(
+                            subjectId: task.subjectId, subject: subject),
                         SizedBox(width: 6 * scale),
                         Expanded(
                           child: Text(
@@ -992,24 +1006,6 @@ class _BoxEditorDialogState extends State<_BoxEditorDialog> {
   bool _scrollLocked = false;
   bool _suppressDraw = false;
 
-  /// 安全钳制：`YoloOnnxService.clampToPage` 要求宽/高至少 0.08，
-  /// 框贴到右/下边时（`1.0 - x < 0.08`）它会抛 ArgumentError；
-  /// 这里先把左上角收到 0.92 以内再钳制（YOLO 服务本身不动）。
-  static QuestionBox _clampBoxSafe(QuestionBox box) {
-    final safe = QuestionBox(
-      id: box.id,
-      layer: box.layer,
-      type: box.type,
-      // 0.90 而不是 0.92：1.0 - 0.92 的浮点值是 0.07999… < 0.08，
-      // 仍会在 clampToPage 里抛 ArgumentError。
-      x: box.x.clamp(0.0, 0.90),
-      y: box.y.clamp(0.0, 0.90),
-      w: box.w,
-      h: box.h,
-    );
-    return YoloOnnxService.clampToPage(safe);
-  }
-
   String? _selectedId;
   String? _selectedInnerId;
   String? _innerModeBoxId;
@@ -1061,9 +1057,30 @@ class _BoxEditorDialogState extends State<_BoxEditorDialog> {
   void initState() {
     super.initState();
     _currentPage = widget.page;
-    _boxesByPage = {
-      widget.page: widget.initialBoxes.map((b) => _clampBoxSafe(b)).toList(),
-    };
+    _boxesByPage = {};
+    _ingestDetected(widget.page, widget.initialBoxes);
+  }
+
+  /// 把检测返回的混合框按层拆开：第 1 层进本页题级框，第 2 层按中心点
+  /// 归属到所属题级框名下（见 [YoloOnnxService.groupInners]），
+  /// 无主的题内框作独立题内框展示。双击进内框模式时已有的题内框
+  /// 直接沿用，不再按固定比例凭空造三个框。
+  void _ingestDetected(int page, List<QuestionBox> boxes) {
+    // 检测输出是量出来的尺寸，只做越界钳制，不补最小尺寸
+    // （见 YoloOnnxService.clampToPage 的 minSize 说明）。
+    final clamped = boxes
+        .map((b) => YoloOnnxService.clampToPage(b, minSize: false))
+        .toList();
+    final grouped = YoloOnnxService.groupInners(clamped);
+    _boxesByPage[page] = clamped.where((b) => b.layer == 1).toList();
+    for (final entry in grouped.inners.entries) {
+      _inners['$page:${entry.key}'] = entry.value;
+    }
+    if (grouped.orphans.isNotEmpty) {
+      _standaloneInner[page] = grouped.orphans;
+    } else {
+      _standaloneInner.remove(page);
+    }
   }
 
   @override
@@ -1146,8 +1163,7 @@ class _BoxEditorDialogState extends State<_BoxEditorDialog> {
         _inners.remove('$_currentPage:$id');
         _rotations.remove(id);
       }
-      _boxesByPage[_currentPage] = boxes.map((b) => _clampBoxSafe(b)).toList();
-      _standaloneInner.remove(_currentPage);
+      _ingestDetected(_currentPage, boxes);
       _selectedId = null;
       _selectedInnerId = null;
       _innerModeBoxId = null;
@@ -1232,7 +1248,7 @@ class _BoxEditorDialogState extends State<_BoxEditorDialog> {
       if (updated.layer == 1) {
         final list = _boxesByPage[_currentPage]!;
         final i = list.indexWhere((b) => b.id == updated.id);
-        if (i >= 0) list[i] = _clampBoxSafe(updated);
+        if (i >= 0) list[i] = YoloOnnxService.clampToPage(updated);
       } else if (_innerModeBoxId != null) {
         final key = '$_currentPage:$_innerModeBoxId';
         final list = _inners[key]!;
@@ -1246,7 +1262,7 @@ class _BoxEditorDialogState extends State<_BoxEditorDialog> {
         final i = list.indexWhere((b) => b.id == updated.id);
         if (i >= 0) {
           _standaloneInner[_currentPage] = List.of(list)
-            ..[i] = _clampBoxSafe(updated);
+            ..[i] = YoloOnnxService.clampToPage(updated);
         }
       }
     });
@@ -1331,7 +1347,7 @@ class _BoxEditorDialogState extends State<_BoxEditorDialog> {
           w: pending.w,
           h: pending.h,
         );
-        _boxesByPage[_currentPage] = [..._boxes, _clampBoxSafe(box)];
+        _boxesByPage[_currentPage] = [..._boxes, YoloOnnxService.clampToPage(box)];
         _selectedId = box.id;
         _selectedInnerId = null;
       } else {
@@ -1372,7 +1388,7 @@ class _BoxEditorDialogState extends State<_BoxEditorDialog> {
           } else {
             _standaloneInner[_currentPage] = [
               ..._standalone,
-              _clampBoxSafe(box),
+              YoloOnnxService.clampToPage(box),
             ];
           }
           _selectedInnerId = box.id;
@@ -1478,7 +1494,7 @@ class _BoxEditorDialogState extends State<_BoxEditorDialog> {
       final outer = _boxes.firstWhere((b) => b.id == _innerModeBoxId);
       setState(() => _pendingBox = _clampInner(pending, outer));
     } else {
-      setState(() => _pendingBox = _clampBoxSafe(pending));
+      setState(() => _pendingBox = YoloOnnxService.clampToPage(pending));
     }
   }
 

@@ -3,7 +3,6 @@ import 'dart:io';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
-import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 import '../../data/badge_notifier.dart';
 import '../../data/database.dart';
@@ -33,6 +32,7 @@ class SettingsPage extends StatefulWidget {
     required this.settings,
     required this.onSettingsChanged,
     this.loadFailed = false,
+    this.onBackupFailed,
   });
 
   final QuestionRepository repo;
@@ -41,6 +41,9 @@ class SettingsPage extends StatefulWidget {
 
   /// 设置读取失败时由 app 传入：显示错误横幅，已显示默认设置。
   final bool loadFailed;
+
+  /// 待定3：手动备份失败时调用（应用层点亮首页红色横幅）。
+  final VoidCallback? onBackupFailed;
 
   @override
   State<SettingsPage> createState() => _SettingsPageState();
@@ -72,6 +75,10 @@ class _SettingsPageState extends State<SettingsPage> {
   bool _busy = false;
   bool _errorDismissed = false;
   bool _dbPendingRestart = false;
+  // B4.3：本次改位置是否真的迁了库文件（迁了就是新位置已在用，
+  // 提示语不能再说“重启前还是用现在这个位置”；“保留现有库”只是
+  // 换了指向，重启前仍在用旧库，走旧提示语）。
+  bool _dbMigrated = false;
   int _questionCount = 0;
 
   // 恢复：选好的备份文件（未确认前只记着，不动库）。
@@ -169,31 +176,73 @@ class _SettingsPageState extends State<SettingsPage> {
 
   // ---------- 数据：备份 / 恢复 ----------
 
+  /// 待定3：记一次备份失败——写库标志 + 通知应用层点亮首页横幅。
+  /// 标志写失败也不影响本页的即时提示（静默跳过）。
+  Future<void> _markBackupFailed() async {
+    try {
+      await widget.repo.setBackupFailed(true);
+    } catch (_) {}
+    widget.onBackupFailed?.call();
+  }
+
   Future<void> _backup() async {
     setState(() => _busy = true);
     try {
       final json = await widget.repo.exportBackupJson();
+      final bytes = utf8.encode(json);
       final path = await FilePicker.platform.saveFile(
         dialogTitle: '备份题库',
         fileName: 'quiz-master2-backup.json',
-        bytes: utf8.encode(json),
       );
-      if (path != null) _snack('备份已保存');
+      if (path == null) return;
+      // B4.2：file_picker 8.3.7 的 saveFile 在桌面端只返回选好的路径，
+      // 不写文件（bytes 参数只在移动端走通道写文件；Linux 实现直接
+      // 忽略 bytes，macOS 传了还会抛错）——必须自己写文件。之前只
+      // 传了 bytes 就弹“备份已保存”，实际上没有文件落盘，是旧 bug；
+      // 本次修掉，否则 B4.2 的“备份→恢复”流程无文件可恢复。
+      try {
+        await File(path).writeAsBytes(bytes);
+        // 待定3：备份成功，清掉之前可能留下的失败标志。
+        try {
+          await widget.repo.setBackupFailed(false);
+        } catch (_) {}
+        _snack('备份已保存');
+      } catch (_) {
+        // 待定3：写文件失败 = 本次备份失败，记标志（首页出红横幅）；
+        // 本页原有的即时提示保留。
+        await _markBackupFailed();
+        _snack('备份没存上，换个位置再试一次');
+      }
+    } catch (_) {
+      // 导出备份或选路径本身失败（以前这里无 catch、异常直接外抛，
+      // 既无提示也不留标志）：同样记一次备份失败。
+      await _markBackupFailed();
+      _snack('备份没存上，换个位置再试一次');
     } finally {
       if (mounted) setState(() => _busy = false);
     }
   }
 
-  static const _backupTables = [
-    'subjects',
-    'questions',
-    'folders',
-    'tags',
-    'exams',
-    'knowledge_points',
-    'cause_records',
-    'settings',
-  ];
+  Future<void> _confirmRestore() async {
+    final data = _restoreData;
+    if (data == null) return;
+    setState(() {
+      _busy = true;
+      _restoreData = null;
+      _restoreFileName = null;
+    });
+    try {
+      // B4.2：恢复走数据层 importBackupJson（整体覆盖，含补齐的 4 张表）。
+      await widget.repo.importBackupJson(data);
+      bumpBadgeVersion();
+      final restored = await widget.repo.settings();
+      await _apply(restored);
+      await _loadQuestionCount();
+      _snack('已恢复备份');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
 
   Future<void> _pickRestoreFile() async {
     final result = await FilePicker.platform.pickFiles(
@@ -222,70 +271,86 @@ class _SettingsPageState extends State<SettingsPage> {
     });
   }
 
-  Future<void> _confirmRestore() async {
-    final data = _restoreData;
-    if (data == null) return;
-    setState(() {
-      _busy = true;
-      _restoreData = null;
-      _restoreFileName = null;
-    });
-    try {
-      final db = await widget.repo.db.db;
-      await db.transaction((txn) async {
-        for (final t in [
-          'cause_records',
-          'review_state',
-          'review_history',
-          'recent_tasks',
-          'questions',
-          'folders',
-          'tags',
-          'exams',
-          'knowledge_points',
-          'subjects',
-          'settings',
-        ]) {
-          await txn.delete(t);
-        }
-        for (final t in _backupTables) {
-          final rows = data[t];
-          if (rows is! List) continue;
-          for (final row in rows) {
-            if (row is! Map) continue;
-            await txn.insert(
-              t,
-              Map<String, Object?>.from(row),
-              conflictAlgorithm: ConflictAlgorithm.replace,
-            );
-          }
-        }
-      });
-      bumpBadgeVersion();
-      final restored = await widget.repo.settings();
-      await _apply(restored);
-      await _loadQuestionCount();
-      _snack('已恢复备份');
-    } finally {
-      if (mounted) setState(() => _busy = false);
-    }
-  }
-
   String get _dbPath {
     final used = widget.repo.db.dbPathUsed;
     if (used != null && used.isNotEmpty) return used;
     return '${AppDatabase.dataDirectoryPath()}${Platform.pathSeparator}quiz-master2.db';
   }
 
+  /// B4.3：切换数据库位置时迁移旧库（复制旧库文件到新位置，不只写
+  /// 标记）。新位置已有库文件时先问用户：覆盖（用当前题库替换新
+  /// 位置的库）/ 保留现有库（直接用新位置原来的题库，当前题库留
+  /// 在原位置不动）/ 取消。迁移失败提示且不丢旧库。
   Future<void> _changeDbLocation() async {
     final dir = await FilePicker.platform.getDirectoryPath(
       dialogTitle: '选择数据库位置',
     );
     if (dir == null) return;
-    await widget.repo.setCustomDataDirectory(dir);
     if (!mounted) return;
-    setState(() => _dbPendingRestart = true);
-    _snack('新位置已保存，重启后生效');
+    if (AppDatabase.databaseExistsAt(dir)) {
+      final choice = await showDialog<String>(
+        context: context,
+        builder: (dctx) => AlertDialog(
+          title: const Text('这个位置已经有题库了'),
+          content: const Text(
+              '新位置已经有一个 quiz-master2.db。覆盖会用现在的题库替换它（新位置原来的题库就没了）；保留会直接用新位置原来的题库，现在的题库留在原位置不动。'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dctx).pop(null),
+              child: const Text('取消'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.of(dctx).pop('keep'),
+              child: const Text('保留现有库'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(dctx).pop('overwrite'),
+              child: const Text('覆盖'),
+            ),
+          ],
+        ),
+      );
+      if (choice == null) return;
+      if (choice == 'keep') {
+        await widget.repo.setCustomDataDirectory(dir);
+        if (!mounted) return;
+        setState(() {
+          _dbPendingRestart = true;
+          _dbMigrated = false;
+        });
+        _snack('已切换到新位置原来的题库，重启后生效');
+        return;
+      }
+      await _migrateDb(dir, overwrite: true);
+      return;
+    }
+    await _migrateDb(dir, overwrite: false);
+  }
+
+  Future<void> _migrateDb(String dir, {required bool overwrite}) async {
+    final outcome =
+        await widget.repo.migrateToDirectory(dir, overwrite: overwrite);
+    if (!mounted) return;
+    switch (outcome) {
+      case DbMigrationOutcome.migrated:
+        setState(() {
+          _dbPendingRestart = true;
+          _dbMigrated = true;
+        });
+        _snack('已把题库迁移到新位置，重启后生效');
+      case DbMigrationOutcome.noSourceDb:
+        setState(() {
+          _dbPendingRestart = true;
+          _dbMigrated = true;
+        });
+        _snack('新位置已保存，重启后生效');
+      case DbMigrationOutcome.sameLocation:
+        _snack('已经是这个位置了');
+      case DbMigrationOutcome.targetExists:
+        _snack('这个位置已经有题库了');
+      case DbMigrationOutcome.failed:
+        _snack('迁移失败，仍用原来的题库');
+    }
   }
 
   // ---------- 数据：缓存清理 ----------
@@ -909,7 +974,9 @@ class _SettingsPageState extends State<SettingsPage> {
           ),
         ),
         if (_dbPendingRestart)
-          _noteText('新位置已保存：要重启软件才生效——重启后才会改用新位置存数据库，重启前还是用现在这个位置。'),
+          _noteText(_dbMigrated
+              ? '新位置已保存：题库已迁过去，重启后彻底生效。'
+              : '新位置已保存：要重启软件才生效——重启后才会改用新位置存数据库，重启前还是用现在这个位置。'),
         _row(
           '清理缓存',
           preview == null

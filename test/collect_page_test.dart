@@ -34,13 +34,19 @@ CollectTask task(
 );
 
 class FakeRepo extends QuestionRepository {
-  FakeRepo(this.tasks) : super(AppDatabase.instance);
+  FakeRepo(this.tasks, {List<Subject>? subjects})
+      : subjectsValue = subjects ?? Subject.all,
+        super(AppDatabase.instance);
 
   List<CollectTask> tasks;
+  List<Subject> subjectsValue;
   final List<Question> savedQuestions = [];
   final List<CollectTask> savedTasks = [];
   final List<String> deletedTaskIds = [];
   var organizeCalls = 0;
+
+  @override
+  Future<List<Subject>> subjects() async => List.of(subjectsValue);
 
   @override
   Future<List<CollectTask>> collectTasks() async => List.of(tasks);

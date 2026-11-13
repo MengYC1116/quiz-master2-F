@@ -14,9 +14,12 @@ dependencies:
   sqflite_common_ffi: ^2.3.6
   path: ^1.9.1
   file_picker: ^8.0.0
-  # ONNX Runtime 的 Dart 包版本故意不 pin：须在 Win11 上对 Flutter 3.47.9
-  # 验证通过后再定（见 docs/decision-log.md D-07）。在此之前 YOLO 服务
-  # 以占位模式运行，返回一页一个整题框。
+  # onnxruntime 1.4.1（D-23，2026-11-13）：pub.dev 上唯一的 Dart 版
+  # ONNX Runtime 插件，最新稳定版；自带各平台原生库（Linux 用
+  # libonnxruntime.so.1.15.1，即 ORT 1.15.1）。Dart 3.13.7 /
+  # Flutter 3.47.9 下可用，但须在 Win11 上重验（见 D-23）。
+  # 除此之外不升级任何依赖。
+  onnxruntime: ^1.4.1
 
 dev_dependencies:
   flutter_test:
@@ -27,3 +30,7 @@ flutter:
   uses-material-design: true
   assets:
     - assets/models/
+    # 目录声明只含直属文件，子目录须另列，否则模型打不进包
+    # （2026-11-13 实测：只写 assets/models/ 时模型未进包）。
+    # 第 2 层模型已移出仓库（见 D-23），只留第 1 层。
+    - assets/models/question/

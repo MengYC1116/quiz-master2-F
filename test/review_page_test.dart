@@ -24,6 +24,7 @@ Question rq(
   DateTime? createdAt,
   bool isOrganized = true,
   bool reviewJoined = false,
+  bool isArchived = false,
 }) =>
     Question(
       id: id,
@@ -36,6 +37,7 @@ Question rq(
       createdAt: createdAt ?? DateTime(2026, 11, 8),
       isOrganized: isOrganized,
       reviewJoined: reviewJoined,
+      isArchived: isArchived,
       sliceKind: 'material',
       sliceText: '题：$title',
     );
@@ -70,14 +72,21 @@ class FakeReviewRepo extends QuestionRepository {
     required this.records,
     AppSettings? settings,
     this.throwOnCheck = false,
+    List<Subject>? subjects,
   })  : settingsValue = settings ?? AppSettings.defaults,
+        subjectsValue = subjects ?? Subject.all,
         super(AppDatabase.instance);
 
   List<Question> questions;
   List<CauseRecord> records;
   AppSettings settingsValue;
   bool throwOnCheck;
+  List<Subject> subjectsValue;
   ReviewSessionState? savedState;
+
+  @override
+  Future<List<Subject>> subjects() async => List.of(subjectsValue);
+
   final Map<String, List<({String result, DateTime reviewedAt})>> history =
       {};
 
@@ -124,6 +133,8 @@ class FakeReviewRepo extends QuestionRepository {
     String result, {
     int cureChecks = 2,
     int recheckIntervalDays = 7,
+    // 待定1：与真实实现同语义——复查通过不加计数，只顺延复查日。
+    bool isRecheck = false,
   }) async {
     if (throwOnCheck) throw StateError('save failed');
     if (result == 'unsure') return r;
@@ -131,8 +142,8 @@ class FakeReviewRepo extends QuestionRepository {
     final today = DateTime(now.year, now.month, now.day);
     late CauseRecord updated;
     if (result == 'solved') {
-      final count = r.solvedCount + 1;
-      if (count >= cureChecks) {
+      final count = isRecheck ? r.solvedCount : r.solvedCount + 1;
+      if (isRecheck || count >= cureChecks) {
         updated = r.copyWith(
           status: CauseStatus.solved,
           solvedCount: count,
@@ -249,6 +260,48 @@ FakeReviewRepo singleRepo({int solvedCount = 0}) {
   return repo;
 }
 
+/// B6：库里多一道已归档但已加入复习的题（q9）；取消归档用时把
+/// 同一道题的 isArchived 改回 false 即可。
+FakeReviewRepo archivedRepo({bool archived = true}) {
+  final repo = reviewRepo();
+  repo.questions = [
+    ...repo.questions,
+    rq('q9', '已归档题',
+        errorTypes: const ['概念不清'],
+        createdAt: DateTime(2026, 11, 9),
+        reviewJoined: true,
+        isArchived: archived),
+  ];
+  repo.records = [
+    ...repo.records,
+    rec('q9', '概念不清', joinedAt: DateTime(2026, 11, 9)),
+  ];
+  return repo;
+}
+
+/// 待定1：只有一道复查到期的题——已解决、solvedCount 已满 2、
+/// 复查日是昨天（已到期）。
+FakeReviewRepo recheckRepo() {
+  final repo = reviewRepo();
+  repo.questions = [
+    rq('q1', '函数极限',
+        errorTypes: const ['概念不清'],
+        answer: '3',
+        explanation: 'lim sin3x/x = 3。',
+        notes: '当时没看清题目。',
+        createdAt: DateTime(2026, 11, 8),
+        reviewJoined: true),
+  ];
+  repo.records = [
+    rec('q1', '概念不清',
+        status: CauseStatus.solved,
+        solvedCount: 2,
+        recheckDate: DateTime.now().subtract(const Duration(days: 1)),
+        joinedAt: DateTime(2026, 11, 10)),
+  ];
+  return repo;
+}
+
 Future<void> pumpReview(
   WidgetTester tester, {
   FakeReviewRepo? repo,
@@ -355,6 +408,15 @@ void main() {
           findsOneWidget);
     });
 
+    testWidgets('B6：已归档的已加入题不在复习列表里，取消归档后回来',
+        (tester) async {
+      await pumpReview(tester, repo: archivedRepo());
+      expect(find.textContaining('已归档题'), findsNothing);
+      // 归档题的记录保留在库里（只是列表不显示），取消归档即回来。
+      await pumpReview(tester, repo: archivedRepo(archived: false));
+      expect(find.textContaining('已归档题'), findsOneWidget);
+    });
+
     testWidgets('无外层卡片框、无 Icon', (tester) async {
       await pumpReview(tester);
       expect(find.byType(Icon), findsNothing);
@@ -404,6 +466,57 @@ void main() {
           tester, find.byType(DropdownButton<int>), 20);
       expect(find.text('共 3 条 · 第 1 / 1 页'), findsOneWidget);
       expect(repo.settingsValue.pageSize, 20);
+    });
+
+    testWidgets('S8A6 大库 55 组：五档页数与末页条数', (tester) async {
+      // 与真机大库同口径：55 道题已加入复习；复习列表按 subject|cause
+      // 分组，固定错因只有 5 种会并组，所以每题给一个唯一自定义错因，
+      // 55 道题即 55 组。加入时间递增，组顺序即题号顺序。
+      final base = DateTime(2026, 11, 10);
+      final repo = FakeReviewRepo(
+        questions: [
+          for (var i = 0; i < 55; i++)
+            Question(
+              id: 'b$i',
+              title: '分页题 $i',
+              subjectId: 'math',
+              customErrorTypes: ['分页错因 $i'],
+              createdAt: base.subtract(Duration(hours: 55 - i)),
+              isOrganized: true,
+              reviewJoined: true,
+              sliceKind: 'material',
+              sliceText: '题：分页题 $i',
+            ),
+        ],
+        records: [
+          for (var i = 0; i < 55; i++)
+            rec('b$i', '分页错因 $i',
+                joinedAt: base.add(Duration(minutes: i))),
+        ],
+      );
+      await pumpReview(tester, repo: repo);
+      // 每档：每页数 → 总页数 / 末页首组 / 上一页首组（不在末页）。
+      const cases = [
+        (10, 6, '分页错因 50', '分页错因 49'),
+        (20, 3, '分页错因 40', '分页错因 39'),
+        (30, 2, '分页错因 30', '分页错因 29'),
+        (40, 2, '分页错因 40', '分页错因 39'),
+        (50, 2, '分页错因 50', '分页错因 49'),
+      ];
+      for (final (size, pages, first, before) in cases) {
+        if (size != 10) {
+          await pickMenuItem<int>(
+              tester, find.byType(DropdownButton<int>), size);
+        }
+        expect(find.text('共 55 条 · 第 1 / $pages 页'), findsOneWidget);
+        for (var p = 1; p < pages; p++) {
+          await tapButton(tester, '下一页');
+        }
+        expect(find.text('共 55 条 · 第 $pages / $pages 页'), findsOneWidget);
+        expect(find.text(first), findsOneWidget);
+        expect(find.text('分页错因 54'), findsOneWidget);
+        expect(find.text(before), findsNothing);
+      }
     });
 
     testWidgets('已治愈组：点一行展开看解决记录，再点收起', (tester) async {
@@ -477,6 +590,35 @@ void main() {
       expect(find.textContaining('今天解决了 1 个错因'), findsOneWidget);
       expect(find.textContaining('解决中 → 已解决'), findsOneWidget);
       expect(find.textContaining('下次复查'), findsOneWidget);
+    });
+
+    testWidgets('待定1：复查通过不加计数——已满 2 次治愈后复查通过仍为 2',
+        (tester) async {
+      final repo = recheckRepo();
+      await pumpReview(tester, repo: repo);
+      // 复查到期的题在列表里，带复查标记。
+      expect(find.text('复查'), findsOneWidget);
+      await tapButton(tester, '开始解决');
+      await tapButton(tester, '下一步：写补救');
+      await tapButton(tester, '下一步：重做');
+      await tapButton(tester, '看答案');
+      await tapButton(tester, '下一步：自查');
+      // 自查选项是 QmButton；复查记录的状态 pill 也叫“已解决”，
+      // 不能用 tapText（会命中两个），按 QmButton 精确定位。
+      final checkButton = find.widgetWithText(QmButton, '已解决');
+      await tester.ensureVisible(checkButton);
+      await tester.pumpAndSettle();
+      await tester.tap(checkButton);
+      await tester.pumpAndSettle();
+      await tapButton(tester, '看总结');
+      expect(find.textContaining('复查通过'), findsOneWidget);
+      final r = repo.records.single;
+      expect(r.status, CauseStatus.solved);
+      expect(r.solvedCount, 2);
+      final today = DateTime.now();
+      final todayStart = DateTime(today.year, today.month, today.day);
+      expect(r.recheckDate, isNotNull);
+      expect(!r.recheckDate!.isBefore(todayStart), isTrue);
     });
 
     testWidgets('自查要全选完才能“下一题”：双错因题先选一个仍禁用',

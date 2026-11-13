@@ -179,3 +179,54 @@ D 队列弹层、错题本（书架 → 目录页 → 列表，修后 2 道与�
 深色主题（冷灰）正常。截图 01–20 在 `screenshots-linux/`。
 未验证：错题本/复习分页翻页（演示数据每科最多 3 道，只有一页）、
 真实文件导入（无真实 PDF/图片）、修框编辑器全流程（无真实文件）。
+
+## D-23 — 真实 YOLO 接入：只接第 1 层，第 2 层暂缓（2026-11-13，Meng 定）
+
+D-07 的“版本故意不 pin”到此为止。pub.dev 上唯一的 Dart 版 ONNX
+Runtime 插件是 `onnxruntime`，最新稳定版 **1.4.1**（2024-03-27，
+之后无新版），已写入 `pubspec.yaml`（`onnxruntime: ^1.4.1`）；
+`pubspec.lock` 只多了这一项（ffi 已是 2.2.0，未动）。该包自带各
+平台原生库：Linux 用 `libonnxruntime.so.1.15.1`（即 ORT 1.15.1），
+Windows 用 `onnxruntime.dll`（同包同版本）。选它的理由：pub.dev
+上没有更新的 Dart onnxruntime 包；1.4.1 的 sdk 约束
+（`>=2.17.0 <4.0.0`）兼容 Dart 3.13.7 / Flutter 3.47.9；Linux
+Release 实测能加载原生库并跑通模型（见
+docs/ui-replication/YOLO-INTEGRATION-REPORT.md）。
+**Win11 上须重验**：`flutter pub get` 后 `onnxruntime.dll` 是否随
+应用打包、会话能否创建、CPU 推理速度。
+
+第 1 层模型（Meng 提供，已在仓库 `assets/models/question/`）：
+`yolo11s-question-v1.onnx`（38,432,570 字节），YOLO11s，输入
+1×3×1280×1280，输出 1×5×33600，1 类 question。推理约定
+（`lib/services/yolo_onnx_service.dart`）：整页 letterbox 1280
+（灰边 114）；置信度 0.45，NMS IoU 0.5；按阅读顺序（先上后下、
+同行先左后右）编号；推理在 worker isolate 跑（`runAsync`），
+不卡 UI 线程。模型缺失、加载失败或图片文件不存在时回退占位
+（一页一个整题框），不抛错。`QuestionBox` 接口不变；
+`clampToPage` 只加了一个默认 true 的 `minSize` 可选参数
+（默认行为与 A3 回归测试完全一致）：检测输出的框是量出来的
+尺寸，用 `minSize: false` 原样保留，否则题行（实测高
+0.018~0.10，多在 0.08 以下）全被撑成 0.08，相邻题行互相重叠、
+确认被拦，真实推理没法用。
+
+第 2 层暂缓（Meng 2026-11-13 定）：模型还需再训练。
+`yolo11s-intra-v1.onnx`（38,406,563 字节，SHA256
+8486b519dc184266be559e983ce409d1d78e34100790ff22905353d98b269267）
+已从仓库 `assets/models/intra/` 移到仓库外
+`~/workspace/yolo-models-archive/` 存着（Drive 上 yolo-intra/
+里还有一份），不删除；应用不再打包这 38MB。
+暂缓原因（3 张真实试卷页双模型实测，见 YOLO 报告）：
+题干/选项基本准，但 figure 误报多——纯文字页上无图的题也被框
+成图，3 页 4 个 figure 均存疑；另有 stem/figure 同框重复。
+再接入路径：训好的模型放回 `assets/models/intra/`、
+`pubspec.yaml` 里把 `assets/models/intra/` 声明加回来、
+`YoloOnnxService.intraEnabled` 改 true、按
+`_detectIntra` 的注释恢复逐题裁剪推理（绝不在整页上跑——
+整页跑时题干框会横跨整页）；后处理 `decodeYoloOutput` 与
+归属 `groupInners` 已留好。第 2 层的数据模型与界面不动：
+`QuestionBox.layer`、修框内框模式、三色高亮、切片区都保留，
+没有模型时用户仍可手动框 stem / option / figure。
+
+导入流程仍只存文件名（`CollectTask.fileName` 为显示名，未改
+Schema）：`detectPage` 按传入路径找文件，找得到跑真实推理，
+找不到回占位。真实文件落盘 / PDF 渲染仍是待办，见 YOLO 报告。
