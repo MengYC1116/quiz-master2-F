@@ -80,6 +80,7 @@ class FakeReviewRepo extends QuestionRepository {
   List<Question> questions;
   List<CauseRecord> records;
   AppSettings settingsValue;
+  int saveSettingsCalls = 0;
   bool throwOnCheck;
   List<Subject> subjectsValue;
   ReviewSessionState? savedState;
@@ -95,6 +96,7 @@ class FakeReviewRepo extends QuestionRepository {
 
   @override
   Future<void> saveSettings(AppSettings s) async {
+    saveSettingsCalls++;
     settingsValue = s;
   }
 
@@ -115,7 +117,7 @@ class FakeReviewRepo extends QuestionRepository {
 
   @override
   Future<void> saveReviewState(
-          {required List<String> queue, required int position}) async =>
+          {required List<ReviewQueueItem> queue, required int position}) async =>
       savedState = ReviewSessionState(
         queue: queue,
         position: position,
@@ -458,14 +460,17 @@ void main() {
       expect(find.text('计算错误'), findsNWidgets(2));
     });
 
-    testWidgets('每页数量可改：改成 20 条后只剩 1 页', (tester) async {
+    testWidgets('每页数量可改：改成 20 条后只剩 1 页，设置默认值不动（P0B2 本地行为）',
+        (tester) async {
       final repo = reviewRepo(pageSize: 2);
       await pumpReview(tester, repo: repo);
       expect(find.text('共 3 条 · 第 1 / 2 页'), findsOneWidget);
       await pickMenuItem<int>(
           tester, find.byType(DropdownButton<int>), 20);
       expect(find.text('共 3 条 · 第 1 / 1 页'), findsOneWidget);
-      expect(repo.settingsValue.pageSize, 20);
+      // 本地行为：只改本页显示，不写库、不改设置默认值。
+      expect(repo.settingsValue.pageSize, 2);
+      expect(repo.saveSettingsCalls, 0);
     });
 
     testWidgets('S8A6 大库 55 组：五档页数与末页条数', (tester) async {

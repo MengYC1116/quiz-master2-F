@@ -10,14 +10,44 @@ import 'package:quiz_master2/data/repository.dart';
 import 'package:quiz_master2/models/models.dart';
 import 'package:quiz_master2/modules/settings/settings_page.dart';
 import 'package:quiz_master2/theme/app_theme.dart';
+import 'package:quiz_master2/widgets/uikit.dart';
 
 class FakeSettingsRepo extends QuestionRepository {
-  FakeSettingsRepo({this.demoCount = 3, this.questionCount = 9})
+  FakeSettingsRepo(
+      {this.demoCount = 3,
+      this.questionCount = 9,
+      this.orphanFiles = const [],
+      this.storageUsage = (importsBytes: 0, slicesBytes: 0)})
       : super(AppDatabase.instance);
 
   int demoCount;
   int questionCount;
   int clearedDemo = 0;
+
+  /// P3：孤儿扫描的 canned 结果（默认无孤儿）。
+  List<OrphanFile> orphanFiles;
+
+  /// P3：空间占用的 canned 分项。
+  ({int importsBytes, int slicesBytes}) storageUsage;
+
+  /// P3：清理时实际收到的路径。
+  List<String> cleanedPaths = [];
+
+  @override
+  Future<({int importsBytes, int slicesBytes})> storageUsageBreakdown() async =>
+      storageUsage;
+
+  @override
+  Future<OrphanScan> scanOrphanFiles() async => OrphanScan(orphanFiles);
+
+  @override
+  Future<({int deletedCount, int freedBytes})> deleteOrphanFiles(
+      List<String> relativePaths) async {
+    cleanedPaths = relativePaths;
+    final freed =
+        orphanFiles.fold(0, (sum, f) => sum + f.bytes);
+    return (deletedCount: relativePaths.length, freedBytes: freed);
+  }
 
   @override
   Future<List<Question>> all({bool includeArchived = false}) async =>
@@ -277,6 +307,7 @@ void main() {
       final repo = FakeSettingsRepo(demoCount: 3);
       await pumpSettings(tester, repo: repo);
       await openGroup(tester, '数据');
+      await tester.ensureVisible(find.text('清空演示数据'));
       await tester.tap(find.text('清空演示数据'));
       await tester.pumpAndSettle();
       expect(find.textContaining('清空演示数据，确定吗？'), findsOneWidget);
@@ -292,6 +323,7 @@ void main() {
       final repo = FakeSettingsRepo(demoCount: 3);
       await pumpSettings(tester, repo: repo);
       await openGroup(tester, '数据');
+      await tester.ensureVisible(find.text('清空演示数据'));
       await tester.tap(find.text('清空演示数据'));
       await tester.pumpAndSettle();
       await tester.ensureVisible(find.text('取消'));
@@ -299,6 +331,52 @@ void main() {
       await tester.pumpAndSettle();
       expect(repo.clearedDemo, 0);
       expect(find.textContaining('清空演示数据，确定吗？'), findsNothing);
+    });
+
+    testWidgets('P3 空间占用：显示原图/切片分项与上限 2GB', (tester) async {
+      final repo = FakeSettingsRepo(
+          storageUsage: (importsBytes: 2048, slicesBytes: 1024));
+      await pumpSettings(tester, repo: repo);
+      await openGroup(tester, '数据');
+      expect(find.text('空间占用'), findsOneWidget);
+      expect(find.textContaining('共占 3.0 KB'), findsOneWidget);
+      expect(find.textContaining('原图 2.0 KB'), findsOneWidget);
+      expect(find.textContaining('切片 1.0 KB'), findsOneWidget);
+      expect(find.textContaining('上限 2GB'), findsOneWidget);
+    });
+
+    testWidgets('P3 孤儿清理：有孤儿时预览，确认后清理并提示', (tester) async {
+      final repo = FakeSettingsRepo(orphanFiles: [
+        const OrphanFile(relativePath: 'slices/orphan.png', bytes: 2048),
+        const OrphanFile(
+            relativePath: 'imports/task-9/original.jpg', bytes: 1024),
+      ]);
+      await pumpSettings(tester, repo: repo);
+      await openGroup(tester, '数据');
+      expect(find.text('孤儿清理'), findsOneWidget);
+      expect(find.textContaining('发现 2 个无用文件'), findsOneWidget);
+      expect(find.textContaining('共约 3.0 KB'), findsOneWidget);
+      await tester.ensureVisible(find.text('清理无用文件'));
+      await tester.tap(find.text('清理无用文件'));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('清理无用文件，确定吗？'), findsOneWidget);
+      await tester.ensureVisible(find.text('确认清理'));
+      await tester.tap(find.text('确认清理'));
+      await tester.pumpAndSettle();
+      expect(repo.cleanedPaths, [
+        'slices/orphan.png',
+        'imports/task-9/original.jpg',
+      ]);
+      expect(find.text('已清理 2 个无用文件，释放 3.0 KB'), findsOneWidget);
+    });
+
+    testWidgets('P3 孤儿清理：无孤儿时按钮置灰、不弹确认', (tester) async {
+      await pumpSettings(tester);
+      await openGroup(tester, '数据');
+      expect(find.textContaining('没有无用文件'), findsOneWidget);
+      final button = tester.widget<QmButton>(
+          find.ancestor(of: find.text('清理无用文件'), matching: find.byType(QmButton)));
+      expect(button.onPressed, isNull);
     });
   });
 

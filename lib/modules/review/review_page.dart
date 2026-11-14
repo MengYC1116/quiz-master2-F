@@ -30,12 +30,19 @@ class ReviewPage extends StatefulWidget {
     required this.onOpenDetail,
     this.initialSubjectId,
     required this.onGoWrongbook,
+    this.onSettingsChanged,
   });
 
   final QuestionRepository repo;
   final Future<void> Function(Question q, List<String> orderIds) onOpenDetail;
   final String? initialSubjectId;
   final VoidCallback onGoWrongbook;
+
+  /// 设置单 owner（P0B1-4）的遗留参数：P0B2 起复习页“每页”下拉改成
+  /// 本地行为（见 _buildPager），不再经由此回调改设置，也不再写库；
+  /// 参数保留只为兼容既有调用点（app / 测试仍传 `_updateSettings`），
+  /// 当前页内已无使用。后续清理可连同 app.dart 的传入一并删掉。
+  final Future<void> Function(AppSettings s)? onSettingsChanged;
 
   @override
   State<ReviewPage> createState() => _ReviewPageState();
@@ -144,6 +151,9 @@ class _ReviewPageState extends State<ReviewPage> {
   String? _subjectFilter;
   String _causeFilter = '全部';
   int _page = 1;
+  // P0B2：每页条数是本页本地状态（与错题本一致），只在打开时从设置
+  // 默认值读一次初值；下拉改动不写库、不调 onSettingsChanged。
+  int _pageSize = AppSettings.defaults.pageSize;
   String? _openCuredKey;
   _ResumeInfo? _resume;
 
@@ -248,9 +258,10 @@ class _ReviewPageState extends State<ReviewPage> {
     _ResumeInfo? resume;
     final state = await widget.repo.reviewState();
     if (state != null) {
-      final pendingKeys = <String>{
+      final pendingKeys = <ReviewQueueItem>{
         for (final rs in pendingByQ.values)
-          for (final r in rs) '${r.questionId}|${r.cause}',
+          for (final r in rs)
+            ReviewQueueItem(questionId: r.questionId, cause: r.cause),
       };
       final valid =
           state.queue.where(pendingKeys.contains).toList();
@@ -276,6 +287,7 @@ class _ReviewPageState extends State<ReviewPage> {
     if (!mounted) return;
     setState(() {
       _settings = settings;
+      _pageSize = settings.pageSize;
       _subjects = subjectList;
       _groups = sortedPending;
       _curedGroups = sortedCured;
@@ -286,16 +298,16 @@ class _ReviewPageState extends State<ReviewPage> {
     });
   }
 
-  /// 扁平队列（"qid|cause" 顺序）→ 按题分块（连续同题合并）。
-  List<_CauseBlock> _blocksFromFlat(List<String> flat) {
+  /// 扁平队列（ReviewQueueItem 顺序）→ 按题分块（连续同题合并）。
+  List<_CauseBlock> _blocksFromFlat(List<ReviewQueueItem> flat) {
     final blocks = <_CauseBlock>[];
     for (final entry in flat) {
-      final parts = entry.split('|');
-      if (parts.length != 2) continue;
-      if (blocks.isNotEmpty && blocks.last.questionId == parts[0]) {
-        blocks.last.causes.add(parts[1]);
+      if (blocks.isNotEmpty &&
+          blocks.last.questionId == entry.questionId) {
+        blocks.last.causes.add(entry.cause);
       } else {
-        blocks.add(_CauseBlock(questionId: parts[0], causes: [parts[1]]));
+        blocks.add(
+            _CauseBlock(questionId: entry.questionId, causes: [entry.cause]));
       }
     }
     return blocks;
@@ -315,8 +327,6 @@ class _ReviewPageState extends State<ReviewPage> {
 
   List<_CauseGroup> get _filtered => _filterGroups(_groups);
   List<_CauseGroup> get _filteredCured => _filterGroups(_curedGroups);
-
-  int get _pageSize => _settings.pageSize;
 
   int get _totalPages {
     final n = (_filtered.length / _pageSize).ceil();
@@ -501,13 +511,14 @@ class _ReviewPageState extends State<ReviewPage> {
   }
 
   /// 扁平队列 + 当前位置（暂停保存用，与基线 `review_state` 同格式）。
-  (List<String>, int) _flatQueue() {
-    final flat = <String>[];
+  (List<ReviewQueueItem>, int) _flatQueue() {
+    final flat = <ReviewQueueItem>[];
     var pos = 0;
     for (var i = 0; i < _blocks.length; i++) {
       for (var j = 0; j < _blocks[i].causes.length; j++) {
         if (i == _bi && j == _ci) pos = flat.length;
-        flat.add('${_blocks[i].questionId}|${_blocks[i].causes[j]}');
+        flat.add(ReviewQueueItem(
+            questionId: _blocks[i].questionId, cause: _blocks[i].causes[j]));
       }
     }
     return (flat, pos);
@@ -1075,13 +1086,13 @@ class _ReviewPageState extends State<ReviewPage> {
                             DropdownMenuItem(value: n, child: Text('$n')))
                         .toList();
                   }(),
-                  onChanged: (v) async {
+                  onChanged: (v) {
                     if (v == null) return;
-                    final s = _settings.copyWith(pageSize: v);
-                    await widget.repo.saveSettings(s);
-                    if (!mounted) return;
+                    // P0B2：本地行为（与错题本一致）——只改本页 _pageSize
+                    // 并回第 1 页，不调 onSettingsChanged、不写库；
+                    // 初值仍在 _load 里从设置默认值读。
                     setState(() {
-                      _settings = s;
+                      _pageSize = v;
                       _resetPage();
                     });
                   },
@@ -1481,6 +1492,7 @@ class _ReviewPageState extends State<ReviewPage> {
       children: [
         QuestionSlice(
           question: q,
+          subject: _subjectOf(q.subjectId),
           maxHeight: 220,
           onTap: () => showQuestionZoomDialog(context, q, returnLabel: '复习'),
         ),
@@ -1618,6 +1630,7 @@ class _ReviewPageState extends State<ReviewPage> {
       children: [
         QuestionSlice(
           question: q,
+          subject: _subjectOf(q.subjectId),
           maxHeight: 220,
           onTap: () => showQuestionZoomDialog(context, q, returnLabel: '复习'),
         ),

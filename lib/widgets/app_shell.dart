@@ -106,153 +106,174 @@ class AppNavBar extends StatelessWidget {
         DesignTokens.navPaddingH * scale,
         DesignTokens.navPaddingV * scale,
       ),
-      // 导航列：空间够时 side-foot 贴底（Spacer），不够时（小窗口 /
-      // 大字号）整列可滚动，不溢出黄条。SingleChildScrollView +
-      // ConstrainedBox(minHeight = 可用高) + IntrinsicHeight 是标准写法：
-      // 够高时 Column 被撑满、Spacer 把 foot 顶到底；不够高时内容
-      // 超出 minHeight，滚动生效。minHeight 要减掉外壳上下内边距。
+      // 导航列分两段（P0B2-3）：品牌 + 主列表固定在上；学科速览区
+      // （标题 + 学科行）撑满剩余空间，行多 / 窗口矮时只在区内滚动；
+      // 设置按钮固定在导航最底部，不随速览滚动。折叠态没有速览区，
+      // 仍沿用旧的可滚动整列（小窗口 + 大字号时不溢出）。
       child: LayoutBuilder(
         builder: (context, constraints) {
-          return SingleChildScrollView(
-            child: ConstrainedBox(
-              constraints: BoxConstraints(
-                minHeight: constraints.maxHeight -
-                    DesignTokens.navPaddingV * scale * 2,
+          final top = <Widget>[
+            if (collapsed)
+              _NavGlyphButton(
+                glyph: QmGlyphs.chevronRight,
+                tooltip: '展开导航',
+                onPressed: onToggleCollapsed,
+              )
+            else
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'quiz-master2',
+                          style: TextStyle(
+                            fontSize: DesignTokens.navBrandFontSize,
+                            fontWeight: FontWeight.w800,
+                            color: palette.ink,
+                            height: DesignTokens.controlLineHeight,
+                          ),
+                        ),
+                        SizedBox(height: 2 * scale),
+                        Text(
+                          '个人智能错题本',
+                          style: TextStyle(
+                            fontSize: DesignTokens.navBrandSubFontSize,
+                            color: palette.muted,
+                            height: DesignTokens.controlLineHeight,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  _NavGlyphButton(
+                    glyph: QmGlyphs.chevronLeft,
+                    tooltip: '折叠导航',
+                    onPressed: onToggleCollapsed,
+                  ),
+                ],
               ),
-              child: IntrinsicHeight(
-                child: Column(
-                  crossAxisAlignment: collapsed
-                      ? CrossAxisAlignment.center
-                      : CrossAxisAlignment.start,
-                  children: [
-          if (collapsed)
-            _NavGlyphButton(
-              glyph: QmGlyphs.chevronRight,
-              tooltip: '展开导航',
-              onPressed: onToggleCollapsed,
-            )
-          else
-            Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Expanded(
+            SizedBox(height: 12 * scale),
+            ..._navItems().map((item) => Padding(
+                  padding: EdgeInsets.symmetric(vertical: 2 * scale),
+                  child: collapsed
+                      ? _CollapsedNavItem(
+                          item: item,
+                          selected: route == item.route,
+                          onNavigate: onNavigate,
+                        )
+                      : _NavItem(
+                          item: item,
+                          selected: route == item.route,
+                          onNavigate: onNavigate,
+                        ),
+                )),
+          ];
+          if (collapsed) {
+            return SingleChildScrollView(
+              child: ConstrainedBox(
+                constraints: BoxConstraints(
+                  minHeight: constraints.maxHeight -
+                      DesignTokens.navPaddingV * scale * 2,
+                ),
+                child: IntrinsicHeight(
                   child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
+                    crossAxisAlignment: CrossAxisAlignment.center,
                     children: [
-                      Text(
-                        'quiz-master2',
-                        style: TextStyle(
-                          fontSize: DesignTokens.navBrandFontSize,
-                          fontWeight: FontWeight.w800,
-                          color: palette.ink,
-                          height: DesignTokens.controlLineHeight,
+                      ...top,
+                      const Spacer(),
+                      _CollapsedNavItem(
+                        item: const _NavItemData(
+                          route: '/settings',
+                          label: '设置',
+                          glyph: QmGlyphs.navSettings,
+                        ),
+                        selected: route == '/settings',
+                        onNavigate: onNavigate,
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            );
+          }
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              ...top,
+              // 学科速览区：上边框 + 标题固定，学科行在区内滚动。
+              // B2：学科速览按入库顺序最多显示前 5 科（Meng 定）；
+              // 不足 5 科全显示；超过 5 科只显示前 5，不加“还有 N 科”
+              // 提示（现有设计无此提示）。
+              Expanded(
+                child: Container(
+                  decoration: BoxDecoration(
+                    border: Border(top: BorderSide(color: palette.line)),
+                  ),
+                  padding: EdgeInsets.only(top: 10 * scale),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Padding(
+                        padding: EdgeInsets.fromLTRB(
+                          DesignTokens.subjRowPaddingH * scale,
+                          4 * scale,
+                          DesignTokens.subjRowPaddingH * scale,
+                          8 * scale,
+                        ),
+                        child: Text(
+                          '学科速览',
+                          style: TextStyle(
+                            fontSize: DesignTokens.navSectionFontSize,
+                            fontWeight: FontWeight.w700,
+                            color: palette.muted,
+                            letterSpacing: 0.08 * 12,
+                          ),
                         ),
                       ),
-                      SizedBox(height: 2 * scale),
-                      Text(
-                        '个人智能错题本',
-                        style: TextStyle(
-                          fontSize: DesignTokens.navBrandSubFontSize,
-                          color: palette.muted,
-                          height: DesignTokens.controlLineHeight,
+                      Expanded(
+                        child: SingleChildScrollView(
+                          key: const ValueKey('qm-nav-subject-scroll'),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
+                              for (final s
+                                  in (subjects ?? Subject.all).take(5))
+                                _SubjectRow(
+                                  subject: s,
+                                  pending: navPending[s.id] ?? 0,
+                                  rev: navRev[s.id] ?? 0,
+                                ),
+                            ],
+                          ),
                         ),
                       ),
                     ],
                   ),
                 ),
-                _NavGlyphButton(
-                  glyph: QmGlyphs.chevronLeft,
-                  tooltip: '折叠导航',
-                  onPressed: onToggleCollapsed,
+              ),
+              // 底部设置：固定在导航最下方，不随速览滚动。
+              Padding(
+                padding: EdgeInsets.fromLTRB(
+                  DesignTokens.subjRowPaddingH * scale,
+                  8 * scale,
+                  DesignTokens.subjRowPaddingH * scale,
+                  2 * scale,
                 ),
-              ],
-            ),
-          SizedBox(height: 12 * scale),
-          ..._navItems().map((item) => Padding(
-                padding: EdgeInsets.symmetric(vertical: 2 * scale),
-                child: collapsed
-                    ? _CollapsedNavItem(
-                        item: item,
-                        selected: route == item.route,
-                        onNavigate: onNavigate,
-                      )
-                    : _NavItem(
-                        item: item,
-                        selected: route == item.route,
-                        onNavigate: onNavigate,
-                      ),
-              )),
-          const Spacer(),
-          if (collapsed)
-            _CollapsedNavItem(
-              item: const _NavItemData(
-                route: '/settings',
-                label: '设置',
-                glyph: QmGlyphs.navSettings,
-              ),
-              selected: route == '/settings',
-              onNavigate: onNavigate,
-            )
-          else
-            Container(
-              decoration: BoxDecoration(
-                border: Border(top: BorderSide(color: palette.line)),
-              ),
-              padding: EdgeInsets.only(top: 10 * scale),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  Padding(
-                    padding: EdgeInsets.fromLTRB(
-                      DesignTokens.subjRowPaddingH * scale,
-                      4 * scale,
-                      DesignTokens.subjRowPaddingH * scale,
-                      8 * scale,
-                    ),
-                    child: Text(
-                      '学科速览',
-                      style: TextStyle(
-                        fontSize: DesignTokens.navSectionFontSize,
-                        fontWeight: FontWeight.w700,
-                        color: palette.muted,
-                        letterSpacing: 0.08 * 12,
-                      ),
-                    ),
-                  ),
-                  // B2：学科速览按入库顺序最多显示前 5 科（Meng 定）；
-                  // 不足 5 科全显示；超过 5 科只显示前 5，不加“还有 N 科”
-                  // 提示（现有设计无此提示）。
-                  for (final s in (subjects ?? Subject.all).take(5))
-                    _SubjectRow(
-                      subject: s,
-                      pending: navPending[s.id] ?? 0,
-                      rev: navRev[s.id] ?? 0,
-                    ),
-                  Padding(
-                    padding: EdgeInsets.fromLTRB(
-                      DesignTokens.subjRowPaddingH * scale,
-                      8 * scale,
-                      DesignTokens.subjRowPaddingH * scale,
-                      2 * scale,
-                    ),
-                    child: QmButton(
-                      label: '设置',
-                      leadingGlyph: QmGlyphs.navSettings,
-                      variant: route == '/settings'
-                          ? QmButtonVariant.primary
-                          : QmButtonVariant.plain,
-                      size: QmButtonSize.small,
-                      block: true,
-                      onPressed: () => onNavigate('/settings'),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-                  ],
+                child: QmButton(
+                  label: '设置',
+                  leadingGlyph: QmGlyphs.navSettings,
+                  variant: route == '/settings'
+                      ? QmButtonVariant.primary
+                      : QmButtonVariant.plain,
+                  size: QmButtonSize.small,
+                  block: true,
+                  onPressed: () => onNavigate('/settings'),
                 ),
               ),
-            ),
+            ],
           );
         },
       ),

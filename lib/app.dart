@@ -398,6 +398,9 @@ class _QuizMasterAppState extends State<QuizMasterApp> {
           onOpenDetail: (q, ids) => _openDetail(q, ids, sourceLabel: '复习'),
           initialSubjectId: _reviewSubjectArg,
           onGoWrongbook: () => _go('/wrongbook'),
+          // P0B2：复习页“每页”下拉已改成本地行为，不再改设置；
+          // onSettingsChanged 保留传入（参数兼容），页内已无使用。
+          onSettingsChanged: _updateSettings,
         );
       case '/report':
         return ReportPage(

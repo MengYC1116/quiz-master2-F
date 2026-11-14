@@ -50,6 +50,15 @@ class _OrganizePageState extends State<OrganizePage> {
   List<KnowledgePoint> _kps = [];
   List<String> _allTags = [];
   List<String> _customTypesAll = [];
+  // 学科表：读库 subjects（P0B1 扫尾；以前直接 Subject.byId，
+  // 新学科显示成“数学”）。空库回退预设三科。
+  List<Subject> _subjects = Subject.all;
+  // 库里找学科：新学科用库里的名与色；找不到才回退 Subject.byId
+  //（数学兜底，只发生在数据不一致时）。
+  Subject _subjectOf(String id) => _subjects.firstWhere(
+        (s) => s.id == id,
+        orElse: () => Subject.byId(id),
+      );
 
   // 表单状态（当前题）。
   List<String> _folderIds = [];
@@ -161,6 +170,7 @@ class _OrganizePageState extends State<OrganizePage> {
     final exams = await widget.repo.exams();
     final kps = await widget.repo.knowledgePoints();
     final tags = await widget.repo.tags();
+    final subjects = await widget.repo.subjects();
     final customs = <String>{};
     for (final q in all) {
       customs.addAll(q.customErrorTypes);
@@ -174,6 +184,7 @@ class _OrganizePageState extends State<OrganizePage> {
       _exams = exams;
       _kps = kps;
       _allTags = tags;
+      _subjects = subjects.isEmpty ? Subject.all : subjects;
       _customTypesAll = customs.toList();
       _loading = false;
     });
@@ -433,6 +444,11 @@ class _OrganizePageState extends State<OrganizePage> {
   Future<void> _submitNewTag() async {
     final name = _newTagCtrl.text.trim();
     if (name.isEmpty) return;
+    // §6 第 4 条：标签名禁逗号与竖线。
+    if (hasBannedNameSeparator(name)) {
+      _snack('不能含逗号或竖线');
+      return;
+    }
     await widget.repo.addTag(name);
     if (!mounted) return;
     setState(() {
@@ -446,6 +462,11 @@ class _OrganizePageState extends State<OrganizePage> {
   void _addCustomType() {
     final name = _customTypeCtrl.text.trim();
     if (name.isEmpty) return;
+    // §6 第 4 条：自定义错因名禁逗号与竖线。
+    if (hasBannedNameSeparator(name)) {
+      _snack('不能含逗号或竖线');
+      return;
+    }
     setState(() {
       if (!_customTypes.contains(name)) _customTypes.add(name);
       if (!_customTypesAll.contains(name)) _customTypesAll.add(name);
@@ -581,7 +602,7 @@ class _OrganizePageState extends State<OrganizePage> {
   Widget _topbar(Question q) {
     final scale = qmScaleOf(context);
     final palette = DesignTokens.of(Theme.of(context).brightness);
-    final subject = Subject.byId(q.subjectId);
+    final subject = _subjectOf(q.subjectId);
     return Row(
       crossAxisAlignment: CrossAxisAlignment.center,
       children: [
@@ -706,6 +727,7 @@ class _OrganizePageState extends State<OrganizePage> {
     final scale = qmScaleOf(context);
     final slice = QuestionSlice(
       question: q,
+      subject: _subjectOf(q.subjectId),
       maxHeight: DesignTokens.organizePaperMaxHeight * scale,
       failed: widget.imageFailed,
       onTap: widget.imageFailed
@@ -789,21 +811,32 @@ class _OrganizePageState extends State<OrganizePage> {
   }
 
   /// 修框切片：每框一张切片卡（整题框 + 各二层框），只存图不做 OCR。
+  /// 整题框有真实切片时显示真图（QuestionSlice 已接 slice_path）；
+  /// 题干/选项/配图卡只在 sliceText 非空时显示——真实题没有
+  /// sliceText，不显示空白卡。
   Widget _slicesSection(Question q) {
     final regions = regionsOfQuestion(q);
+    final hasText = q.sliceText.trim().isNotEmpty;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        _sliceCard('整题框切片', _sliceTextBody(q, withFigureNote: true)),
-        const SizedBox(height: 10),
-        _sliceCard('题干框切片', _sliceTextBody(q)),
-        if (regions.contains('option')) ...[
+        _sliceCard(
+          '整题框切片',
+          q.slicePath != null
+              ? QuestionSlice(question: q, maxHeight: 220)
+              : _sliceTextBody(q, withFigureNote: true),
+        ),
+        if (hasText) ...[
           const SizedBox(height: 10),
-          _sliceCard('选项框切片', _optionBody()),
-        ],
-        if (regions.contains('figure')) ...[
-          const SizedBox(height: 10),
-          _sliceCard('配图框切片', _figureBody(q)),
+          _sliceCard('题干框切片', _sliceTextBody(q)),
+          if (regions.contains('option')) ...[
+            const SizedBox(height: 10),
+            _sliceCard('选项框切片', _optionBody()),
+          ],
+          if (regions.contains('figure')) ...[
+            const SizedBox(height: 10),
+            _sliceCard('配图框切片', _figureBody(q)),
+          ],
         ],
       ],
     );
@@ -1116,7 +1149,7 @@ class _OrganizePageState extends State<OrganizePage> {
   }
 
   Widget _folderSection(Question q) {
-    final subject = Subject.byId(q.subjectId);
+    final subject = _subjectOf(q.subjectId);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -1526,7 +1559,7 @@ class _OrganizePageState extends State<OrganizePage> {
   ) {
     final scale = qmScaleOf(context);
     final palette = DesignTokens.of(Theme.of(context).brightness);
-    final subject = Subject.byId(q.subjectId);
+    final subject = _subjectOf(q.subjectId);
     return Container(
       padding: EdgeInsets.symmetric(
         horizontal: 14 * scale,
@@ -1895,6 +1928,15 @@ class _QueuePopupState extends State<_QueuePopup> {
   List<Question> _questions = [];
   Map<String, String> _examNames = {};
   List<Folder> _folders = [];
+  // 学科表：读库 subjects（P0B1 扫尾；队列搜索 / 详情行 / 删除确认
+  // 以前直接 Subject.byId，新学科显示成“数学”）。空库回退预设三科。
+  List<Subject> _subjects = Subject.all;
+  // 库里找学科：新学科用库里的名与色；找不到才回退 Subject.byId
+  //（数学兜底，只发生在数据不一致时）。
+  Subject _subjectOf(String id) => _subjects.firstWhere(
+        (s) => s.id == id,
+        orElse: () => Subject.byId(id),
+      );
   String? _pendingDeleteId;
   bool _batchDel = false;
   bool _addingBatchFolder = false;
@@ -1937,10 +1979,12 @@ class _QueuePopupState extends State<_QueuePopup> {
     final exams = await widget.repo.exams();
     final folders =
         await widget.repo.folders(subjectId: _currentSubjectId);
+    final subjects = await widget.repo.subjects();
     if (!mounted) return;
     setState(() {
       _examNames = {for (final e in exams) e.id: e.name};
       _folders = folders;
+      _subjects = subjects.isEmpty ? Subject.all : subjects;
       _batchFolderId ??=
           folders.isEmpty ? null : folders.first.id;
     });
@@ -1970,7 +2014,7 @@ class _QueuePopupState extends State<_QueuePopup> {
     var list = _questions.where((q) {
       if (query.isEmpty) return true;
       final haystack =
-          '${q.title} ${Subject.byId(q.subjectId).name} ${_examNames[q.examId] ?? ''}'
+          '${q.title} ${_subjectOf(q.subjectId).name} ${_examNames[q.examId] ?? ''}'
               .toLowerCase();
       return haystack.contains(query);
     }).toList();
@@ -2014,7 +2058,7 @@ class _QueuePopupState extends State<_QueuePopup> {
     final missing = q.folderIds.isEmpty
         ? '待补充 1 项：文件夹（归类）'
         : '必填已齐';
-    return '${Subject.byId(q.subjectId).name} · ${sliceKindLabel(q.sliceKind)} · ${_dateText(q.createdAt)} · 试卷（来源）：$exam · $missing';
+    return '${_subjectOf(q.subjectId).name} · ${sliceKindLabel(q.sliceKind)} · ${_dateText(q.createdAt)} · 试卷（来源）：$exam · $missing';
   }
 
   Future<void> _confirmDeleteOne(Question q) async {
@@ -2365,7 +2409,7 @@ class _QueuePopupState extends State<_QueuePopup> {
               style: TextStyle(fontWeight: FontWeight.w700)),
           SizedBox(height: 4 * scale),
           Text(
-            '「${Subject.byId(target.subjectId).name} · ${sliceKindLabel(target.sliceKind)}｜${target.title}」删了就没了，不可恢复。',
+            '「${_subjectOf(target.subjectId).name} · ${sliceKindLabel(target.sliceKind)}｜${target.title}」删了就没了，不可恢复。',
             style: const TextStyle(fontSize: 13, height: 1.55),
           ),
           SizedBox(height: 8 * scale),

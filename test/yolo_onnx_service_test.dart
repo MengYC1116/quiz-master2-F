@@ -317,8 +317,7 @@ void main() {
         img.dispose();
         final file = File('${dir.path}/page.png');
         await file.writeAsBytes(png!.buffer.asUint8List());
-        final boxes =
-            await service.detectPage(imagePath: file.path, page: 1);
+        final boxes = (await service.detectPage(imagePath: file.path, page: 1)).boxes;
         if (!service.hasRealModel) {
           markTestSkipped('本机无 onnxruntime 原生库，跳过真实推理');
           return;
@@ -332,15 +331,44 @@ void main() {
       }
     });
 
-    test('图片文件不存在：回占位，不抛错', () async {
+    test('图片文件不存在：不回占位框，usedFallback 为真、显式提示手动框选', () async {
       final service = YoloOnnxService();
-      final boxes = await service.detectPage(
+      final result = await service.detectPage(
         imagePath: '/definitely/not/here/page.png',
         page: 1,
       );
-      expect(boxes.length, 1);
-      expect(boxes.first.id, 'box-q1');
-      expect(boxes.first.layer, 1);
+      expect(result.usedFallback, isTrue);
+      expect(result.boxes, isEmpty);
+      expect(result.error, contains('页图缺失'));
+    });
+
+    test('模型缺失时：不回占位框，usedFallback 为真、提示手动框选', () async {
+      // 先重置加载缓存：真实推理测试跑过后 _loadOk 已缓存为真。
+      YoloOnnxService.resetLoadStateForTest();
+      final service = YoloOnnxService(
+        questionModelAsset: 'assets/models/question/does-not-exist.onnx',
+      );
+      final dir = await Directory.systemTemp.createTemp('yolo-nomodel');
+      try {
+        final recorder = ui.PictureRecorder();
+        final canvas = ui.Canvas(recorder);
+        canvas.drawRect(
+          const ui.Rect.fromLTWH(0, 0, 100, 100),
+          ui.Paint()..color = const ui.Color(0xFFFFFFFF),
+        );
+        final img = await recorder.endRecording().toImage(100, 100);
+        final png = await img.toByteData(format: ui.ImageByteFormat.png);
+        img.dispose();
+        final file = File('${dir.path}/page.png');
+        await file.writeAsBytes(png!.buffer.asUint8List());
+        final result =
+            await service.detectPage(imagePath: file.path, page: 1);
+        expect(result.usedFallback, isTrue);
+        expect(result.boxes, isEmpty);
+        expect(result.error, contains('手动框选'));
+      } finally {
+        await dir.delete(recursive: true);
+      }
     });
   });
 }

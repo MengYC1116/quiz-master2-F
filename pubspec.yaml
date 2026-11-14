@@ -20,6 +20,7 @@ dependencies:
   # Flutter 3.47.9 下可用，但须在 Win11 上重验（见 D-23）。
   # 除此之外不升级任何依赖。
   onnxruntime: ^1.4.1
+  pdfrx_engine: ^0.9.2
 
 dev_dependencies:
   flutter_test:

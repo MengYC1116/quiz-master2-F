@@ -90,6 +90,13 @@ class _HomePageState extends State<HomePage> {
   Map<String, int>? _revCounts;
   Map<String, int>? _pendingCounts;
   List<Subject> _subjects = Subject.all;
+  // 库里找学科：新学科用库里的名；找不到才回退 Subject.byId
+  //（数学兜底，只发生在数据不一致时）。P0B1 扫尾：副标题与焦点卡
+  // 以前直接 Subject.byId，新学科显示成“数学”。
+  Subject _subjectOf(String id) => _subjects.firstWhere(
+        (s) => s.id == id,
+        orElse: () => Subject.byId(id),
+      );
   int _duePending = 0;
   int _dueRecheck = 0;
   ({String kind, String subjectId, String title})? _recent;
@@ -192,7 +199,7 @@ class _HomePageState extends State<HomePage> {
             _recent == null
                 ? '上次停在：还没有记录'
                 : '上次停在：${_kindPageName(_recent!.kind)} · '
-                    '${Subject.byId(_recent!.subjectId).name}「${_recent!.title}」',
+                    '${_subjectOf(_recent!.subjectId).name}「${_recent!.title}」',
             style: TextStyle(
               fontSize: DesignTokens.bodySmallFontSize,
               color: palette.muted,
@@ -222,6 +229,7 @@ class _HomePageState extends State<HomePage> {
               duePending: _duePending,
               dueRecheck: _dueRecheck,
               recent: _recent,
+              subjects: _subjects,
               onTapCard: widget.onGoReview,
               onResume: _resumeRecent,
               onGoCollect: widget.onGoCollect,
@@ -343,6 +351,7 @@ class _FocusCard extends StatelessWidget {
     required this.duePending,
     required this.dueRecheck,
     required this.recent,
+    required this.subjects,
     required this.onTapCard,
     required this.onResume,
     required this.onGoCollect,
@@ -354,9 +363,17 @@ class _FocusCard extends StatelessWidget {
   final int duePending;
   final int dueRecheck;
   final ({String kind, String subjectId, String title})? recent;
+  // 库里的全部学科（P0B1 扫尾：焦点卡“继续上次”里的学科名以前
+  // 直接 Subject.byId，新学科显示成“数学”）。
+  final List<Subject> subjects;
   final VoidCallback onTapCard;
   final VoidCallback onResume;
   final VoidCallback onGoCollect;
+
+  /// 库里找学科名；找不到才回退 Subject.byId（数学兜底）。
+  String _subjectName(String id) => subjects
+      .firstWhere((s) => s.id == id, orElse: () => Subject.byId(id))
+      .name;
 
   @override
   Widget build(BuildContext context) {
@@ -434,7 +451,7 @@ class _FocusCard extends StatelessWidget {
                         Text(
                           hasRecent
                               ? '继续上次：${_kindPageName(recent!.kind)} · '
-                                  '${Subject.byId(recent!.subjectId).name}'
+                                  '${_subjectName(recent!.subjectId)}'
                                   '「${recent!.title}」'
                               : '继续上次：还没有记录',
                           maxLines: 1,

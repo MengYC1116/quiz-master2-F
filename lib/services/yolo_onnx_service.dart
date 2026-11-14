@@ -1,12 +1,30 @@
 import 'dart:io';
 import 'dart:math' as math;
-import 'dart:typed_data';
 import 'dart:ui' as ui;
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:onnxruntime/onnxruntime.dart';
 
 import '../models/models.dart';
+
+/// 检测结果（§1.3，P1-3 定稿）：模型失败不回占位框。
+/// - 成功：`boxes` 是检出的框，`usedFallback` 为 false；
+/// - 页图缺失 / 模型缺失 / 加载失败 / 推理异常：`boxes` 为空，
+///   `usedFallback` 为 true，`error` 是给用户看的原因；
+///   调用方显示“自动检测不可用，请手动框选”，原有框保持不动，
+///   绝不自动写入占位框（只有用户明确手动画框时才落库）。
+class DetectionResult {
+  const DetectionResult({
+    required this.boxes,
+    required this.usedFallback,
+    this.error,
+  });
+
+  final List<QuestionBox> boxes;
+  final bool usedFallback;
+  final String? error;
+}
 
 /// YOLO 检测（ONNX），当前只接第 1 层：整题框 → 整题切片。
 ///
@@ -23,8 +41,8 @@ import '../models/models.dart';
 /// 三色高亮、切片区都保留，没有模型时用户仍可手动框 stem / option /
 /// figure（收集页“先画框后选类型”本来就支持手画），只是不再自动检出。
 ///
-/// 模型文件缺失、加载失败、或图片文件不存在时回退到占位模式
-/// （一页一个整题框），不抛错、不卡住收集流程。
+/// 模型文件缺失、加载失败、或图片文件不存在时返回 [DetectionResult]
+///（usedFallback 为 true），不抛错、不回占位框、不卡住收集流程。
 /// `hasRealModel` 为真当且仅当第 1 层模型已成功加载。
 class YoloOnnxService {
   YoloOnnxService({
@@ -80,6 +98,19 @@ class YoloOnnxService {
   /// 是否已加载真模型（只看第 1 层）。
   bool get hasRealModel => _loadOk;
 
+  /// 测试用：重置模型加载状态（让下一个测试重新走 `_ensureLoaded`）。
+  /// 模型缺失测试需要它：真实推理测试跑过后 `_loadOk` 已缓存为真，
+  /// 不重置就测不到“模型缺失”的分支。仅测试调用。
+  @visibleForTesting
+  static void resetLoadStateForTest() {
+    _loadAttempted = false;
+    _loadOk = false;
+    try {
+      _questionSession?.release();
+    } catch (_) {}
+    _questionSession = null;
+  }
+
   /// 最近一次真实推理的耗时与计数（占位回退时为 null）。
   YoloDetectStats? lastDetectStats;
 
@@ -89,36 +120,52 @@ class YoloOnnxService {
   static bool _loadOk = false;
 
   /// 对一页做检测，只返回第 1 层整题框。图片文件不存在、模型缺失
-  /// 或推理中途出错时返回占位框（一个覆盖页面的整题框），
-  /// 调用方流程不受影响。
+  /// 或推理中途出错时返回 `usedFallback: true` 的空结果（不回占位框，
+  /// 见 [DetectionResult]），调用方流程不受影响。
   ///
   /// 文件读写用同步 IO（`existsSync` / `readAsBytesSync`）：
   /// `testWidgets` 的 FakeAsync 环境下异步文件 IO 永不完成，
   /// 会导致修框编辑器打不开（见 YOLO 报告）；同步读一张
   /// 1653×2200 PNG 约几毫秒，UI 上无感。
-  Future<List<QuestionBox>> detectPage({
+  Future<DetectionResult> detectPage({
     required String imagePath,
     required int page,
   }) async {
     lastDetectStats = null;
+    final file = File(imagePath);
+    if (!file.existsSync()) {
+      return const DetectionResult(
+        boxes: [],
+        usedFallback: true,
+        error: '页图缺失：找不到这页的图片，请重新导入',
+      );
+    }
     try {
-      final file = File(imagePath);
-      if (!file.existsSync()) return _placeholderBoxes();
       final bytes = file.readAsBytesSync();
       final codec = await ui.instantiateImageCodec(bytes);
       final frame = await codec.getNextFrame();
       final pageImage = frame.image;
       try {
-        if (!await _ensureLoaded()) return _placeholderBoxes();
+        if (!await _ensureLoaded()) {
+          return const DetectionResult(
+            boxes: [],
+            usedFallback: true,
+            error: '自动检测不可用，请手动框选',
+          );
+        }
         final sw = Stopwatch()..start();
         final boxes = await _detect(pageImage, page);
         sw.stop();
-        return boxes;
+        return DetectionResult(boxes: boxes, usedFallback: false);
       } finally {
         pageImage.dispose();
       }
     } catch (_) {
-      return _placeholderBoxes();
+      return const DetectionResult(
+        boxes: [],
+        usedFallback: true,
+        error: '自动检测不可用，请手动框选',
+      );
     }
   }
 
@@ -171,6 +218,8 @@ class YoloOnnxService {
       ));
     }
     // 阅读顺序：先上后下、同行先左后右，再按顺序编号 box-q1…。
+    // 编号只换 id，置信度 / 来源 / 页码原样保留（§1.2(c) 小项-1：
+    // 检测服务须填 confidence 与 origin='yolo'，否则两列永远为空）。
     questions.sort((a, b) {
       final dy = a.y.compareTo(b.y);
       return dy != 0 ? dy : a.x.compareTo(b.x);
@@ -186,6 +235,9 @@ class YoloOnnxService {
         y: q.y,
         w: q.w,
         h: q.h,
+        confidence: q.confidence,
+        origin: q.origin,
+        page: page,
       ));
     }
 
@@ -354,6 +406,9 @@ class YoloOnnxService {
           y: src.y1 / pageH,
           w: (src.x2 - src.x1) / pageW,
           h: (src.y2 - src.y1) / pageH,
+          // §1.2(c) 小项-1：检测框填置信度与来源；手画框为 NULL/'manual'。
+          confidence: d.score,
+          origin: 'yolo',
         ),
         minSize: false);
   }
@@ -478,11 +533,6 @@ class YoloOnnxService {
     return (inners: inners, orphans: orphans);
   }
 
-  List<QuestionBox> _placeholderBoxes() => [
-        const QuestionBox(
-            id: 'box-q1', layer: 1, type: 'question', x: 0.06, y: 0.05, w: 0.88, h: 0.85),
-      ];
-
   /// 框钳制：框不得超出页面（0..1），新画的框同样钳制；尺寸随图片实际大小走。
   ///
   /// 对任何输入都不抛错。贴边语义：允许宽/高小于 0.08，不把左上角收进来——
@@ -507,8 +557,24 @@ class YoloOnnxService {
     final h = box.h.clamp(0.0, maxH);
     final w2 = (minSize && maxW >= 0.08 && w < 0.08) ? 0.08 : w;
     final h2 = (minSize && maxH >= 0.08 && h < 0.08) ? 0.08 : h;
+    // 钳制只改坐标与尺寸，其余字段（置信度 / 来源 / 归属 / 页码）
+    // 原样保留——以前这里重建框会丢掉 confidence 与 origin。
     return QuestionBox(
-        id: box.id, layer: box.layer, type: box.type, x: x, y: y, w: w2, h: h2);
+      id: box.id,
+      layer: box.layer,
+      type: box.type,
+      x: x,
+      y: y,
+      w: w2,
+      h: h2,
+      confidence: box.confidence,
+      origin: box.origin,
+      parentBoxId: box.parentBoxId,
+      page: box.page,
+      collectTaskId: box.collectTaskId,
+      questionId: box.questionId,
+      updatedAt: box.updatedAt,
+    );
   }
 }
 

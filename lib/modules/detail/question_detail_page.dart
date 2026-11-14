@@ -18,13 +18,20 @@
 //
 // 颜色只取 DesignTokens；文字符号（D3），不用图标字体；
 // 三档缩放 1.00/1.15/1.30 由 app.dart TextScaler + qmScaleOf 统一做。
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 
+import '../../data/database.dart';
 import '../../data/repository.dart';
 import '../../models/models.dart';
+import '../../services/import_service.dart';
+import '../../services/page_image_pipeline.dart';
+import '../../services/yolo_onnx_service.dart';
 import '../../theme/design_tokens.dart';
 import '../../widgets/uikit.dart';
 import '../../widgets/widgets.dart';
+import '../collect/collect_page.dart';
 
 /// 表单字段（HTML `.form-grid` 的一格）：label 12.5px/700 ink-2，
 /// 值 14.5px；[hint] 是字段下的补充说明（`.ph` 12.5px muted）。
@@ -77,6 +84,15 @@ class _QuestionDetailPageState extends State<QuestionDetailPage> {
   List<Folder> _folders = [];
   List<String> _allTags = [];
   List<KnowledgePoint> _kps = [];
+  // 学科表：读库 subjects（P0B1 扫尾；以前直接 Subject.byId，
+  // 新学科显示成“数学”）。空库回退预设三科。
+  List<Subject> _subjects = Subject.all;
+  // 库里找学科：新学科用库里的名与色；找不到才回退 Subject.byId
+  //（数学兜底，只发生在数据不一致时）。
+  Subject _subjectOf(String id) => _subjects.firstWhere(
+        (s) => s.id == id,
+        orElse: () => Subject.byId(id),
+      );
 
   bool _editing = false;
   bool _dirty = false;
@@ -140,6 +156,7 @@ class _QuestionDetailPageState extends State<QuestionDetailPage> {
     final folders = await widget.repo.folders();
     final tags = await widget.repo.tags();
     final kps = await widget.repo.knowledgePoints();
+    final subjects = await widget.repo.subjects();
     if (!mounted) return;
     setState(() {
       _q = q;
@@ -149,6 +166,7 @@ class _QuestionDetailPageState extends State<QuestionDetailPage> {
       _folders = folders;
       _allTags = tags;
       _kps = kps;
+      _subjects = subjects.isEmpty ? Subject.all : subjects;
       _loading = false;
     });
   }
@@ -244,6 +262,16 @@ class _QuestionDetailPageState extends State<QuestionDetailPage> {
       createdAt: base.createdAt,
       sliceKind: base.sliceKind,
       sliceText: base.sliceText,
+      // P2 §1.2：图片字段是本题的身份，编辑表单不改它们——
+      // 全新构造时必须从 base 带上，否则编辑一次就把
+      // sourcePath/slicePath 等抹掉，题变成“无图题”。
+      sourcePath: base.sourcePath,
+      sourceKind: base.sourceKind,
+      sourcePage: base.sourcePage,
+      pageImagePath: base.pageImagePath,
+      slicePath: base.slicePath,
+      sliceWidth: base.sliceWidth,
+      sliceHeight: base.sliceHeight,
     );
     await widget.repo.save(updated);
     await widget.repo.syncCauseRecords(updated);
@@ -254,6 +282,96 @@ class _QuestionDetailPageState extends State<QuestionDetailPage> {
     });
     widget.onChanged();
     await _load();
+  }
+
+  /// §1.5.1 重新框选：加载同页全部 1 层框——目标题的框可编辑，
+  /// 同页其他题的框只读（重叠校验对所有框生效）；取消丢弃本次修改。
+  /// 页图缺失时不开编辑器（§6 第 6 条）。
+  Future<void> _reworkBoxes() async {
+    final q = _q;
+    if (q == null) return;
+    if (q.pageImagePath == null) {
+      _snack('这道题没有页图，无法重新框选');
+      return;
+    }
+    final pageAbs = AppDatabase.resolveDataPath(q.pageImagePath!);
+    if (pageAbs == null || !File(pageAbs).existsSync()) {
+      _snack('页图缺失：找不到这页的图片，请重新导入');
+      return;
+    }
+    final page = q.sourcePage ?? 1;
+    final allBoxes = await widget.repo.boxesForPageImage(q.pageImagePath!);
+    final targets = allBoxes
+        .where((b) => b.questionId == q.id && b.layer == 1)
+        .toList();
+    final readOnly = allBoxes
+        .where((b) => b.questionId != q.id && b.layer == 1)
+        .toList();
+    final targetIds = targets.map((b) => b.id).toSet();
+    final inners = <String, List<QuestionBox>>{};
+    final standalone = <QuestionBox>[];
+    for (final b in allBoxes) {
+      if (b.questionId != q.id || b.layer != 2) continue;
+      if (b.parentBoxId != null && targetIds.contains(b.parentBoxId)) {
+        (inners[b.parentBoxId!] ??= []).add(b);
+      } else {
+        standalone.add(b);
+      }
+    }
+    if (!mounted) return;
+    final result = await showBoxEditorDialog(
+      context: context,
+      fileName: q.sourcePath?.split('/').last ?? '页图',
+      pageImagePath: pageAbs,
+      page: page,
+      pageCount: 1,
+      subjectName: _subjectOf(q.subjectId).name,
+      taskId: 'rework-${q.id}',
+      mode: BoxEditorMode.rework,
+      initialBoxesByPage: {page: targets},
+      initialInners: inners,
+      initialStandalone: {page: standalone},
+      reworkQuestionId: q.id,
+      readOnlyBoxes: readOnly,
+      yoloService: YoloOnnxService(),
+    );
+    if (result == null) return;
+    final newLayer1 = result.boxesByPage[page] ?? const <QuestionBox>[];
+    if (newLayer1.isEmpty) {
+      _snack('至少保留一个题级框');
+      return;
+    }
+    // 重裁切片：先写盘再落库（切片写不进去不改库）。
+    final pageBytes = await File(pageAbs).readAsBytes();
+    final first = newLayer1.first;
+    final crop = await cropBoxPng(pageBytes, first);
+    final sliceRel = ImportService.sliceRelative(q.id);
+    final sliceAbs = AppDatabase.resolveDataPath(sliceRel);
+    if (sliceAbs == null) {
+      _snack('切片写不进去：数据目录不可用');
+      return;
+    }
+    try {
+      await File(sliceAbs).parent.create(recursive: true);
+      await File(sliceAbs).writeAsBytes(crop.png);
+    } catch (_) {
+      _snack('重新框选失败：切片写不进去');
+      return;
+    }
+    await evictCachedFileImage(sliceAbs);
+    final innersFlat = <QuestionBox>[
+      for (final e in result.inners.entries) ...e.value,
+      ...result.standaloneInner.values.expand((v) => v),
+    ];
+    await widget.repo.replaceQuestionBoxes(q.id, [...newLayer1, ...innersFlat]);
+    await widget.repo.save(q.copyWith(
+      slicePath: sliceRel,
+      sliceWidth: crop.width,
+      sliceHeight: crop.height,
+    ));
+    widget.onChanged();
+    await _load();
+    _snack('已重新框选，切片已更新');
   }
 
   /// 取消编辑：无改动直接退出编辑；有改动显示内联确认框
@@ -418,6 +536,11 @@ class _QuestionDetailPageState extends State<QuestionDetailPage> {
   Future<void> _newTag() async {
     final name = await _askText('新建标签');
     if (name == null) return;
+    // §6 第 4 条：标签名禁逗号与竖线。
+    if (hasBannedNameSeparator(name)) {
+      _snack('不能含逗号或竖线');
+      return;
+    }
     await widget.repo.addTag(name);
     setState(() => _editTags.add(name));
     _markDirty();
@@ -551,6 +674,11 @@ class _QuestionDetailPageState extends State<QuestionDetailPage> {
   Future<void> _newCustomErrorType() async {
     final name = await _askText('自定义错误类型');
     if (name == null) return;
+    // §6 第 4 条：自定义错因名禁逗号与竖线。
+    if (hasBannedNameSeparator(name)) {
+      _snack('不能含逗号或竖线');
+      return;
+    }
     setState(() => _editCustomTypes.add(name));
     _markDirty();
   }
@@ -588,7 +716,7 @@ class _QuestionDetailPageState extends State<QuestionDetailPage> {
     final idx = _orderIds.indexOf(q.id);
     final hasPrev = idx > 0;
     final hasNext = idx >= 0 && idx + 1 < _orderIds.length;
-    final subject = Subject.byId(q.subjectId);
+    final subject = _subjectOf(q.subjectId);
     return PopScope(
       canPop: false,
       onPopInvokedWithResult: (didPop, _) async {
@@ -641,6 +769,7 @@ class _QuestionDetailPageState extends State<QuestionDetailPage> {
                   if (widget.imageFailed)
                     QuestionSlice(
                       question: q,
+                      subject: _subjectOf(q.subjectId),
                       failed: true,
                       maxHeight: 320,
                       onTap: _showZoom,
@@ -648,6 +777,7 @@ class _QuestionDetailPageState extends State<QuestionDetailPage> {
                   else
                     QuestionSlice(
                       question: q,
+                      subject: _subjectOf(q.subjectId),
                       maxHeight: 320,
                       onTap: _showZoom,
                     ),
@@ -819,7 +949,7 @@ class _QuestionDetailPageState extends State<QuestionDetailPage> {
   Widget _buildSubtitle(Question q) {
     final palette = DesignTokens.of(Theme.of(context).brightness);
     final scale = qmScaleOf(context);
-    final subject = Subject.byId(q.subjectId);
+    final subject = _subjectOf(q.subjectId);
     final style = TextStyle(
       fontSize: DesignTokens.bodyFontSize,
       color: palette.muted,
@@ -1059,7 +1189,7 @@ class _QuestionDetailPageState extends State<QuestionDetailPage> {
     final folders =
         _folders.where((f) => q.folderIds.contains(f.id)).toList();
     final kps = _kps.where((k) => q.knowledgePointIds.contains(k.id)).toList();
-    final subject = Subject.byId(q.subjectId);
+    final subject = _subjectOf(q.subjectId);
     return _formGrid([
       _Field(
         '学科（不能改）',
@@ -1110,6 +1240,19 @@ class _QuestionDetailPageState extends State<QuestionDetailPage> {
         ),
         full: true,
       ),
+      // §1.5.1：真实题可重新框选（同页其他题的框只读展示）；
+      // 演示题/老题没有页图，不显示。
+      if (q.pageImagePath != null)
+        _Field(
+          '重新框选',
+          QmButton(
+            label: '重新框选这道题',
+            variant: QmButtonVariant.plain,
+            size: QmButtonSize.small,
+            onPressed: _reworkBoxes,
+          ),
+          hint: '框错了可以重框：同页其他题的框只读，取消不改动',
+        ),
     ]);
   }
 
@@ -1132,7 +1275,7 @@ class _QuestionDetailPageState extends State<QuestionDetailPage> {
         _formGrid([
           _Field(
             '学科（不能改）',
-            _valueText(Subject.byId(q.subjectId).name),
+            _valueText(_subjectOf(q.subjectId).name),
             hint: '导入时选定，详情和整理台都不能改',
           ),
           _Field(
@@ -1249,7 +1392,7 @@ class _QuestionDetailPageState extends State<QuestionDetailPage> {
             ),
             full: true,
             hint:
-                '在这里新建的知识点会加进「${Subject.byId(q.subjectId).name}」的知识点树（自定义一类），之后整理和筛选都能选，不用去学科管理',
+                '在这里新建的知识点会加进「${_subjectOf(q.subjectId).name}」的知识点树（自定义一类），之后整理和筛选都能选，不用去学科管理',
           ),
           _Field(
             '错误类型（固定枚举多选 + 自定义）',

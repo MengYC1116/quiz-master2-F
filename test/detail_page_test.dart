@@ -3,6 +3,11 @@
 //（内联确认，删后进下一题）、上一题/下一题顺序、加入/取消加入复习、
 // 未整理题无加入按钮、无「开始复习」、图加载失败占位、亮/深 × 三档无溢出、
 // 不用图标字体。用 FakeRepo 覆盖 repository 调用（不碰真实数据库）。
+// P2 §1.5.1：重新框选入口（同页他题只读、确认重裁切片）——页图是
+// setUpAll 生成的真实 560×700 PNG，切片写盘走 testDataDirectory。
+import 'dart:io';
+import 'dart:ui' as ui;
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:quiz_master2/data/database.dart';
@@ -10,6 +15,9 @@ import 'package:quiz_master2/data/repository.dart';
 import 'package:quiz_master2/models/models.dart';
 import 'package:quiz_master2/modules/detail/question_detail_page.dart';
 import 'package:quiz_master2/theme/app_theme.dart';
+
+late final Directory _testTmp;
+late final String _pagePngPath;
 
 Question dtq(
   String id,
@@ -30,6 +38,11 @@ Question dtq(
   bool isArchived = false,
   bool isFavorite = false,
   bool reviewJoined = false,
+  String? sourcePath,
+  String? pageImagePath,
+  String? slicePath,
+  int? sliceWidth,
+  int? sliceHeight,
 }) =>
     Question(
       id: id,
@@ -50,6 +63,12 @@ Question dtq(
       reviewJoined: reviewJoined,
       sliceKind: sliceKind,
       sliceText: sliceText,
+      sourcePath: sourcePath,
+      sourceKind: sourcePath == null ? null : 'image',
+      pageImagePath: pageImagePath,
+      slicePath: slicePath,
+      sliceWidth: sliceWidth,
+      sliceHeight: sliceHeight,
     );
 
 class FakeDetailRepo extends QuestionRepository {
@@ -61,6 +80,7 @@ class FakeDetailRepo extends QuestionRepository {
     List<String> tagList = const [],
     List<CauseRecord> records = const [],
     List<({String result, DateTime reviewedAt})> history = const [],
+    List<Subject>? subjectsValue,
   })  : questions = List.of(questions),
         folderList = List.of(folderList),
         examList = List.of(examList),
@@ -68,6 +88,7 @@ class FakeDetailRepo extends QuestionRepository {
         tagList = List.of(tagList),
         records = List.of(records),
         history = List.of(history),
+        subjectsValue = subjectsValue ?? Subject.all,
         super(AppDatabase.instance);
 
   List<Question> questions;
@@ -77,6 +98,10 @@ class FakeDetailRepo extends QuestionRepository {
   List<String> tagList;
   List<CauseRecord> records;
   List<({String result, DateTime reviewedAt})> history;
+  List<Subject> subjectsValue;
+
+  @override
+  Future<List<Subject>> subjects() async => List.of(subjectsValue);
 
   final List<Question> saved = [];
   final List<String> deletedIds = [];
@@ -169,6 +194,22 @@ class FakeDetailRepo extends QuestionRepository {
   @override
   Future<void> addExam(Exam e) async {
     examList.add(e);
+  }
+
+  /// P2 §1.5.1 重框用：同页全部框（目标题 + 他题），测试里预置。
+  List<QuestionBox> pageBoxes = [];
+
+  /// 最近一次 replaceQuestionBoxes 收到的框（按题 id）。
+  final Map<String, List<QuestionBox>> replacedBoxes = {};
+
+  @override
+  Future<List<QuestionBox>> boxesForPageImage(String pageImagePath) async =>
+      List.of(pageBoxes);
+
+  @override
+  Future<void> replaceQuestionBoxes(
+      String questionId, List<QuestionBox> boxes) async {
+    replacedBoxes[questionId] = List.of(boxes);
   }
 }
 
@@ -304,6 +345,34 @@ Future<void> tapText(WidgetTester tester, String text,
 
 
 void main() {
+  setUpAll(() async {
+    _testTmp = await Directory.systemTemp.createTemp('qm2-detail-rework');
+    // 560×700 真实页图（与编辑器画布同比例）。
+    final recorder = ui.PictureRecorder();
+    final canvas = ui.Canvas(recorder);
+    canvas.drawRect(
+      const ui.Rect.fromLTWH(0, 0, 560, 700),
+      ui.Paint()..color = const ui.Color(0xFFFFFFFF),
+    );
+    final bar = ui.Paint()..color = const ui.Color(0xFF111111);
+    for (var i = 0; i < 8; i++) {
+      canvas.drawRect(ui.Rect.fromLTWH(40, 40 + i * 80, 480, 8), bar);
+    }
+    final img = await recorder.endRecording().toImage(560, 700);
+    final png = await img.toByteData(format: ui.ImageByteFormat.png);
+    img.dispose();
+    final file = File('${_testTmp.path}/page.png');
+    await file.writeAsBytes(png!.buffer.asUint8List());
+    _pagePngPath = file.path;
+    // 重框确认时重裁的切片写盘走临时数据目录。
+    AppDatabase.testDataDirectory = _testTmp.path;
+  });
+
+  tearDownAll(() async {
+    AppDatabase.testDataDirectory = null;
+    await _testTmp.delete(recursive: true);
+  });
+
   group('结构与默认态', () {
     testWidgets('三段默认全折叠，标题 + 工具栏 + 无开始复习', (tester) async {
       await pumpDetail(tester);
@@ -582,6 +651,93 @@ void main() {
       expect(find.text('数学 · 极限题'), findsOneWidget);
       expect(find.textContaining('这道题的图片读取失败'), findsOneWidget);
       expect(find.byType(Icon), findsNothing);
+    });
+  });
+
+  group('重新框选 §1.5.1', () {
+    testWidgets('有页图的题：入口可用，同页他题只读，确认后切片重裁、框替换',
+        (tester) async {
+      final repo = detailRepo();
+      repo.questions[0] = repo.questions[0].copyWith(
+        pageImagePath: _pagePngPath,
+        sourcePath: _pagePngPath,
+        slicePath: 'slices/q1.png',
+        sliceWidth: 200,
+        sliceHeight: 100,
+      );
+      repo.pageBoxes = [
+        QuestionBox(
+          id: 'q1-box',
+          layer: 1,
+          type: 'question',
+          x: 0.06,
+          y: 0.05,
+          w: 0.88,
+          h: 0.4,
+          page: 1,
+          questionId: 'q1',
+        ),
+        QuestionBox(
+          id: 'q1-stem',
+          layer: 2,
+          type: 'stem',
+          x: 0.1,
+          y: 0.1,
+          w: 0.4,
+          h: 0.2,
+          page: 1,
+          questionId: 'q1',
+          parentBoxId: 'q1-box',
+        ),
+        QuestionBox(
+          id: 'q2-box',
+          layer: 1,
+          type: 'question',
+          x: 0.1,
+          y: 0.55,
+          w: 0.5,
+          h: 0.35,
+          page: 1,
+          questionId: 'q2',
+        ),
+      ];
+      await pumpDetail(tester, repo: repo);
+      await openSection(tester, '题目信息');
+      expect(find.text('重新框选这道题'), findsOneWidget);
+      await tapText(tester, '重新框选这道题');
+      expect(find.textContaining('修框 ·'), findsOneWidget);
+      // 同页他题的框只读展示，目标题的框可编辑。
+      expect(find.text('其他题 · 只读'), findsOneWidget);
+      expect(find.textContaining('题级框 1'), findsWidgets);
+      // 确认：重裁切片是真实文件 IO + 图片解码，须在 runAsync 内
+      // 反复 pump + 真实延时推进（collect_page_test 的同款做法）。
+      await tester.runAsync(() async {
+        await tester.tap(find.text('确认修框，去整理'));
+        for (var i = 0; i < 20; i++) {
+          await tester.pump();
+          await Future<void>.delayed(const Duration(milliseconds: 200));
+        }
+        await tester.pumpAndSettle();
+      });
+      await tester.pumpAndSettle();
+      expect(find.textContaining('修框 ·'), findsNothing);
+      expect(find.text('已重新框选，切片已更新'), findsOneWidget);
+      // 只替换了目标题的框（1 个题级框 + 它的题内框）。
+      final replaced = repo.replacedBoxes['q1'];
+      expect(replaced, isNotNull);
+      expect(replaced!.where((b) => b.layer == 1).length, 1);
+      // 切片被重写，题的 sliceWidth/Height 已更新。
+      final savedQ = repo.saved.lastWhere((q) => q.id == 'q1');
+      expect(savedQ.sliceWidth, greaterThan(0));
+      expect(savedQ.sliceHeight, greaterThan(0));
+      final sliceAbs = AppDatabase.resolveDataPath(savedQ.slicePath!);
+      expect(sliceAbs != null && File(sliceAbs).existsSync(), isTrue);
+    });
+
+    testWidgets('无页图的题：不显示重新框选入口', (tester) async {
+      await pumpDetail(tester, repo: detailRepo());
+      await openSection(tester, '题目信息');
+      expect(find.text('重新框选这道题'), findsNothing);
     });
   });
 

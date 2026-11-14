@@ -105,7 +105,7 @@ class FakeWrongbookRepo extends QuestionRepository {
   Future<List<KnowledgePoint>> knowledgePoints() async => List.of(kpList);
 
   @override
-  Future<Map<String, (int, int, int)>> subjectCounts() async => counts;
+  Future<Map<String, (int, int, int)>> subjectCounts({bool includeArchived = false}) async => counts;
 
   @override
   Future<List<CauseRecord>> causeRecords() async => List.of(records);
@@ -426,6 +426,38 @@ void main() {
       );
       expect(scroll.padding, EdgeInsets.zero);
       expect(find.byType(Icon), findsNothing);
+    });
+
+    testWidgets('封面顶部无英文：数学/英语/政治/新学科均无英文行',
+        (tester) async {
+      // 新学科化学：封面中文名 + 一道题；旧写死映射会把它写成 MATHEMATICS。
+      final repo = threeSubjectRepo();
+      repo.subjectsValue = [
+        ...repo.subjectsValue,
+        Subject(
+          id: 'chemistry',
+          name: '化学',
+          color: const Color(0xFF7C3AED),
+          icon: '化',
+          coverColor: 'purple',
+        ),
+      ];
+      repo.questions = [
+        ...repo.questions,
+        wbq('q9', '化学平衡', subjectId: 'chemistry'),
+      ];
+      await pumpWrongbook(tester, repo: repo);
+      expect(find.text('数学'), findsOneWidget);
+      expect(find.text('英语'), findsOneWidget);
+      expect(find.text('政治'), findsOneWidget);
+      expect(find.text('化学'), findsOneWidget);
+      expect(find.text('错 题 本'), findsNWidgets(4));
+      expect(find.text('第 1 / 1 页 · 共 4 本（每页最多 6 本）'),
+          findsOneWidget);
+      // 四科封面顶部均无英文行（含旧写死映射的三词与新学科的回退词）。
+      expect(find.text('MATHEMATICS'), findsNothing);
+      expect(find.text('ENGLISH'), findsNothing);
+      expect(find.text('POLITICS'), findsNothing);
     });
 
     testWidgets('点封面进目录；封面内开始复习只走复习、不打开书',
@@ -864,6 +896,66 @@ void main() {
       await tester.tap(find.text('恢复到错题本'));
       await tester.pumpAndSettle();
       expect(repo.archivedChanges, contains(('q5', false)));
+    });
+  });
+
+  group('详情返回刷新', () {
+    testWidgets('大卡片：详情里删题，返回后卡片消失', (tester) async {
+      final repo = threeSubjectRepo();
+      Question? opened;
+      await pumpWrongbook(tester,
+          repo: repo,
+          onOpenDetail: (q, _) async {
+            opened = q;
+            await repo.delete(q);
+          });
+      await openMathList(tester);
+      expect(find.byType(QuestionSlice), findsNWidgets(3));
+      await tester.tap(find.byType(QuestionSlice).first);
+      await tester.pumpAndSettle();
+      expect(opened?.id, 'q1');
+      expect(find.byType(QuestionSlice), findsNWidgets(2));
+    });
+
+    testWidgets('紧凑列表：详情里改收藏，返回后星标出现', (tester) async {
+      final repo = threeSubjectRepo();
+      Question? opened;
+      await pumpWrongbook(tester,
+          repo: repo,
+          onOpenDetail: (q, _) async {
+            opened = q;
+            await repo.toggleFavorite(q);
+          });
+      await openMathListCompact(tester);
+      expect(find.text('★'), findsOneWidget); // 只有 q1 已收藏
+      await tester.tap(find.text('导数综合'));
+      await tester.pumpAndSettle();
+      expect(opened?.id, 'q2');
+      // 注意：_load 会把视图重置为设置里的默认视图（大卡片），这是
+      // _load 的既有行为（行内点星 _toggleFavorite 同样走 _load），
+      // 与本次修的“返回刷新”无关；切回紧凑列表再断言星标。
+      await tester.tap(find.text('紧凑列表'));
+      await tester.pumpAndSettle();
+      expect(find.text('★'), findsNWidgets(2));
+      expect(find.text('☆'), findsOneWidget);
+    });
+
+    testWidgets('已归档行：详情里恢复归档，返回后该行消失', (tester) async {
+      final repo = threeSubjectRepo();
+      await pumpWrongbook(tester,
+          repo: repo,
+          initialSubjectId: 'math',
+          onOpenDetail: (q, _) async => repo.archive(q, archived: false));
+      await tester.tap(find.text('全部题目'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('筛选 ▾'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('已归档'));
+      await tester.pumpAndSettle();
+      expect(find.text('旧题'), findsOneWidget);
+      await tester.tap(find.text('旧题'));
+      await tester.pumpAndSettle();
+      expect(find.text('旧题'), findsNothing);
     });
   });
 

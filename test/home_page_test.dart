@@ -90,7 +90,7 @@ class FakeRepo extends QuestionRepository {
       recent;
 
   @override
-  Future<List<Question>> dueToday() async => due;
+  Future<List<Question>> dueToday({bool includeArchived = false}) async => due;
 
   @override
   Future<List<CauseRecord>> causeRecords() async => records;

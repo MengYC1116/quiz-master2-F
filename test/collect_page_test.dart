@@ -3,7 +3,14 @@
 // 画新框选类型、确认拆分替换原任务、取消留修框中、重叠拦确认、
 // 无框提示、旋转整页）、亮/深、三档缩放无溢出、不用图标字体。
 // 用 FakeRepo 覆盖 repository 调用（不碰真实数据库，不改口径）。
+// P2：编辑器改走真实页图 + DetectionResult——setUpAll 生成一张
+// 560×700 真实页图（与 DesignTokens.collectEditorCanvasWidth/Height
+// 同比例，页内几何计算不变），任务默认 sourcePath 指向它；检测用
+// 桩服务（固定 1 个框），不跑真实推理；切片/烘焙写盘走
+// AppDatabase.testDataDirectory 指向的临时目录，不污染真实数据目录。
+import 'dart:io';
 import 'dart:math' as math;
+import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -12,7 +19,68 @@ import 'package:quiz_master2/data/database.dart';
 import 'package:quiz_master2/data/repository.dart';
 import 'package:quiz_master2/models/models.dart';
 import 'package:quiz_master2/modules/collect/collect_page.dart';
+import 'package:quiz_master2/services/yolo_onnx_service.dart';
 import 'package:quiz_master2/theme/app_theme.dart';
+
+late final Directory _testTmp;
+late final String _pagePngPath;
+
+/// 桩检测：固定返回 1 个题级框（0.06/0.05/0.88/0.85，与旧占位框同几何，
+/// 旧几何断言不用改）；detectError 非空时模拟模型失败——返回空框 +
+/// usedFallback，不落占位框。
+class _StubYolo extends YoloOnnxService {
+  _StubYolo({this.detectError});
+
+  final String? detectError;
+
+  @override
+  Future<DetectionResult> detectPage({
+    required String imagePath,
+    required int page,
+  }) async {
+    if (detectError != null) {
+      return DetectionResult(
+        boxes: const [],
+        usedFallback: true,
+        error: detectError,
+      );
+    }
+    return DetectionResult(
+      boxes: [
+        QuestionBox(
+          id: 'box-q1',
+          layer: 1,
+          type: 'question',
+          x: 0.06,
+          y: 0.05,
+          w: 0.88,
+          h: 0.85,
+          page: page,
+        ),
+      ],
+      usedFallback: false,
+    );
+  }
+}
+
+/// 画布内的框标签（题级框 / 题内框的文字在画布里；底部 hint 也含
+/// “题级框 N”字样，必须限定在画布内找，否则会命中 hint）。
+Finder editorBoxLabel(String label) => find.descendant(
+  of: find.byKey(const Key('box-editor-canvas')),
+  matching: find.textContaining(label),
+);
+
+/// 画布内某标签所属的框手柄（GestureDetector，key 是
+/// `editor-box-<持久化 id>`，id 含随机 uuid8，不能按 key 找）。
+Finder editorBoxHandle(String label) => find.ancestor(
+  of: editorBoxLabel(label),
+  matching: find.byWidgetPredicate(
+    (w) =>
+        w is GestureDetector &&
+        w.key is ValueKey<String> &&
+        (w.key as ValueKey<String>).value.startsWith('editor-box-'),
+  ),
+);
 
 CollectTask task(
   String id,
@@ -21,6 +89,7 @@ CollectTask task(
   int progress = 0,
   String? error,
   int pageCount = 1,
+  String? sourcePath,
 }) => CollectTask(
   id: id,
   name: name,
@@ -31,6 +100,8 @@ CollectTask task(
   pageCount: pageCount,
   page: 1,
   error: error,
+  // 默认指向 setUpAll 生成的真实页图（P2：编辑器要读真实页图）。
+  sourcePath: sourcePath ?? _pagePngPath,
 );
 
 class FakeRepo extends QuestionRepository {
@@ -44,6 +115,41 @@ class FakeRepo extends QuestionRepository {
   final List<CollectTask> savedTasks = [];
   final List<String> deletedTaskIds = [];
   var organizeCalls = 0;
+
+  /// 草稿框（按任务 id 存，saveDraftBoxes 写入、boxesForTask 读出）。
+  final Map<String, List<QuestionBox>> draftBoxes = {};
+
+  @override
+  Future<List<QuestionBox>> boxesForTask(String taskId) async =>
+      List.of(draftBoxes[taskId] ?? const []);
+
+  @override
+  Future<void> saveDraftBoxes({
+    required String taskId,
+    required Map<int, List<QuestionBox>> boxesByPage,
+    required Map<String, List<QuestionBox>> inners,
+    required Map<int, List<QuestionBox>> standaloneInner,
+    required Map<int, int> rotations,
+  }) async {
+    draftBoxes[taskId] = [
+      for (final e in boxesByPage.entries) ...e.value,
+      for (final v in inners.values) ...v,
+      for (final v in standaloneInner.values) ...v,
+    ];
+  }
+
+  @override
+  Future<void> confirmSplit({
+    required CollectTask originalTask,
+    required List<Question> questions,
+    required List<CollectTask> splitTasks,
+    required Map<String, List<QuestionBox>> boxesByQuestionId,
+  }) async {
+    savedQuestions.addAll(questions);
+    tasks.addAll(splitTasks);
+    tasks.removeWhere((t) => t.id == originalTask.id);
+    deletedTaskIds.add(originalTask.id);
+  }
 
   @override
   Future<List<Subject>> subjects() async => List.of(subjectsValue);
@@ -108,6 +214,7 @@ Future<void> pumpCollect(
   Brightness brightness = Brightness.light,
   double scale = 1.0,
   Key? pageKey,
+  YoloOnnxService? yoloService,
 }) async {
   tester.view.physicalSize = const Size(1280, 720);
   tester.view.devicePixelRatio = 1.0;
@@ -130,6 +237,7 @@ Future<void> pumpCollect(
                 key: pageKey,
                 repo: repo ?? FakeRepo([]),
                 onOpenOrganize: () {},
+                yoloService: yoloService ?? _StubYolo(),
               ),
             ),
           );
@@ -149,7 +257,51 @@ Future<void> openEditor(WidgetTester tester, String buttonLabel) async {
   expect(find.textContaining('修框 ·'), findsOneWidget);
 }
 
+/// 点确认并等 _confirmSplit 的真实文件 IO + 图片解码跑完：
+/// 测试体在 fake async zone 里，真实 IO 的 Future 等不到完成；
+/// 须在 runAsync 内反复 pump + 真实延时推进（每步 IO 各需一次
+/// pump 刷 microtask + 一次真实延时让事件循环跑完）。
+Future<void> tapConfirmAndWait(WidgetTester tester, String label) async {
+  await tester.runAsync(() async {
+    await tester.tap(find.text(label));
+    for (var i = 0; i < 20; i++) {
+      await tester.pump();
+      await Future<void>.delayed(const Duration(milliseconds: 200));
+    }
+    await tester.pumpAndSettle();
+  });
+  await tester.pumpAndSettle();
+}
+
 void main() {
+  setUpAll(() async {
+    _testTmp = await Directory.systemTemp.createTemp('qm2-collect-test');
+    // 560×700 真实页图：白底 + 8 条黑横线（与编辑器画布同比例）。
+    final recorder = ui.PictureRecorder();
+    final canvas = ui.Canvas(recorder);
+    canvas.drawRect(
+      const ui.Rect.fromLTWH(0, 0, 560, 700),
+      ui.Paint()..color = const ui.Color(0xFFFFFFFF),
+    );
+    final bar = ui.Paint()..color = const ui.Color(0xFF111111);
+    for (var i = 0; i < 8; i++) {
+      canvas.drawRect(ui.Rect.fromLTWH(40, 40 + i * 80, 480, 8), bar);
+    }
+    final img = await recorder.endRecording().toImage(560, 700);
+    final png = await img.toByteData(format: ui.ImageByteFormat.png);
+    img.dispose();
+    final file = File('${_testTmp.path}/page.png');
+    await file.writeAsBytes(png!.buffer.asUint8List());
+    _pagePngPath = file.path;
+    // 切片/烘焙写盘走临时数据目录，不污染真实数据目录。
+    AppDatabase.testDataDirectory = _testTmp.path;
+  });
+
+  tearDownAll(() async {
+    AppDatabase.testDataDirectory = null;
+    await _testTmp.delete(recursive: true);
+  });
+
   group('收集中心正常态', () {
     testWidgets('6 态渲染：药丸、按钮、进度条、失败原因', (tester) async {
       await pumpCollect(tester, repo: FakeRepo(sixStateTasks()));
@@ -354,7 +506,7 @@ void main() {
       ]);
       await pumpCollect(tester, repo: repo);
       await openEditor(tester, '修框');
-      final box = find.byKey(const Key('editor-box-box-q1'));
+      final box = editorBoxHandle('题级框 1');
       expect(box, findsOneWidget);
       await tester.ensureVisible(box);
       await tester.pumpAndSettle();
@@ -379,7 +531,7 @@ void main() {
       ]);
       await pumpCollect(tester, repo: repo);
       await openEditor(tester, '修框');
-      final box = find.byKey(const Key('editor-box-box-q1'));
+      final box = editorBoxHandle('题级框 1');
       expect(box, findsOneWidget);
       await tester.ensureVisible(box);
       await tester.pumpAndSettle();
@@ -391,13 +543,13 @@ void main() {
       // 画布可视区 = 外层 Listener 的矩形；三个内框都应完整落在里面，
       // 不能像固定 560×700 那样把 option / figure 顶到可视区之外。
       final canvas = tester.getRect(find.byKey(const Key('box-editor-canvas')));
-      for (final id in ['box-q1-stem', 'box-q1-option', 'box-q1-figure']) {
-        final rect = tester.getRect(find.byKey(Key('editor-box-$id')));
-        expect(canvas.contains(rect.topLeft), isTrue, reason: '$id topLeft');
+      for (final label in ['stem 题干', 'option 选项', 'figure 配图']) {
+        final rect = tester.getRect(editorBoxHandle(label));
+        expect(canvas.contains(rect.topLeft), isTrue, reason: '$label topLeft');
         expect(
           canvas.contains(rect.bottomRight),
           isTrue,
-          reason: '$id bottomRight',
+          reason: '$label bottomRight',
         );
       }
     });
@@ -414,7 +566,7 @@ void main() {
       await openEditor(tester, '修框');
       expect(find.textContaining('本页已框 1 道题'), findsOneWidget);
       expect(find.textContaining('没框到题'), findsNothing);
-      final box = find.byKey(const Key('editor-box-box-q1'));
+      final box = editorBoxHandle('题级框 1');
       await tester.ensureVisible(box);
       await tester.pumpAndSettle();
       await tester.tap(box);
@@ -440,7 +592,7 @@ void main() {
       // 先删掉占位框：它几乎盖满整页，新框画在哪都会和它重叠。
       // 页在画布里居中 fit；删框会出“没框到题”横幅把画布顶下去，
       // 所以每次拖动前都按当前画布矩形重算页原点与页尺寸。
-      final box = find.byKey(const Key('editor-box-box-q1'));
+      final box = editorBoxHandle('题级框 1');
       await tester.ensureVisible(box);
       await tester.pumpAndSettle();
       await tester.tap(box);
@@ -491,8 +643,7 @@ void main() {
       await tester.tap(find.byKey(const Key('pending-type-question')));
       await tester.pumpAndSettle();
       expect(find.text('确认修框，拆成 2 个待整理任务'), findsOneWidget);
-      await tester.tap(find.text('确认修框，拆成 2 个待整理任务'));
-      await tester.pumpAndSettle();
+      await tapConfirmAndWait(tester, '确认修框，拆成 2 个待整理任务');
       expect(find.textContaining('修框 ·'), findsNothing);
       expect(repo.deletedTaskIds, contains('t-needbox'));
       final split = repo.tasks.where(
@@ -516,8 +667,8 @@ void main() {
       ]);
       await pumpCollect(tester, repo: repo);
       await openEditor(tester, '修框');
-      // 页在画布里居中 fit：用占位框矩形反推页原点再画框。
-      final box = find.byKey(const Key('editor-box-box-q1'));
+      // 页在画布里居中 fit：用检测框矩形反推页原点再画框。
+      final box = editorBoxHandle('题级框 1');
       await tester.ensureVisible(box);
       await tester.pumpAndSettle();
       final boxRect = tester.getRect(box);
@@ -551,7 +702,7 @@ void main() {
       ]);
       await pumpCollect(tester, repo: repo);
       await openEditor(tester, '修框');
-      final box = find.byKey(const Key('editor-box-box-q1'));
+      final box = editorBoxHandle('题级框 1');
       await tester.ensureVisible(box);
       await tester.pumpAndSettle();
       await tester.tap(box);
@@ -587,7 +738,8 @@ void main() {
       expect(find.text('整页已旋转 180°（图片和框一起转的）'), findsOneWidget);
     });
 
-    testWidgets('页缩略图条 + 旋转圆柄存在，拖动圆柄不报错', (tester) async {
+    testWidgets('单框旋转圆柄不存在：选中框后无 editor-rotate-* 句柄（§6 第 10 条）',
+        (tester) async {
       final repo = FakeRepo([
         task(
           't-needbox',
@@ -602,24 +754,93 @@ void main() {
       expect(find.byKey(const Key('editor-thumb-2')), findsOneWidget);
       expect(find.byKey(const Key('editor-thumb-3')), findsOneWidget);
       expect(find.text('第 1 页'), findsOneWidget);
-      final box = find.byKey(const Key('editor-box-box-q1'));
+      final box = editorBoxHandle('题级框 1');
       await tester.ensureVisible(box);
       await tester.pumpAndSettle();
       await tester.tap(box);
       await tester.pump(const Duration(milliseconds: 500));
       await tester.pumpAndSettle();
-      final handle = find.byKey(const Key('editor-rotate-box-q1'));
-      expect(handle, findsOneWidget);
-      await tester.ensureVisible(handle);
-      await tester.pumpAndSettle();
-      await tester.timedDrag(
-        handle,
-        const Offset(20, -20),
-        const Duration(milliseconds: 200),
+      // 单框旋转已禁用：框上不再有旋转圆柄（以前是 editor-rotate-<id>）。
+      expect(
+        find.byWidgetPredicate(
+          (w) =>
+              w.key is ValueKey<String> &&
+              (w.key as ValueKey<String>)
+                  .value
+                  .startsWith('editor-rotate-'),
+        ),
+        findsNothing,
       );
-      await tester.pumpAndSettle();
-      expect(find.byKey(const Key('editor-box-box-q1')), findsOneWidget);
+      expect(editorBoxHandle('题级框 1'), findsOneWidget);
       expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('模型失败：不落占位框，显式提示手动框选', (tester) async {
+      final repo = FakeRepo([
+        task(
+          't-needbox',
+          '待框选文件.pdf · 第1页 · 第1题',
+          status: CollectStatus.needBox,
+        ),
+      ]);
+      await pumpCollect(
+        tester,
+        repo: repo,
+        yoloService: _StubYolo(detectError: '自动检测不可用，请手动框选'),
+      );
+      await openEditor(tester, '修框');
+      expect(find.textContaining('自动检测不可用，请手动框选'), findsOneWidget);
+      expect(editorBoxLabel('题级框 1'), findsNothing);
+      expect(find.textContaining('没框到题'), findsWidgets);
+    });
+
+    testWidgets('取消保存草稿：重进“继续修框”恢复上次的框', (tester) async {
+      final repo = FakeRepo([
+        task(
+          't-needbox',
+          '待框选文件.pdf · 第1页 · 第1题',
+          status: CollectStatus.needBox,
+        ),
+      ]);
+      await pumpCollect(tester, repo: repo);
+      await openEditor(tester, '修框');
+      expect(editorBoxLabel('题级框 1'), findsOneWidget);
+      await tester.tap(find.text('取消'));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('修框 ·'), findsNothing);
+      // 取消时草稿已保存（不是丢弃）。
+      expect(repo.draftBoxes['t-needbox']?.length, 1);
+      // 重进：草稿优先，不再检测，框还在。
+      await openEditor(tester, '继续修框');
+      expect(editorBoxLabel('题级框 1'), findsOneWidget);
+    });
+
+    testWidgets('旋转后确认：页图烘焙 -r90，切片落盘', (tester) async {
+      final repo = FakeRepo([
+        task(
+          't-needbox',
+          '待框选文件.pdf · 第1页 · 第1题',
+          status: CollectStatus.needBox,
+        ),
+      ]);
+      await pumpCollect(tester, repo: repo);
+      await openEditor(tester, '修框');
+      await tester.tap(find.text('旋转整页'));
+      await tester.pumpAndSettle();
+      expect(find.text('整页已旋转 90°（图片和框一起转的）'), findsOneWidget);
+      await tapConfirmAndWait(tester, '确认修框，去整理');
+      expect(find.textContaining('修框 ·'), findsNothing);
+      expect(repo.savedQuestions.length, 1);
+      final q = repo.savedQuestions.first;
+      // 烘焙进页图：pageImagePath 含 -r90。
+      expect(q.pageImagePath, contains('-r90'));
+      final bakedAbs = AppDatabase.resolveDataPath(q.pageImagePath!);
+      expect(bakedAbs != null && File(bakedAbs).existsSync(), isTrue);
+      // 切片落盘且有尺寸。
+      final sliceAbs = AppDatabase.resolveDataPath(q.slicePath!);
+      expect(sliceAbs != null && File(sliceAbs).existsSync(), isTrue);
+      expect(q.sliceWidth, greaterThan(0));
+      expect(q.sliceHeight, greaterThan(0));
     });
 
     testWidgets('单框确认：确认修框，去整理', (tester) async {
@@ -633,8 +854,7 @@ void main() {
       await pumpCollect(tester, repo: repo);
       await openEditor(tester, '修框');
       expect(find.text('确认修框，去整理'), findsOneWidget);
-      await tester.tap(find.text('确认修框，去整理'));
-      await tester.pumpAndSettle();
+      await tapConfirmAndWait(tester, '确认修框，去整理');
       expect(repo.deletedTaskIds, contains('t-needbox'));
       expect(
         repo.tasks
@@ -711,3 +931,4 @@ void main() {
     });
   });
 }
+

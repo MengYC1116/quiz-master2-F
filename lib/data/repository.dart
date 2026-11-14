@@ -1,5 +1,6 @@
 import '../data/database.dart';
 import '../models/models.dart';
+import '../services/import_service.dart';
 
 /// 仓库：各页面模块共用的查询口径（首页计数、错题本筛选、整理队列、复习）。
 /// 不直接读其他模块的状态，只读数据层。
@@ -56,9 +57,14 @@ class QuestionRepository {
 
   /// 要复习的题：手动加入复习、已整理、至少一个错因还没解决
   /// （待解决 / 解决中）或到了复查时间。数题不数错因。
-  Future<List<Question>> dueToday() async {
-    final questions = await all(includeArchived: true);
-    final records = await _db.allCauseRecords();
+  /// 已归档的题不算（与复习页 B6 主列表同口径；记录保留在库里，
+  /// 取消归档后重新计入）。`includeArchived: true` 仅供显式
+  /// 需要时用，默认排除。
+  Future<List<Question>> dueToday({bool includeArchived = false}) async {
+    final questions = await all(includeArchived: includeArchived);
+    // 记录走仓库方法 causeRecords()（与 _db.allCauseRecords() 同义，
+    // 便于单测覆盖；subjectCounts 同款做法）。
+    final records = await causeRecords();
     final byQ = <String, List<CauseRecord>>{};
     for (final r in records) {
       (byQ[r.questionId] ??= []).add(r);
@@ -89,14 +95,16 @@ class QuestionRepository {
 
   /// 各科三数：要复习 / 待复查 / 已解决（不显示总题数）。
   /// 一道题可同时计入要复习与待复查（不同错因状态不同）。
+  /// 已归档的题不算（与 dueToday / 复习页同口径；取消归档后
+  /// 重新计入）。
   ///
   /// 键按库里的 subjects 表取（B2 补充：新增学科也要有计数键；以前按
   /// `Subject.all` 初始化，新学科的键缺失，错题本封面三数会显示 0）。
   /// 口径本身不变，只改键的来源。记录走仓库方法 `causeRecords()`
   ///（与 `_db.allCauseRecords()` 同义），便于单测覆盖。
   Future<Map<String, (int toReview, int toRecheck, int solved)>>
-      subjectCounts() async {
-    final questions = await all(includeArchived: true);
+      subjectCounts({bool includeArchived = false}) async {
+    final questions = await all(includeArchived: includeArchived);
     final records = await causeRecords();
     final byQ = <String, List<CauseRecord>>{};
     for (final r in records) {
@@ -174,13 +182,10 @@ class QuestionRepository {
         clearRecheckDate: true,
       );
     }
-    await _db.upsertCauseRecord(updated);
-    await _db.addCauseCheckHistory(
-        questionId: r.questionId, result: result);
-    final q = await _db.questionById(r.questionId);
-    if (q != null) {
-      await _db.upsertQuestion(q.copyWith(reviewCount: q.reviewCount + 1));
-    }
+    // §4.2：三步同事务（改错因记录 → 记自查历史 → 题目自查次数 +1），
+    // 中间失败整体回滚，不留半截记录。
+    await _db.recordSelfCheckTxn(
+        updated: updated, questionId: r.questionId, result: result);
     return updated;
   }
 
@@ -199,7 +204,7 @@ class QuestionRepository {
   Future<ReviewSessionState?> reviewState() => _db.loadReviewState();
 
   Future<void> saveReviewState(
-          {required List<String> queue, required int position}) =>
+          {required List<ReviewQueueItem> queue, required int position}) =>
       _db.saveReviewState(queue: queue, position: position);
 
   Future<void> clearReviewState() => _db.clearReviewState();
@@ -318,17 +323,85 @@ class QuestionRepository {
 
   Future<void> deleteCollectTask(String id) => _db.deleteCollectTask(id);
 
+  // ---------- 框（question_boxes，§1.5；P2） ----------
+
+  /// 读某任务的全部草稿框（“继续修框”恢复用）。
+  Future<List<QuestionBox>> boxesForTask(String taskId) =>
+      _db.boxesForTask(taskId);
+
+  /// 读同一页图上全部已确认题的框（重框同页上下文）。
+  Future<List<QuestionBox>> boxesForPageImage(String pageImagePath) =>
+      _db.boxesForPageImage(pageImagePath);
+
+  /// 草稿保存：修框关闭 / 取消 / 切页时批量保存（拖拽只改内存）。
+  Future<void> saveDraftBoxes({
+    required String taskId,
+    required Map<int, List<QuestionBox>> boxesByPage,
+    required Map<String, List<QuestionBox>> inners,
+    required Map<int, List<QuestionBox>> standaloneInner,
+    required Map<int, int> rotations,
+  }) =>
+      _db.saveDraftBoxes(
+        taskId: taskId,
+        boxesByPage: boxesByPage,
+        inners: inners,
+        standaloneInner: standaloneInner,
+        rotations: rotations,
+      );
+
+  /// 详情页重框：只替换这一题的框（同页其他题不动）。
+  Future<void> replaceQuestionBoxes(
+          String questionId, List<QuestionBox> boxes) =>
+      _db.replaceQuestionBoxes(questionId, boxes);
+
+  /// 确认拆题四步同事务（切片须由调用方先写盘）。
+  Future<void> confirmSplit({
+    required CollectTask originalTask,
+    required List<Question> questions,
+    required List<CollectTask> splitTasks,
+    required Map<String, List<QuestionBox>> boxesByQuestionId,
+  }) =>
+      _db.confirmSplit(
+        originalTask: originalTask,
+        questions: questions,
+        splitTasks: splitTasks,
+        boxesByQuestionId: boxesByQuestionId,
+      );
+
   Future<String> exportBackupJson() => _db.exportBackupJson();
 
   /// B4.2：恢复备份（整体覆盖，见 database.dart）。
   Future<void> importBackupJson(Map<String, dynamic> data) =>
       _db.importBackupJson(data);
 
+  /// §2.3/P3：zip 文件级备份（JSON + imports/ + slices/）。
+  Future<List<int>> exportBackupZip() => _db.exportBackupZip();
+
+  /// §2.3/P3：zip 备份恢复（JSON + 文件一起恢复）。
+  Future<void> importBackupZip(List<int> bytes) =>
+      _db.importBackupZip(bytes);
+
+  /// §2.3/P3：zip 备份恢复（按文件路径读）。
+  Future<void> importBackupZipFile(String path) =>
+      _db.importBackupZipFile(path);
+
+  /// §4.5/P3：孤儿扫描（imports/ + slices/ 里无引用的文件）。
+  Future<OrphanScan> scanOrphanFiles() => _db.scanOrphans();
+
+  /// §4.5/P3：孤儿清理（只删传入的无引用文件）。
+  Future<({int deletedCount, int freedBytes})> deleteOrphanFiles(
+          List<String> relativePaths) =>
+      _db.cleanOrphans(relativePaths);
+
+  /// §4.5/P3：空间占用分项（设置页“空间占用”显示用）。
+  Future<({int importsBytes, int slicesBytes})> storageUsageBreakdown() =>
+      ImportService.storageUsageBreakdown();
+
   /// B4.1：到了复查时间的错因数（已解决且复查日 ≤ 今天，数错因
-  /// 不数题）。口径与 dueToday 一致：只算已加入复习、已整理的题
-  /// （已归档的题仍算，与 dueToday 相同）。
-  Future<int> recheckDueCauseCount() async {
-    final questions = await all(includeArchived: true);
+  /// 不数题）。口径与 dueToday 一致：只算已加入复习、已整理的题，
+  /// 已归档的题不算（取消归档后重新计入）。
+  Future<int> recheckDueCauseCount({bool includeArchived = false}) async {
+    final questions = await all(includeArchived: includeArchived);
     final joined = {
       for (final q in questions)
         if (q.reviewJoined && q.isOrganized) q.id
@@ -352,10 +425,18 @@ class QuestionRepository {
   Future<void> setBackupFailed(bool failed) =>
       _db.saveBackupFailed(failed);
 
-  /// B4.3：切换数据库位置并迁移旧库（见 database.dart）。
+  /// B4.3：切换数据库位置并迁移旧库与文件目录（见 database.dart）。
+  /// 目标已有库时先问用户，`overwrite` 按用户选择传（覆盖 / 保留 /
+  /// 取消；文件目录沿用同一选择）。`onProgress` / `isCancelled`
+  /// 见 [AppDatabase.migrateDataFiles]（大目录复制进度 / 取消）。
   Future<DbMigrationOutcome> migrateToDirectory(String dir,
-          {bool overwrite = false}) =>
-      _db.migrateToDirectory(dir, overwrite: overwrite);
+          {bool overwrite = false,
+          void Function(double progress)? onProgress,
+          bool Function()? isCancelled}) =>
+      _db.migrateToDirectory(dir,
+          overwrite: overwrite,
+          onProgress: onProgress,
+          isCancelled: isCancelled);
 
   Future<void> setCustomDataDirectory(String dir) =>
       _db.setCustomDataDirectory(dir);

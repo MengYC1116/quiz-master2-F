@@ -45,13 +45,19 @@ class FakeOrganizeRepo extends QuestionRepository {
     this.examList = const [],
     this.kpList = const [],
     this.tagList = const [],
-  }) : super(AppDatabase.instance);
+    List<Subject>? subjectsValue,
+  })  : subjectsValue = subjectsValue ?? Subject.all,
+        super(AppDatabase.instance);
 
   List<Question> questions;
   List<Folder> folderList;
   List<Exam> examList;
   List<KnowledgePoint> kpList;
   List<String> tagList;
+  List<Subject> subjectsValue;
+
+  @override
+  Future<List<Subject>> subjects() async => List.of(subjectsValue);
   final List<Question> saved = [];
   final List<String> deletedIds = [];
   final List<Folder> savedFolders = [];

@@ -71,7 +71,7 @@ class B2FakeRepo extends QuestionRepository {
       null;
 
   @override
-  Future<List<Question>> dueToday() async => [];
+  Future<List<Question>> dueToday({bool includeArchived = false}) async => [];
 
   @override
   Future<List<CauseRecord>> causeRecords() async => [];

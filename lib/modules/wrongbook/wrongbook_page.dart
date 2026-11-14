@@ -1236,11 +1236,6 @@ class _WrongbookPageState extends State<WrongbookPage> {
         .where((q) => q.subjectId == s.id && q.isOrganized && !q.isArchived)
         .length;
     final coverColor = CoverTokens.of(s.coverColor);
-    final enName = switch (s.id) {
-      'english' => 'ENGLISH',
-      'politics' => 'POLITICS',
-      _ => 'MATHEMATICS',
-    };
     return InkWell(
       onTap: () => _openDirectory(s.id),
       borderRadius: BorderRadius.only(
@@ -1334,20 +1329,6 @@ class _WrongbookPageState extends State<WrongbookPage> {
               Column(
                 crossAxisAlignment: CrossAxisAlignment.center,
                 children: [
-                  // 英文名（HTML `.nb-book-en`）。
-                  Padding(
-                    padding: EdgeInsets.only(left: 2 * scale, top: 26 * scale),
-                    child: Text(
-                      enName,
-                      style: const TextStyle(
-                        fontSize: 12,
-                        fontWeight: FontWeight.w600,
-                        letterSpacing: 4.08,
-                        color: Colors.white,
-                        height: 1.2,
-                      ),
-                    ),
-                  ),
                   // 学科名（HTML `.nb-book-name`：52px/800）。
                   // 注：原型封面实际渲染为横排 52px 学科名 + 横排
                   // 「错 题 本」，无 `writing-mode: vertical-rl`；
@@ -2849,9 +2830,13 @@ class _WrongbookPageState extends State<WrongbookPage> {
       children: [
         QuestionSlice(
           question: q,
+          subject: _subjectOf(q.subjectId),
           maxHeight: 160 * scale,
           fixedHeight: true,
-          onTap: () => widget.onOpenDetail(q, orderIds),
+          onTap: () async {
+            await widget.onOpenDetail(q, orderIds);
+            await _load();
+          },
         ),
         Positioned(
           top: 7 * scale,
@@ -2932,7 +2917,10 @@ class _WrongbookPageState extends State<WrongbookPage> {
     final palette = DesignTokens.of(Theme.of(context).brightness);
     final nextRecheck = _nextRecheckOf(q);
     return InkWell(
-      onTap: () => widget.onOpenDetail(q, orderIds),
+      onTap: () async {
+        await widget.onOpenDetail(q, orderIds);
+        await _load();
+      },
       borderRadius: BorderRadius.circular(6 * scale),
       child: Padding(
         padding: EdgeInsets.fromLTRB(
@@ -2961,7 +2949,7 @@ class _WrongbookPageState extends State<WrongbookPage> {
               ),
             GestureDetector(
               onTap: () => showQuestionZoomDialog(context, q),
-              child: CompactSliceThumb(question: q),
+              child: CompactSliceThumb(question: q, subject: _subjectOf(q.subjectId)),
             ),
             SizedBox(width: 12 * scale),
             Expanded(
@@ -3087,7 +3075,10 @@ class _WrongbookPageState extends State<WrongbookPage> {
     final scale = qmScaleOf(context);
     final palette = DesignTokens.of(Theme.of(context).brightness);
     return InkWell(
-      onTap: () => widget.onOpenDetail(q, orderIds),
+      onTap: () async {
+        await widget.onOpenDetail(q, orderIds);
+        await _load();
+      },
       borderRadius: BorderRadius.circular(6 * scale),
       child: Padding(
         padding: EdgeInsets.fromLTRB(
@@ -3101,7 +3092,7 @@ class _WrongbookPageState extends State<WrongbookPage> {
           children: [
             GestureDetector(
               onTap: () => showQuestionZoomDialog(context, q),
-              child: CompactSliceThumb(question: q),
+              child: CompactSliceThumb(question: q, subject: _subjectOf(q.subjectId)),
             ),
             SizedBox(width: 12 * scale),
             Expanded(

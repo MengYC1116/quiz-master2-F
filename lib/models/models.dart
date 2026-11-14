@@ -167,6 +167,27 @@ class CauseRecord {
   }
 }
 
+/// 复习队列的一项：题 + 错因（§3.4）。
+/// 以前队列是 `List<String>`，项拼成 `"questionId|cause"` 再用
+/// `split('|')` 解析；自定义错因里一旦含 `|` 或 `,` 就切错。
+/// 改成对象后数据库里走 JSON 对象数组（见 database.dart 的
+/// encodeQueue / decodeQueue），值里含什么分隔符都不怕。
+class ReviewQueueItem {
+  const ReviewQueueItem({required this.questionId, required this.cause});
+
+  final String questionId;
+  final String cause;
+
+  @override
+  bool operator ==(Object other) =>
+      other is ReviewQueueItem &&
+      other.questionId == questionId &&
+      other.cause == cause;
+
+  @override
+  int get hashCode => Object.hash(questionId, cause);
+}
+
 /// 复习会话断点（单行，id = 1）：暂停时存下队列与位置，
 /// 下次进复习页从断的那个错因继续。
 class ReviewSessionState {
@@ -175,8 +196,8 @@ class ReviewSessionState {
     required this.position,
     required this.updatedAt,
   });
-  // 队列项 "questionId|cause"，按解决顺序排。
-  final List<String> queue;
+  // 队列项按解决顺序排（ReviewQueueItem，不再拼 "qid|cause" 字符串）。
+  final List<ReviewQueueItem> queue;
   final int position;
   final DateTime updatedAt;
 }
@@ -185,6 +206,13 @@ class ReviewSessionState {
 class ErrorTypes {
   static const fixed = ['审题失误', '概念不清', '计算错误', '方法不会', '其他'];
 }
+
+/// §6 第 4 条（已定）：仅标签名和自定义错因名两个字段禁 `,` `，` `|`，
+/// 输了提示“不能含逗号或竖线”；不禁其他符号（数学、英文、中文标点、
+/// 表情都允许——JSON 编码已保证数据正确，输入限制只是前端防护）。
+/// 三处调用点（学科管理标签、整理/详情的自定义错因与新建标签）共用。
+bool hasBannedNameSeparator(String name) =>
+    name.contains(',') || name.contains('，') || name.contains('|');
 
 /// 知识点：预置树 学科 → 章节 → 知识点（大学层级），多选不限量。
 class KnowledgePoint {
@@ -253,6 +281,18 @@ class Question {
     this.sliceKind = 'material',
     // 题干切片文字（演示用；真实数据是图片切片，无 OCR）
     this.sliceText = '',
+    // §1.2(a)：真实题的图片链路（P1 只加字段与列，不接业务）。
+    // sourcePath：库内源文件副本（相对数据目录）；sourceKind：'pdf'/'image'；
+    // sourcePage：源文件页码（图片为 1）；pageImagePath：修框底图/详情大图
+    // （PNG/JPG，图片导入保留原图）；slicePath：整题切片 PNG；
+    // sliceWidth/sliceHeight：切片像素尺寸。
+    this.sourcePath,
+    this.sourceKind,
+    this.sourcePage,
+    this.pageImagePath,
+    this.slicePath,
+    this.sliceWidth,
+    this.sliceHeight,
   });
 
   final String id;
@@ -276,6 +316,14 @@ class Question {
   final DateTime createdAt;
   final String sliceKind;
   final String sliceText;
+  // §1.2(a)：图片链路字段，全部可空（无图的新题/老题为空）。
+  final String? sourcePath;
+  final String? sourceKind; // 'pdf' / 'image'
+  final int? sourcePage;
+  final String? pageImagePath;
+  final String? slicePath;
+  final int? sliceWidth;
+  final int? sliceHeight;
 
   /// 全部错因（固定枚举 + 自定义）。
   List<String> get allCauses => [...errorTypes, ...customErrorTypes];
@@ -296,12 +344,23 @@ class Question {
     bool? isFavorite,
     bool? isArchived,
     bool? reviewJoined,
+    // §1.2(a)：图片链路字段。
+    String? sourcePath,
+    String? sourceKind,
+    int? sourcePage,
+    String? pageImagePath,
+    String? slicePath,
+    int? sliceWidth,
+    int? sliceHeight,
     // 传 null 表示“保持原值”；要把字段清空时用这些标志（整理/详情页
     // 把答案、解析、笔记清空后保存必须真正清掉，不能留旧值）。
     bool clearExamId = false,
     bool clearAnswer = false,
     bool clearExplanation = false,
     bool clearNotes = false,
+    bool clearSourcePath = false,
+    bool clearPageImagePath = false,
+    bool clearSlicePath = false,
   }) {
     return Question(
       id: id,
@@ -325,6 +384,14 @@ class Question {
       createdAt: createdAt,
       sliceKind: sliceKind,
       sliceText: sliceText,
+      sourcePath: clearSourcePath ? null : (sourcePath ?? this.sourcePath),
+      sourceKind: sourceKind ?? this.sourceKind,
+      sourcePage: sourcePage ?? this.sourcePage,
+      pageImagePath:
+          clearPageImagePath ? null : (pageImagePath ?? this.pageImagePath),
+      slicePath: clearSlicePath ? null : (slicePath ?? this.slicePath),
+      sliceWidth: sliceWidth ?? this.sliceWidth,
+      sliceHeight: sliceHeight ?? this.sliceHeight,
     );
   }
 }
@@ -364,6 +431,11 @@ class CollectTask {
     this.page = 1,
     this.error,
     this.questionId,
+    this.createdAt,
+    // §1.2(b)：sourcePath 是库内副本路径（fileName 只做显示名）；
+    // pageRotations 是草稿修框的按页旋转角度（页 → 角度，见 §1.6.1）。
+    this.sourcePath = '',
+    this.pageRotations = const {},
   });
   final String id;
   final String name;
@@ -375,9 +447,21 @@ class CollectTask {
   final int page;
   final String? error;
   final String? questionId; // 修框确认后产出的题目 id（一对一）
+  /// 任务创建时间（§4.3：导入队列按它排序；UPDATE 不改它）。
+  /// 旧行 / 旧备份里没有时为 null。
+  final DateTime? createdAt;
+  /// §1.2(b)：导入时复制进库的库内副本路径（相对数据目录）。
+  final String sourcePath;
+  /// §1.6.1：草稿修框的按页旋转角度（页 → 角度，如 {1: 90}）。
+  final Map<int, int> pageRotations;
 }
 
 /// 两层框：layer 1 整题框，layer 2 题干 / 选项 / 配图（只做辅助区，永不拆题）。
+/// §1.2(c)：表里有的字段模型里也要有（扩展模型，不另建 StoredQuestionBox）。
+/// 编辑器内新建的框只填 id/layer/type/x/y/w/h，其余为 NULL/默认值：
+/// confidence 只有 YOLO 框有值（手画框为 NULL），origin 默认 'manual'，
+/// collectTaskId 是修框阶段的草稿归属（确认后只保留 questionId），
+/// parentBoxId 是第 2 层框的父框（第 1 层框为 NULL），page 默认 1。
 class QuestionBox {
   const QuestionBox({
     required this.id,
@@ -387,11 +471,66 @@ class QuestionBox {
     required this.y,
     required this.w,
     required this.h,
+    this.confidence,
+    this.origin = 'manual',
+    this.parentBoxId,
+    this.page = 1,
+    this.collectTaskId,
+    this.questionId,
+    this.updatedAt,
   });
   final String id;
   final int layer;
   final String type;
   final double x, y, w, h; // 相对页面的 0..1 坐标，钳制在页面范围内
+  final double? confidence; // YOLO 置信度 0..1；手画框为 NULL
+  final String origin; // 'yolo' / 'manual'
+  final String? parentBoxId;
+  final int page;
+  final String? collectTaskId;
+  final String? questionId;
+  final DateTime? updatedAt;
+
+  QuestionBox copyWith({
+    String? id,
+    int? layer,
+    String? type,
+    double? x,
+    double? y,
+    double? w,
+    double? h,
+    double? confidence,
+    String? origin,
+    String? parentBoxId,
+    int? page,
+    String? collectTaskId,
+    String? questionId,
+    DateTime? updatedAt,
+    bool clearConfidence = false,
+    bool clearParentBoxId = false,
+    bool clearCollectTaskId = false,
+    bool clearQuestionId = false,
+  }) =>
+      QuestionBox(
+        id: id ?? this.id,
+        layer: layer ?? this.layer,
+        type: type ?? this.type,
+        x: x ?? this.x,
+        y: y ?? this.y,
+        w: w ?? this.w,
+        h: h ?? this.h,
+        confidence:
+            clearConfidence ? null : (confidence ?? this.confidence),
+        origin: origin ?? this.origin,
+        parentBoxId:
+            clearParentBoxId ? null : (parentBoxId ?? this.parentBoxId),
+        page: page ?? this.page,
+        collectTaskId:
+            clearCollectTaskId ? null : (collectTaskId ?? this.collectTaskId),
+        questionId:
+            clearQuestionId ? null : (questionId ?? this.questionId),
+        updatedAt: updatedAt ?? this.updatedAt,
+      );
 }
 
 /// 设置（settings 表 key/value 存取，见 AppSettings.defaults）。

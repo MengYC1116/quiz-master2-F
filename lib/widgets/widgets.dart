@@ -1,8 +1,10 @@
+import 'dart:io';
 import 'dart:math' as math;
 
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 
+import '../data/database.dart';
 import '../models/models.dart';
 import '../theme/app_theme.dart';
 import 'uikit.dart';
@@ -160,12 +162,18 @@ class QuestionSlice extends StatelessWidget {
     this.onTap,
     this.failed = false,
     this.fixedHeight = false,
+    // 库里读到的学科对象（调用方从 `_subjects` 里找）：传了就用它的
+    // 名 / 图标 / 存色，新学科不再显示成“数学”+数学色；
+    // 不传则走 `Subject.byId` 回退（预设三科旧行为不变，
+    // SubjectLabel 同款做法）。
+    this.subject,
   });
 
   final Question question;
   final double maxHeight;
   final VoidCallback? onTap;
   final bool failed;
+  final Subject? subject;
 
   /// 大卡片里固定为限高（各张卡片等高，容器“两张整卡 + 第三张露一半”
   /// 才算得准）；放大层与缩略图里按内容走。
@@ -173,7 +181,9 @@ class QuestionSlice extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final subject = Subject.byId(question.subjectId);
+    // 传了库里的学科对象就用它；没传才回退 Subject.byId（未知 id
+    // 回退数学，只发生在数据不一致或调用方没传时）。
+    final subject = this.subject ?? Subject.byId(question.subjectId);
     final palette = DesignTokens.of(Theme.of(context).brightness);
     // 图加载失败占位（HTML `imgFailHTML`）：学科图标 + 学科 · 题型文字，
     // 不留空白；切片与表单不受影响。
@@ -187,7 +197,8 @@ class QuestionSlice extends StatelessWidget {
                   style: TextStyle(
                     fontSize: 34,
                     fontWeight: FontWeight.w800,
-                    color: subjectLabelColor(context, question.subjectId),
+                    color: subjectLabelColor(
+                        context, question.subjectId, subject.color),
                     height: 1.2,
                   ),
                 ),
@@ -206,32 +217,7 @@ class QuestionSlice extends StatelessWidget {
               ],
             ),
           )
-        : Center(
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(
-                    question.sliceText,
-                    textAlign: TextAlign.center,
-                    maxLines: 3,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                        fontSize: 14, color: Colors.black87, height: 1.6),
-                  ),
-                  const SizedBox(height: 6),
-                  SizedBox(
-                    width: 230,
-                    height: 48,
-                    child: CustomPaint(
-                      painter: _SliceFigurePainter(question.sliceKind),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          );
+        : _realSliceBody(context, subject, palette);
     return GestureDetector(
       onTap: onTap,
       child: Container(
@@ -246,6 +232,90 @@ class QuestionSlice extends StatelessWidget {
           borderRadius: BorderRadius.circular(10),
         ),
         child: body,
+      ),
+    );
+  }
+
+  /// §1.2(a)/§1.4：真实切片优先——`slice_path` 指向的 PNG 存在就
+  /// 显示真图（按显示尺寸解码，`cacheWidth` 不解全分辨率大图）；
+  /// `slice_path` 有值但文件缺失、或真实题有来源却无切片时显示
+  /// “图片缺失，可重新导入/重新框选”，不回退空白纸面；
+  /// `sliceText` 回退只适用于演示题与老题
+  /// （老题判定：`sourcePath == null && slicePath == null`）。
+  Widget _realSliceBody(
+      BuildContext context, Subject subject, AppPalette palette) {
+    final sliceAbs = question.slicePath == null
+        ? null
+        : AppDatabase.resolveDataPath(question.slicePath!);
+    if (sliceAbs != null && File(sliceAbs).existsSync()) {
+      return ClipRRect(
+        borderRadius: BorderRadius.circular(10),
+        child: Image.file(
+          File(sliceAbs),
+          fit: BoxFit.contain,
+          cacheWidth: (maxHeight * 2).ceil(),
+        ),
+      );
+    }
+    final isLegacy =
+        question.sourcePath == null && question.slicePath == null;
+    if (question.slicePath != null || !question.isDemo && !isLegacy) {
+      // 真实题缺图：明确提示，不画空白纸面。
+      return Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              subject.icon,
+              style: TextStyle(
+                fontSize: 34,
+                fontWeight: FontWeight.w800,
+                color: subjectLabelColor(
+                    context, question.subjectId, subject.color),
+                height: 1.2,
+              ),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              '${subject.name} · ${sliceKindLabel(question.sliceKind)}',
+              style: const TextStyle(
+                  fontSize: 15, fontWeight: FontWeight.w700),
+            ),
+            const SizedBox(height: 4),
+            const Text(
+              '图片缺失，可重新导入/重新框选',
+              style: TextStyle(fontSize: 13),
+              textAlign: TextAlign.center,
+            ),
+          ],
+        ),
+      );
+    }
+    // 演示题 / 老题：沿用 sliceText 占位绘制。
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              question.sliceText,
+              textAlign: TextAlign.center,
+              maxLines: 3,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                  fontSize: 14, color: Colors.black87, height: 1.6),
+            ),
+            const SizedBox(height: 6),
+            SizedBox(
+              width: 230,
+              height: 48,
+              child: CustomPaint(
+                painter: _SliceFigurePainter(question.sliceKind),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -340,9 +410,16 @@ class _SliceFigurePainter extends CustomPainter {
 /// 不只是题干文字；加载失败显示学科图标 + “加载失败”。
 /// 点缩略图放大看整题图（手势由调用处包 GestureDetector）。
 class CompactSliceThumb extends StatelessWidget {
-  const CompactSliceThumb({super.key, required this.question, this.failed = false});
+  const CompactSliceThumb({
+    super.key,
+    required this.question,
+    this.failed = false,
+    // 同 QuestionSlice：库里读到的学科对象；不传走 Subject.byId 回退。
+    this.subject,
+  });
   final Question question;
   final bool failed;
+  final Subject? subject;
 
   bool get _hasOptionRows =>
       question.sliceText.contains('（') ||
@@ -350,60 +427,87 @@ class CompactSliceThumb extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final subject = Subject.byId(question.subjectId);
+    final subject = this.subject ?? Subject.byId(question.subjectId);
     final dark = Theme.of(context).brightness == Brightness.dark;
     final barColor = dark ? const Color(0xFF6B7686) : const Color(0xFFC9CFDA);
-    final body = failed
+    // §1.2(a)：真实切片存在就显示真图（128px 解码）；真实题缺图
+    // 显示“图片缺失”，不画空白迷你条；演示题/老题沿用原迷你条绘制。
+    final sliceAbs = question.slicePath == null
+        ? null
+        : AppDatabase.resolveDataPath(question.slicePath!);
+    final sliceFile = sliceAbs == null ? null : File(sliceAbs);
+    final sliceExists =
+        sliceFile != null && sliceFile.existsSync();
+    final missingRealImage = (question.slicePath != null && !sliceExists) ||
+        (question.slicePath == null &&
+            question.sourcePath != null &&
+            !question.isDemo);
+    final body = failed || missingRealImage
         ? Column(
             mainAxisSize: MainAxisSize.min,
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
+              // 图标 14px（P0B1 顺带修：以前 17px 时图标 +“加载失败”
+              // 两行共 44px，超出 64×48 容器内高 38px、底部溢出 6px；
+              // 数学题同样溢出，与学科无关，新回归测试发现）。
               Text(subject.icon,
                   style: TextStyle(
-                      fontSize: 17,
+                      fontSize: 14,
                       fontWeight: FontWeight.w800,
-                      color: subjectLabelColor(context, question.subjectId))),
+                      height: 1.0,
+                      color: subjectLabelColor(
+                          context, question.subjectId, subject.color))),
               const SizedBox(height: 1),
-              Text('加载失败',
+              Text(missingRealImage && !failed ? '图片缺失' : '加载失败',
                   style: TextStyle(
                       fontSize: 9,
                       fontWeight: FontWeight.w700,
+                      height: 1.2,
                       color: Theme.of(context).textTheme.bodySmall?.color)),
             ],
           )
-        : Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              _miniBar(49, barColor),
-              const SizedBox(height: 2),
-              _miniBar(38, barColor),
-              if (question.sliceKind != 'material') ...[
-                const SizedBox(height: 2),
-                SizedBox(
-                  width: 52,
-                  height: 14,
-                  child: CustomPaint(
-                    painter: _SliceFigurePainter(question.sliceKind),
-                  ),
+        : sliceFile != null && sliceFile.existsSync()
+            ? ClipRRect(
+                borderRadius: BorderRadius.circular(8),
+                child: Image.file(
+                  sliceFile,
+                  fit: BoxFit.cover,
+                  cacheWidth: 128,
                 ),
-              ],
-              if (_hasOptionRows) ...[
-                const SizedBox(height: 2),
-                Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    for (var i = 0; i < 4; i++) ...[
-                      if (i > 0) const SizedBox(width: 3),
-                      _miniBar(10, barColor),
-                    ],
+              )
+            : Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  _miniBar(49, barColor),
+                  const SizedBox(height: 2),
+                  _miniBar(38, barColor),
+                  if (question.sliceKind != 'material') ...[
+                    const SizedBox(height: 2),
+                    SizedBox(
+                      width: 52,
+                      height: 14,
+                      child: CustomPaint(
+                        painter: _SliceFigurePainter(question.sliceKind),
+                      ),
+                    ),
                   ],
-                ),
-              ],
-              const SizedBox(height: 2),
-              _miniBar(43, barColor),
-            ],
-          );
+                  if (_hasOptionRows) ...[
+                    const SizedBox(height: 2),
+                    Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        for (var i = 0; i < 4; i++) ...[
+                          if (i > 0) const SizedBox(width: 3),
+                          _miniBar(10, barColor),
+                        ],
+                      ],
+                    ),
+                  ],
+                  const SizedBox(height: 2),
+                  _miniBar(43, barColor),
+                ],
+              );
     return Container(
       width: 64,
       height: 48,
@@ -468,6 +572,9 @@ Color subjectLabelColor(BuildContext context, String subjectId,
       subjectId != 'politics') {
     return stored;
   }
+  // 没传存色时按 id 查表回退（未知 id 落到数学色）：调用方有库里的
+  // Subject 时应传 stored（QuestionSlice / CompactSliceThumb /
+  // SubjectLabel 都已传），新学科才不会落到数学色。
   if (!dark) return Subject.byId(subjectId).color;
   return switch (subjectId) {
     'english' => AppTheme.darkEnglishMist,

@@ -8,6 +8,8 @@ import '../../data/badge_notifier.dart';
 import '../../data/database.dart';
 import '../../data/repository.dart';
 import '../../models/models.dart';
+import '../../services/import_service.dart';
+import '../../services/zip_archive.dart';
 import '../../theme/design_tokens.dart';
 import '../../widgets/uikit.dart';
 
@@ -20,7 +22,8 @@ import '../../widgets/uikit.dart';
 /// 说明行、复查间隔/自查次数/每轮错因数/跳过次数/重做答案默认/通知
 /// 开关 + 提醒时间/复习列表排序；错题本默认视图/排序/每页数量；
 /// 数据备份/恢复（恢复先选文件再内联确认，含备份题数与当前题数）、
-/// 数据库位置（改后提示重启才生效）、缓存清理（先预览临时文件数 +
+/// 数据库位置（改后提示重启才生效）、空间占用与孤儿清理（P3 §4.5：
+/// 打开数据组时统计/扫描，清理前预览确认）、缓存清理（先预览临时文件数 +
 /// 缩略图数 + 约多少 MB，再确认）、清除演示数据；启动页 + 关于
 /// （版本 v0.1.0、作者 Meng（个人项目）、更新说明）。
 /// 不做的项不出现：首页显示内容开关、封面计数牌开关、导入文件大小、
@@ -84,6 +87,19 @@ class _SettingsPageState extends State<SettingsPage> {
   // 恢复：选好的备份文件（未确认前只记着，不动库）。
   String? _restoreFileName;
   Map<String, dynamic>? _restoreData;
+  // P3 §2.3：zip 备份恢复——选好后只存路径，确认时再读文件恢复
+  // （zip 可能很大，不常驻内存；老 JSON 备份沿用 _restoreData）。
+  String? _restoreZipPath;
+
+  // 空间占用与孤儿清理：只在打开数据组时扫描一次。
+  ({int importsBytes, int slicesBytes})? _storageUsage;
+  OrphanScan? _orphanScan;
+  bool _orphanConfirm = false;
+
+  // 迁移进度：搬库进行中显示百分比，可取消。
+  bool _migrating = false;
+  double _migrateProgress = 0;
+  bool _migrateCancelled = false;
 
   // 缓存清理：只在打开数据组时扫描一次；清理完显示释放量，可重新扫描。
   _CachePreview? _cachePreview;
@@ -148,7 +164,44 @@ class _SettingsPageState extends State<SettingsPage> {
     setState(() {
       _openGroup = _openGroup == key ? null : key;
       if (_openGroup == 'data' && !_cacheScanned) _scanCache();
+      if (_openGroup == 'data') _scanStorageAndOrphans();
     });
+  }
+
+  /// P3 §4.5/§6 第 9 条：打开数据组时统计空间占用、扫描孤儿文件。
+  /// 孤儿清理的提醒就放在这里：每次打开数据组，有孤儿就提示一次。
+  Future<void> _scanStorageAndOrphans() async {
+    try {
+      final usage = await widget.repo.storageUsageBreakdown();
+      if (!mounted) return;
+      setState(() => _storageUsage = usage);
+    } catch (_) {}
+    try {
+      final scan = await widget.repo.scanOrphanFiles();
+      if (!mounted) return;
+      setState(() => _orphanScan = scan);
+    } catch (_) {}
+  }
+
+  /// P3 §4.5：孤儿清理——确认后执行，只删预览里列出的无引用文件。
+  Future<void> _clearOrphans() async {
+    final scan = _orphanScan;
+    if (scan == null || scan.files.isEmpty) return;
+    setState(() => _orphanConfirm = false);
+    try {
+      final result = await widget.repo.deleteOrphanFiles(
+        scan.files.map((f) => f.relativePath).toList(),
+      );
+      if (!mounted) return;
+      setState(() => _orphanScan = null);
+      await _scanStorageAndOrphans();
+      _snack(result.deletedCount == 0
+          ? '没有可清理的无用文件'
+          : '已清理 ${result.deletedCount} 个无用文件，'
+              '释放 ${ImportService.formatBytes(result.freedBytes)}');
+    } catch (_) {
+      _snack('清理失败，稍后再试');
+    }
   }
 
   void _snack(String message) {
@@ -188,11 +241,14 @@ class _SettingsPageState extends State<SettingsPage> {
   Future<void> _backup() async {
     setState(() => _busy = true);
     try {
-      final json = await widget.repo.exportBackupJson();
-      final bytes = utf8.encode(json);
+      // P3 §2.3：备份改为 zip（JSON + imports/ + slices/），扩展名
+      // 仍是 .qm2backup，内容改为 zip；恢复即完整（含题目图片）。
+      final bytes = await widget.repo.exportBackupZip();
       final path = await FilePicker.platform.saveFile(
         dialogTitle: '备份题库',
-        fileName: 'quiz-master2-backup.json',
+        // §2.3：v2 备份扩展名 .qm2backup（v1 选择器只允许 .json，
+        // 正常流程下选不到 v2 备份；导出时提示仅新版可恢复）。
+        fileName: 'quiz-master2-backup.qm2backup',
       );
       if (path == null) return;
       // B4.2：file_picker 8.3.7 的 saveFile 在桌面端只返回选好的路径，
@@ -206,7 +262,7 @@ class _SettingsPageState extends State<SettingsPage> {
         try {
           await widget.repo.setBackupFailed(false);
         } catch (_) {}
-        _snack('备份已保存');
+        _snack('备份已保存（含题目图片，此备份仅新版可恢复）');
       } catch (_) {
         // 待定3：写文件失败 = 本次备份失败，记标志（首页出红横幅）；
         // 本页原有的即时提示保留。
@@ -226,19 +282,32 @@ class _SettingsPageState extends State<SettingsPage> {
   Future<void> _confirmRestore() async {
     final data = _restoreData;
     if (data == null) return;
+    final zipPath = _restoreZipPath;
     setState(() {
       _busy = true;
       _restoreData = null;
       _restoreFileName = null;
+      _restoreZipPath = null;
     });
     try {
-      // B4.2：恢复走数据层 importBackupJson（整体覆盖，含补齐的 4 张表）。
-      await widget.repo.importBackupJson(data);
+      if (zipPath != null) {
+        // P3 §2.3：zip 恢复（JSON + 文件一起恢复，失败回滚、原库不动）。
+        await widget.repo.importBackupZipFile(zipPath);
+      } else {
+        // 老 JSON 备份（.qm2backup 但内容是 JSON）：走 JSON 恢复。
+        await widget.repo.importBackupJson(data);
+      }
       bumpBadgeVersion();
       final restored = await widget.repo.settings();
       await _apply(restored);
       await _loadQuestionCount();
       _snack('已恢复备份');
+    } on BackupRestoreException catch (e) {
+      // §2.3：校验不过拒绝恢复、原库不动；报具体原因（不是笼统的
+      // “恢复失败”），恢复失败要向用户报错（以前是静默的 finally）。
+      _snack(e.message);
+    } catch (_) {
+      _snack('恢复失败，备份文件可能已损坏，原题库没动');
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -248,11 +317,40 @@ class _SettingsPageState extends State<SettingsPage> {
     final result = await FilePicker.platform.pickFiles(
       dialogTitle: '选择备份文件',
       type: FileType.custom,
-      allowedExtensions: ['json'],
-      withData: true,
+      // §2.3（任务定稿）：同时允许 .json 与 .qm2backup；.json 选到时
+      // 按校验拒绝（_meta 缺失 → v1 备份不再支持），不要静默读坏。
+      allowedExtensions: ['json', 'qm2backup'],
     );
-    final bytes = result?.files.single.bytes;
-    if (bytes == null) return;
+    final path = result?.files.single.path;
+    if (path == null) return;
+    List<int> bytes;
+    try {
+      bytes = await File(path).readAsBytes();
+    } catch (_) {
+      _snack('这个备份文件打不开，换一个再试');
+      return;
+    }
+    // P3 §2.3：按魔数识别，不靠扩展名——新 zip 备份以 PK 开头，
+    // 老 .qm2backup JSON 内容是 JSON 文本；两者恢复口径不同，
+    // 不要静默读坏。
+    if (isZipBytes(bytes)) {
+      Map<String, dynamic> data;
+      try {
+        data = AppDatabase.readBackupJsonFromZip(bytes);
+      } on BackupRestoreException catch (e) {
+        _snack(e.message);
+        return;
+      } catch (_) {
+        _snack('这个文件不是 quiz-master2 的备份，恢复不了');
+        return;
+      }
+      setState(() {
+        _restoreFileName = result!.files.single.name;
+        _restoreData = data;
+        _restoreZipPath = path;
+      });
+      return;
+    }
     Map<String, dynamic> data;
     try {
       final decoded = jsonDecode(utf8.decode(bytes));
@@ -261,6 +359,12 @@ class _SettingsPageState extends State<SettingsPage> {
       if (data['questions'] is! List || data['subjects'] is! List) {
         throw const FormatException();
       }
+      // §2.3：选文件时先校验版本（_meta 缺失 / > 2 都拒绝），
+      // 即时反馈；确认恢复时数据层再校验一次。
+      AppDatabase.validateBackupData(data);
+    } on BackupRestoreException catch (e) {
+      _snack(e.message);
+      return;
     } catch (_) {
       _snack('这个文件不是 quiz-master2 的备份，恢复不了');
       return;
@@ -268,6 +372,7 @@ class _SettingsPageState extends State<SettingsPage> {
     setState(() {
       _restoreFileName = result!.files.single.name;
       _restoreData = data;
+      _restoreZipPath = null;
     });
   }
 
@@ -293,7 +398,7 @@ class _SettingsPageState extends State<SettingsPage> {
         builder: (dctx) => AlertDialog(
           title: const Text('这个位置已经有题库了'),
           content: const Text(
-              '新位置已经有一个 quiz-master2.db。覆盖会用现在的题库替换它（新位置原来的题库就没了）；保留会直接用新位置原来的题库，现在的题库留在原位置不动。'),
+              '新位置已经有一个 quiz-master2.db。覆盖会用现在的题库替换它（题库和图片一起搬过去；新位置原来的题库就没了）；保留会直接用新位置原来的题库，现在的题库留在原位置不动。'),
           actions: [
             TextButton(
               onPressed: () => Navigator.of(dctx).pop(null),
@@ -328,9 +433,22 @@ class _SettingsPageState extends State<SettingsPage> {
   }
 
   Future<void> _migrateDb(String dir, {required bool overwrite}) async {
-    final outcome =
-        await widget.repo.migrateToDirectory(dir, overwrite: overwrite);
+    // P3 §4.6：搬库带进度与取消（大目录复制按字节回调进度）。
+    setState(() {
+      _migrating = true;
+      _migrateProgress = 0;
+      _migrateCancelled = false;
+    });
+    final outcome = await widget.repo.migrateToDirectory(
+      dir,
+      overwrite: overwrite,
+      onProgress: (p) {
+        if (mounted) setState(() => _migrateProgress = p);
+      },
+      isCancelled: () => _migrateCancelled,
+    );
     if (!mounted) return;
+    setState(() => _migrating = false);
     switch (outcome) {
       case DbMigrationOutcome.migrated:
         setState(() {
@@ -348,6 +466,8 @@ class _SettingsPageState extends State<SettingsPage> {
         _snack('已经是这个位置了');
       case DbMigrationOutcome.targetExists:
         _snack('这个位置已经有题库了');
+      case DbMigrationOutcome.cancelled:
+        _snack('已取消迁移，仍用原来的题库');
       case DbMigrationOutcome.failed:
         _snack('迁移失败，仍用原来的题库');
     }
@@ -915,12 +1035,20 @@ class _SettingsPageState extends State<SettingsPage> {
     final preview = _cachePreview;
     final pendingQuestions =
         (_restoreData?['questions'] as List?)?.length ?? 0;
+    // P3 §6 第 9 条：空间占用与上限提示（打开数据组时统计）。
+    final storageTotal = _storageUsage == null
+        ? null
+        : _storageUsage!.importsBytes + _storageUsage!.slicesBytes;
+    final storageWarning = storageTotal == null
+        ? null
+        : ImportService.storageLimitMessage(storageTotal);
+    final orphanScan = _orphanScan;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         _row(
           '备份',
-          '把题库导出为一个 JSON 文件，换电脑时用备份文件恢复。',
+          '把题库导出为一个备份文件（.qm2backup，含题目图片），换电脑时用备份文件恢复。此备份仅新版可恢复。',
           QmButton(
             label: '备份题库',
             size: QmButtonSize.small,
@@ -947,6 +1075,7 @@ class _SettingsPageState extends State<SettingsPage> {
             onCancel: () => setState(() {
               _restoreData = null;
               _restoreFileName = null;
+              _restoreZipPath = null;
             }),
           ),
         _row(
@@ -967,7 +1096,7 @@ class _SettingsPageState extends State<SettingsPage> {
                   label: '改位置',
                   variant: QmButtonVariant.secondary,
                   size: QmButtonSize.small,
-                  onPressed: _changeDbLocation,
+                  onPressed: _migrating ? null : _changeDbLocation,
                 ),
               ],
             ),
@@ -977,6 +1106,50 @@ class _SettingsPageState extends State<SettingsPage> {
           _noteText(_dbMigrated
               ? '新位置已保存：题库已迁过去，重启后彻底生效。'
               : '新位置已保存：要重启软件才生效——重启后才会改用新位置存数据库，重启前还是用现在这个位置。'),
+        if (_migrating)
+          _noteText(
+              '正在迁移…${(_migrateProgress * 100).toStringAsFixed(0)}%（题库和图片一起搬，搬完前不要退出）。'),
+        if (_migrating)
+          QmButton(
+            label: '取消迁移',
+            variant: QmButtonVariant.plain,
+            size: QmButtonSize.small,
+            onPressed: () => setState(() => _migrateCancelled = true),
+          ),
+        _row(
+          '空间占用',
+          _storageUsage == null
+              ? '正在统计…'
+              : '题图与原图共占 ${ImportService.formatBytes(storageTotal!)}'
+                  '（原图 ${ImportService.formatBytes(_storageUsage!.importsBytes)}、'
+                  '切片 ${ImportService.formatBytes(_storageUsage!.slicesBytes)}），上限 2GB。',
+          const SizedBox.shrink(),
+        ),
+        if (storageWarning != null) _noteText(storageWarning),
+        _row(
+          '孤儿清理',
+          orphanScan == null
+              ? '正在扫描无用文件…'
+              : orphanScan.files.isEmpty
+                  ? '没有无用文件（所有图片都有题目在用）。'
+                  : '发现 ${orphanScan.count} 个无用文件，共约 ${ImportService.formatBytes(orphanScan.totalBytes)}：删题、删学科后留下的旧图片。清理只删这些没人用的文件，题目图片不会动。',
+          QmButton(
+            label: '清理无用文件',
+            size: QmButtonSize.small,
+            onPressed: orphanScan == null || orphanScan.files.isEmpty
+                ? null
+                : () => setState(() => _orphanConfirm = true),
+          ),
+        ),
+        if (_orphanConfirm && orphanScan != null && orphanScan.files.isNotEmpty)
+          _confirmBox(
+            title: '清理无用文件，确定吗？',
+            detail:
+                '将删掉 ${orphanScan.count} 个没人用的文件（共约 ${ImportService.formatBytes(orphanScan.totalBytes)}），题目和数据不动，删了找不回来。确定清理吗？',
+            confirmLabel: '确认清理',
+            onConfirm: _clearOrphans,
+            onCancel: () => setState(() => _orphanConfirm = false),
+          ),
         _row(
           '清理缓存',
           preview == null

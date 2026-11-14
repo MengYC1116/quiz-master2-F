@@ -36,11 +36,17 @@ const _newSubjectColors = [
   // 与 Subject.all 的 R1 新值同步（2026-11-13 修）：新库上前三科
   // 占掉新蓝/新绿/新红后，新学科轮到紫；老库三科仍是旧值（不迁移，
   // Meng 已定），老库上新学科仍可能拿到与数学旧蓝相近的新蓝。
+  // P0B2-3（2026-11-14）：加青、粉两色，第 6、7 科不再回落数学蓝；
+  // 青 0xFF06B6D4（cyan-500，色相约 192°，在蓝与绿之间）、
+  // 粉 0xFFEC4899（pink-500，色相约 336°，在红与紫之间），
+  // 与现有 5 色同为 500 级明艳色，亮/深两主题都直接用存色画圆点。
   Color(0xFF2E7CF6),
   Color(0xFF00A884),
   Color(0xFFEF4444),
   Color(0xFF7C5CFC),
   Color(0xFFF08A1D),
+  Color(0xFF06B6D4),
+  Color(0xFFEC4899),
 ];
 
 class _SubjectsPageState extends State<SubjectsPage> {
@@ -210,6 +216,10 @@ class _SubjectsPageState extends State<SubjectsPage> {
         await widget.repo.renameKnowledgePoint(kp.id, name);
       case 'tag':
         if (key == name) return;
+        if (hasBannedNameSeparator(name)) {
+          _snack('不能含逗号或竖线');
+          return;
+        }
         if (_tags.contains(name)) {
           _snack('已经有了这个标签');
           return;
@@ -360,6 +370,12 @@ class _SubjectsPageState extends State<SubjectsPage> {
   Future<void> _addTag() async {
     final name = _newTagController.text.trim();
     if (name.isEmpty) return;
+    // §6 第 4 条：标签名禁逗号与竖线（多值字段已改 JSON，不再靠
+    // 分隔符拆分，名字里不能再出现分隔符）。
+    if (hasBannedNameSeparator(name)) {
+      _snack('不能含逗号或竖线');
+      return;
+    }
     if (_tags.contains(name)) {
       _snack('已经有了这个标签');
       return;
