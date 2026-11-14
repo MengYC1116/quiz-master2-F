@@ -1,0 +1,1599 @@
+{
+ "16676QPFVu1ck984AfWQHruoHWRfTz99b.png": {
+  "layer1Ms": 2909,
+  "layer2Ms": 17676,
+  "layer1": 14,
+  "layer2": 37,
+  "layer2ByType": {
+   "option": 21,
+   "stem": 12,
+   "figure": 4
+  },
+  "boxes": [
+   {
+    "id": "box-q1",
+    "layer": 1,
+    "type": "question",
+    "x": 0.14,
+    "y": 0.085,
+    "w": 0.788,
+    "h": 0.054,
+    "conf": 0.91
+   },
+   {
+    "id": "box-q2",
+    "layer": 1,
+    "type": "question",
+    "x": 0.138,
+    "y": 0.143,
+    "w": 0.792,
+    "h": 0.053,
+    "conf": 0.92
+   },
+   {
+    "id": "box-q3",
+    "layer": 1,
+    "type": "question",
+    "x": 0.136,
+    "y": 0.198,
+    "w": 0.793,
+    "h": 0.075,
+    "conf": 0.91
+   },
+   {
+    "id": "box-q4",
+    "layer": 1,
+    "type": "question",
+    "x": 0.137,
+    "y": 0.274,
+    "w": 0.785,
+    "h": 0.04,
+    "conf": 0.91
+   },
+   {
+    "id": "box-q5",
+    "layer": 1,
+    "type": "question",
+    "x": 0.137,
+    "y": 0.317,
+    "w": 0.792,
+    "h": 0.046,
+    "conf": 0.87
+   },
+   {
+    "id": "box-q6",
+    "layer": 1,
+    "type": "question",
+    "x": 0.139,
+    "y": 0.363,
+    "w": 0.303,
+    "h": 0.033,
+    "conf": 0.86
+   },
+   {
+    "id": "box-q7",
+    "layer": 1,
+    "type": "question",
+    "x": 0.138,
+    "y": 0.398,
+    "w": 0.378,
+    "h": 0.018,
+    "conf": 0.81
+   },
+   {
+    "id": "box-q8",
+    "layer": 1,
+    "type": "question",
+    "x": 0.138,
+    "y": 0.418,
+    "w": 0.446,
+    "h": 0.018,
+    "conf": 0.5
+   },
+   {
+    "id": "box-q9",
+    "layer": 1,
+    "type": "question",
+    "x": 0.129,
+    "y": 0.418,
+    "w": 0.691,
+    "h": 0.038,
+    "conf": 0.78
+   },
+   {
+    "id": "box-q10",
+    "layer": 1,
+    "type": "question",
+    "x": 0.135,
+    "y": 0.419,
+    "w": 0.684,
+    "h": 0.082,
+    "conf": 0.61
+   },
+   {
+    "id": "box-q11",
+    "layer": 1,
+    "type": "question",
+    "x": 0.525,
+    "y": 0.458,
+    "w": 0.301,
+    "h": 0.041,
+    "conf": 0.8
+   },
+   {
+    "id": "box-q12",
+    "layer": 1,
+    "type": "question",
+    "x": 0.526,
+    "y": 0.617,
+    "w": 0.317,
+    "h": 0.019,
+    "conf": 0.76
+   },
+   {
+    "id": "box-q13",
+    "layer": 1,
+    "type": "question",
+    "x": 0.137,
+    "y": 0.617,
+    "w": 0.119,
+    "h": 0.026,
+    "conf": 0.79
+   },
+   {
+    "id": "box-q14",
+    "layer": 1,
+    "type": "question",
+    "x": 0.113,
+    "y": 0.761,
+    "w": 0.814,
+    "h": 0.044,
+    "conf": 0.85
+   },
+   {
+    "id": "box-q1-option-1",
+    "layer": 2,
+    "type": "option",
+    "x": 0.527,
+    "y": 0.108,
+    "w": 0.043,
+    "h": 0.03,
+    "conf": 0.91
+   },
+   {
+    "id": "box-q1-option-2",
+    "layer": 2,
+    "type": "option",
+    "x": 0.707,
+    "y": 0.108,
+    "w": 0.05,
+    "h": 0.03,
+    "conf": 0.9
+   },
+   {
+    "id": "box-q1-option-3",
+    "layer": 2,
+    "type": "option",
+    "x": 0.157,
+    "y": 0.108,
+    "w": 0.044,
+    "h": 0.03,
+    "conf": 0.9
+   },
+   {
+    "id": "box-q1-option-4",
+    "layer": 2,
+    "type": "option",
+    "x": 0.341,
+    "y": 0.108,
+    "w": 0.043,
+    "h": 0.031,
+    "conf": 0.9
+   },
+   {
+    "id": "box-q1-stem-1",
+    "layer": 2,
+    "type": "stem",
+    "x": 0.153,
+    "y": 0.086,
+    "w": 0.738,
+    "h": 0.022,
+    "conf": 0.89
+   },
+   {
+    "id": "box-q2-option-1",
+    "layer": 2,
+    "type": "option",
+    "x": 0.157,
+    "y": 0.167,
+    "w": 0.044,
+    "h": 0.026,
+    "conf": 0.89
+   },
+   {
+    "id": "box-q2-option-2",
+    "layer": 2,
+    "type": "option",
+    "x": 0.341,
+    "y": 0.168,
+    "w": 0.043,
+    "h": 0.025,
+    "conf": 0.88
+   },
+   {
+    "id": "box-q2-option-3",
+    "layer": 2,
+    "type": "option",
+    "x": 0.712,
+    "y": 0.171,
+    "w": 0.037,
+    "h": 0.016,
+    "conf": 0.81
+   },
+   {
+    "id": "box-q2-option-4",
+    "layer": 2,
+    "type": "option",
+    "x": 0.526,
+    "y": 0.171,
+    "w": 0.035,
+    "h": 0.015,
+    "conf": 0.77
+   },
+   {
+    "id": "box-q2-stem-1",
+    "layer": 2,
+    "type": "stem",
+    "x": 0.146,
+    "y": 0.145,
+    "w": 0.721,
+    "h": 0.021,
+    "conf": 0.63
+   },
+   {
+    "id": "box-q3-option-1",
+    "layer": 2,
+    "type": "option",
+    "x": 0.711,
+    "y": 0.255,
+    "w": 0.047,
+    "h": 0.017,
+    "conf": 0.87
+   },
+   {
+    "id": "box-q3-option-2",
+    "layer": 2,
+    "type": "option",
+    "x": 0.526,
+    "y": 0.254,
+    "w": 0.046,
+    "h": 0.018,
+    "conf": 0.86
+   },
+   {
+    "id": "box-q3-option-3",
+    "layer": 2,
+    "type": "option",
+    "x": 0.341,
+    "y": 0.256,
+    "w": 0.035,
+    "h": 0.014,
+    "conf": 0.83
+   },
+   {
+    "id": "box-q3-option-4",
+    "layer": 2,
+    "type": "option",
+    "x": 0.157,
+    "y": 0.255,
+    "w": 0.034,
+    "h": 0.016,
+    "conf": 0.81
+   },
+   {
+    "id": "box-q3-stem-1",
+    "layer": 2,
+    "type": "stem",
+    "x": 0.135,
+    "y": 0.202,
+    "w": 0.73,
+    "h": 0.051,
+    "conf": 0.79
+   },
+   {
+    "id": "box-q3-option-5",
+    "layer": 2,
+    "type": "option",
+    "x": 0.137,
+    "y": 0.199,
+    "w": 0.171,
+    "h": 0.049,
+    "conf": 0.34
+   },
+   {
+    "id": "box-q4-option-1",
+    "layer": 2,
+    "type": "option",
+    "x": 0.527,
+    "y": 0.295,
+    "w": 0.144,
+    "h": 0.016,
+    "conf": 0.91
+   },
+   {
+    "id": "box-q4-option-2",
+    "layer": 2,
+    "type": "option",
+    "x": 0.713,
+    "y": 0.295,
+    "w": 0.145,
+    "h": 0.017,
+    "conf": 0.91
+   },
+   {
+    "id": "box-q4-option-3",
+    "layer": 2,
+    "type": "option",
+    "x": 0.341,
+    "y": 0.295,
+    "w": 0.117,
+    "h": 0.016,
+    "conf": 0.9
+   },
+   {
+    "id": "box-q4-option-4",
+    "layer": 2,
+    "type": "option",
+    "x": 0.157,
+    "y": 0.295,
+    "w": 0.1,
+    "h": 0.017,
+    "conf": 0.9
+   },
+   {
+    "id": "box-q4-stem-1",
+    "layer": 2,
+    "type": "stem",
+    "x": 0.15,
+    "y": 0.274,
+    "w": 0.734,
+    "h": 0.021,
+    "conf": 0.88
+   },
+   {
+    "id": "box-q5-option-1",
+    "layer": 2,
+    "type": "option",
+    "x": 0.157,
+    "y": 0.343,
+    "w": 0.067,
+    "h": 0.015,
+    "conf": 0.89
+   },
+   {
+    "id": "box-q5-option-2",
+    "layer": 2,
+    "type": "option",
+    "x": 0.711,
+    "y": 0.343,
+    "w": 0.131,
+    "h": 0.016,
+    "conf": 0.89
+   },
+   {
+    "id": "box-q5-option-3",
+    "layer": 2,
+    "type": "option",
+    "x": 0.34,
+    "y": 0.341,
+    "w": 0.084,
+    "h": 0.018,
+    "conf": 0.8
+   },
+   {
+    "id": "box-q5-stem-1",
+    "layer": 2,
+    "type": "stem",
+    "x": 0.139,
+    "y": 0.321,
+    "w": 0.717,
+    "h": 0.018,
+    "conf": 0.61
+   },
+   {
+    "id": "box-q5-option-4",
+    "layer": 2,
+    "type": "option",
+    "x": 0.525,
+    "y": 0.338,
+    "w": 0.129,
+    "h": 0.021,
+    "conf": 0.58
+   },
+   {
+    "id": "box-q6-figure-1",
+    "layer": 2,
+    "type": "figure",
+    "x": 0.144,
+    "y": 0.364,
+    "w": 0.284,
+    "h": 0.03,
+    "conf": 0.87
+   },
+   {
+    "id": "box-q7-stem-1",
+    "layer": 2,
+    "type": "stem",
+    "x": 0.156,
+    "y": 0.399,
+    "w": 0.354,
+    "h": 0.016,
+    "conf": 0.91
+   },
+   {
+    "id": "box-q8-stem-1",
+    "layer": 2,
+    "type": "stem",
+    "x": 0.16,
+    "y": 0.419,
+    "w": 0.418,
+    "h": 0.016,
+    "conf": 0.92
+   },
+   {
+    "id": "box-q9-stem-1",
+    "layer": 2,
+    "type": "stem",
+    "x": 0.141,
+    "y": 0.418,
+    "w": 0.647,
+    "h": 0.037,
+    "conf": 0.92
+   },
+   {
+    "id": "box-q10-stem-1",
+    "layer": 2,
+    "type": "stem",
+    "x": 0.167,
+    "y": 0.418,
+    "w": 0.641,
+    "h": 0.079,
+    "conf": 0.78
+   },
+   {
+    "id": "box-q10-stem-2",
+    "layer": 2,
+    "type": "stem",
+    "x": 0.134,
+    "y": 0.418,
+    "w": 0.631,
+    "h": 0.036,
+    "conf": 0.55
+   },
+   {
+    "id": "box-q10-figure-1",
+    "layer": 2,
+    "type": "figure",
+    "x": 0.136,
+    "y": 0.458,
+    "w": 0.256,
+    "h": 0.036,
+    "conf": 0.29
+   },
+   {
+    "id": "box-q11-figure-1",
+    "layer": 2,
+    "type": "figure",
+    "x": 0.53,
+    "y": 0.459,
+    "w": 0.28,
+    "h": 0.036,
+    "conf": 0.92
+   },
+   {
+    "id": "box-q12-stem-1",
+    "layer": 2,
+    "type": "stem",
+    "x": 0.541,
+    "y": 0.617,
+    "w": 0.296,
+    "h": 0.016,
+    "conf": 0.93
+   },
+   {
+    "id": "box-q13-figure-1",
+    "layer": 2,
+    "type": "figure",
+    "x": 0.139,
+    "y": 0.619,
+    "w": 0.112,
+    "h": 0.023,
+    "conf": 0.49
+   },
+   {
+    "id": "box-q14-stem-1",
+    "layer": 2,
+    "type": "stem",
+    "x": 0.126,
+    "y": 0.761,
+    "w": 0.762,
+    "h": 0.04,
+    "conf": 0.93
+   }
+  ]
+ },
+ "1TYQmeLkJc40U4X5s6v5xou3MmrDtzrEf.png": {
+  "layer1Ms": 2208,
+  "layer2Ms": 8259,
+  "layer1": 7,
+  "layer2": 20,
+  "layer2ByType": {
+   "stem": 8,
+   "option": 12
+  },
+  "boxes": [
+   {
+    "id": "box-q1",
+    "layer": 1,
+    "type": "question",
+    "x": 0.109,
+    "y": 0.084,
+    "w": 0.798,
+    "h": 0.026,
+    "conf": 0.68
+   },
+   {
+    "id": "box-q2",
+    "layer": 1,
+    "type": "question",
+    "x": 0.113,
+    "y": 0.194,
+    "w": 0.414,
+    "h": 0.046,
+    "conf": 0.71
+   },
+   {
+    "id": "box-q3",
+    "layer": 1,
+    "type": "question",
+    "x": 0.093,
+    "y": 0.337,
+    "w": 0.812,
+    "h": 0.041,
+    "conf": 0.83
+   },
+   {
+    "id": "box-q4",
+    "layer": 1,
+    "type": "question",
+    "x": 0.074,
+    "y": 0.473,
+    "w": 0.837,
+    "h": 0.2,
+    "conf": 0.56
+   },
+   {
+    "id": "box-q5",
+    "layer": 1,
+    "type": "question",
+    "x": 0.081,
+    "y": 0.733,
+    "w": 0.823,
+    "h": 0.082,
+    "conf": 0.91
+   },
+   {
+    "id": "box-q6",
+    "layer": 1,
+    "type": "question",
+    "x": 0.085,
+    "y": 0.816,
+    "w": 0.819,
+    "h": 0.056,
+    "conf": 0.9
+   },
+   {
+    "id": "box-q7",
+    "layer": 1,
+    "type": "question",
+    "x": 0.085,
+    "y": 0.875,
+    "w": 0.82,
+    "h": 0.058,
+    "conf": 0.9
+   },
+   {
+    "id": "box-q1-stem-1",
+    "layer": 2,
+    "type": "stem",
+    "x": 0.122,
+    "y": 0.084,
+    "w": 0.747,
+    "h": 0.024,
+    "conf": 0.88
+   },
+   {
+    "id": "box-q2-stem-1",
+    "layer": 2,
+    "type": "stem",
+    "x": 0.132,
+    "y": 0.194,
+    "w": 0.388,
+    "h": 0.041,
+    "conf": 0.9
+   },
+   {
+    "id": "box-q3-stem-1",
+    "layer": 2,
+    "type": "stem",
+    "x": 0.106,
+    "y": 0.338,
+    "w": 0.76,
+    "h": 0.039,
+    "conf": 0.93
+   },
+   {
+    "id": "box-q4-stem-1",
+    "layer": 2,
+    "type": "stem",
+    "x": 0.114,
+    "y": 0.477,
+    "w": 0.784,
+    "h": 0.191,
+    "conf": 0.64
+   },
+   {
+    "id": "box-q5-option-1",
+    "layer": 2,
+    "type": "option",
+    "x": 0.129,
+    "y": 0.754,
+    "w": 0.167,
+    "h": 0.034,
+    "conf": 0.92
+   },
+   {
+    "id": "box-q5-option-2",
+    "layer": 2,
+    "type": "option",
+    "x": 0.501,
+    "y": 0.785,
+    "w": 0.197,
+    "h": 0.028,
+    "conf": 0.89
+   },
+   {
+    "id": "box-q5-option-3",
+    "layer": 2,
+    "type": "option",
+    "x": 0.503,
+    "y": 0.762,
+    "w": 0.186,
+    "h": 0.018,
+    "conf": 0.89
+   },
+   {
+    "id": "box-q5-option-4",
+    "layer": 2,
+    "type": "option",
+    "x": 0.129,
+    "y": 0.794,
+    "w": 0.207,
+    "h": 0.018,
+    "conf": 0.89
+   },
+   {
+    "id": "box-q5-stem-1",
+    "layer": 2,
+    "type": "stem",
+    "x": 0.083,
+    "y": 0.734,
+    "w": 0.669,
+    "h": 0.023,
+    "conf": 0.78
+   },
+   {
+    "id": "box-q5-stem-2",
+    "layer": 2,
+    "type": "stem",
+    "x": 0.493,
+    "y": 0.735,
+    "w": 0.411,
+    "h": 0.028,
+    "conf": 0.47
+   },
+   {
+    "id": "box-q6-stem-1",
+    "layer": 2,
+    "type": "stem",
+    "x": 0.125,
+    "y": 0.817,
+    "w": 0.765,
+    "h": 0.021,
+    "conf": 0.91
+   },
+   {
+    "id": "box-q6-option-1",
+    "layer": 2,
+    "type": "option",
+    "x": 0.501,
+    "y": 0.839,
+    "w": 0.043,
+    "h": 0.03,
+    "conf": 0.9
+   },
+   {
+    "id": "box-q6-option-2",
+    "layer": 2,
+    "type": "option",
+    "x": 0.315,
+    "y": 0.838,
+    "w": 0.043,
+    "h": 0.03,
+    "conf": 0.9
+   },
+   {
+    "id": "box-q6-option-3",
+    "layer": 2,
+    "type": "option",
+    "x": 0.13,
+    "y": 0.845,
+    "w": 0.035,
+    "h": 0.016,
+    "conf": 0.82
+   },
+   {
+    "id": "box-q6-option-4",
+    "layer": 2,
+    "type": "option",
+    "x": 0.687,
+    "y": 0.847,
+    "w": 0.04,
+    "h": 0.015,
+    "conf": 0.44
+   },
+   {
+    "id": "box-q7-stem-1",
+    "layer": 2,
+    "type": "stem",
+    "x": 0.098,
+    "y": 0.874,
+    "w": 0.768,
+    "h": 0.04,
+    "conf": 0.95
+   },
+   {
+    "id": "box-q7-option-1",
+    "layer": 2,
+    "type": "option",
+    "x": 0.13,
+    "y": 0.914,
+    "w": 0.078,
+    "h": 0.016,
+    "conf": 0.9
+   },
+   {
+    "id": "box-q7-option-2",
+    "layer": 2,
+    "type": "option",
+    "x": 0.501,
+    "y": 0.915,
+    "w": 0.112,
+    "h": 0.017,
+    "conf": 0.9
+   },
+   {
+    "id": "box-q7-option-3",
+    "layer": 2,
+    "type": "option",
+    "x": 0.686,
+    "y": 0.916,
+    "w": 0.154,
+    "h": 0.016,
+    "conf": 0.85
+   },
+   {
+    "id": "box-q7-option-4",
+    "layer": 2,
+    "type": "option",
+    "x": 0.316,
+    "y": 0.914,
+    "w": 0.132,
+    "h": 0.017,
+    "conf": 0.84
+   }
+  ]
+ },
+ "1iMDN14nE6qZD_srN4VHi1yCZ5j6ywg_D.png": {
+  "layer1Ms": 1869,
+  "layer2Ms": 16105,
+  "layer1": 13,
+  "layer2": 65,
+  "layer2ByType": {
+   "option": 51,
+   "stem": 14
+  },
+  "boxes": [
+   {
+    "id": "box-q1",
+    "layer": 1,
+    "type": "question",
+    "x": 0.132,
+    "y": 0.086,
+    "w": 0.792,
+    "h": 0.094,
+    "conf": 0.93
+   },
+   {
+    "id": "box-q2",
+    "layer": 1,
+    "type": "question",
+    "x": 0.133,
+    "y": 0.184,
+    "w": 0.795,
+    "h": 0.072,
+    "conf": 0.93
+   },
+   {
+    "id": "box-q3",
+    "layer": 1,
+    "type": "question",
+    "x": 0.133,
+    "y": 0.26,
+    "w": 0.796,
+    "h": 0.041,
+    "conf": 0.91
+   },
+   {
+    "id": "box-q4",
+    "layer": 1,
+    "type": "question",
+    "x": 0.134,
+    "y": 0.307,
+    "w": 0.796,
+    "h": 0.07,
+    "conf": 0.93
+   },
+   {
+    "id": "box-q5",
+    "layer": 1,
+    "type": "question",
+    "x": 0.137,
+    "y": 0.383,
+    "w": 0.794,
+    "h": 0.054,
+    "conf": 0.89
+   },
+   {
+    "id": "box-q6",
+    "layer": 1,
+    "type": "question",
+    "x": 0.136,
+    "y": 0.441,
+    "w": 0.794,
+    "h": 0.042,
+    "conf": 0.9
+   },
+   {
+    "id": "box-q7",
+    "layer": 1,
+    "type": "question",
+    "x": 0.133,
+    "y": 0.486,
+    "w": 0.796,
+    "h": 0.104,
+    "conf": 0.92
+   },
+   {
+    "id": "box-q8",
+    "layer": 1,
+    "type": "question",
+    "x": 0.135,
+    "y": 0.593,
+    "w": 0.802,
+    "h": 0.078,
+    "conf": 0.9
+   },
+   {
+    "id": "box-q9",
+    "layer": 1,
+    "type": "question",
+    "x": 0.132,
+    "y": 0.675,
+    "w": 0.796,
+    "h": 0.039,
+    "conf": 0.92
+   },
+   {
+    "id": "box-q10",
+    "layer": 1,
+    "type": "question",
+    "x": 0.13,
+    "y": 0.717,
+    "w": 0.796,
+    "h": 0.063,
+    "conf": 0.93
+   },
+   {
+    "id": "box-q11",
+    "layer": 1,
+    "type": "question",
+    "x": 0.125,
+    "y": 0.784,
+    "w": 0.801,
+    "h": 0.061,
+    "conf": 0.92
+   },
+   {
+    "id": "box-q12",
+    "layer": 1,
+    "type": "question",
+    "x": 0.127,
+    "y": 0.849,
+    "w": 0.797,
+    "h": 0.041,
+    "conf": 0.91
+   },
+   {
+    "id": "box-q13",
+    "layer": 1,
+    "type": "question",
+    "x": 0.124,
+    "y": 0.893,
+    "w": 0.807,
+    "h": 0.04,
+    "conf": 0.87
+   },
+   {
+    "id": "box-q1-option-1",
+    "layer": 2,
+    "type": "option",
+    "x": 0.523,
+    "y": 0.145,
+    "w": 0.172,
+    "h": 0.032,
+    "conf": 0.93
+   },
+   {
+    "id": "box-q1-option-2",
+    "layer": 2,
+    "type": "option",
+    "x": 0.151,
+    "y": 0.149,
+    "w": 0.223,
+    "h": 0.023,
+    "conf": 0.9
+   },
+   {
+    "id": "box-q1-option-3",
+    "layer": 2,
+    "type": "option",
+    "x": 0.522,
+    "y": 0.113,
+    "w": 0.188,
+    "h": 0.02,
+    "conf": 0.89
+   },
+   {
+    "id": "box-q1-option-4",
+    "layer": 2,
+    "type": "option",
+    "x": 0.149,
+    "y": 0.109,
+    "w": 0.145,
+    "h": 0.032,
+    "conf": 0.87
+   },
+   {
+    "id": "box-q1-stem-1",
+    "layer": 2,
+    "type": "stem",
+    "x": 0.138,
+    "y": 0.085,
+    "w": 0.65,
+    "h": 0.027,
+    "conf": 0.82
+   },
+   {
+    "id": "box-q2-stem-1",
+    "layer": 2,
+    "type": "stem",
+    "x": 0.146,
+    "y": 0.186,
+    "w": 0.744,
+    "h": 0.038,
+    "conf": 0.9
+   },
+   {
+    "id": "box-q2-option-1",
+    "layer": 2,
+    "type": "option",
+    "x": 0.153,
+    "y": 0.224,
+    "w": 0.046,
+    "h": 0.03,
+    "conf": 0.9
+   },
+   {
+    "id": "box-q2-option-2",
+    "layer": 2,
+    "type": "option",
+    "x": 0.708,
+    "y": 0.223,
+    "w": 0.068,
+    "h": 0.03,
+    "conf": 0.9
+   },
+   {
+    "id": "box-q2-option-3",
+    "layer": 2,
+    "type": "option",
+    "x": 0.523,
+    "y": 0.223,
+    "w": 0.065,
+    "h": 0.03,
+    "conf": 0.9
+   },
+   {
+    "id": "box-q2-option-4",
+    "layer": 2,
+    "type": "option",
+    "x": 0.337,
+    "y": 0.227,
+    "w": 0.043,
+    "h": 0.027,
+    "conf": 0.89
+   },
+   {
+    "id": "box-q2-option-5",
+    "layer": 2,
+    "type": "option",
+    "x": 0.907,
+    "y": 0.224,
+    "w": 0.021,
+    "h": 0.027,
+    "conf": 0.75
+   },
+   {
+    "id": "box-q3-option-1",
+    "layer": 2,
+    "type": "option",
+    "x": 0.338,
+    "y": 0.283,
+    "w": 0.111,
+    "h": 0.015,
+    "conf": 0.9
+   },
+   {
+    "id": "box-q3-option-2",
+    "layer": 2,
+    "type": "option",
+    "x": 0.154,
+    "y": 0.284,
+    "w": 0.115,
+    "h": 0.015,
+    "conf": 0.9
+   },
+   {
+    "id": "box-q3-option-3",
+    "layer": 2,
+    "type": "option",
+    "x": 0.526,
+    "y": 0.282,
+    "w": 0.301,
+    "h": 0.016,
+    "conf": 0.89
+   },
+   {
+    "id": "box-q3-stem-1",
+    "layer": 2,
+    "type": "stem",
+    "x": 0.171,
+    "y": 0.261,
+    "w": 0.742,
+    "h": 0.022,
+    "conf": 0.79
+   },
+   {
+    "id": "box-q3-stem-2",
+    "layer": 2,
+    "type": "stem",
+    "x": 0.522,
+    "y": 0.261,
+    "w": 0.406,
+    "h": 0.02,
+    "conf": 0.27
+   },
+   {
+    "id": "box-q4-option-1",
+    "layer": 2,
+    "type": "option",
+    "x": 0.521,
+    "y": 0.341,
+    "w": 0.051,
+    "h": 0.034,
+    "conf": 0.87
+   },
+   {
+    "id": "box-q4-option-2",
+    "layer": 2,
+    "type": "option",
+    "x": 0.708,
+    "y": 0.351,
+    "w": 0.036,
+    "h": 0.016,
+    "conf": 0.78
+   },
+   {
+    "id": "box-q4-option-3",
+    "layer": 2,
+    "type": "option",
+    "x": 0.339,
+    "y": 0.345,
+    "w": 0.041,
+    "h": 0.03,
+    "conf": 0.73
+   },
+   {
+    "id": "box-q4-stem-1",
+    "layer": 2,
+    "type": "stem",
+    "x": 0.176,
+    "y": 0.316,
+    "w": 0.716,
+    "h": 0.024,
+    "conf": 0.47
+   },
+   {
+    "id": "box-q5-option-1",
+    "layer": 2,
+    "type": "option",
+    "x": 0.155,
+    "y": 0.421,
+    "w": 0.036,
+    "h": 0.015,
+    "conf": 0.86
+   },
+   {
+    "id": "box-q5-option-2",
+    "layer": 2,
+    "type": "option",
+    "x": 0.709,
+    "y": 0.419,
+    "w": 0.066,
+    "h": 0.016,
+    "conf": 0.85
+   },
+   {
+    "id": "box-q5-option-3",
+    "layer": 2,
+    "type": "option",
+    "x": 0.524,
+    "y": 0.42,
+    "w": 0.034,
+    "h": 0.014,
+    "conf": 0.85
+   },
+   {
+    "id": "box-q5-option-4",
+    "layer": 2,
+    "type": "option",
+    "x": 0.338,
+    "y": 0.42,
+    "w": 0.034,
+    "h": 0.015,
+    "conf": 0.83
+   },
+   {
+    "id": "box-q5-stem-1",
+    "layer": 2,
+    "type": "stem",
+    "x": 0.138,
+    "y": 0.384,
+    "w": 0.649,
+    "h": 0.036,
+    "conf": 0.29
+   },
+   {
+    "id": "box-q6-option-1",
+    "layer": 2,
+    "type": "option",
+    "x": 0.338,
+    "y": 0.462,
+    "w": 0.141,
+    "h": 0.018,
+    "conf": 0.92
+   },
+   {
+    "id": "box-q6-option-2",
+    "layer": 2,
+    "type": "option",
+    "x": 0.525,
+    "y": 0.463,
+    "w": 0.127,
+    "h": 0.017,
+    "conf": 0.91
+   },
+   {
+    "id": "box-q6-option-3",
+    "layer": 2,
+    "type": "option",
+    "x": 0.155,
+    "y": 0.465,
+    "w": 0.1,
+    "h": 0.016,
+    "conf": 0.91
+   },
+   {
+    "id": "box-q6-option-4",
+    "layer": 2,
+    "type": "option",
+    "x": 0.708,
+    "y": 0.462,
+    "w": 0.132,
+    "h": 0.017,
+    "conf": 0.91
+   },
+   {
+    "id": "box-q6-stem-1",
+    "layer": 2,
+    "type": "stem",
+    "x": 0.149,
+    "y": 0.441,
+    "w": 0.743,
+    "h": 0.022,
+    "conf": 0.91
+   },
+   {
+    "id": "box-q7-option-1",
+    "layer": 2,
+    "type": "option",
+    "x": 0.155,
+    "y": 0.571,
+    "w": 0.405,
+    "h": 0.018,
+    "conf": 0.83
+   },
+   {
+    "id": "box-q7-option-2",
+    "layer": 2,
+    "type": "option",
+    "x": 0.146,
+    "y": 0.501,
+    "w": 0.464,
+    "h": 0.023,
+    "conf": 0.79
+   },
+   {
+    "id": "box-q7-option-3",
+    "layer": 2,
+    "type": "option",
+    "x": 0.154,
+    "y": 0.548,
+    "w": 0.541,
+    "h": 0.02,
+    "conf": 0.76
+   },
+   {
+    "id": "box-q7-option-4",
+    "layer": 2,
+    "type": "option",
+    "x": 0.151,
+    "y": 0.528,
+    "w": 0.524,
+    "h": 0.018,
+    "conf": 0.76
+   },
+   {
+    "id": "box-q7-stem-1",
+    "layer": 2,
+    "type": "stem",
+    "x": 0.138,
+    "y": 0.487,
+    "w": 0.557,
+    "h": 0.019,
+    "conf": 0.56
+   },
+   {
+    "id": "box-q8-option-1",
+    "layer": 2,
+    "type": "option",
+    "x": 0.525,
+    "y": 0.63,
+    "w": 0.098,
+    "h": 0.016,
+    "conf": 0.9
+   },
+   {
+    "id": "box-q8-option-2",
+    "layer": 2,
+    "type": "option",
+    "x": 0.154,
+    "y": 0.633,
+    "w": 0.12,
+    "h": 0.016,
+    "conf": 0.9
+   },
+   {
+    "id": "box-q8-option-3",
+    "layer": 2,
+    "type": "option",
+    "x": 0.525,
+    "y": 0.652,
+    "w": 0.087,
+    "h": 0.016,
+    "conf": 0.89
+   },
+   {
+    "id": "box-q8-option-4",
+    "layer": 2,
+    "type": "option",
+    "x": 0.154,
+    "y": 0.653,
+    "w": 0.178,
+    "h": 0.016,
+    "conf": 0.89
+   },
+   {
+    "id": "box-q8-stem-1",
+    "layer": 2,
+    "type": "stem",
+    "x": 0.134,
+    "y": 0.593,
+    "w": 0.604,
+    "h": 0.036,
+    "conf": 0.66
+   },
+   {
+    "id": "box-q9-option-1",
+    "layer": 2,
+    "type": "option",
+    "x": 0.156,
+    "y": 0.698,
+    "w": 0.095,
+    "h": 0.015,
+    "conf": 0.9
+   },
+   {
+    "id": "box-q9-option-2",
+    "layer": 2,
+    "type": "option",
+    "x": 0.34,
+    "y": 0.697,
+    "w": 0.095,
+    "h": 0.016,
+    "conf": 0.9
+   },
+   {
+    "id": "box-q9-option-3",
+    "layer": 2,
+    "type": "option",
+    "x": 0.526,
+    "y": 0.696,
+    "w": 0.094,
+    "h": 0.016,
+    "conf": 0.9
+   },
+   {
+    "id": "box-q9-option-4",
+    "layer": 2,
+    "type": "option",
+    "x": 0.71,
+    "y": 0.696,
+    "w": 0.096,
+    "h": 0.016,
+    "conf": 0.89
+   },
+   {
+    "id": "box-q9-stem-1",
+    "layer": 2,
+    "type": "stem",
+    "x": 0.145,
+    "y": 0.675,
+    "w": 0.743,
+    "h": 0.022,
+    "conf": 0.77
+   },
+   {
+    "id": "box-q10-stem-1",
+    "layer": 2,
+    "type": "stem",
+    "x": 0.168,
+    "y": 0.717,
+    "w": 0.745,
+    "h": 0.045,
+    "conf": 0.94
+   },
+   {
+    "id": "box-q10-option-1",
+    "layer": 2,
+    "type": "option",
+    "x": 0.71,
+    "y": 0.761,
+    "w": 0.132,
+    "h": 0.016,
+    "conf": 0.91
+   },
+   {
+    "id": "box-q10-option-2",
+    "layer": 2,
+    "type": "option",
+    "x": 0.526,
+    "y": 0.761,
+    "w": 0.128,
+    "h": 0.016,
+    "conf": 0.9
+   },
+   {
+    "id": "box-q10-option-3",
+    "layer": 2,
+    "type": "option",
+    "x": 0.156,
+    "y": 0.763,
+    "w": 0.114,
+    "h": 0.016,
+    "conf": 0.9
+   },
+   {
+    "id": "box-q10-option-4",
+    "layer": 2,
+    "type": "option",
+    "x": 0.338,
+    "y": 0.762,
+    "w": 0.131,
+    "h": 0.015,
+    "conf": 0.89
+   },
+   {
+    "id": "box-q11-option-1",
+    "layer": 2,
+    "type": "option",
+    "x": 0.156,
+    "y": 0.806,
+    "w": 0.202,
+    "h": 0.016,
+    "conf": 0.9
+   },
+   {
+    "id": "box-q11-option-2",
+    "layer": 2,
+    "type": "option",
+    "x": 0.156,
+    "y": 0.828,
+    "w": 0.2,
+    "h": 0.016,
+    "conf": 0.9
+   },
+   {
+    "id": "box-q11-option-3",
+    "layer": 2,
+    "type": "option",
+    "x": 0.526,
+    "y": 0.804,
+    "w": 0.2,
+    "h": 0.017,
+    "conf": 0.88
+   },
+   {
+    "id": "box-q11-option-4",
+    "layer": 2,
+    "type": "option",
+    "x": 0.526,
+    "y": 0.826,
+    "w": 0.078,
+    "h": 0.017,
+    "conf": 0.85
+   },
+   {
+    "id": "box-q11-stem-1",
+    "layer": 2,
+    "type": "stem",
+    "x": 0.138,
+    "y": 0.784,
+    "w": 0.67,
+    "h": 0.021,
+    "conf": 0.83
+   },
+   {
+    "id": "box-q12-option-1",
+    "layer": 2,
+    "type": "option",
+    "x": 0.34,
+    "y": 0.871,
+    "w": 0.119,
+    "h": 0.016,
+    "conf": 0.9
+   },
+   {
+    "id": "box-q12-option-2",
+    "layer": 2,
+    "type": "option",
+    "x": 0.157,
+    "y": 0.872,
+    "w": 0.103,
+    "h": 0.015,
+    "conf": 0.9
+   },
+   {
+    "id": "box-q12-option-3",
+    "layer": 2,
+    "type": "option",
+    "x": 0.527,
+    "y": 0.87,
+    "w": 0.076,
+    "h": 0.016,
+    "conf": 0.89
+   },
+   {
+    "id": "box-q12-option-4",
+    "layer": 2,
+    "type": "option",
+    "x": 0.711,
+    "y": 0.87,
+    "w": 0.057,
+    "h": 0.016,
+    "conf": 0.86
+   },
+   {
+    "id": "box-q12-stem-1",
+    "layer": 2,
+    "type": "stem",
+    "x": 0.138,
+    "y": 0.849,
+    "w": 0.621,
+    "h": 0.021,
+    "conf": 0.57
+   },
+   {
+    "id": "box-q13-option-1",
+    "layer": 2,
+    "type": "option",
+    "x": 0.711,
+    "y": 0.913,
+    "w": 0.069,
+    "h": 0.016,
+    "conf": 0.89
+   },
+   {
+    "id": "box-q13-option-2",
+    "layer": 2,
+    "type": "option",
+    "x": 0.156,
+    "y": 0.916,
+    "w": 0.069,
+    "h": 0.015,
+    "conf": 0.89
+   },
+   {
+    "id": "box-q13-option-3",
+    "layer": 2,
+    "type": "option",
+    "x": 0.527,
+    "y": 0.914,
+    "w": 0.065,
+    "h": 0.017,
+    "conf": 0.89
+   },
+   {
+    "id": "box-q13-option-4",
+    "layer": 2,
+    "type": "option",
+    "x": 0.34,
+    "y": 0.915,
+    "w": 0.066,
+    "h": 0.015,
+    "conf": 0.87
+   },
+   {
+    "id": "box-q13-stem-1",
+    "layer": 2,
+    "type": "stem",
+    "x": 0.136,
+    "y": 0.894,
+    "w": 0.627,
+    "h": 0.021,
+    "conf": 0.62
+   }
+  ]
+ }
+}

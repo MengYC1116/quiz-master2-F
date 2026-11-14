@@ -1,0 +1,6 @@
+== 复习页改 10→20 后 ==
+pageSize=20
+themeMode=dark
+== 设置页改主题为浅色、杀应用后 ==
+pageSize=10
+themeMode=light
