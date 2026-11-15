@@ -180,52 +180,6 @@ void main() {
     });
   });
 
-  group('SR-P2-2 清演示数据走删题事务', () {
-    test('演示题的框清掉、任务指向置空；断点队列去掉演示条目、其余不动', () async {
-      final db = await openTestDb();
-      addTearDown(() async => db.close());
-      await insertQuestion(db, 'demo1', isDemo: 1);
-      await insertQuestion(db, 'real1', isDemo: 0);
-      await insertCauseRecord(db, 'demo1', '计算错误');
-      await db.insert(
-        'question_boxes',
-        _boxRow(box(id: 'b-demo', questionId: 'demo1')),
-      );
-      await insertTask(db, 'ct-demo', sourcePath: '');
-      await db.update(
-        'collect_tasks',
-        {'question_id': 'demo1'},
-        where: 'id = ?',
-        whereArgs: ['ct-demo'],
-      );
-      await db.insert('recent_tasks', {
-        'id': 1,
-        'kind': '整理',
-        'subject_id': 'math',
-        'title': 't',
-        'updated_at': 1,
-      });
-      await db.insert('review_state', {
-        'id': 1,
-        'queue': '[{"q":"demo1","c":"计算错误"}]',
-        'position': 0,
-        'updated_at': 1,
-      });
-      final n = await AppDatabase.clearDemoDataFrom(db);
-      expect(n, 1);
-      expect(await db.query('question_boxes'), isEmpty);
-      final task = (await db.query(
-        'collect_tasks',
-        where: 'id = ?',
-        whereArgs: ['ct-demo'],
-      )).single;
-      expect(task['question_id'], isNull);
-      expect(await db.query('recent_tasks'), hasLength(1));
-      final state = (await db.query('review_state')).single;
-      expect(state['queue'], '[]');
-    });
-  });
-
   group('SR-P2-4 备份校验缺口', () {
     test('缺表键拒绝恢复，原库不动', () async {
       final db = await openTestDb();

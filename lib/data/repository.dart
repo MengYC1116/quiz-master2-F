@@ -287,10 +287,6 @@ class QuestionRepository {
           required String title}) =>
       _db.saveRecentTask(kind: kind, subjectId: subjectId, title: title);
 
-  Future<int> clearDemoData() => _db.clearDemoData();
-
-  Future<int> demoQuestionCount() => _db.demoQuestionCount();
-
   Future<void> archive(Question q, {bool archived = true}) async =>
       _db.upsertQuestion(q.copyWith(isArchived: archived));
 

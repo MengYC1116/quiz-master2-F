@@ -15,7 +15,11 @@ import 'package:quiz_master2/services/page_image_pipeline.dart';
 import 'package:quiz_master2/widgets/widgets.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
+import 'test_fixtures.dart';
+
 late final Directory _tmp;
+late final String _photoPath; // B10-2：生成的照片固件
+late final String _exif6Path; // B10-2：生成的方向 6 固件
 
 Future<Database> openMemoryDb() async {
   sqfliteFfiInit();
@@ -100,6 +104,13 @@ void main() {
     final slicesDir = Directory('${_tmp.path}/slices')
       ..createSync(recursive: true);
     await makePng(slicesDir, 'q1.png');
+    // B10-2：照片 / 方向 6 固件写进临时目录，不读磁盘夹具。
+    _photoPath =
+        (await writeFixtureFile(_tmp, 'photo.jpg', photoFixtureBytes()))
+            .path;
+    _exif6Path = (await writeFixtureFile(
+            _tmp, 'exif-orientation-6.jpg', exifFixtureBytes(6)))
+        .path;
   });
 
   tearDownAll(() async {
@@ -111,7 +122,7 @@ void main() {
     test('图片导入：复制进 imports/，source_path 是相对路径，进度走到 100', () async {
       await openMemoryDb();
       final service = ImportService(AppDatabase.instance);
-      final src = File('test/fixtures/photo.jpg');
+      final src = File(_photoPath);
       final progress = <int>[];
       final tasks = await service.enqueue(
         [src.path],
@@ -152,7 +163,7 @@ void main() {
       await openMemoryDb();
       final service = ImportService(AppDatabase.instance);
       final tasks = await service.enqueue(
-        ['test/fixtures/exif-orientation-6.jpg'],
+        [_exif6Path],
         subjectId: 'math',
       );
       final t = tasks.first;
@@ -162,11 +173,11 @@ void main() {
       expect(norm.existsSync(), isTrue);
     });
 
-    test('EXIF 方向 1 的照片：不生成归一化副本', () async {
+    test('无 EXIF 的照片：不生成归一化副本', () async {
       await openMemoryDb();
       final service = ImportService(AppDatabase.instance);
       final tasks = await service.enqueue(
-        ['test/fixtures/photo.jpg'],
+        [_photoPath],
         subjectId: 'math',
       );
       final t = tasks.first;
@@ -178,10 +189,10 @@ void main() {
 
     test('EXIF 镜像方向 2：显式失败，提示镜像方向，导入目录已删', () async {
       await openMemoryDb();
-      // 把方向 6 的 fixture 改成方向 2：大端 TIFF，orientation
+      // 把方向 6 的固件改成方向 2：大端 TIFF，orientation
       // tag 在偏移 40，值 SHORT 在偏移 48..49（00 06 → 00 02）。
-      final bytes = await File('test/fixtures/exif-orientation-6.jpg')
-          .readAsBytes();
+      // B10-2：固件字节与原磁盘文件逐字节相同，偏移不变。
+      final bytes = exifFixtureBytes(6);
       expect(readJpegExifOrientation(bytes), 6);
       final patched = Uint8List.fromList(bytes);
       patched[48] = 0x00;

@@ -435,9 +435,6 @@ class AppDatabase {
   static String normalizeRecentKind(String kind) =>
       normalizeRecentKindImpl(kind);
 
-  static Future<int> clearDemoDataFrom(Database db) =>
-      clearDemoDataFromImpl(db);
-
   static Future<void> saveSettingsInto(Database db, AppSettings s) =>
       saveSettingsIntoImpl(db, s);
   // -- db_collect.dart --

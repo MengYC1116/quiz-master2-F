@@ -24,7 +24,7 @@ import '../../widgets/uikit.dart';
 /// 数据备份/恢复（恢复先选文件再弹窗确认，含备份题数与当前题数）、
 /// 数据库位置（改后提示重启才生效）、空间占用与孤儿清理（P3 §4.5：
 /// 打开数据组时统计/扫描，清理前预览确认）、缓存清理（先预览临时文件数 +
-/// 缩略图数 + 约多少 MB，再确认）、清除演示数据；启动页 + 关于
+/// 缩略图数 + 约多少 MB，再确认）；启动页 + 关于
 /// （版本 v0.1.0、作者 Meng（个人项目）、更新说明）。
 /// 不做的项不出现：首页显示内容开关、封面计数牌开关、导入文件大小、
 /// 整理台默认排序（与 HTML psub 的“不做”清单一致）。
@@ -104,21 +104,6 @@ class _SettingsPageState extends State<SettingsPage> {
   _CachePreview? _cachePreview;
   bool _cacheScanned = false;
   String? _cacheCleanedMb;
-
-  /// B3：清空演示数据确认改模态弹窗（文案与原来行内条一致）。
-  Future<void> _askClearDemo() async {
-    final count = await widget.repo.demoQuestionCount();
-    if (count == 0) {
-      _snack('没有演示数据');
-      return;
-    }
-    final ok = await _showConfirmDialog(
-      title: '清空演示数据，确定吗？',
-      detail: '三科共 $count 道演示题会全部删掉，删了就没了，确定吗？',
-      confirmLabel: '确认清空',
-    );
-    if (ok && mounted) await _clearDemo();
-  }
 
   @override
   void initState() {
@@ -652,12 +637,6 @@ class _SettingsPageState extends State<SettingsPage> {
     _snack(deleted == 0 ? '没有可清理的缓存' : '已清理 $deleted 项缓存');
   }
 
-  Future<void> _clearDemo() async {
-    final n = await widget.repo.clearDemoData();
-    await _loadQuestionCount();
-    _snack('已清空 $n 道演示题');
-  }
-
   Future<void> _pickNotifyTime() async {
     final parts = _s.notifyTime.split(':');
     final initial = TimeOfDay(
@@ -1175,16 +1154,6 @@ class _SettingsPageState extends State<SettingsPage> {
           _noteText(preview.failedCount > 0
               ? '其中含导入失败的残留文件 ${preview.failedCount} 个，缩略图之后用到时会自动重新生成。'
               : '缩略图之后用到时会自动重新生成。'),
-        _row(
-          '演示数据',
-          '清空全部演示数据：数学 / 英语 / 政治三科的演示题会被删掉。这个入口只放在设置里，首页没有这个按钮。',
-          QmButton(
-            label: '清空演示数据',
-            variant: QmButtonVariant.danger,
-            size: QmButtonSize.small,
-            onPressed: _askClearDemo,
-          ),
-        ),
       ],
     );
   }

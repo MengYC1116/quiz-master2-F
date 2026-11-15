@@ -16,6 +16,8 @@ import 'package:quiz_master2/models/models.dart';
 import 'package:quiz_master2/services/page_image_pipeline.dart';
 import 'package:quiz_master2/services/yolo_onnx_service.dart';
 
+import 'test_fixtures.dart';
+
 const _pagesDir = '/home/hatch/workspace/yolo-test-images';
 const _page1 = '$_pagesDir/16676QPFVu1ck984AfWQHruoHWRfTz99b.png';
 
@@ -355,10 +357,11 @@ void main() {
 
   group('P0.5-4 页图格式：照片保留原图，不转 PNG', () {
     test('JPG 原样复制：字节相同、扩展名不变、不产生 PNG', () async {
-      final fixture = File('test/fixtures/photo.jpg');
-      expect(fixture.existsSync(), isTrue);
       final dir = await Directory.systemTemp.createTemp('p05-format');
       try {
+        // B10-2：照片固件现场生成（test_fixtures.dart），不读磁盘夹具。
+        final fixture = await writeFixtureFile(
+            dir, 'photo.jpg', photoFixtureBytes());
         // 模拟导入复制：原文件 → imports/<task-id>/original.jpg。
         Directory('${dir.path}/imports/task-1').createSync(recursive: true);
         final copied =
@@ -383,14 +386,12 @@ void main() {
     test('手写解析：读出 1/3/6/8；PNG 与无 EXIF 的 JPG 返回 null', () async {
       TestWidgetsFlutterBinding.ensureInitialized();
       for (final ori in [1, 3, 6, 8]) {
-        final bytes = await File('test/fixtures/exif-orientation-$ori.jpg')
-            .readAsBytes();
-        expect(readJpegExifOrientation(bytes), ori);
+        // B10-2：EXIF 固件 base64 内嵌（test_fixtures.dart）。
+        expect(readJpegExifOrientation(exifFixtureBytes(ori)), ori);
       }
       final png = await File(_page1).readAsBytes();
       expect(readJpegExifOrientation(png), isNull);
-      final noExif =
-          await File('test/fixtures/photo.jpg').readAsBytes();
+      final noExif = photoFixtureBytes();
       expect(readJpegExifOrientation(noExif), isNull);
       expect(readJpegExifOrientation(Uint8List.fromList([0xFF, 0xD8])),
           isNull);
@@ -407,8 +408,7 @@ void main() {
 
     test('归一化：方向 6 的图转正后红块从左上移到右上，尺寸互换', () async {
       TestWidgetsFlutterBinding.ensureInitialized();
-      final stored =
-          await File('test/fixtures/exif-orientation-6.jpg').readAsBytes();
+      final stored = exifFixtureBytes(6);
       final norm = await normalizeExifImageBytes(stored);
       expect(norm.orientation, 6);
       expect(norm.wasNormalized, isTrue);
@@ -428,20 +428,17 @@ void main() {
       expect(bottomLeft.$2, greaterThan(120));
       expect(bottomLeft.$3, lessThan(80));
       // 方向 1 不动：字节原样、wasNormalized=false。
-      final one =
-          await File('test/fixtures/exif-orientation-1.jpg').readAsBytes();
+      final one = exifFixtureBytes(1);
       final norm1 = await normalizeExifImageBytes(one);
       expect((norm1.orientation, norm1.wasNormalized), (1, false));
       expect(norm1.bytes, one);
       // 方向 3：红块左上 → 右下；方向 8：红块左上 → 左下。
-      final three = await File('test/fixtures/exif-orientation-3.jpg')
-          .readAsBytes();
+      final three = exifFixtureBytes(3);
       final norm3 = await normalizeExifImageBytes(three);
       final br = await _pixelAt(norm3.bytes, 350, 250);
       expect(br.$1, greaterThan(200));
       expect(br.$2, lessThan(80));
-      final eight = await File('test/fixtures/exif-orientation-8.jpg')
-          .readAsBytes();
+      final eight = exifFixtureBytes(8);
       final norm8 = await normalizeExifImageBytes(eight);
       // 方向 8：红块左上 → 左下 (0..100, 300..400)。
       final bl = await _pixelAt(norm8.bytes, 50, 350);
@@ -452,8 +449,7 @@ void main() {
     test('框/页图/切片方向一致：归一化页上的框与存储页解码后的正向像素一致',
         () async {
       TestWidgetsFlutterBinding.ensureInitialized();
-      final stored =
-          await File('test/fixtures/exif-orientation-6.jpg').readAsBytes();
+      final stored = exifFixtureBytes(6);
       final norm = await normalizeExifImageBytes(stored);
       // dart:ui 解码 JPEG 时已按 EXIF 转正，所以“存储页解码后”
       // 与归一化页是同一套正向像素；框一律用正向坐标系：

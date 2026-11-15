@@ -25,13 +25,18 @@ import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:path/path.dart' as p;
 import 'package:quiz_master2/data/database.dart';
 import 'package:quiz_master2/models/models.dart';
 import 'package:quiz_master2/services/import_service.dart';
 import 'package:quiz_master2/services/pdf_render_service.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
+import 'test_fixtures.dart';
+
 late final Directory _tmp;
+late final String _photoPath; // B10-2：生成的照片固件
+late final String _exif6Path; // B10-2：生成的方向 6 固件
 
 Future<Database> openMemoryDb() async {
   sqfliteFfiInit();
@@ -100,6 +105,13 @@ void main() {
   setUpAll(() async {
     _tmp = await Directory.systemTemp.createTemp('qm2-import-p1-fixes');
     AppDatabase.testDataDirectory = _tmp.path;
+    // B10-2：照片 / 方向 6 固件写进临时目录，不读磁盘夹具。
+    _photoPath =
+        (await writeFixtureFile(_tmp, 'photo.jpg', photoFixtureBytes()))
+            .path;
+    _exif6Path = (await writeFixtureFile(
+            _tmp, 'exif-orientation-6.jpg', exifFixtureBytes(6)))
+        .path;
   });
 
   tearDownAll(() async {
@@ -180,8 +192,8 @@ void main() {
         END
       ''');
       final tasks = await ImportService(AppDatabase.instance).enqueue([
-        'test/fixtures/photo.jpg',
-        'test/fixtures/exif-orientation-6.jpg',
+        _photoPath,
+        _exif6Path,
       ], subjectId: 'math');
       // 没修之前：第一张图的尾部 upsert 抛错逃出 enqueue，整个 await
       // 抛错、一个任务都拿不到。修后：两个任务都在，且第二个也被处理。
@@ -302,7 +314,7 @@ void main() {
     test('对照：20MB 以内图片仍正常进 needBox', () async {
       await openMemoryDb();
       final tasks = await ImportService(AppDatabase.instance)
-          .enqueue(['test/fixtures/photo.jpg'], subjectId: 'math');
+          .enqueue([_photoPath], subjectId: 'math');
       expect(tasks.length, 1);
       expect(tasks.first.status, CollectStatus.needBox);
     });
@@ -315,7 +327,7 @@ void main() {
       expect(hint, contains('导入会失败'));
       expect(hint, isNot(contains('仍可继续导入')));
       expect(
-        ImportService.oversizeHint(File('test/fixtures/photo.jpg')),
+        ImportService.oversizeHint(File(_photoPath)),
         isNull,
       );
     });
@@ -324,7 +336,7 @@ void main() {
       await openMemoryDb();
       // photo.jpg 后补 0 到恰好 20MB：JPEG 解码在 EOI 后停，尾部
       // 补零不影响解码；断言 size == limit 时 `size > limit` 不触发。
-      final bytes = await File('test/fixtures/photo.jpg').readAsBytes();
+      final bytes = photoFixtureBytes();
       final padded = Uint8List(ImportService.maxImageBytes)
         ..setRange(0, bytes.length, bytes);
       final exact = File('${_tmp.path}/exact-20mb.jpg');
@@ -351,7 +363,7 @@ void main() {
   group('SR-P1-17 enqueue 同批去重', () {
     test('同批两次选同一文件：只建一个任务', () async {
       await openMemoryDb();
-      const src = 'test/fixtures/photo.jpg';
+      final src = _photoPath;
       // _tmp 是本文件各测试共享的：只断言本次调用新增的任务目录数。
       final importsDir = Directory('${_tmp.path}/imports');
       final before = importsDir.existsSync()
@@ -370,8 +382,8 @@ void main() {
     test('同批两个不同文件：仍建两个任务', () async {
       await openMemoryDb();
       final tasks = await ImportService(AppDatabase.instance).enqueue([
-        'test/fixtures/photo.jpg',
-        'test/fixtures/exif-orientation-6.jpg',
+        _photoPath,
+        _exif6Path,
       ], subjectId: 'math');
       expect(tasks.length, 2);
       expect(tasks.map((t) => t.status).toSet(), {CollectStatus.needBox});
@@ -380,7 +392,7 @@ void main() {
     test('跨批重复仍允许重导（D-08）：两次调用各建一个任务', () async {
       await openMemoryDb();
       final service = ImportService(AppDatabase.instance);
-      const src = 'test/fixtures/photo.jpg';
+      final src = _photoPath;
       final first = await service.enqueue([src], subjectId: 'math');
       // 任务 id 含毫秒时间戳，同毫秒两次调用会撞 id，隔一下再导。
       await Future<void>.delayed(const Duration(milliseconds: 10));
@@ -394,8 +406,9 @@ void main() {
 
     test('同文件相对路径与绝对路径写法（SR2-72）：只建一个任务', () async {
       await openMemoryDb();
-      const relative = 'test/fixtures/photo.jpg';
-      final absolute = File(relative).absolute.path;
+      // B10-2：照片固件在临时目录；相对写法用 path.relative 算出。
+      final relative = p.relative(_photoPath, from: Directory.current.path);
+      final absolute = _photoPath;
       expect(absolute, isNot(relative));
       final tasks = await ImportService(AppDatabase.instance)
           .enqueue([relative, absolute], subjectId: 'math');
@@ -406,7 +419,7 @@ void main() {
 
     test('同文件符号链接写法（SR2-72）：只建一个任务', () async {
       await openMemoryDb();
-      const src = 'test/fixtures/photo.jpg';
+      final src = _photoPath;
       final link = Link('${_tmp.path}/link-photo.jpg');
       await link.create(File(src).absolute.path);
       final tasks = await ImportService(AppDatabase.instance)
@@ -423,9 +436,11 @@ void main() {
       // 文件撞键，所以建两个任务：一个 needBox、一个 failed（诚实
       // 行为）。产品跑在不区分大小写的 Windows 上，那里两种拼写
       // 打开同一文件，仍只建一个任务。
+      // B10-2：大写拼写取生成路径整体大写（临时目录名本身含小写，
+      // 大写后一定不存在）。
       final tasks = await ImportService(AppDatabase.instance).enqueue([
-        'test/fixtures/photo.jpg',
-        'TEST/FIXTURES/PHOTO.JPG',
+        _photoPath,
+        _photoPath.toUpperCase(),
       ], subjectId: 'math');
       expect(tasks.length, 2);
       expect(
@@ -441,8 +456,8 @@ void main() {
       // 失败任务、真实文件被当作重复跳过，只剩一个失败任务。修后：
       // 两个任务，真实文件正常进 needBox。
       final tasks = await ImportService(AppDatabase.instance).enqueue([
-        'TEST/FIXTURES/PHOTO.JPG',
-        'test/fixtures/photo.jpg',
+        _photoPath.toUpperCase(),
+        _photoPath,
       ], subjectId: 'math');
       expect(tasks.length, 2);
       final real = tasks.firstWhere((t) => t.fileName == 'photo.jpg');
@@ -457,7 +472,7 @@ void main() {
     test('图片复制循环内回调抛错：任务仍进 needBox，不判复制失败', () async {
       await openMemoryDb();
       final tasks = await ImportService(AppDatabase.instance).enqueue(
-        ['test/fixtures/photo.jpg'],
+        [_photoPath],
         subjectId: 'math',
         onProgress: (_, _) => throw StateError('UI 回调炸了'),
       );

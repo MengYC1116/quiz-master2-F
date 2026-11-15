@@ -1,6 +1,6 @@
 // R10 设置页 widget 测试：五组折叠（默认全折、一次只开一段）、
 // 外观三段 + 问候语保存/恢复默认、复习八项分段切换、错题本三项、
-// 数据组（备份/恢复入口、数据库位置、缓存预览、清空演示数据确认）、
+// 数据组（备份/恢复入口、数据库位置、缓存预览）、
 // 启动页 + 关于、加载失败横幅、亮/深 × 三档无溢出、不用图标字体。
 // 用 FakeRepo 覆盖 repository 调用（不碰真实数据库，不弹文件选择器）。
 import 'dart:io';
@@ -16,15 +16,12 @@ import 'package:quiz_master2/widgets/uikit.dart';
 
 class FakeSettingsRepo extends QuestionRepository {
   FakeSettingsRepo(
-      {this.demoCount = 3,
-      this.questionCount = 9,
+      {this.questionCount = 9,
       this.orphanFiles = const [],
       this.storageUsage = (importsBytes: 0, slicesBytes: 0)})
       : super(AppDatabase.instance);
 
-  int demoCount;
   int questionCount;
-  int clearedDemo = 0;
 
   /// P3：孤儿扫描的 canned 结果（默认无孤儿）。
   List<OrphanFile> orphanFiles;
@@ -65,16 +62,6 @@ class FakeSettingsRepo extends QuestionRepository {
           sliceText: '题',
         ),
       );
-
-  @override
-  Future<int> demoQuestionCount() async => demoCount;
-
-  @override
-  Future<int> clearDemoData() async {
-    clearedDemo = demoCount;
-    demoCount = 0;
-    return clearedDemo;
-  }
 }
 
 Future<List<AppSettings>> pumpSettings(
@@ -407,36 +394,6 @@ void main() {
         cleared = find.text('已清理 2 项缓存').evaluate().isNotEmpty;
       }
       expect(cleared, isTrue, reason: 'failed 目录里的 2 个文件应逐个计');
-    });
-
-    testWidgets('清空演示数据：模态弹窗确认，确认后清掉并提示', (tester) async {
-      final repo = FakeSettingsRepo(demoCount: 3);
-      await pumpSettings(tester, repo: repo);
-      await openGroup(tester, '数据');
-      await tester.ensureVisible(find.text('清空演示数据'));
-      await tester.tap(find.text('清空演示数据'));
-      await tester.pumpAndSettle();
-      expect(find.textContaining('清空演示数据，确定吗？'), findsOneWidget);
-      expect(find.textContaining('三科共 3 道演示题会全部删掉'), findsOneWidget);
-      await tester.ensureVisible(find.text('确认清空'));
-      await tester.tap(find.text('确认清空'));
-      await tester.pumpAndSettle();
-      expect(repo.clearedDemo, 3);
-      expect(find.text('已清空 3 道演示题'), findsOneWidget);
-    });
-
-    testWidgets('清空演示数据：点取消不清', (tester) async {
-      final repo = FakeSettingsRepo(demoCount: 3);
-      await pumpSettings(tester, repo: repo);
-      await openGroup(tester, '数据');
-      await tester.ensureVisible(find.text('清空演示数据'));
-      await tester.tap(find.text('清空演示数据'));
-      await tester.pumpAndSettle();
-      await tester.ensureVisible(find.text('取消'));
-      await tester.tap(find.text('取消'));
-      await tester.pumpAndSettle();
-      expect(repo.clearedDemo, 0);
-      expect(find.textContaining('清空演示数据，确定吗？'), findsNothing);
     });
 
     testWidgets('P3 空间占用：显示原图/切片分项与上限 2GB', (tester) async {

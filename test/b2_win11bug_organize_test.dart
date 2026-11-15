@@ -8,10 +8,11 @@
 // Win11 验收第 6 项他明确改回手风琴，本组已按新口径重写，详见
 // docs/ui-replication/B8-6-ACCORDION.md。
 //
-// 夹具：test/fixtures/slice-narrow-500x120.png（500×120 白底黑条，
-// 模拟真实题目切片：固有宽度 500，小于 1280 宽窗口下左栏约 628 的
-// 容器宽）。B3-P01：slicePath 不再用绝对路径（resolveDataPath
-// 已拒绝绝对路径）；夹具在 setUpAll 拷进 testDataDirectory，
+// 夹具：500×120 白底黑条 PNG（B10-2：dart:ui 在 setUpAll 现场生成，
+// 见 test_fixtures.dart；原 test/fixtures/slice-narrow-500x120.png
+// 已删），模拟真实题目切片：固有宽度 500，小于 1280 宽窗口下左栏
+// 约 628 的容器宽。B3-P01：slicePath 不再用绝对路径（resolveDataPath
+// 已拒绝绝对路径）；夹具在 setUpAll 写进 testDataDirectory，
 // slicePath 用相对路径 `slices/q-real.png`，预热用的绝对路径
 // 只传给 precacheImage 的 FileImage，不走 resolveDataPath。
 import 'dart:io';
@@ -23,6 +24,8 @@ import 'package:quiz_master2/data/repository.dart';
 import 'package:quiz_master2/models/models.dart';
 import 'package:quiz_master2/modules/organize/organize_page.dart';
 import 'package:quiz_master2/theme/app_theme.dart';
+
+import 'test_fixtures.dart';
 
 class _FakeRepo extends QuestionRepository {
   _FakeRepo({required this.questions, required this.folderList})
@@ -168,9 +171,9 @@ void main() {
     fixtureTmp = await Directory.systemTemp.createTemp('b2-organize-');
     final sliceDir = Directory('${fixtureTmp.path}/slices');
     await sliceDir.create(recursive: true);
-    final fixture = File('test/fixtures/slice-narrow-500x120.png');
-    expect(fixture.existsSync(), isTrue);
-    final copy = await fixture.copy('${sliceDir.path}/q-real.png');
+    // B10-2：窄切片现场生成（dart:ui，真实 zone），不再读磁盘夹具。
+    final copy = await writeFixtureFile(
+        sliceDir, 'q-real.png', await narrowSlicePngBytes());
     sliceAbs = copy.path;
     sliceRel = 'slices/q-real.png';
     AppDatabase.testDataDirectory = fixtureTmp.path;

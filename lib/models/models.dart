@@ -325,7 +325,7 @@ class Question {
   final String? notes;
   final int reviewCount;
   final bool isOrganized; // 是否已在整理工作台确认过
-  final bool isDemo; // 演示题标记，“清空演示数据”只删 is_demo = 1 的题
+  final bool isDemo; // 演示题标记（v1 老库遗留；v2 新库从空开始、不预置演示题，清空入口已删）
   final bool isFavorite;
   final bool isArchived;
   final bool reviewJoined;

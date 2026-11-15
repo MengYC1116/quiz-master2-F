@@ -441,50 +441,5 @@ void main() {
       expect(await db.query('recent_tasks'), isEmpty);
       expect(await db.query('folders'), isEmpty);
     });
-
-    test('SR-P2-2 clearDemoDataFrom：演示题走删题事务，非演示一律不动', () async {
-      final db = await openTestDb();
-      addTearDown(() async => db.close());
-      await insertQuestion(db, 'demo1', isDemo: 1);
-      await insertQuestion(db, 'real1', isDemo: 0);
-      await insertCauseRecord(db, 'demo1', '计算错误');
-      await insertCauseRecord(db, 'real1', '概念不清');
-      await insertHistory(db, 'demo1');
-      await insertHistory(db, 'real1');
-      await db.insert('recent_tasks', {
-        'id': 1,
-        'kind': '整理',
-        'subject_id': 'math',
-        'title': 't',
-        'updated_at': 1,
-      });
-      await db.insert('review_state', {
-        'id': 1,
-        'queue': '[{"q":"demo1","c":"计算错误"}]',
-        'position': 0,
-        'updated_at': 1,
-      });
-      final n = await AppDatabase.clearDemoDataFrom(db);
-      expect(n, 1);
-      expect(
-          (await db.query('questions')).map((r) => r['id']).toList(),
-          ['real1']);
-      expect(
-          (await db.query('cause_records'))
-              .map((r) => r['question_id'])
-              .toList(),
-          ['real1']);
-      expect(
-          (await db.query('review_history'))
-              .map((r) => r['question_id'])
-              .toList(),
-          ['real1']);
-      // recent_tasks 不动：旧写法整表删，会把非演示的“最近任务”也抹掉。
-      expect(await db.query('recent_tasks'), hasLength(1));
-      // review_state 不整行删：演示题只从队列里摘掉，断点行还在。
-      final state = await db.query('review_state');
-      expect(state, hasLength(1));
-      expect(state.single['queue'], '[]');
-    });
   });
 }

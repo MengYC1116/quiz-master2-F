@@ -19,7 +19,10 @@ import 'package:quiz_master2/services/import_service.dart';
 import 'package:quiz_master2/services/pdf_render_service.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
+import 'test_fixtures.dart';
+
 late final Directory _tmp;
+late final String _encryptedPdfPath; // B10-2：生成的加密 PDF 固件
 
 Future<Database> openMemoryDb() async {
   sqfliteFfiInit();
@@ -173,6 +176,10 @@ void main() {
   setUpAll(() async {
     _tmp = await Directory.systemTemp.createTemp('qm2-pdf-render');
     AppDatabase.testDataDirectory = _tmp.path;
+    // B10-2：加密 PDF 固件写进临时目录，不读磁盘夹具。
+    _encryptedPdfPath = (await writeFixtureFile(
+            _tmp, 'pdf-encrypted.pdf', encryptedPdfFixtureBytes()))
+        .path;
   });
 
   tearDownAll(() async {
@@ -238,11 +245,11 @@ void main() {
     test('加密 PDF（密码 1234）：抛 PdfEncryptedException', () async {
       final service = PdfRenderService();
       await expectLater(
-        service.pageCount('test/fixtures/pdf-encrypted.pdf'),
+        service.pageCount(_encryptedPdfPath),
         throwsA(isA<PdfEncryptedException>()),
       );
       await expectLater(
-        service.renderPagePng('test/fixtures/pdf-encrypted.pdf', 1),
+        service.renderPagePng(_encryptedPdfPath, 1),
         throwsA(isA<PdfEncryptedException>()),
       );
     }, timeout: const Timeout(Duration(minutes: 5)));
@@ -357,7 +364,7 @@ void main() {
       await openMemoryDb();
       final service = ImportService(AppDatabase.instance);
       final tasks = await service.enqueue(
-        ['test/fixtures/pdf-encrypted.pdf'],
+        [_encryptedPdfPath],
         subjectId: 'math',
       );
       final t = tasks.first;
