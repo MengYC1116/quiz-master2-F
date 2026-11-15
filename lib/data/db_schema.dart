@@ -36,6 +36,13 @@ Future<Database> openAtImpl(String dbPath, {DatabaseFactory? factory}) async {
     options: OpenDatabaseOptions(
       version: AppDatabase.schemaVersion,
       onCreate: _onCreate,
+      // B9-1 回填：每次开库扫一遍，把题已整理但任务仍
+      // pendingOrganize 的卡住行持久化置 done（见
+      // backfillCollectDoneIntoImpl）。新库刚建完表时无行可扫，
+      // 是空操作；只读探针（deleteLegacyDatabaseIfPresent）用
+      // 自己的 options，不走这里。onOpen 在 onCreate 之后跑，
+      // 表一定已存在。
+      onOpen: (db) async => backfillCollectDoneIntoImpl(db),
       // §2.1：旧版应用打开 v2 库：直接抛错并提示用新版打开，
       // 不许静默删库重建。
       onDowngrade: (db, oldVersion, newVersion) async {

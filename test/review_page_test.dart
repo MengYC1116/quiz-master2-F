@@ -431,11 +431,14 @@ void main() {
       expect(find.textContaining('政治「马原」'), findsOneWidget);
     });
 
-    testWidgets('元信息行：待解决/解决中 3 条 · 已解决 1 条', (tester) async {
+    testWidgets('元信息行：待解决/解决中 2 道题 · 已解决 1 道', (tester) async {
       await pumpReview(tester);
+      // B9-4（Meng 2026-11-15 ~19:43 裁决：与角标 / 首页统一，按题数）：
+      // 种子库待治 3 条错因记录分属 2 道题（q1 1 条、q2 2 条），
+      // 页顶按题计是 2 道题，不是 3 条；q3 已解决（复查日未到）计 1 道。
       expect(
-          find.text('待解决 / 解决中 3 条解决记录'), findsOneWidget);
-      expect(find.text('已解决 1 条'), findsOneWidget);
+          find.text('待解决 / 解决中 2 道题'), findsOneWidget);
+      expect(find.text('已解决 1 道'), findsOneWidget);
       expect(find.textContaining('列表按加入时间排，先加入的先解决'),
           findsOneWidget);
     });

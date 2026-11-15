@@ -448,6 +448,12 @@ class AppDatabase {
   static Future<void> upsertCollectTaskInto(Database db, CollectTask t) =>
       upsertCollectTaskIntoImpl(db, t);
 
+  /// B9-1 回填（可单测版）：题已整理但任务仍 pendingOrganize 的
+  /// 卡住行持久化置 done，返回治好的行数。见
+  /// [backfillCollectDoneIntoImpl]。
+  static Future<int> backfillCollectDoneFrom(Database db) =>
+      backfillCollectDoneIntoImpl(db);
+
   static Future<void> deleteCollectTaskFrom(Database db, String id) =>
       deleteCollectTaskFromImpl(db, id);
   // -- db_orphans.dart --

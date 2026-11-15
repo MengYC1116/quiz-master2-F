@@ -35,6 +35,26 @@ Future<void> upsertCollectTaskIntoImpl(Database db, CollectTask t) async {
   }
 }
 
+/// B9-1 回填（可单测版）：把题已整理、任务仍 pendingOrganize 的
+/// 卡住行持久化置 done，返回治好的行数。只改同时满足三条的行：
+/// 任务仍是 pendingOrganize、question_id 非空、指向的题已整理
+/// （is_organized = 1）。其它状态（needBox / boxing / importing /
+/// queued / failed / 已是 done）与无题可指的行一律不动；题未整
+/// 理的行不动。单条 UPDATE，幂等、无新字段、不改 Schema。
+/// 调用点：[AppDatabase.openAtImpl] 的 onOpen（每次开库扫一遍，
+/// Meng 库里卡住的 13 行下次启动即变过来）与单测直接调用。
+/// 恢复（importBackupJsonInto）整表重插、绕过 upsertQuestion，
+/// 恢复当次不扫——备份里带来的卡住行在下次启动开库时治好，见
+/// B9-1 报告“残留口子”。
+Future<int> backfillCollectDoneIntoImpl(Database db) async {
+  return db.rawUpdate('''
+    UPDATE collect_tasks SET status = 'done'
+    WHERE status = 'pendingOrganize'
+      AND question_id IS NOT NULL
+      AND question_id IN (SELECT id FROM questions WHERE is_organized = 1)
+  ''');
+}
+
 /// §1.2(c) + B2-6a：删任务（可单测版）：一次事务，不 bump。
 /// 事务内：待整理的拆出题（经 _deleteQuestionTxn，含其框、解决记录、
 /// 自查历史、复习队列项）→ 未确认的草稿框 → 任务行。事务提交后，

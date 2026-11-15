@@ -71,6 +71,9 @@ class _QuizMasterAppState extends State<QuizMasterApp> {
 
   int _collectBadge = 0;
   int _organizeBadge = 0;
+  // B9-3：复习角标（要复习题数，共享口径 = homeRevCounts 各科之和
+  // = dueToday().length = 首页焦点卡“要复习的数量”，数题不数错因）。
+  int _reviewBadge = 0;
   Map<String, int> _navRev = {};
   Map<String, int> _navPending = {};
 
@@ -236,6 +239,11 @@ class _QuizMasterAppState extends State<QuizMasterApp> {
     setState(() {
       _collectBadge = CollectPage.countPendingBox(tasks) + pendingOrganize;
       _organizeBadge = pendingOrganize;
+      // B9-3：复习角标取 homeRevCounts 各科之和——每科已是
+      // dueToday() 的题数（数题不数错因），和 = 要复习总数，
+      // 与首页焦点卡“要复习的数量”同一数字（见 repository
+      // homeRevCounts / dueToday 的口径注释）。
+      _reviewBadge = rev.values.fold(0, (a, b) => a + b);
       _navRev = rev;
       _navPending = pending;
       // B8-1：空表不回退 Subject.all——新库建表时已预置三科
@@ -325,6 +333,7 @@ class _QuizMasterAppState extends State<QuizMasterApp> {
       onToggleCollapsed: () => setState(() => _collapsed = !_collapsed),
       collectBadge: _collectBadge,
       organizeBadge: _organizeBadge,
+      reviewBadge: _reviewBadge,
       navRev: _navRev,
       navPending: _navPending,
       subjects: _navSubjects,

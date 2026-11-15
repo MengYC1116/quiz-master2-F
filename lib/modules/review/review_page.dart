@@ -404,21 +404,37 @@ class _ReviewPageState extends State<ReviewPage> {
   }
 
   /// 元信息行计数（不过滤，HTML `revListHTML` 口径）。
+  /// B9-4（Meng 2026-11-15 ~19:43 裁决：与角标 / 首页统一，按题数）：
+  /// 三数按题互斥拆分，复用 `QuestionRepository.reviewBucketOf`
+  /// 的共享口径——一道题按其全部错因记录只落一个桶：
+  /// - 待解决 / 解决中：桶为 pending 的题数（≥1 个错因未解决）；
+  /// - 复查：桶为 recheck 的题数（全部已解决且 ≥1 条到复查时间）；
+  /// - 已解决：桶为 solved 的题数（全部已解决且无一条到复查时间）。
+  /// 不会双计 / 漏计：`_load` 里一条记录只进 `_groups` 或
+  /// `_curedGroups` 其中一边（isPending 分流），两边按题汇总后
+  /// 才是该题的全部记录；多错因一题只计 1 道。已归档题不进两边，
+  /// 与角标 / 首页口径一致（取消归档后重新计入）。
   (int pend, int check, int cured) get _metaCounts {
-    var pend = 0;
-    var check = 0;
-    for (final g in _groups) {
+    final byQ = <String, List<CauseRecord>>{};
+    for (final g in [..._groups, ..._curedGroups]) {
       for (final it in g.items) {
-        if (it.record.isRecheckDue) {
-          check++;
-        } else {
-          pend++;
-        }
+        (byQ[it.question.id] ??= []).add(it.record);
       }
     }
+    var pend = 0;
+    var check = 0;
     var cured = 0;
-    for (final g in _curedGroups) {
-      cured += g.items.length;
+    for (final records in byQ.values) {
+      switch (QuestionRepository.reviewBucketOf(records)) {
+        case ReviewBucket.pending:
+          pend++;
+        case ReviewBucket.recheck:
+          check++;
+        case ReviewBucket.solved:
+          cured++;
+        case ReviewBucket.none:
+          break;
+      }
     }
     return (pend, check, cured);
   }
@@ -997,13 +1013,13 @@ class _ReviewPageState extends State<ReviewPage> {
                   text: '$pend',
                   style: const TextStyle(fontWeight: FontWeight.w700),
                 ),
-                const TextSpan(text: ' 条解决记录'),
+                const TextSpan(text: ' 道题'),
               ],
             ),
           ),
           if (check > 0)
-            QmStatusPill.tone(label: '复查 $check 条', tone: QmTone.error),
-          Text('已解决 $cured 条', style: metaStyle),
+            QmStatusPill.tone(label: '复查 $check 道', tone: QmTone.error),
+          Text('已解决 $cured 道', style: metaStyle),
           Text(
             _settings.reviewSort == 'subject'
                 ? '列表按学科排（数学 / 英语 / 政治），同一科里先加入的先解决'

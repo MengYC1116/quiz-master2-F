@@ -214,8 +214,10 @@ Future<void> pumpOrganize(
   double scale = 1.0,
   bool imageFailed = false,
   Key? pageKey,
+  // B9-2：窄窗口用例用（默认 1280×720）。
+  Size viewSize = const Size(1280, 720),
 }) async {
-  tester.view.physicalSize = const Size(1280, 720);
+  tester.view.physicalSize = viewSize;
   tester.view.devicePixelRatio = 1.0;
   addTearDown(tester.view.resetPhysicalSize);
   addTearDown(tester.view.resetDevicePixelRatio);
@@ -254,9 +256,13 @@ Future<void> openQueue(WidgetTester tester) async {
   expect(find.text('待整理队列 · 3 道'), findsOneWidget);
 }
 
+/// 队列弹窗内各题行的 Checkbox（不含列表顶栏的“全选”三态框，
+/// B9-2：全选框 `tristate == true`，行内框是默认 `false`）。
 Finder popupCheckboxes(WidgetTester tester) => find.descendant(
       of: find.byKey(const Key('organize-queue-popup')),
-      matching: find.byType(Checkbox),
+      matching: find.byWidgetPredicate(
+        (w) => w is Checkbox && w.tristate != true,
+      ),
     );
 
 /// B6-P1 SR2-26：写库失败模拟——`failSave` 打开后 `save` 一律抛错，
@@ -547,7 +553,7 @@ void main() {
       await tester.tap(popupCheckboxes(tester).first);
       await tester.pumpAndSettle();
       expect(find.text('批量操作 · 已选 1 道'), findsOneWidget);
-      expect(find.text('批量打标签 #需重做'), findsOneWidget);
+      expect(find.text('批量打标签'), findsOneWidget);
       expect(find.text('批量确认整理'), findsOneWidget);
       expect(find.text('批量删除'), findsOneWidget);
       await tester.tap(find.text('取消'));
@@ -555,13 +561,13 @@ void main() {
       expect(find.textContaining('批量操作 · 已选'), findsNothing);
     });
 
-    testWidgets('批量打标签 #需重做', (tester) async {
+    testWidgets('批量打标签（默认需重做）', (tester) async {
       final repo = threeQuestionRepo();
       await pumpOrganize(tester, repo: repo);
       await openQueue(tester);
       await tester.tap(popupCheckboxes(tester).first);
       await tester.pumpAndSettle();
-      await tester.tap(find.text('批量打标签 #需重做'));
+      await tester.tap(find.text('批量打标签'));
       await tester.pumpAndSettle();
       expect(
         repo.saved.any(
@@ -583,7 +589,7 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(popupCheckboxes(tester).at(1));
       await tester.pumpAndSettle();
-      await tester.tap(find.text('批量打标签 #需重做'));
+      await tester.tap(find.text('批量打标签'));
       await tester.pumpAndSettle();
       // 部分失败提示出现，异常没逃出按钮回调。
       expect(find.textContaining('部分保存失败'), findsOneWidget);
@@ -705,7 +711,7 @@ void main() {
       await openQueue(tester);
       await tester.tap(popupCheckboxes(tester).first);
       await tester.pumpAndSettle();
-      await tester.tap(find.text('批量打标签 #需重做'));
+      await tester.tap(find.text('批量打标签'));
       await tester.pumpAndSettle();
       await tester.tap(find.text('关闭 ×'));
       await tester.pumpAndSettle();
@@ -866,7 +872,7 @@ void main() {
       await openQueue(tester);
       await tester.tap(popupCheckboxes(tester).first);
       await tester.pumpAndSettle();
-      await tester.tap(find.text('批量打标签 #需重做'));
+      await tester.tap(find.text('批量打标签'));
       await tester.pumpAndSettle();
       // 批量加文件夹默认选中本科第一个文件夹「试卷」(f1)。
       await tester.tap(find.text('批量加入该文件夹'));
@@ -887,7 +893,7 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(find.text('批量加入该文件夹'));
       await tester.pumpAndSettle();
-      await tester.tap(find.text('批量打标签 #需重做'));
+      await tester.tap(find.text('批量打标签'));
       await tester.pumpAndSettle();
       await tester.tap(find.text('批量确认整理'));
       await tester.pumpAndSettle();
@@ -971,13 +977,9 @@ void main() {
       repo.failSave = true;
       await tester.tap(find.text('时间降序'));
       await tester.pumpAndSettle();
-      // 注意：队列层是 OverlayEntry，里面 DropdownButton 的菜单项
-      // 点按在测试里落不到菜单上（探针：点按后菜单仍开着、回调不
-      // 触发），改走键盘：菜单打开时当前项已获焦点，Tab 移到下
-      // 一项（时间升序）再回车选中。
-      await tester.sendKeyEvent(LogicalKeyboardKey.tab);
-      await tester.pumpAndSettle();
-      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      // B9-2：排序下拉已改内联菜单（SR3-15 根因修复），菜单项真实
+      // 点按可选中，不再走键盘绕路。
+      await tester.tap(find.text('时间升序'));
       await tester.pumpAndSettle();
       expect(find.text('保存失败，请重试'), findsOneWidget);
       expect(find.text('待整理队列 · 3 道'), findsOneWidget);
@@ -999,9 +1001,8 @@ void main() {
       await openQueue(tester);
       await tester.tap(find.text('时间降序'));
       await tester.pumpAndSettle();
-      await tester.sendKeyEvent(LogicalKeyboardKey.tab);
-      await tester.pumpAndSettle();
-      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      // B9-2：同上，内联菜单真实点按。
+      await tester.tap(find.text('时间升序'));
       await tester.pumpAndSettle();
       // 队列内已按时间升序重排：q3（11/3）在上，q1（11/8）在下。
       final y1 = tester.getTopLeft(find.text('函数极限')).dy;
@@ -1020,6 +1021,198 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.text('保存失败，请重试'), findsOneWidget);
       expect(find.text('草稿已保存'), findsNothing);
+      expect(tester.takeException(), isNull);
+    });
+  });
+
+  group('B9-2 队列批量操作：全选 / 可选标签 / 内联下拉', () {
+    Finder popupText(String text) => find.descendant(
+          of: find.byKey(const Key('organize-queue-popup')),
+          matching: find.text(text),
+        );
+
+    testWidgets('全选：点全选勾上全部、批量条计数对；再点取消全选', (tester) async {
+      await pumpOrganize(tester);
+      await openQueue(tester);
+      expect(find.text('已选 0 / 共 3 道'), findsOneWidget);
+      expect(find.textContaining('批量操作 · 已选'), findsNothing);
+      await tester.tap(find.text('全选'));
+      await tester.pumpAndSettle();
+      expect(find.text('批量操作 · 已选 3 道'), findsOneWidget);
+      expect(find.text('已选 3 / 共 3 道'), findsOneWidget);
+      final boxes = popupCheckboxes(tester);
+      expect(boxes.evaluate().length, 3);
+      for (var i = 0; i < 3; i++) {
+        expect(tester.widget<Checkbox>(boxes.at(i)).value, isTrue);
+      }
+      await tester.tap(find.text('全选'));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('批量操作 · 已选'), findsNothing);
+      for (var i = 0; i < 3; i++) {
+        expect(tester.widget<Checkbox>(boxes.at(i)).value, isFalse);
+      }
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('全选范围是当前筛选：搜到 1 道时全选只勾那 1 道，筛外已选保留',
+        (tester) async {
+      await pumpOrganize(tester);
+      await openQueue(tester);
+      final searchField = find.byWidgetPredicate(
+        (w) =>
+            w is TextField && w.decoration?.hintText == '搜题名、学科、试卷',
+      );
+      await tester.enterText(searchField, '函数');
+      await tester.pumpAndSettle();
+      expect(find.textContaining('搜到 1 道'), findsOneWidget);
+      await tester.tap(find.text('全选'));
+      await tester.pumpAndSettle();
+      expect(find.text('批量操作 · 已选 1 道'), findsOneWidget);
+      // 清掉搜索：q1 的勾保留，q2/q3 没勾，全选框呈部分选（三态 null）。
+      await tester.enterText(searchField, '');
+      await tester.pumpAndSettle();
+      expect(find.text('已选 1 / 共 3 道'), findsOneWidget);
+      final selectAllBox = find.descendant(
+        of: find.byKey(const Key('organize-queue-popup')),
+        matching: find.byWidgetPredicate(
+          (w) => w is Checkbox && w.tristate == true,
+        ),
+      );
+      expect(tester.widget<Checkbox>(selectAllBox).value, isNull);
+      // 再搜“导数”全选：q2 加进来，q1 保留。
+      await tester.enterText(searchField, '导数');
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('全选'));
+      await tester.pumpAndSettle();
+      expect(find.text('批量操作 · 已选 2 道'), findsOneWidget);
+      // 清搜索后全选补上 q3 成 3 道；再点一次全清。
+      await tester.enterText(searchField, '');
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('全选'));
+      await tester.pumpAndSettle();
+      expect(find.text('批量操作 · 已选 3 道'), findsOneWidget);
+      await tester.tap(find.text('全选'));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('批量操作 · 已选'), findsNothing);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('批量打标签可选：下拉选预设标签落库，打完不清空选中',
+        (tester) async {
+      final repo = threeQuestionRepo();
+      await pumpOrganize(tester, repo: repo);
+      await openQueue(tester);
+      await tester.tap(popupCheckboxes(tester).first);
+      await tester.pumpAndSettle();
+      // 标签字段默认 '#需重做'；改选预设 '易错'。
+      await tester.tap(find.text('#需重做'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('#易错'));
+      await tester.pumpAndSettle();
+      expect(find.text('#易错'), findsOneWidget);
+      await tester.tap(find.text('批量打标签'));
+      await tester.pumpAndSettle();
+      expect(
+        repo.saved.any((x) => x.id == 'q1' && x.tags.contains('易错')),
+        isTrue,
+      );
+      expect(find.textContaining('已给 1 道题打上 #易错'), findsOneWidget);
+      // 打完不清空选中（与批量加文件夹一致）。
+      expect(find.text('批量操作 · 已选 1 道'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('批量打标签可选：下拉选自定义标签落库', (tester) async {
+      final repo = threeQuestionRepo();
+      repo.tagList = ['易错', '常考', '期末重点'];
+      await pumpOrganize(tester, repo: repo);
+      await openQueue(tester);
+      await tester.tap(popupCheckboxes(tester).first);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('#需重做'));
+      await tester.pumpAndSettle();
+      // 预设在前、自定义在后：菜单里三预设与自定义都在。
+      expect(find.text('#易错'), findsOneWidget);
+      expect(find.text('#期末重点'), findsOneWidget);
+      await tester.tap(find.text('#期末重点'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('批量打标签'));
+      await tester.pumpAndSettle();
+      expect(
+        repo.saved.any((x) => x.id == 'q1' && x.tags.contains('期末重点')),
+        isTrue,
+      );
+      expect(find.textContaining('已给 1 道题打上 #期末重点'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('SR3-15 文件夹下拉：真实点按选平时作业，菜单关闭且值生效',
+        (tester) async {
+      final repo = threeQuestionRepo();
+      await pumpOrganize(tester, repo: repo);
+      await openQueue(tester);
+      await tester.tap(popupCheckboxes(tester).first);
+      await tester.pumpAndSettle();
+      // 文件夹字段默认 '试卷'；点开菜单、真实点按选 '平时作业'。
+      await tester.tap(popupText('试卷'));
+      await tester.pumpAndSettle();
+      expect(find.text('＋ 添加新文件夹…'), findsOneWidget);
+      await tester.tap(find.text('平时作业').last);
+      await tester.pumpAndSettle();
+      // 菜单关闭、值生效（字段显示 '平时作业'）。
+      expect(find.text('＋ 添加新文件夹…'), findsNothing);
+      expect(popupText('平时作业'), findsOneWidget);
+      await tester.tap(find.text('批量加入该文件夹'));
+      await tester.pumpAndSettle();
+      expect(
+        repo.saved.any(
+          (x) => x.id == 'q1' && x.folderIds.contains('f2'),
+        ),
+        isTrue,
+      );
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('SR3-15 文件夹下拉：真实点按“添加新文件夹”打开新建表单',
+        (tester) async {
+      await pumpOrganize(tester);
+      await openQueue(tester);
+      await tester.tap(popupCheckboxes(tester).first);
+      await tester.pumpAndSettle();
+      await tester.tap(popupText('试卷'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('＋ 添加新文件夹…'));
+      await tester.pumpAndSettle();
+      expect(find.text('＋ 添加新文件夹…'), findsNothing);
+      expect(find.text('添加新文件夹'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('Esc 先关内联菜单，不关队列', (tester) async {
+      await pumpOrganize(tester);
+      await openQueue(tester);
+      await tester.tap(popupCheckboxes(tester).first);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('#需重做'));
+      await tester.pumpAndSettle();
+      expect(find.text('#易错'), findsOneWidget);
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await tester.pumpAndSettle();
+      expect(find.text('#易错'), findsNothing);
+      expect(find.text('待整理队列 · 3 道'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('窄窗口 480：全选后批量条无溢出，标签菜单能打开',
+        (tester) async {
+      await pumpOrganize(tester, viewSize: const Size(480, 720));
+      await openQueue(tester);
+      await tester.tap(find.text('全选'));
+      await tester.pumpAndSettle();
+      expect(find.text('批量操作 · 已选 3 道'), findsOneWidget);
+      await tester.tap(find.text('#需重做'));
+      await tester.pumpAndSettle();
+      expect(find.text('#易错'), findsOneWidget);
       expect(tester.takeException(), isNull);
     });
   });

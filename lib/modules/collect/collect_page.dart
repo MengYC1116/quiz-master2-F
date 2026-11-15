@@ -142,11 +142,13 @@ class _CollectPageState extends State<CollectPage> {
     final hasSplitSibling = <String>{};
     // P1-2：同 sourcePath 的拆分任务（待整理/已整理）所在页就是已拆页，
     // 不算未框（保留任务重进列表时，第 1 页已拆成题，不能再报没框）。
-    // SR-P2-33：CollectStatus.done 全仓无赋值处——没有任何生产代码
-    // 会把任务置为 done（已整理任务仍以 pendingOrganize 呈现）；
-    // 这里的 done 分支是防御性保留：万一旧库行读回 done 状态，仍按
-    // 已拆页算，不会把它误报成未框；_taskNote / _statusPill /
-    // _taskActions 里的 done 分支同理（switch 穷举也要求保留）。
+    // B9-1：SR-P2-33 在此结案——done 现在有生产入口，不再是死分支：
+    // 题变为已整理时，数据层 upsertQuestionIntoImpl（db_questions.dart）
+    // 同句柄把指向它的任务置 done；开库时 onOpen 再扫一遍回填卡住
+    // 的旧行（backfillCollectDoneIntoImpl）。这里的 done 分支仍保
+    // 留：旧库读回 done 状态时仍按已拆页算，不会把它误报成未框；
+    // _taskNote / _statusPill / _taskActions 里的 done 分支同理
+    // （switch 穷举也要求保留）。
     final splitPagesBySource = <String, Set<int>>{};
     for (final t in tasks) {
       if (t.status != CollectStatus.pendingOrganize &&

@@ -1882,6 +1882,17 @@ class _QueuePopup extends StatefulWidget {
   State<_QueuePopup> createState() => _QueuePopupState();
 }
 
+/// B9-2：队列弹窗内联下拉的菜单标识（排序 / 文件夹 / 标签）。
+/// 根因（SR3-15 探针结论，见 `_toggleMenu`）：队列层是直接插进
+/// Overlay 的 OverlayEntry，DropdownButton 的菜单走 Navigator 路由；
+/// Navigator 每次 push 后 `OverlayState.rearrange` 都会把直接插入的
+/// 条目留在所有路由条目之上，于是菜单被画在队列层下面、点按也被队列层
+/// 外框（BoxDecoration）截住——排序、文件夹两个下拉在测试里点按无响应
+/// 就是这个原因，是产品问题，不是测试环境问题。弹窗内的下拉因此不用
+/// DropdownButton，改用弹窗自己 Stack 顶层渲染的内联菜单（与 B3 删除
+/// 确认框同款做法：状态放 `_QueuePopupState`，面板画在弹窗的 Stack 里）。
+enum _PopupMenu { sort, folder, tag }
+
 class _QueuePopupState extends State<_QueuePopup> {
   final _selected = <String>{};
   final _searchCtrl = TextEditingController();
@@ -1904,6 +1915,21 @@ class _QueuePopupState extends State<_QueuePopup> {
       _subjects.firstWhere((s) => s.id == id, orElse: () => Subject.byId(id));
   bool _addingBatchFolder = false;
   String? _batchFolderId;
+  // B9-2：批量打标签的标签来源（与整理表单一致：预设 + 自定义）。
+  // 弹窗自己的 `_loadMeta` 以前只读 exams/folders/subjects，不读标签，
+  // 这里补上；下拉选项见 `_tagOptions`。
+  List<String> _allTags = [];
+  // B9-2：批量打标签当前选中的标签。默认 '需重做'，与旧固定按钮
+  // 一次点按的行为一致（不清空选中，只提示，见 `_batchTag`）。
+  String? _batchTag = '需重做';
+  // B9-2：弹窗内联下拉的菜单状态（见 `_toggleMenu` 的根因注释）。
+  _PopupMenu? _openMenu;
+  double _menuLeft = 0;
+  double _menuTop = 0;
+  double _menuWidth = 200;
+  final _sortFieldKey = GlobalKey();
+  final _folderFieldKey = GlobalKey();
+  final _tagFieldKey = GlobalKey();
   final _currentRowKey = GlobalKey();
 
   @override
@@ -1942,11 +1968,14 @@ class _QueuePopupState extends State<_QueuePopup> {
     final exams = await widget.repo.exams();
     final folders = await widget.repo.folders(subjectId: _currentSubjectId);
     final subjects = await widget.repo.subjects();
+    // B9-2：补读标签（批量打标签下拉用；与整理表单同源 `repo.tags()`）。
+    final tags = await widget.repo.tags();
     if (!mounted) return;
     setState(() {
       _examNames = {for (final e in exams) e.id: e.name};
       _folders = folders;
       _subjects = subjects;
+      _allTags = tags;
       _batchFolderId ??= folders.isEmpty ? null : folders.first.id;
     });
   }
@@ -2002,6 +2031,284 @@ class _QueuePopupState extends State<_QueuePopup> {
 
   List<Question> get _selectedQuestions =>
       _questions.where((q) => _selected.contains(q.id)).toList();
+
+  /// B9-2：批量打标签下拉的选项，与整理表单同序——预设在前
+  /// （易错 / 常考 / 需重做），自定义在后（去重预设）。
+  List<String> get _tagOptions => [
+    ...QmChip.presetTags,
+    ..._allTags.where((t) => !QmChip.presetTags.contains(t)),
+  ];
+
+  /// B9-2：批量加文件夹字段当前显示的文件夹名（未选时是提示文案）。
+  String get _batchFolderLabel {
+    final id = _batchFolderId;
+    if (id == null) return '选文件夹';
+    for (final f in _folders) {
+      if (f.id == id) return f.name;
+    }
+    return '选文件夹';
+  }
+
+  /// B9-2 全选：范围是当前筛选出的题（`_filtered`），不是全部题——
+  /// 用户搜/排之后全选，选中的应是眼前这批，所见即所得；选了看不见
+  /// 的题再批量确认/删除会吓人一跳。Checkbox 三态：全选上 / 全没选 /
+  /// 部分选（null，显示短横）。
+  bool? get _selectAllValue {
+    if (_filtered.isEmpty) return false;
+    final selectedCount =
+        _filtered.where((q) => _selected.contains(q.id)).length;
+    if (selectedCount == 0) return false;
+    if (selectedCount == _filtered.length) return true;
+    return null;
+  }
+
+  /// B9-2 全选切换：没全选上就把当前筛选出的题全勾上；已全选上就
+  /// 只取消当前筛选出的题——筛选外的已选项保留（比如先搜“函数”全选，
+  /// 再搜“导数”全选，两批都在；取消时也只取消眼前这批）。
+  void _toggleSelectAll() {
+    final ids = _filtered.map((q) => q.id).toList();
+    if (ids.isEmpty) return;
+    setState(() {
+      if (ids.every(_selected.contains)) {
+        _selected.removeAll(ids);
+      } else {
+        _selected.addAll(ids);
+      }
+    });
+  }
+
+  void _closeMenu() {
+    if (_openMenu != null) setState(() => _openMenu = null);
+  }
+
+  /// B9-2：内联下拉开关。点字段只改 state，选项面板由弹窗自己的
+  /// Stack 画在顶层（见 `_menuPanel`），不走 Navigator 路由——这就
+  /// 是修掉 SR3-15 共因的关键：路由菜单永远会被 `rearrange` 压到
+  /// 队列层之下，内联菜单不会。面板默认向下展开；下方空间不够就向上
+  /// 展开，并夹在弹窗上下边之内。
+  void _toggleMenu(_PopupMenu menu, GlobalKey fieldKey) {
+    if (_openMenu == menu) {
+      _closeMenu();
+      return;
+    }
+    final box = fieldKey.currentContext?.findRenderObject() as RenderBox?;
+    if (box == null) return;
+    final scale = qmScaleOf(context);
+    final origin = box.localToGlobal(Offset.zero);
+    final count = switch (menu) {
+      _PopupMenu.sort => 4,
+      _PopupMenu.folder => 1 + _folders.length,
+      _PopupMenu.tag => _tagOptions.length,
+    };
+    final menuHeight = (count * 38.0 + 8.0)
+        .clamp(0.0, 248.0 * scale)
+        .toDouble();
+    var top = origin.dy + box.size.height + 4 * scale;
+    final popupBottom = widget.top + widget.maxHeight;
+    if (top + menuHeight > popupBottom - 8 * scale &&
+        origin.dy - 4 * scale - menuHeight >= widget.top + 8 * scale) {
+      top = origin.dy - 4 * scale - menuHeight;
+    }
+    top = top.clamp(
+      widget.top + 8 * scale,
+      (popupBottom - 8 * scale - menuHeight).clamp(
+        widget.top + 8 * scale,
+        double.infinity,
+      ),
+    );
+    setState(() {
+      _openMenu = menu;
+      _menuLeft = origin.dx;
+      _menuTop = top;
+      _menuWidth = box.size.width.clamp(
+        120.0 * scale,
+        widget.width - 16 * scale,
+      );
+    });
+  }
+
+  /// B9-2：内联下拉的字段（替代 DropdownButton 的按钮部分）：
+  /// 当前值 + 下箭头，底边细线沿用 DropdownButton 的视觉。
+  Widget _menuField({
+    required GlobalKey fieldKey,
+    required String label,
+    required _PopupMenu menu,
+  }) {
+    final scale = qmScaleOf(context);
+    final palette = DesignTokens.of(Theme.of(context).brightness);
+    final open = _openMenu == menu;
+    return InkWell(
+      key: fieldKey,
+      onTap: () => _toggleMenu(menu, fieldKey),
+      child: Container(
+        padding: EdgeInsets.symmetric(
+          horizontal: 10 * scale,
+          vertical: 9 * scale,
+        ),
+        decoration: BoxDecoration(
+          border: Border(
+            bottom: BorderSide(
+              color: open ? palette.accent : palette.lineStrong,
+              width: open ? 2 : 1,
+            ),
+          ),
+        ),
+        child: Row(
+          children: [
+            Expanded(
+              child: Text(
+                label,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(fontSize: 13.5, height: 1.2),
+              ),
+            ),
+            SizedBox(width: 6 * scale),
+            Text('▾', style: TextStyle(fontSize: 12, color: palette.muted)),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// B9-2：内联下拉的选项面板，画在弹窗 Stack 顶层（`build` 末尾），
+  /// 全屏透明层点按即关菜单（只关菜单，不关队列）。选项行点后执行
+  /// 各自的旧 onChanged 逻辑再关菜单。
+  Widget _menuPanel() {
+    final scale = qmScaleOf(context);
+    final palette = DesignTokens.of(Theme.of(context).brightness);
+    final menu = _openMenu!;
+    final List<Widget> options;
+    switch (menu) {
+      case _PopupMenu.sort:
+        const labels = {
+          'timeDesc': '时间降序',
+          'timeAsc': '时间升序',
+          'subjectAsc': '学科首字母升序',
+          'subjectDesc': '学科首字母降序',
+        };
+        options = labels.entries
+            .map(
+              (e) => _menuOption(
+                label: e.value,
+                selected: _sort == e.key,
+                onTap: () async {
+                  _closeMenu();
+                  if (e.key == _sort) return;
+                  setState(() => _sort = e.key);
+                  await widget.onSortChanged(e.key);
+                },
+              ),
+            )
+            .toList();
+      case _PopupMenu.folder:
+        options = [
+          _menuOption(
+            label: '＋ 添加新文件夹…',
+            selected: false,
+            onTap: () => setState(() {
+              _openMenu = null;
+              _addingBatchFolder = true;
+            }),
+          ),
+          ..._folders.map(
+            (f) => _menuOption(
+              label: f.name,
+              selected: _batchFolderId == f.id,
+              onTap: () => setState(() {
+                _openMenu = null;
+                _batchFolderId = f.id;
+              }),
+            ),
+          ),
+        ];
+      case _PopupMenu.tag:
+        options = _tagOptions
+            .map(
+              (t) => _menuOption(
+                label: '#$t',
+                selected: _batchTag == t,
+                onTap: () => setState(() {
+                  _openMenu = null;
+                  _batchTag = t;
+                }),
+              ),
+            )
+            .toList();
+    }
+    return Stack(
+      children: [
+        Positioned.fill(
+          child: GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: _closeMenu,
+            child: Container(color: Colors.transparent),
+          ),
+        ),
+        Positioned(
+          left: _menuLeft,
+          top: _menuTop,
+          width: _menuWidth,
+          child: Material(
+            color: palette.surface,
+            elevation: 8,
+            borderRadius: BorderRadius.circular(10 * scale),
+            clipBehavior: Clip.antiAlias,
+            child: Container(
+              decoration: BoxDecoration(
+                border: Border.all(color: palette.lineStrong),
+                borderRadius: BorderRadius.circular(10 * scale),
+              ),
+              constraints: BoxConstraints(maxHeight: 248 * scale),
+              child: ListView(
+                shrinkWrap: true,
+                padding: EdgeInsets.symmetric(vertical: 4 * scale),
+                children: options,
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _menuOption({
+    required String label,
+    required bool selected,
+    required VoidCallback onTap,
+  }) {
+    final scale = qmScaleOf(context);
+    final palette = DesignTokens.of(Theme.of(context).brightness);
+    return InkWell(
+      onTap: onTap,
+      child: Padding(
+        padding: EdgeInsets.symmetric(
+          horizontal: 12 * scale,
+          vertical: 10 * scale,
+        ),
+        child: Row(
+          children: [
+            Expanded(
+              child: Text(
+                label,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontSize: 13.5,
+                  fontWeight:
+                      selected ? FontWeight.w700 : FontWeight.normal,
+                  color: selected ? palette.accent : null,
+                  height: 1.2,
+                ),
+              ),
+            ),
+            if (selected)
+              Text('✓', style: TextStyle(color: palette.accent)),
+          ],
+        ),
+      ),
+    );
+  }
 
   String _detailLine(Question q) {
     final exam = q.examId == null ? '未归属' : (_examNames[q.examId] ?? '未知试卷');
@@ -2069,7 +2376,18 @@ class _QueuePopupState extends State<_QueuePopup> {
     if (ok && mounted) await _batchDelete();
   }
 
-  Future<void> _batchTagRedo() async {
+  /// B9-2：批量打标签（下拉选标签；旧 `_batchTagRedo` 只打固定
+  /// '需重做'，已改成 `_applyBatchTag` + `_batchTag` 字段，默认仍是
+  /// '需重做'）。打完**不清空选中**（与 `_batchAddFolder` 一致：
+  /// 那边也只同步 `_questions` + 提示，没有别的收尾动作），只提示；
+  /// 已保存子集同步回弹窗内 `_questions`（SR3-15 同款 finally 同步，
+  /// 防后续批量操作拿旧行覆盖）。
+  Future<void> _applyBatchTag() async {
+    final tag = _batchTag;
+    if (tag == null || tag.isEmpty) {
+      widget.onNotify('先选标签');
+      return;
+    }
     final selected = _selectedQuestions;
     // SR3-15：循环中途某题写库失败时，已保存的题也必须同步回弹窗内
     // 的 `_questions`，否则后续批量加文件夹 / 批量确认拿旧行整行
@@ -2078,7 +2396,7 @@ class _QueuePopupState extends State<_QueuePopup> {
     final savedIds = <String>{};
     try {
       for (final q in selected) {
-        final tags = {...q.tags, '需重做'}.toList();
+        final tags = {...q.tags, tag}.toList();
         await widget.repo.save(q.copyWith(tags: tags));
         savedIds.add(q.id);
       }
@@ -2092,8 +2410,8 @@ class _QueuePopupState extends State<_QueuePopup> {
       if (mounted && savedIds.isNotEmpty) {
         setState(() {
           _questions = _questions.map((q) {
-            if (savedIds.contains(q.id) && !q.tags.contains('需重做')) {
-              return q.copyWith(tags: [...q.tags, '需重做']);
+            if (savedIds.contains(q.id) && !q.tags.contains(tag)) {
+              return q.copyWith(tags: [...q.tags, tag]);
             }
             return q;
           }).toList();
@@ -2102,11 +2420,11 @@ class _QueuePopupState extends State<_QueuePopup> {
     }
     if (savedIds.length < selected.length) {
       widget.onNotify(
-        '部分保存失败：已给 ${savedIds.length} 道题打上 #需重做，其余请重试',
+        '部分保存失败：已给 ${savedIds.length} 道题打上 #$tag，其余请重试',
       );
       return;
     }
-    widget.onNotify('已给 ${selected.length} 道题打上 #需重做');
+    widget.onNotify('已给 ${selected.length} 道题打上 #$tag');
   }
 
   Future<void> _batchAddFolder() async {
@@ -2226,6 +2544,11 @@ class _QueuePopupState extends State<_QueuePopup> {
       onKeyEvent: (node, event) {
         if (event is KeyDownEvent &&
             event.logicalKey == LogicalKeyboardKey.escape) {
+          // B9-2：内联下拉菜单开着时 Esc 先关菜单（再是确认框、队列层）。
+          if (_openMenu != null) {
+            _closeMenu();
+            return KeyEventResult.handled;
+          }
           // 确认框开着时 Esc 先关确认框（不关队列层）。
           if (_confirmCompleter != null) {
             _resolveConfirm(false);
@@ -2301,7 +2624,7 @@ class _QueuePopupState extends State<_QueuePopup> {
                           bottom: 10 * scale,
                         ),
                         child: Text(
-                          '点中一道题，下面展开它的一行详情 · 勾了题底部才出现批量条',
+                          '点中一道题，下面展开它的一行详情 · 全选勾上当前列表，底部出现批量条',
                           style: TextStyle(
                             fontSize: 12,
                             color: palette.muted,
@@ -2357,39 +2680,67 @@ class _QueuePopupState extends State<_QueuePopup> {
                                   ),
                                 ),
                                 const SizedBox(height: 4),
-                                DropdownButton<String>(
-                                  value: _sort,
-                                  isExpanded: true,
-                                  items: const [
-                                    DropdownMenuItem(
-                                      value: 'timeDesc',
-                                      child: Text('时间降序'),
-                                    ),
-                                    DropdownMenuItem(
-                                      value: 'timeAsc',
-                                      child: Text('时间升序'),
-                                    ),
-                                    DropdownMenuItem(
-                                      value: 'subjectAsc',
-                                      child: Text('学科首字母升序'),
-                                    ),
-                                    DropdownMenuItem(
-                                      value: 'subjectDesc',
-                                      child: Text('学科首字母降序'),
-                                    ),
-                                  ],
-                                  onChanged: (v) async {
-                                    if (v == null) return;
-                                    setState(() => _sort = v);
-                                    await widget.onSortChanged(v);
+                                // B9-2：内联下拉（替代 DropdownButton，见
+                                // `_toggleMenu` 的 SR3-15 根因注释——路由菜单在
+                                // 队列层里点按无响应，是产品问题）。
+                                _menuField(
+                                  fieldKey: _sortFieldKey,
+                                  label: switch (_sort) {
+                                    'timeAsc' => '时间升序',
+                                    'subjectAsc' => '学科首字母升序',
+                                    'subjectDesc' => '学科首字母降序',
+                                    _ => '时间降序',
                                   },
+                                  menu: _PopupMenu.sort,
                                 ),
                               ],
                             ),
                           ),
                         ],
                       ),
-                      SizedBox(height: 10 * scale),
+                      // B9-2 全选：放在列表顶栏（不勾题也能点到），管当前
+                      // 筛选出的题；三态 Checkbox + 计数，点后批量条出现。
+                      Padding(
+                        padding: EdgeInsets.only(top: 10 * scale),
+                        child: Row(
+                          children: [
+                            Checkbox(
+                              value: _selectAllValue,
+                              tristate: true,
+                              activeColor: palette.accent,
+                              materialTapTargetSize:
+                                  MaterialTapTargetSize.shrinkWrap,
+                              visualDensity: VisualDensity.compact,
+                              onChanged: filtered.isEmpty
+                                  ? null
+                                  : (_) => _toggleSelectAll(),
+                            ),
+                            GestureDetector(
+                              onTap: filtered.isEmpty
+                                  ? null
+                                  : _toggleSelectAll,
+                              child: const Text(
+                                '全选',
+                                style: TextStyle(
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.w700,
+                                  height: 1.2,
+                                ),
+                              ),
+                            ),
+                            SizedBox(width: 8 * scale),
+                            Text(
+                              '已选 ${_selected.length} / 共 ${filtered.length} 道',
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: palette.muted,
+                                height: 1.2,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      SizedBox(height: 6 * scale),
                       Expanded(
                         child: Container(
                           decoration: BoxDecoration(
@@ -2423,6 +2774,9 @@ class _QueuePopupState extends State<_QueuePopup> {
                 ),
               ),
             ),
+            // B9-2：内联下拉菜单（见 `_toggleMenu` 的 SR3-15 根因注释）：
+            // 画在弹窗 Stack 顶层、确认框之下；确认框仍是最上层。
+            if (_openMenu != null) _menuPanel(),
             // B3：删除确认的模态弹窗（见 [_askConfirm]）：直接画在队列层
             // 自己的 Stack 顶层，盖在队列层之上；ModalBarrier 挡住底下
             // 的点按，Esc 先关确认框（见上面 onKeyEvent）。
@@ -2549,6 +2903,10 @@ class _QueuePopupState extends State<_QueuePopup> {
   }
 
   /// 底部浮动批量条：只在有勾选时出现。
+  /// B9-2 重排：三行——第 1 行标签（下拉 + 打标签按钮）、第 2 行文件夹
+  /// （下拉 + 加入按钮）、第 3 行确认 / 删除 / 取消用 Wrap（窄窗口
+  /// 时自动换行，不溢出）。两个下拉都是内联下拉（见 `_toggleMenu`，
+  /// SR3-15 根因：DropdownButton 的路由菜单在队列层里点按无响应）。
   Widget _batchBar() {
     final scale = qmScaleOf(context);
     final palette = DesignTokens.of(Theme.of(context).brightness);
@@ -2585,34 +2943,29 @@ class _QueuePopupState extends State<_QueuePopup> {
           SizedBox(height: 8 * scale),
           Row(
             children: [
-              QmButton(
-                label: '批量打标签 #需重做',
-                size: QmButtonSize.small,
-                onPressed: _batchTagRedo,
+              Expanded(
+                child: _menuField(
+                  fieldKey: _tagFieldKey,
+                  label: _batchTag == null ? '选标签' : '#$_batchTag',
+                  menu: _PopupMenu.tag,
+                ),
               ),
               SizedBox(width: 8 * scale),
+              QmButton(
+                label: '批量打标签',
+                size: QmButtonSize.small,
+                onPressed: _applyBatchTag,
+              ),
+            ],
+          ),
+          SizedBox(height: 8 * scale),
+          Row(
+            children: [
               Expanded(
-                child: DropdownButton<String>(
-                  value: _batchFolderId,
-                  hint: const Text('选文件夹'),
-                  isExpanded: true,
-                  items: [
-                    const DropdownMenuItem(
-                      value: '__add__',
-                      child: Text('＋ 添加新文件夹…'),
-                    ),
-                    ..._folders.map(
-                      (f) => DropdownMenuItem(value: f.id, child: Text(f.name)),
-                    ),
-                  ],
-                  onChanged: (v) {
-                    if (v == null) return;
-                    if (v == '__add__') {
-                      setState(() => _addingBatchFolder = true);
-                      return;
-                    }
-                    setState(() => _batchFolderId = v);
-                  },
+                child: _menuField(
+                  fieldKey: _folderFieldKey,
+                  label: _batchFolderLabel,
+                  menu: _PopupMenu.folder,
                 ),
               ),
               SizedBox(width: 8 * scale),
@@ -2624,21 +2977,21 @@ class _QueuePopupState extends State<_QueuePopup> {
             ],
           ),
           SizedBox(height: 8 * scale),
-          Row(
+          Wrap(
+            spacing: 8 * scale,
+            runSpacing: 8 * scale,
             children: [
               QmButton(
                 label: '批量确认整理',
                 size: QmButtonSize.small,
                 onPressed: _batchConfirm,
               ),
-              SizedBox(width: 8 * scale),
               QmButton(
                 label: '批量删除',
                 variant: QmButtonVariant.danger,
                 size: QmButtonSize.small,
                 onPressed: _askBatchDelete,
               ),
-              SizedBox(width: 8 * scale),
               QmButton(
                 label: '取消',
                 variant: QmButtonVariant.plain,

@@ -197,6 +197,24 @@ Future<void> upsertQuestionIntoImpl(Database db, Question q) async {
       conflictAlgorithm: ConflictAlgorithm.replace,
     );
   }
+  // B9-1：题变为已整理时，同句柄把指向它的收集任务置 done。
+  // 这是全部整理路径的汇合点（整理确认、批量整理都走 repo.save →
+  // _db.upsertQuestion → 这里；详情/错题本的保存也一样，只是不翻
+  // isOrganized）；集中处理一次，任何调用点都不会漏。只改仍是
+  // pendingOrganize 的行：已是 done 或其它状态的行不动；题未整理
+  // 时不碰任务。条件里不读旧行——已整理题的任何一次保存都会把卡
+  // 住的任务顺手治好（自愈），且 UPDATE 本身是幂等的。
+  // 与题写同一句柄，不另开事务：调用方若传进来的是 Transaction，
+  // 任务改动与题改动同事务；传普通 Database 时与旧写法同口径
+  // （本题写本身也不是事务）。
+  if (q.isOrganized) {
+    await db.update(
+      'collect_tasks',
+      {'status': CollectStatus.done.name},
+      where: 'question_id = ? AND status = ?',
+      whereArgs: [q.id, CollectStatus.pendingOrganize.name],
+    );
+  }
 }
 
 /// §4.5：删题（可单测版）：一次事务，不 bump。事务提交后删该题
