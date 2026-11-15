@@ -227,11 +227,22 @@ Future<List<QuestionBox>> boxesForPageImageFromImpl(
     columns: ['id'],
     where: 'page_image_path = ?',
     whereArgs: [pageImagePath],
+    // SR2-27：题 id 列表也要确定顺序（questions 表没有 page 列，
+    // 这里按 id 排；框行的顺序由下面的 ORDER BY 定）。
+    orderBy: 'id ASC',
   );
   if (qs.isEmpty) return const [];
   final ids = qs.map((r) => r['id'] as String).toList();
   final where = 'question_id IN (${List.filled(ids.length, '?').join(',')})';
-  final rows = await db.query('question_boxes', where: where, whereArgs: ids);
+  // SR2-27：与 boxesForTask 对齐，按页、id 排序——realRegionRects
+  // 的“同面积取第一个”依赖输入顺序，无 ORDER BY 时 SQLite 不保证
+  // 行序（通常是 rowid 序，但不保证）。
+  final rows = await db.query(
+    'question_boxes',
+    where: where,
+    whereArgs: ids,
+    orderBy: 'page ASC, id ASC',
+  );
   return rows.map(_questionBoxFromRow).toList();
 }
 
@@ -320,7 +331,9 @@ Future<void> replaceQuestionBoxesIntoImpl(
 /// 换框与写回题的 slice_path / slice_width / slice_height
 /// 一起成功或一起回滚。旧写法是两步（先 replaceQuestionBoxes
 /// 再 save），中途失败会留下“框换了、切片还是旧的”的不一致。
-/// 切片文件本身仍由调用方在事务前写盘（写不进去不进事务）；
+/// 切片文件由调用方先写临时文件（SR2-3：临时文件 + 事务成功后
+/// rename 到正式路径；旧写法“事务前原地写盘”会让事务失败时删掉
+/// 刚覆盖掉旧图的唯一一份切片）、事务失败只删临时文件；
 /// 题行不存在（update 影响 0 行）时抛错，整个事务回滚。
 Future<void> replaceQuestionBoxesAndSliceIntoImpl(
   Database db, {
@@ -403,7 +416,8 @@ Future<void> _deleteBoxesForQuestionTxn(
 /// 建题 + 回填 `question_boxes.question_id` + 建拆分任务 + 删原任务。
 /// 框的回填：先删该题已有的旧框（防重复确认/重检测产生两个
 /// layer = 1 框，partial unique 的防呆），再把传入的框逐行
-/// upsert（question_id 回填、collect_task_id 置空）。
+/// upsert（question_id 回填、collect_task_id 置空）；同一题内
+/// 重复 id 的框只保留第一个（SR2-18，与保留任务草稿同口径）。
 /// 拆分任务行同样写 source_path / created_at / page_count
 /// （§1.2(b)，调用方在 splitTasks 里给好）。
 ///
@@ -467,7 +481,14 @@ Future<void> confirmSplitIntoImpl(
         conflictAlgorithm: ConflictAlgorithm.fail,
       );
       await _deleteBoxesForQuestionTxn(txn, q.id);
+      // SR2-18：框回填也去重——与保留任务草稿的 seenIds 同口径
+      // （见下）：同一题的入参里若有两个同 id 框，旧写法用 REPLACE
+      // 让后者静默覆盖前者，与 SR-P2-10“重复确认显式失败而不是
+      // 静默覆盖”的防呆口径不一致；这里直接跳过重复 id（保留第一
+      // 个），与保留任务分支一致。
+      final seenBoxIds = <String>{};
       for (final b in boxesByQuestionId[q.id] ?? const <QuestionBox>[]) {
+        if (!seenBoxIds.add(b.id)) continue;
         await txn.insert(
           'question_boxes',
           _questionBoxToRow(

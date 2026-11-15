@@ -621,6 +621,11 @@ class QmChip extends StatelessWidget {
     // 不装 Tap 识别器（childHandlesTap），点按全由内层两个
     // GestureDetector 承担（点片身切换、点 × 删除），不再内外两层
     // Tap 识别器竞争同一手势；键盘/无障碍仍走外层的 onTap（主操作）。
+    // SR2-35：内层识别器只包文字本身时，水平/垂直内边距与两区之间
+    // 的间隙都点按无反应（Batch 5 新回归）——改走方案 (a)：标签区
+    // 的识别器包住含左内边距的区域（padding 移进标签识别器内，
+    // 间隙归属标签区），× 识别器热区向外扩到右内边距；整个芯片
+    // 都可点，Container 本身不再另设 padding（总尺寸不变）。
     if (deletable) {
       final chip = _QmPressable(
         ringRadius: 999,
@@ -639,10 +644,6 @@ class QmChip extends StatelessWidget {
           final border =
               state.hovered || state.pressed ? palette.errLine : palette.accent;
           return Container(
-            padding: EdgeInsets.symmetric(
-              horizontal: DesignTokens.deletableChipPaddingH * scale,
-              vertical: DesignTokens.deletableChipPaddingV * scale,
-            ),
             decoration: BoxDecoration(
               color: bg,
               border: Border.all(color: border, width: 1),
@@ -655,22 +656,43 @@ class QmChip extends StatelessWidget {
                       GestureDetector(
                         behavior: HitTestBehavior.opaque,
                         onTap: onTap,
-                        child: labelText(fg),
+                        child: Padding(
+                          padding: EdgeInsets.fromLTRB(
+                            DesignTokens.deletableChipPaddingH * scale,
+                            DesignTokens.deletableChipPaddingV * scale,
+                            4 * scale,
+                            DesignTokens.deletableChipPaddingV * scale,
+                          ),
+                          child: labelText(fg),
+                        ),
                       ),
-                      SizedBox(width: 4 * scale),
                       GestureDetector(
                         behavior: HitTestBehavior.opaque,
                         onTap: onDelete,
-                        child: QmGlyph(
-                          QmGlyphs.close,
-                          size: DesignTokens.captionFontSize,
-                          color: fg,
-                          fontWeight: FontWeight.w700,
+                        child: Padding(
+                          padding: EdgeInsets.fromLTRB(
+                            0,
+                            DesignTokens.deletableChipPaddingV * scale,
+                            DesignTokens.deletableChipPaddingH * scale,
+                            DesignTokens.deletableChipPaddingV * scale,
+                          ),
+                          child: QmGlyph(
+                            QmGlyphs.close,
+                            size: DesignTokens.captionFontSize,
+                            color: fg,
+                            fontWeight: FontWeight.w700,
+                          ),
                         ),
                       ),
                     ],
                   )
-                : labelText(fg),
+                : Padding(
+                    padding: EdgeInsets.symmetric(
+                      horizontal: DesignTokens.deletableChipPaddingH * scale,
+                      vertical: DesignTokens.deletableChipPaddingV * scale,
+                    ),
+                    child: labelText(fg),
+                  ),
           );
         },
       );

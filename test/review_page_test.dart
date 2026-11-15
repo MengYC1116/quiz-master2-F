@@ -316,6 +316,7 @@ Future<void> pumpReview(
   Brightness brightness = Brightness.light,
   double scale = 1.0,
   String? initialSubjectId,
+  Future<void> Function(Question q, List<String> ids)? onOpenDetail,
 }) async {
   tester.view.physicalSize = const Size(1280, 720);
   tester.view.devicePixelRatio = 1.0;
@@ -340,6 +341,7 @@ Future<void> pumpReview(
                 initialSubjectId: initialSubjectId,
                 onOpenDetail: (q, ids) async {
                   opened.add(q);
+                  if (onOpenDetail != null) await onOpenDetail(q, ids);
                 },
                 onGoWrongbook: () {},
               ),
@@ -708,6 +710,10 @@ void main() {
       // 不再把 q2 的另一个待治错因“方法不会”也带进来。
       expect(find.textContaining('第 1 / 1 道题'), findsOneWidget);
       expect(find.text('本题错因 1 / 1'), findsOneWidget);
+      // SR2-33：按组进会话的范围文案按该组写（数学 · 计算错误），
+      // 不再写筛选口径的“全部待解决错因”。
+      expect(find.textContaining('第 1 / 1 道题 · 数学 · 计算错误'),
+          findsOneWidget);
     });
 
     testWidgets('放大浮层：点题图弹出，标题“整题图 · 放大查看”',
@@ -922,6 +928,36 @@ void main() {
       expect(find.text('收起'), findsOneWidget);
     });
 
+    testWidgets('SR2-75 未加入盒按学科分行：新学科/未知学科排最后',
+        (tester) async {
+      final repo = reviewRepo();
+      // 新学科化学进学科表（排在预设三科之后）；未知学科不在表里。
+      repo.subjectsValue = [
+        ...Subject.all,
+        Subject(
+            id: 'chemistry',
+            name: '化学',
+            color: Color(0xFF7C4DDB),
+            icon: '化'),
+      ];
+      repo.questions = [
+        ...repo.questions,
+        rq('n0', '数学新题', errorTypes: const ['方法不会']),
+        rq('n1', '化学新题',
+            subjectId: 'chemistry', errorTypes: const ['概念不清']),
+        rq('n2', '未知学科题',
+            subjectId: 'weird', errorTypes: const ['概念不清']),
+      ];
+      await pumpReview(tester, repo: repo);
+      // 未加入盒共 4 行，按学科表顺序：数学 → 政治 → 化学 → 未知学科。
+      // 未知学科名回退到数学（Subject.byId 兜底），但行本身排在最后。
+      double dy(String s) =>
+          tester.getTopLeft(find.textContaining(s)).dy;
+      expect(dy('数学新题'), lessThan(dy('马原')));
+      expect(dy('马原'), lessThan(dy('化学新题')));
+      expect(dy('化学新题'), lessThan(dy('未知学科题')));
+    });
+
     testWidgets('SR-P2-48 读库失败出错误横幅；重试失败仍在，成功后恢复',
         (tester) async {
       final repo = reviewRepo();
@@ -945,6 +981,39 @@ void main() {
       expect(find.textContaining('第 1 / 1 道题 · 错因「计算错误」'),
           findsOneWidget);
       expect(find.text('本题错因 1 / 1'), findsOneWidget);
+    });
+
+    testWidgets('SR2-34：筛“计算错误”进会话，详情里删掉唯一带它的题，'
+        '回列表不断言、筛选回到全部', (tester) async {
+      // 只有 q2 带“计算错误”（待治组里唯一）；详情页删题由
+      // onOpenDetail 模拟：删题 + 删记录。
+      final repo = reviewRepo();
+      await pumpReview(tester,
+          repo: repo,
+          onOpenDetail: (q, ids) async {
+            repo.questions.removeWhere((x) => x.id == q.id);
+            repo.records.removeWhere((r) => r.questionId == q.id);
+          });
+      await pickMenuItem<String>(
+          tester, find.byType(DropdownButton<String>).last, '计算错误');
+      await tapButton(tester, '开始解决');
+      expect(find.textContaining('第 1 / 1 道题 · 错因「计算错误」'),
+          findsOneWidget);
+      // 会话里进详情删题：题没了，会话切到总结页。
+      await tapButton(tester, '查看题目详情');
+      expect(repo.questions.where((x) => x.id == 'q2'), isEmpty);
+      expect(find.text('本轮复习总结'), findsOneWidget);
+      await tapButton(tester, '回复习列表');
+      // 未修时 _causeFilter 仍是“计算错误”，而选项里已无它，
+      // 回列表重建下拉会抛 DropdownButton 断言。
+      expect(
+          tester
+              .widget<DropdownButton<String>>(
+                  find.byType(DropdownButton<String>).last)
+              .value,
+          '全部');
+      expect(find.text('计算错误'), findsNothing);
+      expect(find.textContaining('关联 1 道题：函数极限'), findsOneWidget);
     });
 
     testWidgets('SR-P2-57 断点恢复的范围按保存队列写，不写死“全部待解决错因”',

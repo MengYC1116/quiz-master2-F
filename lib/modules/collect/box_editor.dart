@@ -423,20 +423,27 @@ class _BoxEditorDialogState extends State<_BoxEditorDialog> {
     try {
       final bytes = await File(path).readAsBytes();
       final codec = await ui.instantiateImageCodec(bytes);
-      final frame = await codec.getNextFrame();
-      final image = frame.image;
-      if (!mounted || path != _currentPageImagePath) {
+      // SR2-37：Codec 用完即 dispose（与 page_image_pipeline._decode /
+      // yolo_onnx_service.detectPage 同款 try/finally），否则每次切页
+      // 漏一份 native 资源；getNextFrame 抛错时 finally 同样释放。
+      try {
+        final frame = await codec.getNextFrame();
+        final image = frame.image;
+        if (!mounted || path != _currentPageImagePath) {
+          image.dispose();
+          return;
+        }
+        setState(() {
+          _pageImageSize = ui.Size(
+            image.width.toDouble(),
+            image.height.toDouble(),
+          );
+          _pageImageFailed = false;
+        });
         image.dispose();
-        return;
+      } finally {
+        codec.dispose();
       }
-      setState(() {
-        _pageImageSize = ui.Size(
-          image.width.toDouble(),
-          image.height.toDouble(),
-        );
-        _pageImageFailed = false;
-      });
-      image.dispose();
     } catch (_) {
       if (mounted && path == _currentPageImagePath) {
         setState(() => _pageImageFailed = true);
@@ -647,12 +654,17 @@ class _BoxEditorDialogState extends State<_BoxEditorDialog> {
     // SR-P2-19：只查 1 层框会漏掉手画的题内框——手画的 stem /
     // option / figure 独立内框（同样 origin == 'manual'）不弹确认
     // 就被 _ingestDetected 覆盖掉；_inners 与 _standaloneInner 也要查。
+    // SR2-21：但只查当前页——_inners / _standaloneInner 是跨页的 map，
+    // _boxes 只是当前页；别页的手画框不该让当前页弹确认（确认后
+    // _ingestDetected 也只替换当前页，文案与行为会对不上）。
     bool hasManualIn(List<QuestionBox> boxes) =>
         boxes.any((b) => b.origin == 'manual');
     final hasManual =
         hasManualIn(_boxes) ||
-        _inners.values.any(hasManualIn) ||
-        _standaloneInner.values.any(hasManualIn);
+        _inners.entries
+            .where((e) => e.key.startsWith('$_currentPage:'))
+            .any((e) => hasManualIn(e.value)) ||
+        hasManualIn(_standaloneInner[_currentPage] ?? const <QuestionBox>[]);
     if (hasManual && mounted) {
       final ok = await showDialog<bool>(
         context: context,
@@ -707,11 +719,16 @@ class _BoxEditorDialogState extends State<_BoxEditorDialog> {
           .showSnackBar(const SnackBar(content: Text('这道题还没有框，请手动框选')));
       return;
     }
+    // SR2-20：reworkQuestionId 是题 id（详情页传 q.id），永不等于框 id，
+    // 不能拿它跟框 id 比——旧代码只认第一道框，多框题会误报“没找到对应
+    // 的题”或把第一道框挪到第二道题的位置上。目标框 = questionId 等
+    // 于该题的 1 层框；框上没填 questionId（旧草稿/测试桩）时回退到
+    // 全部 1 层框（重框模式下当前页本就只有目标题的框）。
     final targetId = widget.reworkQuestionId;
-    final target = layer1.firstWhere(
-      (b) => targetId == null || b.id == targetId,
-      orElse: () => layer1.first,
-    );
+    final byQuestion = targetId == null
+        ? layer1
+        : layer1.where((b) => b.questionId == targetId).toList();
+    final targets = byQuestion.isEmpty ? layer1 : byQuestion;
     final result = await widget.yoloService.detectPage(
       imagePath: _currentPageImagePath,
       page: _currentPage,
@@ -723,32 +740,42 @@ class _BoxEditorDialogState extends State<_BoxEditorDialog> {
       ).showSnackBar(SnackBar(content: Text(result.error ?? '自动检测不可用，请手动框选')));
       return;
     }
-    // 与当前框重叠度最大的检测框才是这道题；找不到就手动框选。
-    QuestionBox? best;
-    var bestIou = 0.0;
-    for (final b in result.boxes.where((b) => b.layer == 1)) {
-      final iou = _iou(target, b);
-      if (iou > bestIou) {
-        bestIou = iou;
-        best = b;
+    // 逐个目标框做 IoU 匹配：与当前框重叠度最大的检测框才是这道题。
+    // 全部候选按 IoU 从大到小贪心认领，每个检测框只用一次，避免两道
+    // 题抢到同一个检测框；IoU ≤ 0.05 的不认领（找不到就手动框选）。
+    final detected = result.boxes.where((b) => b.layer == 1).toList();
+    final scored = <({QuestionBox target, QuestionBox picked, double iou})>[];
+    for (final target in targets) {
+      for (final b in detected) {
+        final iou = _iou(target, b);
+        if (iou > 0.05) scored.add((target: target, picked: b, iou: iou));
       }
     }
-    if (best == null || bestIou <= 0.05) {
+    scored.sort((a, b) => b.iou.compareTo(a.iou));
+    final matches = <({QuestionBox target, QuestionBox picked})>[];
+    final claimed = <QuestionBox>{};
+    for (final s in scored) {
+      if (matches.any((m) => m.target.id == s.target.id)) continue;
+      if (claimed.contains(s.picked)) continue;
+      claimed.add(s.picked);
+      matches.add((target: s.target, picked: s.picked));
+    }
+    if (matches.isEmpty) {
       ScaffoldMessenger.of(context)
           .showSnackBar(const SnackBar(content: Text('没找到对应的题，请手动框选')));
       return;
     }
-    // 闭包里不保留可空提升，先取到局部变量再进 setState。
-    final picked = best;
-    // SR-P2-20：只换 1 层框坐标，挂在它下面的旧内框原样保留——新框
-    // 移动/缩放后旧内框可能落在新框外，确认后照此入库。按新旧框的
-    // 相对位置换算内框（框内相对坐标不变），再用 _clampInner 钳进
-    // 新框；旧框无面积时无法换算，直接钳进新框。
-    final oldTarget = target;
     setState(() {
       final list = _boxesByPage[_currentPage]!;
-      final i = list.indexWhere((b) => b.id == target.id);
-      if (i >= 0) {
+      for (final m in matches) {
+        final target = m.target;
+        final picked = m.picked;
+        final i = list.indexWhere((b) => b.id == target.id);
+        if (i < 0) continue;
+        // SR-P2-20：只换 1 层框坐标，挂在它下面的旧内框原样保留——新框
+        // 移动/缩放后旧内框可能落在新框外，确认后照此入库。按新旧框的
+        // 相对位置换算内框（框内相对坐标不变），再用 _clampInner 钳进
+        // 新框；旧框无面积时无法换算，直接钳进新框。
         final newBox = YoloOnnxService.clampToPage(
           picked.copyWith(id: target.id, page: _currentPage),
           minSize: false,
@@ -758,16 +785,16 @@ class _BoxEditorDialogState extends State<_BoxEditorDialog> {
         final inners = _inners[key];
         if (inners != null) {
           _inners[key] = inners.map((b) {
-            final moved = oldTarget.w > 0 && oldTarget.h > 0
+            final moved = target.w > 0 && target.h > 0
                 ? b.copyWith(
                     x:
                         newBox.x +
-                        ((b.x - oldTarget.x) / oldTarget.w) * newBox.w,
+                        ((b.x - target.x) / target.w) * newBox.w,
                     y:
                         newBox.y +
-                        ((b.y - oldTarget.y) / oldTarget.h) * newBox.h,
-                    w: (b.w / oldTarget.w) * newBox.w,
-                    h: (b.h / oldTarget.h) * newBox.h,
+                        ((b.y - target.y) / target.h) * newBox.h,
+                    w: (b.w / target.w) * newBox.w,
+                    h: (b.h / target.h) * newBox.h,
                   )
                 : b;
             return _clampInner(moved, newBox);
@@ -778,6 +805,14 @@ class _BoxEditorDialogState extends State<_BoxEditorDialog> {
       _selectedInnerId = null;
       _pendingBox = null;
     });
+    // 有的目标框没找到对应的检测框：已恢复的照常生效，没恢复的留在原位，
+    // 提示用户手动框选（而不是整单报“没找到”让用户以为全没恢复）。
+    final missed = targets.length - matches.length;
+    if (missed > 0 && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('有 $missed 道框没找到对应的检测框，已恢复其余框，请手动框选')),
+      );
+    }
   }
 
   static double _iou(QuestionBox a, QuestionBox b) {

@@ -36,15 +36,16 @@ flutter build windows --release   # Win11 上必须构建成功
 
 界面改动还要在真机窗口里跑一遍、截图，和 HTML 原型对照；Linux 构建成功不替代 Win11 真机验收（字体、DPI、尺寸要在 Win11 上复核）。
 
-## 当前状态（2026-11-14）
+## 当前状态（2026-11-15）
 
 - R0–R11 UI 重构、§8 与 P0–P3 实施已完成并推送；分支 **`ui-replication`**，
-  本地 head 为 `bca8586`（以 `git log` 为准）。
-- **Batch 1/2/3/4 的改动在工作树里，未提交、未推送**：最终自审已做完
-  （见 `docs/ui-replication/SELF-REVIEW-SUMMARY.md`，第五批修复进行中），
-  在 Meng 看过自审汇总并明确批准之前，**不要 push**。
+  本地 head 为 `bca8586`（以 `git log` 为准），远端 head 为 `6448c45`
+  （快照推送不写本地历史）。
+- **Batch 1–5 已推送（2026-11-15 09:35，远端 head `6448c45`）**；第二次自审
+  已做完（见 `docs/ui-replication/SELF-REVIEW-2-SUMMARY.md`），**第六批修复已完成、
+  在工作树里，未提交、未推送**；在 Meng 明确批准之前，**不要 push**。
   也不要 commit、reset、checkout——只改文件，不动 git 历史。
-- **Batch 4 God 类拆分已完成，同样未提交、未推送**（Meng 2026-11-14
+- **Batch 4 God 类拆分已完成，已随 Batch 5 一并推送**（Meng 2026-11-14
   批准“马上拆就行”，后追加 `wrongbook_page.dart`；纯重构，不改行为、
   不修 bug、不加功能；细节见 `docs/ui-replication/B4-SUMMARY.md`）：
   - `lib/data/database.dart` 3191 行 → 541 行入口 + 10 个 `db_*.dart`

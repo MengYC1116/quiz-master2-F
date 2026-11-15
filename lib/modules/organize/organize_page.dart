@@ -316,16 +316,40 @@ class _OrganizePageState extends State<OrganizePage> {
     final updated = _formQuestion(q);
     await widget.repo.save(updated);
     await widget.repo.syncCauseRecords(updated);
+    // SR2-6 根治：保存成功后把新行写回内存 `_queue`。只写库不同步
+    // 内存时，`_loadForm` 切题往返后仍读旧对象，再保存会把已落盘的
+    // 改动（文件夹、答案等）整行覆盖回旧值。只在保存成功后写回；
+    // 失败时 `_queue` 保持旧行，调用方拦下切题、提示重试。
+    // 这里不用 setState：调用方随后都会 setState / `_loadForm` /
+    // `_refresh`，且失败路径（未挂载）下直接改列表最安全。
+    final i = _queue.indexWhere((x) => x.id == q.id);
+    if (i >= 0) _queue[i] = updated;
+  }
+
+  /// 切题 / 开队列 / 跳转前的自动保存（SR2-26）：保存失败不抛错，
+  /// 弹提示并返回 false，由调用方拦下本次动作——表单改动仍在内存
+  /// 里（控制器与 `_queue` 都没动），用户可重试保存。直接放行会
+  /// 让 `_loadForm` / `_refresh` 用旧行重建表单，等于静默丢掉未
+  /// 保存的改动，所以这里选择拦下而不是放行。
+  Future<bool> _trySaveCurrent() async {
+    try {
+      await _saveCurrent();
+      return true;
+    } catch (_) {
+      if (mounted) _snack('保存失败，请重试');
+      return false;
+    }
   }
 
   Future<void> _saveDraft() async {
-    await _saveCurrent();
-    if (mounted) _snack('草稿已保存');
+    if (await _trySaveCurrent()) {
+      if (mounted) _snack('草稿已保存');
+    }
   }
 
   Future<void> _goTo(int next) async {
     if (next < 0 || next >= _queue.length || next == _index) return;
-    await _saveCurrent();
+    if (!await _trySaveCurrent()) return;
     if (!mounted) return;
     setState(() => _index = next);
     await _loadFolders();
@@ -354,7 +378,8 @@ class _OrganizePageState extends State<OrganizePage> {
   Future<void> _openDetail() async {
     final q = _current;
     if (q == null) return;
-    await _saveCurrent();
+    // SR2-26 同款：保存失败时拦下、不进详情页，提示重试。
+    if (!await _trySaveCurrent()) return;
     await widget.onOpenDetail(q, _orderIds);
     await _refresh();
   }
@@ -371,19 +396,12 @@ class _OrganizePageState extends State<OrganizePage> {
   /// `_refresh` → `_loadForm` 从库重读，改动就再也回不来了。
   Future<void> _openQueue() async {
     if (_queue.isEmpty || _queueEntry != null) return;
-    await _saveCurrent();
+    // SR2-26：保存失败时拦下、不开队列（提示见 `_trySaveCurrent`），
+    // 表单改动仍在内存里，用户可重试保存。
+    if (!await _trySaveCurrent()) return;
     if (!mounted) return;
-    // 只落盘还不够：[_saveCurrent] 只写库，内存里的 `_queue` 仍是
-    // 打开前的旧对象；弹出层拿 `List.of(_queue)` 拍快照，批量操作
-    // 再用旧对象 `copyWith` 整行覆盖，刚保存的改动一样会被抹掉。
-    // 所以把刚保存的表单行写回 `_queue`，再拍快照。
-    final current = _current;
-    if (current != null) {
-      final i = _queue.indexWhere((q) => q.id == current.id);
-      if (i >= 0) {
-        setState(() => _queue[i] = _formQuestion(current));
-      }
-    }
+    // SR2-6：`_saveCurrent` 成功后已把表单行写回 `_queue`，这里
+    // 直接拍快照即可，不再像 B5 那样单点打补丁。
     // 保存是异步的：等的过程中用户可能又点了一次「队列」，上面的
     // 首道 guard 拦不住第二次调用，这里再拦一次，避免插两个层。
     if (_queue.isEmpty || _queueEntry != null) return;
@@ -438,7 +456,8 @@ class _OrganizePageState extends State<OrganizePage> {
     if (entry == null) return;
     _queueEntry = null;
     entry.remove();
-    await _saveCurrent();
+    // SR2-26：保存失败时拦下跳转、留在当前题（弹出层已关），提示重试。
+    if (!await _trySaveCurrent()) return;
     if (!mounted) return;
     final idx = _queue.indexWhere((q) => q.id == id);
     if (idx < 0) {
@@ -453,7 +472,8 @@ class _OrganizePageState extends State<OrganizePage> {
   /// 队列里改排序：先保存当前题，按新排序重排并回到第 1 道（与基线
   /// 顶栏排序下拉的行为一致），再让弹出层按新 currentId 重绘。
   Future<void> _applyQueueSort(String sort) async {
-    await _saveCurrent();
+    // SR2-26：保存失败时拦下、不改排序（弹出层仍开着），提示重试。
+    if (!await _trySaveCurrent()) return;
     if (!mounted) return;
     setState(() {
       _sort = sort;
@@ -2269,6 +2289,19 @@ class _QueuePopupState extends State<_QueuePopup> {
       final tags = {...q.tags, '需重做'}.toList();
       await widget.repo.save(q.copyWith(tags: tags));
     }
+    // SR2-5：保存后把标签同步回弹窗内的 `_questions`（与
+    // `_batchAddFolder` 同款 `setState` map），否则同一次弹窗里
+    // 再做批量加文件夹 / 批量确认时，拿的仍是打标签前的旧
+    // `Question` 整行覆盖，标签被抹掉。
+    if (!mounted) return;
+    setState(() {
+      _questions = _questions.map((q) {
+        if (_selected.contains(q.id) && !q.tags.contains('需重做')) {
+          return q.copyWith(tags: [...q.tags, '需重做']);
+        }
+        return q;
+      }).toList();
+    });
     widget.onNotify('已给 ${selected.length} 道题打上 #需重做');
   }
 

@@ -1,5 +1,6 @@
 import 'dart:io';
 import 'dart:math' as math;
+import 'dart:typed_data';
 
 import 'package:file_picker/file_picker.dart';
 
@@ -168,6 +169,25 @@ class ImportService {
     return result.files.where((f) => f.path != null).map((f) => f.path!).toList();
   }
 
+  /// SR2-72：同批去重键——同一文件的不同写法只建一个任务。
+  /// `resolveSymbolicLinks` 同时完成绝对化（相对路径 → 绝对路径）
+  /// 与链接解析（符号链接 → 目标路径）；再整体小写折叠，覆盖
+  /// Windows/macOS 不区分大小写的文件系统（产品跑在 Windows 上；
+  /// Linux 下同目录仅大小写不同的两个文件是病态构造）。去重键只
+  /// 用于比较，实际打开的仍是调用方传的原路径。解析失败（如文件
+  /// 不存在）时回退到绝对路径小写，仍能覆盖相对 / 大小写写法。
+  Future<String> _dedupKey(String path) async {
+    try {
+      return (await File(path).resolveSymbolicLinks()).toLowerCase();
+    } catch (_) {
+      try {
+        return File(path).absolute.path.toLowerCase();
+      } catch (_) {
+        return path.toLowerCase();
+      }
+    }
+  }
+
   /// 多文件排队：逐个导入，下一文件自动开始；返回创建的任务。
   ///
   /// 真实进度（替换旧 `_simulateImport` 假进度）：复制按字节回调
@@ -182,13 +202,15 @@ class ImportService {
     void Function(String taskId, int progress)? onProgress,
   }) async {
     final tasks = <CollectTask>[];
-    // SR-P1-17：同批去重（按源文件路径）。同一文件在一次多选里
-    // 出现两次时只建一个任务，后面的直接跳过。
-    // 跨批重复不在这里拦：D-08 定了重复导入允许重导，收集页先弹
-    // “已经导入过”提示，用户点“仍然再导一份”才进 enqueue。
+    // SR-P1-17：同批去重。同一文件在一次多选里出现两次时只建一个
+    // 任务，后面的直接跳过。跨批重复不在这里拦：D-08 定了重复导入
+    // 允许重导，收集页先弹“已经导入过”提示，用户点“仍然再导一份”
+    // 才进 enqueue。SR2-72：去重键是规范化后的路径（见 _dedupKey），
+    // 同一文件的不同写法（相对/绝对路径、符号链接、大小写）也只建
+    // 一个任务。
     final seenPaths = <String>{};
     for (var i = 0; i < paths.length; i++) {
-      if (!seenPaths.add(paths[i])) continue;
+      if (!seenPaths.add(await _dedupKey(paths[i]))) continue;
       final file = File(paths[i]);
       final name = file.uri.pathSegments.last;
       // SR-P2-60：id 后缀加 6 位随机段。旧 id 是“毫秒时间戳 + 批内序号”，
@@ -206,43 +228,67 @@ class ImportService {
         progress: 0,
         createdAt: DateTime.now(),
       );
+      // SR2-1/SR2-2：每文件一层兜底 try。单个文件任何一步抛错
+      // （含初始 importing 行写库失败）都转成该任务的 failed 行
+      // （能写库就写，写不进也只返回内存里的 failed 任务），继续
+      // 下一个文件，绝不逃出 enqueue、中断整批。taskAdded 记 tasks
+      // 里是否已有本任务的行，cleanupDir 记已建的任务目录（供兜底
+      // 清理用，未建目录时为 null）。
+      var taskAdded = false;
+      String? cleanupDir;
+      try {
       await _db.upsertCollectTask(task);
       tasks.add(task);
+      taskAdded = true;
 
       final ext = name.split('.').last.toLowerCase();
       // 单文件大小上限（§6 第 3 条）：PDF 50MB / 图片 20MB，复制前
       // 先判，超了直接失败，不复制、不渲染；文案说清怎么处理
       //（PDF 拆成多个小 PDF，图片压缩到 20MB 以内）。
       // SR-P1-14：图片与 PDF 同款硬判，不再只提示不执行。
+      // SR2-1(a)：读长度与“超限失败”分开——读不到文件时走后面的
+      // 复制失败路径；超限失败行的 upsert 各自包 try，写不进也只
+      // 返回内存 failed 任务，不再被读长度的 catch 吞掉后继续复制。
+      var oversize = false;
+      String? oversizeError;
       try {
         final size = await file.length();
         final limit = ext == 'pdf' ? maxPdfBytes : maxImageBytes;
         if (size > limit) {
-          task = _failed(
-            task,
-            ext == 'pdf'
-                ? '这个 PDF 有 ${(size / 1024 / 1024).toStringAsFixed(1)}MB，超过 50MB 上限，请拆成多个小 PDF 再导入'
-                : '这张图片有 ${(size / 1024 / 1024).toStringAsFixed(1)}MB，超过 20MB 上限，请压缩到 20MB 以内再导入',
-          );
-          await _db.upsertCollectTask(task);
-          tasks[tasks.length - 1] = task;
-          continue;
+          oversize = true;
+          oversizeError = ext == 'pdf'
+              ? '这个 PDF 有 ${(size / 1024 / 1024).toStringAsFixed(1)}MB，超过 50MB 上限，请拆成多个小 PDF 再导入'
+              : '这张图片有 ${(size / 1024 / 1024).toStringAsFixed(1)}MB，超过 20MB 上限，请压缩到 20MB 以内再导入';
         }
       } catch (_) {}
+      if (oversize) {
+        task = _failed(task, oversizeError!);
+        try {
+          await _db.upsertCollectTask(task);
+        } catch (_) {}
+        tasks[tasks.length - 1] = task;
+        continue;
+      }
       // 空间上限 2GB：导入前估算（已有占用 + 本文件），超了直接失败。
+      // SR2-1(a)：同上，估算与失败写库分开。
+      var storageFull = false;
       try {
         final used = await storageUsageBytes();
-        if (used + await file.length() > maxStorageBytes) {
-          task = _failed(task, '空间不足：题库文件已超过 2GB 上限，先在设置里清理空间再导入');
-          await _db.upsertCollectTask(task);
-          tasks[tasks.length - 1] = task;
-          continue;
-        }
+        storageFull = used + await file.length() > maxStorageBytes;
       } catch (_) {}
+      if (storageFull) {
+        task = _failed(task, '空间不足：题库文件已超过 2GB 上限，先在设置里清理空间再导入');
+        try {
+          await _db.upsertCollectTask(task);
+        } catch (_) {}
+        tasks[tasks.length - 1] = task;
+        continue;
+      }
       // 复制进库（按字节真实进度 0→70%）。
       final dirAbs = AppDatabase.resolveDataPath(taskDirRelative(id))!;
       final targetAbs =
           AppDatabase.resolveDataPath(originalRelative(id, ext))!;
+      cleanupDir = dirAbs;
       try {
         await Directory(dirAbs).create(recursive: true);
         final total = await file.length();
@@ -276,7 +322,10 @@ class ImportService {
           await Directory(dirAbs).delete(recursive: true);
         } catch (_) {}
         task = _failed(task, '导入失败：文件复制不进去（$e）');
-        await _db.upsertCollectTask(task);
+        // SR2-1(a)：失败行的 upsert 也包 try，写不进只返回内存任务。
+        try {
+          await _db.upsertCollectTask(task);
+        } catch (_) {}
         tasks[tasks.length - 1] = task;
         continue;
       }
@@ -284,12 +333,21 @@ class ImportService {
       // （70→100%）；加密 / 损坏 / 超页 / 渲染失败都进 failed
       // 任务并删目录，不建无页图任务。
       if (ext == 'pdf') {
-        final done = await _importPdf(
-          task,
-          targetAbs,
-          dirAbs,
-          onProgress,
-        );
+        // SR2-1：_importPdf 调用点也兜底——其内部失败已由
+        // _failAndClean 转成 failed 任务（SR2-2 保证 _failAndClean
+        // 自身不抛错），这里只接真正意外的异常。
+        CollectTask done;
+        try {
+          done = await _importPdf(
+            task,
+            targetAbs,
+            dirAbs,
+            onProgress,
+          );
+        } catch (e) {
+          done = await _failAndClean(
+              task, dirAbs, '导入失败：这个 PDF 没导进去（$e）');
+        }
         try {
           await _db.upsertCollectTask(done);
         } catch (_) {
@@ -300,49 +358,69 @@ class ImportService {
         continue;
       }
       // EXIF 方向归一化（仅 != 1 时生成副本；镜像方向显式失败）。
+      // SR2-1(b)：分清两种失败——
+      //   (1) “已判定解不开图片”（canDecode 为假 / 镜像方向 2/4/5/7）：
+      //       目录已删，失败后绝不再复活成 needBox；失败行的 upsert
+      //       各自包 try，写不进也只返回内存 failed 任务；
+      //   (2) “读盘 / 写盘失败”（读不到原图、归一化写盘失败）：
+      //       原因不明，保留旧降级（原图已拷进库，修框时按原图走）。
+      Uint8List? bytes;
       try {
-        final bytes = await File(targetAbs).readAsBytes();
-        // SR-P2-61：先校验图片能不能解码。改后缀的非图片文件（如 .txt
-        // 改 .jpg）能通过扩展名检查，解不开时不再静默按原图进 needBox，
-        // 任务直接失败并提示“这张图片打不开”（修框时才暴露太晚了）。
-        if (!await canDecodeImageBytes(bytes)) {
-          try {
-            await Directory(dirAbs).delete(recursive: true);
-          } catch (_) {}
-          task = _failed(task, '这张图片打不开，请确认文件是完好的图片再导入');
-          await _db.upsertCollectTask(task);
-          tasks[tasks.length - 1] = task;
-          continue;
-        }
-        final normalized = await normalizeExifImageBytes(bytes);
-        if (normalized.orientation >= 2 && normalized.orientation <= 7 &&
-            exifOrientationToClockwiseDegrees(normalized.orientation) ==
-                null) {
-          // 镜像方向（2/4/5/7）：暂不支持，不可静默按旋转处理。
-          try {
-            await Directory(dirAbs).delete(recursive: true);
-          } catch (_) {}
-          task = _failed(task,
-              '这张照片是镜像方向（EXIF ${normalized.orientation}），暂不支持，请先转存为正向照片再导入');
-          await _db.upsertCollectTask(task);
-          tasks[tasks.length - 1] = task;
-          continue;
-        }
-        if (normalized.wasNormalized) {
-          final normAbs =
-              AppDatabase.resolveDataPath(normalizedPageRelative(id))!;
-          await File(normAbs).writeAsBytes(normalized.bytes);
-        }
-        onProgress?.call(id, 90);
-        await _updateProgress(task, 90);
-      } catch (e) {
-        // 读不到 / 归一化失败等原因不明的失败：保留旧降级（原图已拷进
-        // 库，修框时按原图走）。SR-P2-61 只把“确实解不开的图片”判
-        // 失败，上面 canDecodeImageBytes 已先行拦截，走到这里的不是
-        // 解码失败，而是读盘 / 写盘等不明确的原因。
-        onProgress?.call(id, 90);
-        await _updateProgress(task, 90);
+        bytes = await File(targetAbs).readAsBytes();
+      } catch (_) {
+        bytes = null;
       }
+      String? decodeError;
+      if (bytes != null) {
+        try {
+          // SR-P2-61：先校验图片能不能解码。改后缀的非图片文件（如 .txt
+          // 改 .jpg）能通过扩展名检查，解不开时不再静默按原图进 needBox，
+          // 任务直接失败并提示“这张图片打不开”（修框时才暴露太晚了）。
+          if (!await canDecodeImageBytes(bytes)) {
+            decodeError = '这张图片打不开，请确认文件是完好的图片再导入';
+          } else {
+            final normalized = await normalizeExifImageBytes(bytes);
+            if (normalized.orientation >= 2 && normalized.orientation <= 7 &&
+                exifOrientationToClockwiseDegrees(normalized.orientation) ==
+                    null) {
+              // 镜像方向（2/4/5/7）：暂不支持，不可静默按旋转处理。
+              decodeError =
+                  '这张照片是镜像方向（EXIF ${normalized.orientation}），暂不支持，请先转存为正向照片再导入';
+            } else if (normalized.wasNormalized) {
+              final normAbs =
+                  AppDatabase.resolveDataPath(normalizedPageRelative(id))!;
+              await File(normAbs).writeAsBytes(normalized.bytes);
+            }
+          }
+        } catch (_) {
+          // 归一化 / 写盘失败：原因不明 → 旧降级（decodeError 保持
+          // null，原图还在）。canDecode 本身不抛错，走到这里的不是
+          // 解码失败，而是 normalize / 写盘失败。
+          decodeError = null;
+        }
+      }
+      if (decodeError != null) {
+        try {
+          await Directory(dirAbs).delete(recursive: true);
+        } catch (_) {}
+        task = _failed(task, decodeError);
+        try {
+          await _db.upsertCollectTask(task);
+        } catch (_) {}
+        tasks[tasks.length - 1] = task;
+        continue;
+      }
+      // 读盘失败（bytes 为 null）或归一化失败：旧降级，按原图进 needBox。
+      // 读不到 / 归一化失败等原因不明的失败：保留旧降级（原图已拷进
+      // 库，修框时按原图走）。SR-P2-61 只把“确实解不开的图片”判
+      // 失败，上面 canDecodeImageBytes 已先行拦截，走到这里的不是
+      // 解码失败，而是读盘 / 写盘等不明确的原因。
+      try {
+        onProgress?.call(id, 90);
+      } catch (_) {}
+      try {
+        await _updateProgress(task, 90);
+      } catch (_) {}
       task = CollectTask(
         id: task.id,
         name: task.name,
@@ -356,9 +434,47 @@ class ImportService {
         sourcePath: originalRelative(id, ext),
       );
       // 状态变化（importing → needBox）才 bump（见 §4.3 节流）。
-      await _db.upsertCollectTask(task);
-      onProgress?.call(id, 100);
+      // SR2-1：图片尾部 upsert 与 PDF 分支同款包进 try/catch，
+      // 失败走 _failAndClean（失败任务 + 清目录）；其自身写库再
+      // 失败时只返回内存里的 failed 任务，绝不逃出 enqueue。
+      try {
+        await _db.upsertCollectTask(task);
+      } catch (e) {
+        task = await _failAndClean(
+            task, dirAbs, '导入失败：这张图片导进来了，但写不进任务列表（$e）');
+        tasks[tasks.length - 1] = task;
+        continue;
+      }
+      try {
+        onProgress?.call(id, 100);
+      } catch (_) {}
       tasks[tasks.length - 1] = task;
+      } catch (e) {
+        // 兜底（SR2-1/SR2-2）：单个文件任何一步抛错都只影响本任务，
+        // 转成 failed 行（能写库就写，写不进也只返回内存里的 failed
+        // 任务），继续下一个文件，绝不逃出 enqueue、中断整批。
+        // 若 task 已是带具体原因的 failed 任务（如某失败分支的
+        // upsert 刚抛错），保留原原因，不用笼统文案覆盖。
+        final failed = task.status == CollectStatus.failed
+            ? task
+            : _failed(task, '导入失败：这个文件没导进去（$e）');
+        CollectTask result;
+        if (cleanupDir != null) {
+          result = await _failAndClean(
+              failed, cleanupDir, failed.error ?? '导入失败');
+        } else {
+          try {
+            await _db.upsertCollectTask(failed);
+          } catch (_) {}
+          result = failed;
+        }
+        if (taskAdded) {
+          tasks[tasks.length - 1] = result;
+        } else {
+          tasks.add(result);
+        }
+        continue;
+      }
     }
     return tasks;
   }
@@ -445,21 +561,23 @@ class ImportService {
     // SR-P1-4：这一步写库失败也不能逃出 enqueue——先走
     // _failAndClean（失败任务 + 清目录）；其自身写库再失败时
     // 返回内存里的 failed 任务，绝不抛到 enqueue 外卡住整批。
+    // SR2-2：_failAndClean 内部已有兜底，不再抛错，这里不再套 try。
     try {
       await _db.upsertCollectTask(done);
     } catch (e) {
-      try {
-        return await _failAndClean(
-            done, dirAbs, '导入失败：这个 PDF 渲完了，但写不进任务列表（$e）');
-      } catch (_) {
-        return _failed(done, '导入失败：这个 PDF 渲完了，但写不进任务列表（$e）');
-      }
+      return _failAndClean(
+          done, dirAbs, '导入失败：这个 PDF 渲完了，但写不进任务列表（$e）');
     }
-    onProgress?.call(task.id, 100);
+    try {
+      onProgress?.call(task.id, 100);
+    } catch (_) {}
     return done;
   }
 
   /// 失败任务 + 删任务目录（不留半截文件），返回已写库的失败任务。
+  /// SR2-2：自身的写库也包进 try——9 处调用点只有尾部 1 处有保护，
+  /// 在这里包一处，九处受益；写不进时只返回内存里的 failed 任务，
+  /// 本函数绝不抛错。
   Future<CollectTask> _failAndClean(
     CollectTask task,
     String dirAbs,
@@ -469,7 +587,9 @@ class ImportService {
       await Directory(dirAbs).delete(recursive: true);
     } catch (_) {}
     final failed = _failed(task, error);
-    await _db.upsertCollectTask(failed);
+    try {
+      await _db.upsertCollectTask(failed);
+    } catch (_) {}
     return failed;
   }
 

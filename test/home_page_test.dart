@@ -102,9 +102,15 @@ class FakeRepo extends QuestionRepository {
   Future<List<CauseRecord>> causeRecords() async => records;
 }
 
+/// SR2-61：repo 参数放宽为 QuestionRepository（FakeRepo 是其子类，
+/// 现有用例不受影响），真实仓储用例可直接传 QuestionRepository
+/// 泵首页，钉住“仓储 → 首页”接线。
+/// `settle`：默认 pumpAndSettle；真实仓储用例传 false——首页 `_load`
+/// 的 Future.wait 在 FakeAsync 下不完成、加载圈一直转，
+/// pumpAndSettle 会超时，调用方改用真实时间驱动（见 SR2-61 用例）。
 Future<void> pumpHome(
   WidgetTester tester, {
-  FakeRepo? repo,
+  QuestionRepository? repo,
   AppSettings settings = const AppSettings(),
   Brightness brightness = Brightness.light,
   double scale = 1.0,
@@ -114,6 +120,7 @@ Future<void> pumpHome(
   void Function()? onGoOrganize,
   void Function(String)? onGoWrongbook,
   void Function()? onGoReview,
+  bool settle = true,
 }) async {
   tester.view.physicalSize = const Size(1280, 720);
   tester.view.devicePixelRatio = 1.0;
@@ -147,7 +154,7 @@ Future<void> pumpHome(
       ),
     ),
   );
-  await tester.pumpAndSettle();
+  if (settle) await tester.pumpAndSettle();
 }
 
 void main() {

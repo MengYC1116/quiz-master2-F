@@ -308,6 +308,13 @@ class _ReviewPageState extends State<ReviewPage> {
       _subjects = subjectList;
       _groups = sortedPending;
       _curedGroups = sortedCured;
+      // SR2-34：错因筛选的当前值可能在详情页删题 / 归档后失效——选项
+      // 来自现存分组的 _allCauses；唯一带该错因的题没了之后，旧值
+      // 不在选项里，直接喂给 DropdownButton 会断言。无效时回落到
+      // “全部”；下拉处另有就地 effectiveValue 兜底。
+      if (_causeFilter != '全部' && !_allCauses.contains(_causeFilter)) {
+        _causeFilter = '全部';
+      }
       _notJoined = notJoined;
       _pendingByQ = pendingByQ;
       _resume = resume;
@@ -500,8 +507,14 @@ class _ReviewPageState extends State<ReviewPage> {
             break;
           }
         }
+        // SR2-33：按组进会话只治该组一个错因，范围文案按该组写
+        //（与 _scopeLabelForBlocks 的单科单错因分支同款），不再写
+        // 筛选口径（“全部待解决错因”/“数学这一科”都夸大了范围）。
+        scopeLabel =
+            '${_subjectOf(fromGroup.subjectId).name} · ${fromGroup.cause}';
+      } else {
+        scopeLabel = _scopeLabelForFilters();
       }
-      scopeLabel = _scopeLabelForFilters();
     }
     if (blocks.isEmpty) return;
     setState(() {
@@ -1034,7 +1047,12 @@ class _ReviewPageState extends State<ReviewPage> {
           SizedBox(
             width: 160 * scale,
             child: _styledDropdown<String>(
-              value: _causeFilter,
+              // SR2-34：就地 effectiveValue——与 _load 里的复位双防线；
+              // _causeFilter 失效时显示“全部”，不在 build 里写回状态。
+              value: _causeFilter == '全部' ||
+                      _allCauses.contains(_causeFilter)
+                  ? _causeFilter
+                  : '全部',
               items: [
                 const DropdownMenuItem(value: '全部', child: Text('全部')),
                 for (final c in _allCauses)

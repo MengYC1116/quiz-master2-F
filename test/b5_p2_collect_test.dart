@@ -160,7 +160,9 @@ Future<void> _openEditorDialog(
   await tester.pumpAndSettle();
   await tester.tap(find.text('打开修框'));
   await tester.pumpAndSettle();
-  expect(find.text('确认修框，去整理'), findsOneWidget);
+  // 确认按钮文案随 1 层框总数变：1 个是“确认修框，去整理”，
+  // 多个是“确认修框，拆成 N 个待整理任务”——只断言按钮在。
+  expect(find.textContaining('确认修框'), findsOneWidget);
 }
 
 /// 双击题级框进内框模式（b5_p1_256 的同款做法）。
@@ -174,9 +176,10 @@ Future<void> _doubleTapBox(WidgetTester tester, Finder box) async {
 }
 
 Future<void> _tapConfirm(WidgetTester tester) async {
-  await tester.tap(find.text('确认修框，去整理'));
+  // 文案随 1 层框总数变（1 个“去整理”，多个“拆成 N 个”），只按前缀点。
+  await tester.tap(find.textContaining('确认修框'));
   await tester.pumpAndSettle();
-  expect(find.text('确认修框，去整理'), findsNothing);
+  expect(find.textContaining('确认修框'), findsNothing);
 }
 
 /// 鼠标左键单击（按下即抬起，不拖动）。
@@ -259,29 +262,11 @@ void main() {
   });
 
   group('SR-P2-23 / SR-P2-24 realRegionRects：按父框换算 + 确定性优先级', () {
-    test('SR-P2-23：同一题两个 1 层框，挂在第 2 个框下的内框按第 2 个框换算', () {
-      final rects = realRegionRects([
-        _box(id: 'b1', x: 0.0, y: 0.0, w: 0.5, h: 0.5),
-        _box(id: 'b2', x: 0.5, y: 0.5, w: 0.5, h: 0.5),
-        // stem 在第 2 个框的左上 1/4 处；按第 1 个框换算会是 (1.0, 1.0)。
-        _box(
-          id: 's2',
-          layer: 2,
-          type: 'stem',
-          x: 0.5,
-          y: 0.5,
-          w: 0.25,
-          h: 0.25,
-          parentBoxId: 'b2',
-        ),
-      ]);
-      expect(rects['stem'], isNotNull);
-      expect(rects['stem']!.left, closeTo(0.0, 1e-9));
-      expect(rects['stem']!.top, closeTo(0.0, 1e-9));
-      expect(rects['stem']!.width, closeTo(0.5, 1e-9));
-      expect(rects['stem']!.height, closeTo(0.5, 1e-9));
-    });
-
+    // SR-P2-23 的旧用例“挂在第 2 个框下的内框按第 2 个框换算”已被
+    // SR2-24 推翻：切片只按首个 1 层框裁出，非首个父框下的内框不参选
+    // （否则画在首个框的切片上位置是错的）。覆盖在
+    // test/b5_p2_services_test.dart 的 SR2-24 组（胜者为首个父框下
+    // 的内框；只有非首个父框下的内框时区域不出结果）。
     test('SR-P2-23：parentBoxId 为空的老数据行回退到第一个 1 层框', () {
       final rects = realRegionRects([
         _box(id: 'b1', x: 0.1, y: 0.1, w: 0.8, h: 0.8),
@@ -471,6 +456,57 @@ void main() {
       expect(yolo.calls, [1]);
       expect(find.text('确认修框，去整理'), findsOneWidget);
     });
+
+    testWidgets('SR2-21：手画框在别页时，当前页纯 YOLO 不弹确认', (tester) async {
+      // 第 2 页的手画题内框在跨页的 _inners 里；旧代码查全部页，
+      // 在第 1 页点“恢复自动框”也会误弹确认（确认后却只替换当前页）。
+      final yolo = _CountingYolo(
+        boxes: [
+          _box(id: 'yolo-2', x: 0.1, y: 0.1, w: 0.8, h: 0.3, origin: 'yolo'),
+        ],
+      );
+      await _openEditorDialog(
+        tester,
+        page: 1,
+        pageCount: 2,
+        mode: BoxEditorMode.draft,
+        initialBoxesByPage: {
+          1: [
+            _box(
+              id: 'yolo-1',
+              x: 0.05,
+              y: 0.05,
+              w: 0.9,
+              h: 0.4,
+              origin: 'yolo',
+            ),
+          ],
+          2: [_box(id: 'b2', page: 2, x: 0.1, y: 0.1, w: 0.5, h: 0.3)],
+        },
+        initialInners: {
+          'b2': [
+            _box(
+              id: 'b2-stem',
+              layer: 2,
+              type: 'stem',
+              page: 2,
+              x: 0.2,
+              y: 0.2,
+              w: 0.3,
+              h: 0.1,
+              parentBoxId: 'b2',
+            ),
+          ],
+        },
+        yoloService: yolo,
+      );
+      await tester.tap(find.text('恢复自动框'));
+      await tester.pumpAndSettle();
+      expect(find.text('用自动框替换当前页的手动框？'), findsNothing);
+      expect(yolo.calls, [1]);
+      // 两页共 2 个 1 层框，确认按钮是“拆成 2 个待整理任务”。
+      expect(find.text('确认修框，拆成 2 个待整理任务'), findsOneWidget);
+    });
   });
 
   group('SR-P2-20 重框模式“恢复自动框”只换 1 层框坐标', () {
@@ -530,6 +566,97 @@ void main() {
       expect(stem.x + stem.w, lessThanOrEqualTo(layer1.x + layer1.w));
       expect(stem.y + stem.h, lessThanOrEqualTo(layer1.y + layer1.h));
     });
+    testWidgets('SR2-20：两道 1 层框各挂内框，恢复后两道框各就其位、内框各自跟随', (tester) async {
+      // reworkQuestionId 是题 id（'q1'），永不等于框 id（'b1'/'b2'）：
+      // 旧代码只认第一道框，第二道框原地不动、内框也不跟随。
+      final yolo = _CountingYolo(
+        boxes: [
+          _box(id: 'yolo-1', x: 0.1, y: 0.1, w: 0.4, h: 0.3, origin: 'yolo'),
+          _box(id: 'yolo-2', x: 0.6, y: 0.1, w: 0.4, h: 0.3, origin: 'yolo'),
+        ],
+      );
+      await _openEditorDialog(
+        tester,
+        page: 2,
+        mode: BoxEditorMode.rework,
+        initialBoxesByPage: {
+          2: [
+            _box(
+              id: 'b1',
+              page: 2,
+              x: 0.05,
+              y: 0.05,
+              w: 0.4,
+              h: 0.3,
+              questionId: 'q1',
+            ),
+            _box(
+              id: 'b2',
+              page: 2,
+              x: 0.55,
+              y: 0.05,
+              w: 0.4,
+              h: 0.3,
+              questionId: 'q1',
+            ),
+          ],
+        },
+        initialInners: {
+          'b1': [
+            _box(
+              id: 's1',
+              layer: 2,
+              type: 'stem',
+              page: 2,
+              x: 0.1,
+              y: 0.1,
+              w: 0.2,
+              h: 0.1,
+              parentBoxId: 'b1',
+            ),
+          ],
+          'b2': [
+            _box(
+              id: 's2',
+              layer: 2,
+              type: 'stem',
+              page: 2,
+              x: 0.6,
+              y: 0.1,
+              w: 0.2,
+              h: 0.1,
+              parentBoxId: 'b2',
+            ),
+          ],
+        },
+        taskId: 'rework-q1',
+        reworkQuestionId: 'q1',
+        yoloService: yolo,
+      );
+      await tester.tap(find.text('恢复自动框'));
+      await tester.pumpAndSettle();
+      // 两道框都找到了对应的检测框，不弹“没找到对应的题”。
+      expect(find.textContaining('没找到对应的题'), findsNothing);
+      await _tapConfirm(tester);
+      final result = _capturedResult!;
+      final layer1 = result.boxesByPage[2]!.where((b) => b.layer == 1).toList();
+      expect(layer1, hasLength(2));
+      // 两道框各就其位（不是都挪到第一道检测框的位置上）。
+      final first = layer1.firstWhere((b) => b.id == 'b1');
+      expect(first.x, closeTo(0.1, 1e-9));
+      expect(first.y, closeTo(0.1, 1e-9));
+      final second = layer1.firstWhere((b) => b.id == 'b2');
+      expect(second.x, closeTo(0.6, 1e-9));
+      expect(second.y, closeTo(0.1, 1e-9));
+      // 内框各自跟随自己的父框（相对位置不变：旧框内 (0.1, 0.1) → 新框内
+      // (0.15, 0.15)；(0.6, 0.1) → (0.65, 0.15)），不串到另一道框下。
+      final stem1 = result.inners['2:b1']!.firstWhere((b) => b.id == 's1');
+      expect(stem1.x, closeTo(0.15, 1e-9));
+      expect(stem1.y, closeTo(0.15, 1e-9));
+      final stem2 = result.inners['2:b2']!.firstWhere((b) => b.id == 's2');
+      expect(stem2.x, closeTo(0.65, 1e-9));
+      expect(stem2.y, closeTo(0.15, 1e-9));
+    });
   });
 
   group('SR-P2-21 内框模式下鼠标左键点空白处不退出', () {
@@ -544,10 +671,22 @@ void main() {
       );
       await _doubleTapBox(tester, _editorBoxHandle('题级框 1'));
       expect(find.textContaining('已进入题级框'), findsOneWidget);
-      // 画布中心落在图内空白处（框 y 0.1–0.4，中心 y 是 0.5）。
+      // SR2-51：先点一次框体（框中心落在题干/选项内框上），仍在内框模式；
+      // 再点空白处才退出。只测空白退出会漏掉“点哪都退出”的过度修复。
       final canvasRect = tester.getRect(
         find.byKey(const Key('box-editor-canvas')),
       );
+      final boxCenter = Offset(
+        canvasRect.left + canvasRect.width * 0.35,
+        canvasRect.top + canvasRect.height * 0.25,
+      );
+      await _clickMouseLeft(tester, boxCenter);
+      expect(
+        find.textContaining('已进入题级框'),
+        findsOneWidget,
+        reason: '点框上不应退出内框模式',
+      );
+      // 画布中心落在图内空白处（框 y 0.1–0.4，中心 y 是 0.5）。
       await _clickMouseLeft(tester, canvasRect.center);
       expect(find.textContaining('已进入题级框'), findsNothing);
       expect(find.text('确认修框，去整理'), findsOneWidget);
@@ -797,6 +936,16 @@ void main() {
       expect(saved.errorTypes, containsAll(['概念不清', '其他']));
       expect(saved.customErrorTypes, isEmpty);
     });
+
+    test('SR2-23：allCauses 保序去重，旧数据同名自定义只显示一次', () {
+      final q = _dtq(
+        'q-old',
+        '旧题',
+        errorTypes: const ['计算错误', '其他'],
+        customErrorTypes: const ['其他', '看错单位'],
+      );
+      expect(q.allCauses, ['计算错误', '其他', '看错单位']);
+    });
   });
 
   // ---------- 整理页 SR-P2-27 / SR-P2-29 / SR-P2-35 ----------
@@ -959,6 +1108,8 @@ void main() {
       WidgetTester tester, {
       required bool corruptPage2,
       required bool txnShouldThrow,
+      // SR2-22：为真时第 2 页不给草稿框——确认后第 2 页留在保留任务里。
+      bool leavePage2Unboxed = false,
     }) async {
       addTearDown(() => AppDatabase.testDataDirectory = null);
       AppDatabase.testDataDirectory = _testTmp.path;
@@ -990,22 +1141,38 @@ void main() {
       ]);
       repo.draftBoxes['t-pdf2'] = [
         _box(id: 'b1', page: 1),
-        _box(id: 'b2', page: 2),
+        if (!leavePage2Unboxed) _box(id: 'b2', page: 2),
       ];
       repo.confirmSplitShouldThrow = txnShouldThrow;
       await _pumpCollect(tester, repo: repo);
       await tester.tap(find.text('修框'));
       await tester.pumpAndSettle();
       expect(find.textContaining('修框 ·'), findsOneWidget);
-      // 2 个题级框 → 确认按钮是“拆成 2 个待整理任务”。
+      // 2 个题级框 → 确认按钮是“拆成 2 个待整理任务”；只剩 1 个框时
+      // 是“确认修框，去整理”。未框页确认框出现时点“确认拆题”。
+      final confirmLabel = leavePage2Unboxed
+          ? '确认修框，去整理'
+          : '确认修框，拆成 2 个待整理任务';
       // _confirmSplit 的图片 IO（旋转烘焙 + 裁剪）是真异步、偏慢：
       // 轮询等失败提示条出现，最多 8 秒；不要定死循环次数（太短则
-      // 流程还没跑完、太长则提示条 4 秒过期）。
+      // 流程还没跑完、太长则提示条 4 秒过期）。成功提示条出现也可停。
       await tester.runAsync(() async {
-        await tester.tap(find.text('确认修框，拆成 2 个待整理任务'));
+        await tester.tap(find.text(confirmLabel));
+        // 未框页确认框（仅 leavePage2Unboxed 时出现）：编辑器先退场，
+        // _confirmSplit 再弹框，轮询等它出现再点“确认拆题”。
+        for (var i = 0; i < 20; i++) {
+          await tester.pump();
+          if (find.text('确认拆题').evaluate().isNotEmpty) {
+            await tester.tap(find.text('确认拆题'));
+            break;
+          }
+          if (find.textContaining('拆题失败').evaluate().isNotEmpty) break;
+          if (find.textContaining('已生成').evaluate().isNotEmpty) break;
+        }
         for (var i = 0; i < 40; i++) {
           await tester.pump();
           if (find.textContaining('拆题失败').evaluate().isNotEmpty) break;
+          if (find.textContaining('已生成').evaluate().isNotEmpty) break;
           await Future<void>.delayed(const Duration(milliseconds: 200));
         }
         await tester.pumpAndSettle();
@@ -1099,6 +1266,66 @@ void main() {
           .toSet();
       expect(rnds, hasLength(1));
     });
+
+    testWidgets('SR2-22：保留任务重建带 boxing 状态，删拆分任务行后警告仍在',
+        (tester) async {
+      final repo = await pumpPdf2(
+        tester,
+        corruptPage2: false,
+        txnShouldThrow: false,
+        leavePage2Unboxed: true,
+      );
+      expect(repo.confirmSplitCalled, isTrue);
+      // 保留任务重建时带上 boxing 状态（不是 needBox），且只有 1 道题被拆出。
+      final retained = repo.confirmedRetainedTask!;
+      expect(retained.id, 't-pdf2');
+      expect(retained.status, CollectStatus.boxing);
+      expect(repo.confirmedQuestions, hasLength(1));
+      expect(repo.confirmedSplitTasks, hasLength(1));
+      // 删掉全部同源拆分任务行（模拟用户在待整理行上点删除），重进列表：
+      // _hasSplitSibling 是派生信号、此时已为空，警告只能靠保留任务
+      // 自身的 boxing 状态 + 未框页草稿（本例未框页无草稿）。
+      // 注意：删拆分任务行也带走了第 1 页的覆盖（那页的题随任务删，
+      // 见收集任务删除语义），重进后未框页是 [1, 2]、全页未框，
+      // 文案是“这份文件还有 2 页没有框”而不是“还有 1 页没有框：第 2 页”。
+      // SR2-22 的要点仍成立：警告还在，靠的是保留任务自身的 boxing
+      // 状态，不是派生信号。
+      repo.tasks.removeWhere((t) => t.status == CollectStatus.pendingOrganize);
+      await _pumpCollect(tester, repo: repo);
+      expect(find.text('多页卷.pdf'), findsOneWidget);
+      expect(find.text('这份文件还有 2 页没有框'), findsOneWidget);
+    });
+
+    testWidgets('SR2-62：同一用例内连续确认两次，两次的随机段不同',
+        (tester) async {
+      // 两次确认都在同一用例内跑（各走一次完整确认流程）；SR2-62 的
+      // 同毫秒撞戳由 _lastSplitStamp 重抽兜底，这里断言可观测的性质：
+      // 两次确认的随机段不同、题 id 全集无交集。
+      final repo1 = await pumpPdf2(
+        tester,
+        corruptPage2: false,
+        txnShouldThrow: false,
+      );
+      // 两次确认之间清掉上一次的“已生成”提示条：它是确认流程在
+      // runAsync（真实时区）里弹的，假时间 pump 推不动它的 4 秒定时；
+      // 不清掉，第二次确认的轮询会在陈旧提示条上立刻跳出、确认还没跑完
+      // 就返回，repo2.confirmedQuestions 还是 null。
+      tester
+          .state<ScaffoldMessengerState>(find.byType(ScaffoldMessenger))
+          .clearSnackBars();
+      await tester.pumpAndSettle();
+      final repo2 = await pumpPdf2(
+        tester,
+        corruptPage2: false,
+        txnShouldThrow: false,
+      );
+      final rnd1 = repo1.confirmedQuestions!.first.id.split('-')[2];
+      final rnd2 = repo2.confirmedQuestions!.first.id.split('-')[2];
+      expect(rnd1, isNot(rnd2));
+      final ids1 = repo1.confirmedQuestions!.map((q) => q.id).toSet();
+      final ids2 = repo2.confirmedQuestions!.map((q) => q.id).toSet();
+      expect(ids1.intersection(ids2), isEmpty);
+    });
   });
 
   group('SR-P2-36 组织/详情新建文件夹整科同名预检', () {
@@ -1176,6 +1403,8 @@ class _CollectFakeRepo extends QuestionRepository {
   bool confirmSplitShouldThrow = false;
   List<Question>? confirmedQuestions;
   List<CollectTask>? confirmedSplitTasks;
+  /// SR2-22：记录保留任务（断言其重建状态用）。
+  CollectTask? confirmedRetainedTask;
 
   @override
   Future<List<CollectTask>> collectTasks() async => List.of(tasks);
@@ -1213,7 +1442,19 @@ class _CollectFakeRepo extends QuestionRepository {
     confirmSplitCalled = true;
     confirmedQuestions = List.of(questions);
     confirmedSplitTasks = List.of(splitTasks);
+    confirmedRetainedTask = retainedTask;
     if (confirmSplitShouldThrow) throw StateError('事务失败（测试桩）');
+    // 模拟真实 confirmSplit 的任务替换与草稿清理：原任务删掉，保留
+    // 任务（若有）与拆分任务入表；已确认页的草稿框随原任务删，只留
+    // 保留任务未框页的草稿——SR2-22 的警告判断要靠它之外的信号。
+    tasks.removeWhere((t) => t.id == originalTask.id);
+    if (retainedTask != null) tasks.add(retainedTask);
+    tasks.addAll(splitTasks);
+    draftBoxes[originalTask.id] = [
+      for (final e in retainedBoxesByPage.entries) ...e.value,
+      for (final e in retainedInners.entries) ...e.value,
+      for (final e in retainedStandaloneInner.entries) ...e.value,
+    ];
   }
 
   @override
@@ -1235,7 +1476,11 @@ Future<void> _pumpCollect(WidgetTester tester, {required _CollectFakeRepo repo})
   await tester.pumpWidget(
     MaterialApp(
       theme: AppTheme.light(),
-      home: Scaffold(body: CollectPage(repo: repo, onOpenOrganize: () {})),
+      // 每次 pump 都挂新 State：同一用例内两次 pump 若复用旧 State，
+      // 旧 State 的任务列表还停在上一次的 repo 上（CollectPage 只在
+      // initState 读库，没有 didUpdateWidget）；SR2-62 同一用例内
+      // 两次确认、各用一个新 FakeRepo，必须每次都从传入的 repo 重读。
+      home: Scaffold(body: CollectPage(key: UniqueKey(), repo: repo, onOpenOrganize: () {})),
     ),
   );
   await tester.pumpAndSettle();

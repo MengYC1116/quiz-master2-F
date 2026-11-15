@@ -180,7 +180,7 @@ void main() {
   });
 
   group('SR-P2-2 清演示数据走删题事务', () {
-    test('演示题的框清掉、任务指向置空；recent_tasks 与复习断点不动', () async {
+    test('演示题的框清掉、任务指向置空；断点队列去掉演示条目、其余不动', () async {
       final db = await openTestDb();
       addTearDown(() async => db.close());
       await insertQuestion(db, 'demo1', isDemo: 1);
@@ -297,6 +297,33 @@ void main() {
       );
       expect(await db.query('questions'), hasLength(1));
     });
+
+    test('空串主键 / 必填列空串拒绝恢复（SR2-16）', () async {
+      final db = await openTestDb();
+      addTearDown(() async => db.close());
+      // 学科 id ''：'' 是合法 String，旧校验只查 is! String 会放过。
+      final emptyId = await exportedJson(db);
+      (emptyId['subjects'] as List).first['id'] = '';
+      await expectLater(
+        () => AppDatabase.importBackupJsonInto(db, emptyId),
+        throwsA(isA<BackupRestoreException>()),
+      );
+      // 必填列 name ''：同样拒绝。
+      final emptyName = await exportedJson(db);
+      (emptyName['subjects'] as List).first['name'] = '';
+      await expectLater(
+        () => AppDatabase.importBackupJsonInto(db, emptyName),
+        throwsA(isA<BackupRestoreException>()),
+      );
+      // settings key ''：同样拒绝。
+      final emptyKey = await exportedJson(db);
+      (emptyKey['settings'] as List).add({'key': '', 'value': 'x'});
+      await expectLater(
+        () => AppDatabase.importBackupJsonInto(db, emptyKey),
+        throwsA(isA<BackupRestoreException>()),
+      );
+      expect(await db.query('questions'), hasLength(1));
+    });
   });
 
   group('SR-P2-5 备份恢复 2GB 上限', () {
@@ -340,6 +367,73 @@ void main() {
       await raf.close();
       final zip = await validZip(db);
       await AppDatabase.importBackupZipInto(db, zip, dataDir: tmpDir.path);
+      expect(await db.query('questions'), hasLength(1));
+    });
+
+    test('恰好 2GB 放行：两条文件条目累加 incoming，== 上限不拒（SR2-58/SR2-65）', () async {
+      final db = await openTestDb();
+      addTearDown(() async => db.close());
+      await exportedJson(db);
+      final json = await AppDatabase.exportBackupJsonFrom(db);
+      // 现有占用 2GB − 200 字节（稀疏文件，几乎不占真实磁盘）。
+      final big = File(p.join(tmpDir.path, 'imports', 'big.bin'));
+      await big.parent.create(recursive: true);
+      final raf = await big.open(mode: FileMode.write);
+      await raf.truncate(2 * 1024 * 1024 * 1024 - 200);
+      await raf.close();
+      // 两条文件条目各 100 字节：incoming 累加为 200，峰值恰好 2GB。
+      final zip = buildZip([
+        ZipEntryData('backup.json', utf8.encode(json)),
+        ZipEntryData('slices/q1.png', List.filled(100, 1)),
+        ZipEntryData('slices/q2.png', List.filled(100, 2)),
+      ]);
+      await AppDatabase.importBackupZipInto(db, zip, dataDir: tmpDir.path);
+      expect(await db.query('questions'), hasLength(1));
+      expect(
+        await File(p.join(tmpDir.path, 'slices', 'q1.png')).exists(),
+        isTrue,
+      );
+      expect(
+        await File(p.join(tmpDir.path, 'slices', 'q2.png')).exists(),
+        isTrue,
+      );
+    });
+
+    test('峰值超 2GB 拒绝：将被覆盖的文件不抵扣峰值（SR2-19/SR2-65）', () async {
+      final db = await openTestDb();
+      addTearDown(() async => db.close());
+      await exportedJson(db);
+      final json = await AppDatabase.exportBackupJsonFrom(db);
+      // 现有占用 2GB − 100 字节：其中 slices/q1.png 占 500 字节，
+      // 将被备份里 200 字节的新 q1.png 覆盖。
+      final big = File(p.join(tmpDir.path, 'imports', 'big.bin'));
+      await big.parent.create(recursive: true);
+      final raf = await big.open(mode: FileMode.write);
+      await raf.truncate(2 * 1024 * 1024 * 1024 - 600);
+      await raf.close();
+      final old = File(p.join(tmpDir.path, 'slices', 'q1.png'));
+      await old.parent.create(recursive: true);
+      final rafOld = await old.open(mode: FileMode.write);
+      await rafOld.truncate(500);
+      await rafOld.close();
+      // 峰值 = (2GB − 100) + 200 = 2GB + 100，超限拒绝；
+      // 旧口径恢复后占用 = (2GB − 100) − 500 + 200 < 2GB，本会放行。
+      final zip = buildZip([
+        ZipEntryData('backup.json', utf8.encode(json)),
+        ZipEntryData('slices/q1.png', List.filled(200, 9)),
+      ]);
+      await expectLater(
+        () => AppDatabase.importBackupZipInto(db, zip, dataDir: tmpDir.path),
+        throwsA(
+          isA<BackupRestoreException>().having(
+            (e) => e.message,
+            'message',
+            contains('2GB'),
+          ),
+        ),
+      );
+      // 原文件原样不动（500 字节，未被 200 字节的新文件覆盖）。
+      expect(await old.length(), 500);
       expect(await db.query('questions'), hasLength(1));
     });
   });
@@ -521,6 +615,169 @@ void main() {
     });
   });
 
+  group('SR2-14 全行 REPLACE 快照覆盖库内新值', () {
+    test('旧快照 setReviewJoinedInto 不把 review_count 打回旧值', () async {
+      final db = await openTestDb();
+      addTearDown(() async => db.close());
+      await insertQuestion(db, 'q1', isOrganized: 1, reviewCount: 5);
+      // 自查一次：库内 review_count 5 → 6（SQL +1）。
+      await AppDatabase.recordSelfCheckInto(
+        db,
+        updated: CauseRecord(
+          questionId: 'q1',
+          cause: '计算错误',
+          subjectId: 'math',
+          joinedAt: DateTime.fromMillisecondsSinceEpoch(1000),
+        ),
+        questionId: 'q1',
+        result: 'solved',
+      );
+      expect(
+        (await db.query(
+          'questions',
+          where: 'id = ?',
+          whereArgs: ['q1'],
+        )).single['review_count'],
+        6,
+      );
+      // 持 reviewCount: 5 的旧快照调 setReviewJoinedInto。
+      final stale = Question(
+        id: 'q1',
+        title: 't',
+        subjectId: 'math',
+        errorTypes: ['计算错误'],
+        reviewJoined: false,
+        isOrganized: true,
+        reviewCount: 5,
+        createdAt: DateTime.fromMillisecondsSinceEpoch(1000),
+      );
+      expect(await AppDatabase.setReviewJoinedInto(db, stale, true), isTrue);
+      final q = (await db.query(
+        'questions',
+        where: 'id = ?',
+        whereArgs: ['q1'],
+      )).single;
+      expect(q['review_joined'], 1);
+      expect(q['review_count'], 6);
+    });
+
+    test('旧快照 upsertQuestionInto 不把 review_count 打回旧值（收藏/归档/保存同路）', () async {
+      final db = await openTestDb();
+      addTearDown(() async => db.close());
+      await insertQuestion(db, 'q1', isOrganized: 1, reviewCount: 6);
+      final stale = Question(
+        id: 'q1',
+        title: 't',
+        subjectId: 'math',
+        isOrganized: true,
+        isFavorite: true,
+        reviewCount: 5,
+        createdAt: DateTime.fromMillisecondsSinceEpoch(1000),
+      );
+      await AppDatabase.upsertQuestionInto(db, stale);
+      final q = (await db.query(
+        'questions',
+        where: 'id = ?',
+        whereArgs: ['q1'],
+      )).single;
+      expect(q['is_favorite'], 1);
+      expect(q['review_count'], 6);
+    });
+
+    test('旧快照 upsertCauseRecord 只改 remedy_history，不覆盖自查改掉的状态/计数/复查日', () async {
+      final db = await openTestDb();
+      AppDatabase.useDatabaseForTest(db);
+      addTearDown(() async => db.close());
+      final recheck = DateTime.now().add(const Duration(days: 7));
+      await insertCauseRecord(
+        db,
+        'q1',
+        '计算错误',
+        status: 'solved',
+        solvedCount: 2,
+        recheckDate: recheck.millisecondsSinceEpoch,
+      );
+      final stale = CauseRecord(
+        questionId: 'q1',
+        cause: '计算错误',
+        subjectId: 'math',
+        status: CauseStatus.pending,
+        solvedCount: 0,
+        remedyHistory: ['2026-11-15：先列错因再算'],
+        joinedAt: DateTime.fromMillisecondsSinceEpoch(1000),
+      );
+      await AppDatabase.instance.upsertCauseRecord(stale);
+      final row = (await db.query('cause_records')).single;
+      expect(row['status'], 'solved');
+      expect(row['solved_count'], 2);
+      expect(row['recheck_date'], recheck.millisecondsSinceEpoch);
+      expect(
+        AppDatabase.decodeRemedyList(row['remedy_history']),
+        ['2026-11-15：先列错因再算'],
+      );
+    });
+  });
+
+  group('SR2-27 boxesForPageImageFrom 按页与 id 排序', () {
+    test('同页多框按 page ASC, id ASC 返回，与插入顺序无关', () async {
+      final db = await openTestDb();
+      addTearDown(() async => db.close());
+      const pageImage = 'imports/t1/original.jpg';
+      // 四题同页，题行本身也倒序插入，钉住题 id 列表的顺序。
+      // 注意：question_boxes 对 layer=1 框有“每题一框”的部分唯一索引，
+      // 四个框必须挂四个不同的题，不能像草稿那样两框共用一题。
+      await insertQuestion(db, 'q4', isOrganized: 1);
+      await insertQuestion(db, 'q3', isOrganized: 1);
+      await insertQuestion(db, 'q2', isOrganized: 1);
+      await insertQuestion(db, 'q1', isOrganized: 1);
+      for (final id in ['q1', 'q2', 'q3', 'q4']) {
+        await db.update(
+          'questions',
+          {'page_image_path': pageImage},
+          where: 'id = ?',
+          whereArgs: [id],
+        );
+      }
+      // 框故意按非排序顺序插入：无 ORDER BY 时行序通常是 rowid 序
+      // （即插入序），与 page/id 序不同，旧实现会在这里返回乱序。
+      for (final b in [
+        box(id: 'b-p2-b', page: 2, questionId: 'q4'),
+        box(id: 'b-p1-b', page: 1, questionId: 'q2'),
+        box(id: 'b-p2-a', page: 2, questionId: 'q3'),
+        box(id: 'b-p1-a', page: 1, questionId: 'q1'),
+      ]) {
+        await db.insert('question_boxes', _boxRow(b));
+      }
+      final all = await AppDatabase.boxesForPageImageFrom(db, pageImage);
+      expect(
+        all.map((b) => b.id).toList(),
+        ['b-p1-a', 'b-p1-b', 'b-p2-a', 'b-p2-b'],
+      );
+      // 不在该页的题的框不混进来；无题的页图返回空。
+      await insertQuestion(db, 'q5', isOrganized: 1);
+      await db.update(
+        'questions',
+        {'page_image_path': 'imports/t1/other.jpg'},
+        where: 'id = ?',
+        whereArgs: ['q5'],
+      );
+      await db.insert(
+        'question_boxes',
+        _boxRow(box(id: 'b-other', questionId: 'q5')),
+      );
+      expect(
+        (await AppDatabase.boxesForPageImageFrom(db, pageImage))
+            .map((b) => b.id)
+            .toList(),
+        ['b-p1-a', 'b-p1-b', 'b-p2-a', 'b-p2-b'],
+      );
+      expect(
+        await AppDatabase.boxesForPageImageFrom(db, 'imports/nope.jpg'),
+        isEmpty,
+      );
+    });
+  });
+
   group('SR-P2-9 saveSettings 入事务', () {
     test('中途失败：已写的键一起回滚，不留新旧混杂', () async {
       final db = await openTestDb();
@@ -651,6 +908,53 @@ void main() {
         ),
       );
       expect(await db.query('questions'), isEmpty);
+    });
+
+    test('同一题内重复 id 的框：只保留第一个，不静默覆盖（SR2-18/SR2-70）', () async {
+      final db = await openTestDb();
+      addTearDown(() async => db.close());
+      final orig = await origTask(db);
+      await AppDatabase.confirmSplitInto(
+        db,
+        originalTask: orig,
+        questions: [
+          Question(
+            id: 'import-1',
+            title: '新题',
+            subjectId: 'math',
+            createdAt: DateTime.fromMillisecondsSinceEpoch(1000),
+          ),
+        ],
+        splitTasks: [
+          CollectTask(
+            id: 'task-split-1',
+            name: 's',
+            fileName: 'orig.jpg',
+            subjectId: 'math',
+          ),
+        ],
+        boxesByQuestionId: {
+          'import-1': [
+            box(id: 'b1'),
+            // 同 id、不同坐标的重复框：旧写法 REPLACE 会让它静默
+            // 覆盖第一个（x 变 0.5）；去重后只保留第一个。
+            QuestionBox(
+              id: 'b1',
+              layer: 1,
+              type: 'question',
+              x: 0.5,
+              y: 0.5,
+              w: 0.4,
+              h: 0.2,
+              page: 1,
+            ),
+          ],
+        },
+      );
+      final boxes = await AppDatabase.boxesForQuestionFrom(db, 'import-1');
+      expect(boxes, hasLength(1));
+      expect(boxes.single.id, 'b1');
+      expect(boxes.single.x, 0.1);
     });
   });
 
@@ -824,6 +1128,49 @@ void main() {
       await AppDatabase.deleteCollectTaskFrom(db, 'orig');
       expect(await dir.exists(), isFalse);
     });
+
+    test('含 _ 的任务 id：LIKE 转义后不误匹配相邻目录（SR2-68）', () async {
+      final db = await openTestDb();
+      addTearDown(() async => db.close());
+      // or_ig 与 orXig：不转义时 'imports/or_ig/%' 的 _ 会通配 X，
+      // 删 or_ig 时误以为 orXig 的引用还在，目录被错误保留。
+      final dir = Directory(p.join(tmpDir.path, 'imports', 'or_ig'));
+      await dir.create(recursive: true);
+      await File(p.join(dir.path, 'original.pdf')).writeAsString('pdf');
+      final other = Directory(p.join(tmpDir.path, 'imports', 'orXig'));
+      await other.create(recursive: true);
+      await File(p.join(other.path, 'original.pdf')).writeAsString('pdf');
+      await insertTask(
+        db,
+        'or_ig',
+        sourcePath: 'imports/or_ig/original.pdf',
+      );
+      await insertTask(
+        db,
+        'orXig',
+        sourcePath: 'imports/orXig/original.pdf',
+      );
+      await AppDatabase.deleteCollectTaskFrom(db, 'or_ig');
+      expect(await dir.exists(), isFalse);
+      expect(await other.exists(), isTrue);
+    });
+
+    test('含 % 的任务 id：安全字符校验不通过，目录保留、不误删（SR2-68）', () async {
+      final db = await openTestDb();
+      addTearDown(() async => db.close());
+      final dir = Directory(p.join(tmpDir.path, 'imports', 'or%ig'));
+      await dir.create(recursive: true);
+      await File(p.join(dir.path, 'original.pdf')).writeAsString('pdf');
+      await insertTask(
+        db,
+        'or%ig',
+        sourcePath: 'imports/or%ig/original.pdf',
+      );
+      await AppDatabase.deleteCollectTaskFrom(db, 'or%ig');
+      // '%' 不在 _safeTaskIdPattern 里：_deleteTaskDirIfUnreferenced
+      // 直接返回，目录保留（LIKE 里的 % 通配符到不了查询）。
+      expect(await dir.exists(), isTrue);
+    });
   });
 
   group('SR-P2-16 自查按库内值重算', () {
@@ -892,6 +1239,103 @@ void main() {
       expect(
         written.recheckDate!.isAfter(DateTime.now()),
         isTrue,
+      );
+    });
+
+    test('unsure 不写库：无行时返回传入值，有行时返回库内值', () async {
+      final db = await openTestDb();
+      addTearDown(() async => db.close());
+      await insertQuestion(db, 'q1', reviewCount: 0);
+      // 无行：返回传入值，不写库（无记录、无历史、次数不动）。
+      final passed = snapshot().copyWith(
+        status: CauseStatus.inProgress,
+        solvedCount: 1,
+      );
+      final noRow = await AppDatabase.recordSelfCheckInto(
+        db,
+        updated: passed,
+        questionId: 'q1',
+        result: 'unsure',
+      );
+      expect(noRow.solvedCount, 1);
+      expect(await db.query('cause_records'), isEmpty);
+      expect(await db.query('review_history'), isEmpty);
+      expect(
+        (await db.query('questions')).single['review_count'],
+        0,
+      );
+      // 有行：返回库内值，库内行原样不动。
+      await insertCauseRecord(
+        db,
+        'q1',
+        '计算错误',
+        status: 'inProgress',
+        solvedCount: 1,
+      );
+      final withRow = await AppDatabase.recordSelfCheckInto(
+        db,
+        updated: snapshot(),
+        questionId: 'q1',
+        result: 'unsure',
+      );
+      expect(withRow.solvedCount, 1);
+      expect(withRow.status, CauseStatus.inProgress);
+      final row = (await db.query('cause_records')).single;
+      expect(row['solved_count'], 1);
+      expect(row['status'], 'inProgress');
+      expect(await db.query('review_history'), isEmpty);
+    });
+
+    test('未解决：solvedCount 清 0，状态回解决中、复查日清掉', () async {
+      final db = await openTestDb();
+      addTearDown(() async => db.close());
+      await insertQuestion(db, 'q1', reviewCount: 0);
+      final recheck = DateTime.now().add(const Duration(days: 7));
+      await insertCauseRecord(
+        db,
+        'q1',
+        '计算错误',
+        status: 'solved',
+        solvedCount: 2,
+        recheckDate: recheck.millisecondsSinceEpoch,
+      );
+      final written = await AppDatabase.recordSelfCheckInto(
+        db,
+        updated: snapshot(),
+        questionId: 'q1',
+        result: 'unsolved',
+      );
+      expect(written.solvedCount, 0);
+      expect(written.status, CauseStatus.inProgress);
+      expect(written.recheckDate, isNull);
+      final row = (await db.query('cause_records')).single;
+      expect(row['solved_count'], 0);
+      expect(row['status'], 'inProgress');
+      expect(row['recheck_date'], isNull);
+    });
+
+    test('无行时按传入值写库（已解决）', () async {
+      final db = await openTestDb();
+      addTearDown(() async => db.close());
+      await insertQuestion(db, 'q1', reviewCount: 0);
+      final written = await AppDatabase.recordSelfCheckInto(
+        db,
+        updated: snapshot().copyWith(
+          status: CauseStatus.inProgress,
+          solvedCount: 1,
+        ),
+        questionId: 'q1',
+        result: 'solved',
+      );
+      expect(written.solvedCount, 1);
+      expect(written.status, CauseStatus.inProgress);
+      final row = (await db.query('cause_records')).single;
+      expect(row['solved_count'], 1);
+      expect(row['status'], 'inProgress');
+      expect(await db.query('review_history'), hasLength(1));
+      expect(
+        (await db.query('questions')).single['review_count'],
+        1,
       );
     });
   });
@@ -994,6 +1438,208 @@ void main() {
         ),
         isFalse,
       );
+    });
+
+    test('并发同名 upsert：库里只有 1 行（SR2-15）', () async {
+      final db = await openTestDb();
+      AppDatabase.useDatabaseForTest(db);
+      addTearDown(() async => db.close());
+      Future<String> attempt(Folder f) async {
+        try {
+          await AppDatabase.instance.upsertFolder(f);
+          return 'ok';
+        } catch (e) {
+          return 'err:$e';
+        }
+      }
+
+      final results = await Future.wait([
+        attempt(const Folder(id: 'f-a', name: '试卷', subjectId: 'math')),
+        attempt(const Folder(id: 'f-b', name: '试卷', subjectId: 'math')),
+      ]);
+      // 一路成功、一路因“已经有了”被拒（旧写法两路都通过判重，
+      // 库里出现两个同名文件夹）。
+      expect(results.where((r) => r == 'ok'), hasLength(1));
+      expect(
+        results.where((r) => r.contains('已经有了')),
+        hasLength(1),
+      );
+      final rows = await db.query(
+        'folders',
+        where: 'subject_id = ? AND name = ?',
+        whereArgs: ['math', '试卷'],
+      );
+      expect(rows, hasLength(1));
+    });
+  });
+
+  group('SR2-66 SR-P2-6 staging 严格匹配 + zip 恢复三档文案', () {
+    Future<List<int>> validZip(Database db) async {
+      final json = await AppDatabase.exportBackupJsonFrom(db);
+      return buildZip([ZipEntryData('backup.json', utf8.encode(json))]);
+    }
+
+    test('旧 staging 清理只删严格匹配的目录，用户同名目录不动', () async {
+      final db = await openTestDb();
+      addTearDown(() async => db.close());
+      await exportedJson(db);
+      // 用户目录：.restore-staging-backup（非纯数字后缀），不动。
+      final userDir = Directory(
+        p.join(tmpDir.path, '.restore-staging-backup'),
+      );
+      await userDir.create();
+      await File(p.join(userDir.path, 'keep.txt')).writeAsString('keep');
+      // 上次崩溃残留的真 staging：纯数字时间戳，应被顺带清掉。
+      final stale = Directory(
+        p.join(tmpDir.path, '.restore-staging-1700000000000'),
+      );
+      await stale.create();
+      await File(p.join(stale.path, 'stale.txt')).writeAsString('stale');
+      final zip = await validZip(db);
+      await AppDatabase.importBackupZipInto(db, zip, dataDir: tmpDir.path);
+      expect(
+        await File(p.join(userDir.path, 'keep.txt')).exists(),
+        isTrue,
+      );
+      expect(await stale.exists(), isFalse);
+    });
+
+    test('校验问题原样抛，不包成“文件写不进去”（第一档）', () async {
+      final db = await openTestDb();
+      addTearDown(() async => db.close());
+      final data = await exportedJson(db);
+      (data['_meta'] as Map)['schemaVersion'] = 99;
+      final zip = buildZip([
+        ZipEntryData('backup.json', utf8.encode(jsonEncode(data))),
+      ]);
+      await expectLater(
+        () => AppDatabase.importBackupZipInto(db, zip, dataDir: tmpDir.path),
+        throwsA(
+          isA<BackupRestoreException>().having(
+            (e) => e.message,
+            'message',
+            allOf(contains('更新的版本'), isNot(contains('文件写不进去'))),
+          ),
+        ),
+      );
+      expect(await db.query('questions'), hasLength(1));
+    });
+
+    test('数据库失败时文案是“备份数据有问题”，不是“文件写不进去”（第二档）', () async {
+      final db = await openTestDb();
+      addTearDown(() async => db.close());
+      final data = await exportedJson(db);
+      await db.execute(
+        "CREATE TRIGGER trg_fail_q BEFORE INSERT ON questions "
+        "BEGIN SELECT RAISE(ABORT, 'boom'); END;",
+      );
+      final zip = buildZip([
+        ZipEntryData('backup.json', utf8.encode(jsonEncode(data))),
+      ]);
+      await expectLater(
+        () => AppDatabase.importBackupZipInto(db, zip, dataDir: tmpDir.path),
+        throwsA(
+          isA<BackupRestoreException>().having(
+            (e) => e.message,
+            'message',
+            allOf(
+              contains('备份数据有问题'),
+              isNot(contains('文件写不进去')),
+            ),
+          ),
+        ),
+      );
+      expect(await db.query('questions'), hasLength(1));
+    });
+
+    test('IO 失败时文案是“文件写不进去”（第三档）', () async {
+      final db = await openTestDb();
+      addTearDown(() async => db.close());
+      final data = await exportedJson(db);
+      // slices 在盘上是个文件不是目录：进位时建 slices/ 目录失败。
+      await File(p.join(tmpDir.path, 'slices')).writeAsString('not-a-dir');
+      final zip = buildZip([
+        ZipEntryData('backup.json', utf8.encode(jsonEncode(data))),
+        ZipEntryData('slices/q1.png', List.filled(10, 1)),
+      ]);
+      await expectLater(
+        () => AppDatabase.importBackupZipInto(db, zip, dataDir: tmpDir.path),
+        throwsA(
+          isA<BackupRestoreException>().having(
+            (e) => e.message,
+            'message',
+            contains('文件写不进去'),
+          ),
+        ),
+      );
+      expect(await File(p.join(tmpDir.path, 'slices')).exists(), isTrue);
+      expect(await db.query('questions'), hasLength(1));
+    });
+  });
+
+  group('SR2-17 readZip 拒重名条目', () {
+    test('重名文件条目抛错；backup.json 重名是例外，取最后一个', () {
+      final dup = buildStoredZipForTest([
+        ('slices/q1.png', [1, 2]),
+        ('slices/q1.png', [3, 4]),
+      ]);
+      expect(
+        () => readZip(dup),
+        throwsA(
+          isA<ZipFormatException>().having(
+            (e) => e.message,
+            'message',
+            contains('重复条目'),
+          ),
+        ),
+      );
+      // backup.json 重名不抛错（恢复取最后一个，进位循环跳过它）。
+      Map<String, dynamic> minimalJson({bool withSubject = false}) => {
+        '_meta': {
+          'schemaVersion': 2,
+          'appVersion': 'test',
+          'exportedAt': 1,
+        },
+        for (final t in AppDatabase.backupTables)
+          t: withSubject && t == 'subjects'
+              ? [
+                  {'id': 'math', 'name': '数学', 'color': 1},
+                ]
+              : <dynamic>[],
+      };
+      final dupJson = buildStoredZipForTest([
+        ('backup.json', utf8.encode(jsonEncode(minimalJson()))),
+        (
+          'backup.json',
+          utf8.encode(jsonEncode(minimalJson(withSubject: true))),
+        ),
+      ]);
+      final entries = readZip(dupJson);
+      expect(entries.map((e) => e.name), ['backup.json', 'backup.json']);
+      final decoded = AppDatabase.readBackupJsonFromZip(dupJson);
+      expect((decoded['subjects'] as List), hasLength(1));
+    });
+
+    test('重名文件条目的备份：恢复报“已损坏”，不误报“文件写不进去”', () async {
+      final db = await openTestDb();
+      addTearDown(() async => db.close());
+      final data = await exportedJson(db);
+      final zip = buildStoredZipForTest([
+        ('backup.json', utf8.encode(jsonEncode(data))),
+        ('slices/q1.png', [1, 2]),
+        ('slices/q1.png', [3, 4]),
+      ]);
+      await expectLater(
+        () => AppDatabase.importBackupZipInto(db, zip, dataDir: tmpDir.path),
+        throwsA(
+          isA<BackupRestoreException>().having(
+            (e) => e.message,
+            'message',
+            allOf(contains('已损坏'), isNot(contains('文件写不进去'))),
+          ),
+        ),
+      );
+      expect(await db.query('questions'), hasLength(1));
     });
   });
 

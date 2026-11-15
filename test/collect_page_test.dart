@@ -217,6 +217,13 @@ class FakeRepo extends QuestionRepository {
   final Map<String, List<QuestionBox>> lastRetainedInners = {};
   final Map<int, List<QuestionBox>> lastRetainedStandalone = {};
 
+  /// SR2-4：最近一次 confirmSplit 收到的每题框（含确认时挂接后的
+  /// 独立题内框，见 collect_page.dart `_confirmSplit`）。
+  final Map<String, List<QuestionBox>> lastBoxesByQuestionId = {};
+
+  /// SR2-25：为真时 saveRecentTask 抛错（注入确认尾部写库失败）。
+  var failSaveRecentTask = false;
+
   @override
   Future<void> confirmSplit({
     required CollectTask originalTask,
@@ -228,6 +235,9 @@ class FakeRepo extends QuestionRepository {
     Map<String, List<QuestionBox>> retainedInners = const {},
     Map<int, List<QuestionBox>> retainedStandaloneInner = const {},
   }) async {
+    lastBoxesByQuestionId
+      ..clear()
+      ..addAll(boxesByQuestionId);
     savedQuestions.addAll(questions);
     tasks.addAll(splitTasks);
     tasks.removeWhere((t) => t.id == originalTask.id);
@@ -289,7 +299,9 @@ class FakeRepo extends QuestionRepository {
     required String kind,
     required String subjectId,
     required String title,
-  }) async {}
+  }) async {
+    if (failSaveRecentTask) throw StateError('最近任务写库失败（测试注入）');
+  }
 }
 
 List<CollectTask> sixStateTasks() => [
@@ -1128,26 +1140,30 @@ void main() {
             .length,
         1,
       );
-      // 原任务没删干净：同 id 留在任务里，回待框选、从首个未框页修。
+      // 原任务没删干净：同 id 留在任务里，带修框中状态（SR2-22：保留
+      // 任务只可能由编辑器确认产生，必定打开过，直接写 boxing，不
+      // 再重置回 needBox）、从首个未框页修。
       final retained = repo.tasks.firstWhere((t) => t.id == 't-pdf');
-      expect(retained.status, CollectStatus.needBox);
+      expect(retained.status, CollectStatus.boxing);
       expect(retained.page, 2);
       expect(retained.pageCount, 3);
       // SR-P1-2：保留任务与确认拆题是同一次 confirmSplit 调用提交的，
       // 不是事务外两步重建（崩溃窗口已关掉）。
       expect(repo.lastRetainedTask, isNotNull);
       expect(repo.lastRetainedTask!.id, 't-pdf');
-      expect(repo.lastRetainedTask!.status, CollectStatus.needBox);
+      expect(repo.lastRetainedTask!.status, CollectStatus.boxing);
       expect(repo.lastRetainedTask!.page, 2);
-      // 列表行上出红色警告（待框选筛选下也一样）。
+      // 列表行上出红色警告（修框中筛选下也一样；保留任务现在是
+      // boxing，不再出现在待框选筛选里）。
       expect(find.text('还有 2 页没有框：第 2、3 页'), findsOneWidget);
-      await tester.tap(find.byKey(const Key('collect-filter-needBox')));
+      await tester.tap(find.byKey(const Key('collect-filter-boxing')));
       await tester.pumpAndSettle();
       expect(find.text('还有 2 页没有框：第 2、3 页'), findsOneWidget);
       await tester.tap(find.byKey(const Key('collect-filter-all')));
       await tester.pumpAndSettle();
-      // 重进修框：从第 2 页开始，该页没框。
-      await openEditor(tester, '修框');
+      // 重进修框：从第 2 页开始，该页没框。保留任务现在是 boxing，
+      // 行上按钮是「继续修框」而不是「修框」。
+      await openEditor(tester, '继续修框');
       expect(find.textContaining('没框到题'), findsWidgets);
       // 切回已拆的第 1 页：自动检测又框出题，但确认不重复拆。
       await tester.tap(find.byKey(const Key('editor-thumb-1')));
@@ -1230,6 +1246,100 @@ void main() {
       final warning =
           tester.widget<Text>(find.text('还有 2 页没有框：第 2、3 页'));
       expect(warning.style?.color, DesignTokens.light.errInk);
+    });
+  });
+
+  group('SR2-4 有框页独立题内框确认不丢', () {
+    testWidgets('独立 stem 按中心点挂到最近的题下，确认后仍在该题的框里',
+        (tester) async {
+      final repo = FakeRepo([
+        task(
+          't-needbox',
+          '待框选文件.pdf · 第1页 · 第1题',
+          status: CollectStatus.needBox,
+        ),
+      ]);
+      // 草稿：第 1 页两道题级框 + 一个无父框的独立 stem。
+      // stem 中心 (0.30, 0.49) 落在两框之间：离上框 b1（下沿 0.45）
+      // 0.04，离下框 b2（上沿 0.55）0.06——命中“最近”而非“命中”，
+      // 钉住最近规则；修前确认后它随原任务删除一起丢。
+      QuestionBox box(
+        String id,
+        int layer,
+        String type,
+        double x,
+        double y,
+        double w,
+        double h,
+      ) => QuestionBox(
+        id: id,
+        layer: layer,
+        type: type,
+        x: x,
+        y: y,
+        w: w,
+        h: h,
+        page: 1,
+      );
+      repo.draftBoxes['t-needbox'] = [
+        box('b1', 1, 'question', 0.06, 0.05, 0.88, 0.40),
+        box('b2', 1, 'question', 0.06, 0.55, 0.88, 0.40),
+        box('orphan-stem', 2, 'stem', 0.10, 0.45, 0.40, 0.08),
+      ];
+      await pumpCollect(tester, repo: repo);
+      await openEditor(tester, '修框');
+      expect(editorBoxLabel('题级框 1'), findsOneWidget);
+      expect(editorBoxLabel('题级框 2'), findsOneWidget);
+      expect(editorBoxLabel('stem 题干'), findsOneWidget);
+      await tapConfirmAndWait(tester, '确认修框，拆成 2 个待整理任务');
+      expect(find.textContaining('修框 ·'), findsNothing);
+      expect(repo.savedQuestions.length, 2);
+      // 独立 stem 仍在：挂到了中心最近的上框 b1 下，parentBoxId 已补。
+      final withOrphan = repo.lastBoxesByQuestionId.entries.singleWhere(
+        (e) => e.value.any((b) => b.id == 'orphan-stem'),
+      );
+      expect(
+        withOrphan.value.firstWhere((b) => b.layer == 1).id,
+        'b1',
+      );
+      final orphan =
+          withOrphan.value.firstWhere((b) => b.id == 'orphan-stem');
+      expect(orphan.layer, 2);
+      expect(orphan.type, 'stem');
+      expect(orphan.parentBoxId, 'b1');
+      // 另一道题的框里没有它，不重复挂。
+      expect(
+        repo.lastBoxesByQuestionId.values
+            .expand((v) => v)
+            .where((b) => b.id == 'orphan-stem'),
+        hasLength(1),
+      );
+    });
+  });
+
+  group('SR2-25 确认拆题后 saveRecentTask 失败不影响成功提示与刷新', () {
+    testWidgets('最近任务写库失败：仍拆题成功，列表刷新到待整理', (tester) async {
+      final repo = FakeRepo([
+        task(
+          't-needbox',
+          '待框选文件.pdf · 第1页 · 第1题',
+          status: CollectStatus.needBox,
+        ),
+      ]);
+      await pumpCollect(tester, repo: repo);
+      await openEditor(tester, '修框');
+      expect(editorBoxLabel('题级框 1'), findsOneWidget);
+      // 确认尾部的 saveRecentTask 注入失败。
+      repo.failSaveRecentTask = true;
+      await tapConfirmAndWait(tester, '确认修框，去整理');
+      expect(find.textContaining('修框 ·'), findsNothing);
+      // 拆题已提交；修前：异常逃出 _confirmSplit，_load() 不执行，
+      // 列表仍停在修框中的旧行（「继续修框」还在）。
+      expect(repo.savedQuestions.length, 1);
+      expect(find.text('去整理'), findsOneWidget);
+      expect(find.text('继续修框'), findsNothing);
+      expect(find.text('修框'), findsNothing);
+      expect(tester.takeException(), isNull);
     });
   });
 

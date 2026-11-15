@@ -57,8 +57,10 @@ lib/
                        db_orphans / db_paths / db_questions / db_schema /
                        db_settings / db_storage（实现见代码地图 §2）
     repository.dart    各页共用查询口径
-    demo_data.dart     演示数据定义：数学/英语/政治各 3 道大学题
-                       （`demoQuestions()`，共 9 道）+ 演示试卷/知识点树；
+    demo_data.dart     演示数据定义：`demoQuestions()` 已于 Batch 5
+                       （SR-P2-13）删除，演示题的唯一合法来源是 v1 老库
+                       （已整体删除，不迁移）；演示试卷/知识点树
+                       （`demoExams()` / `demoKnowledgePoints()`）仍在；
                        新库建库时不预置演示题（§6 第 1 条），种子只写
                        学科/文件夹/标签/试卷/知识点树
     badge_notifier.dart 角标刷新通知

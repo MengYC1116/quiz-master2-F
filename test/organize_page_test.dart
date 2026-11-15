@@ -253,6 +253,30 @@ Finder popupCheckboxes(WidgetTester tester) => find.descendant(
       matching: find.byType(Checkbox),
     );
 
+/// B6-P1 SR2-26：写库失败模拟——`failSave` 打开后 `save` 一律抛错，
+/// 其余调用仍走内存假实现。开关留在测试手里：先正常打开队列、再
+/// 打开失败，分别覆盖 `_openQueue` 与 `_jumpToQuestion` /
+/// `_applyQueueSort` 的失败路径。
+class FailingSaveRepo extends FakeOrganizeRepo {
+  FailingSaveRepo(FakeOrganizeRepo base)
+      : super(
+          questions: base.questions,
+          folderList: base.folderList,
+          examList: base.examList,
+          kpList: base.kpList,
+          tagList: base.tagList,
+          subjectsValue: base.subjectsValue,
+        );
+
+  bool failSave = false;
+
+  @override
+  Future<void> save(Question question) async {
+    if (failSave) throw StateError('模拟写库失败');
+    return super.save(question);
+  }
+}
+
 void main() {
   group('整理工作台正常态', () {
     testWidgets('H 布局：左图右表、顶栏队列 + 当前整理、页内无边距、无 Icon',
@@ -792,6 +816,193 @@ void main() {
       expect(find.text('区域仅作辅助定位，整题图始终是主体'), findsOneWidget);
       expect(find.text('stem 题干'), findsNWidgets(2));
       expect(find.text('option 选项'), findsNWidgets(2));
+    });
+  });
+
+  group('B6-P1 队列快照（SR2-5 / SR2-6 / SR2-26）', () {
+    /// 与 SR-P1-7 组同款：改当前题表单（选文件夹「平时作业」+ 填答案），
+    /// 只改表单 state，不点保存/确认。
+    Future<void> editCurrentForm(WidgetTester tester) async {
+      await tester.ensureVisible(find.text('平时作业').first);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('平时作业').first);
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(find.text('答案 · 解析 · 笔记（可选）'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('答案 · 解析 · 笔记（可选）'));
+      await tester.pumpAndSettle();
+      final answerField = find.byWidgetPredicate(
+        (w) =>
+            w is TextField && w.decoration?.hintText == '还没想好可留空',
+      );
+      await tester.enterText(answerField, '答案：1');
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(find.text('队列'));
+      await tester.pumpAndSettle();
+    }
+
+    testWidgets('SR2-5：同一弹窗内打标签 → 加文件夹 → 关闭，标签与文件夹都在',
+        (tester) async {
+      final repo = threeQuestionRepo();
+      await pumpOrganize(tester, repo: repo);
+      await openQueue(tester);
+      await tester.tap(popupCheckboxes(tester).first);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('批量打标签 #需重做'));
+      await tester.pumpAndSettle();
+      // 批量加文件夹默认选中本科第一个文件夹「试卷」(f1)。
+      await tester.tap(find.text('批量加入该文件夹'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('关闭 ×'));
+      await tester.pumpAndSettle();
+      final q1 = repo.questions.firstWhere((x) => x.id == 'q1');
+      expect(q1.tags, contains('需重做'));
+      expect(q1.folderIds, contains('f1'));
+    });
+
+    testWidgets('SR2-5：同一弹窗内加文件夹 → 打标签 → 批量确认，标签与文件夹都在',
+        (tester) async {
+      final repo = threeQuestionRepo();
+      await pumpOrganize(tester, repo: repo);
+      await openQueue(tester);
+      await tester.tap(popupCheckboxes(tester).first);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('批量加入该文件夹'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('批量打标签 #需重做'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('批量确认整理'));
+      await tester.pumpAndSettle();
+      final q1 = repo.questions.firstWhere((x) => x.id == 'q1');
+      expect(q1.isOrganized, isTrue);
+      expect(q1.tags, contains('需重做'));
+      expect(q1.folderIds, contains('f1'));
+      expect(find.text('还剩 2 道'), findsOneWidget);
+    });
+
+    testWidgets('SR2-6：改表单 → 下一道 → 上一道 → 保存草稿，文件夹与答案仍在',
+        (tester) async {
+      final repo = threeQuestionRepo();
+      await pumpOrganize(tester, repo: repo);
+      await editCurrentForm(tester);
+      await tester.ensureVisible(find.text('下一道'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('下一道'));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('数学 · 导数综合'), findsOneWidget);
+      await tester.ensureVisible(find.text('上一道'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('上一道'));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('数学 · 函数极限'), findsOneWidget);
+      // 切回来后表单仍是改动后的值（不是打开前的旧快照）。
+      expect(find.textContaining('本题必填已齐'), findsOneWidget);
+      await tester.ensureVisible(find.text('保存草稿'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('保存草稿'));
+      await tester.pumpAndSettle();
+      expect(find.text('草稿已保存'), findsOneWidget);
+      final saves = repo.saved.where((x) => x.id == 'q1').toList();
+      expect(saves, isNotEmpty);
+      expect(saves.last.folderIds, contains('f2'));
+      expect(saves.last.answer, '答案：1');
+    });
+
+    testWidgets('SR2-26：打开队列时保存失败，弹提示且队列打不开',
+        (tester) async {
+      final repo = FailingSaveRepo(threeQuestionRepo())..failSave = true;
+      await pumpOrganize(tester, repo: repo);
+      await tester.tap(find.text('队列'));
+      await tester.pumpAndSettle();
+      expect(find.text('保存失败，请重试'), findsOneWidget);
+      expect(find.text('待整理队列 · 3 道'), findsNothing);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('SR2-26：切题时保存失败，弹提示且留在当前题', (tester) async {
+      final repo = FailingSaveRepo(threeQuestionRepo())..failSave = true;
+      await pumpOrganize(tester, repo: repo);
+      await tester.ensureVisible(find.text('下一道'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('下一道'));
+      await tester.pumpAndSettle();
+      expect(find.text('保存失败，请重试'), findsOneWidget);
+      expect(find.textContaining('数学 · 函数极限'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('SR2-26：队列内跳转时保存失败，弹提示且留在当前题',
+        (tester) async {
+      final repo = FailingSaveRepo(threeQuestionRepo());
+      await pumpOrganize(tester, repo: repo);
+      await openQueue(tester);
+      repo.failSave = true;
+      await tester.tap(find.text('导数综合'));
+      await tester.pumpAndSettle();
+      expect(find.text('保存失败，请重试'), findsOneWidget);
+      expect(find.text('待整理队列 · 3 道'), findsNothing);
+      expect(find.textContaining('数学 · 函数极限'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('SR2-26：队列内改排序时保存失败，弹提示且主队列排序不变',
+        (tester) async {
+      final repo = FailingSaveRepo(threeQuestionRepo());
+      await pumpOrganize(tester, repo: repo);
+      await openQueue(tester);
+      repo.failSave = true;
+      await tester.tap(find.text('时间降序'));
+      await tester.pumpAndSettle();
+      // 注意：队列层是 OverlayEntry，里面 DropdownButton 的菜单项
+      // 点按在测试里落不到菜单上（探针：点按后菜单仍开着、回调不
+      // 触发），改走键盘：菜单打开时当前项已获焦点，Tab 移到下
+      // 一项（时间升序）再回车选中。
+      await tester.sendKeyEvent(LogicalKeyboardKey.tab);
+      await tester.pumpAndSettle();
+      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await tester.pumpAndSettle();
+      expect(find.text('保存失败，请重试'), findsOneWidget);
+      expect(find.text('待整理队列 · 3 道'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+      // 恢复写库后关掉重开：父页排序仍是时间降序（q1 在上）。
+      repo.failSave = false;
+      await tester.tap(find.text('关闭 ×'));
+      await tester.pumpAndSettle();
+      await openQueue(tester);
+      final y1 = tester.getTopLeft(find.text('函数极限')).dy;
+      final y3 = tester.getTopLeft(find.text('阅读主旨')).dy;
+      expect(y1, lessThan(y3));
+    });
+
+    testWidgets('SR2-26（对照）：队列内改排序保存成功时，主队列按新排序重排',
+        (tester) async {
+      final repo = FailingSaveRepo(threeQuestionRepo());
+      await pumpOrganize(tester, repo: repo);
+      await openQueue(tester);
+      await tester.tap(find.text('时间降序'));
+      await tester.pumpAndSettle();
+      await tester.sendKeyEvent(LogicalKeyboardKey.tab);
+      await tester.pumpAndSettle();
+      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await tester.pumpAndSettle();
+      // 队列内已按时间升序重排：q3（11/3）在上，q1（11/8）在下。
+      final y1 = tester.getTopLeft(find.text('函数极限')).dy;
+      final y3 = tester.getTopLeft(find.text('阅读主旨')).dy;
+      expect(y3, lessThan(y1));
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('SR2-26：保存草稿失败时提示失败，不谎报已保存',
+        (tester) async {
+      final repo = FailingSaveRepo(threeQuestionRepo())..failSave = true;
+      await pumpOrganize(tester, repo: repo);
+      await tester.ensureVisible(find.text('保存草稿'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('保存草稿'));
+      await tester.pumpAndSettle();
+      expect(find.text('保存失败，请重试'), findsOneWidget);
+      expect(find.text('草稿已保存'), findsNothing);
+      expect(tester.takeException(), isNull);
     });
   });
 }

@@ -552,7 +552,7 @@ class _SettingsPageState extends State<SettingsPage> {
       }
     }
 
-    void walk(Directory d, {bool insideCacheDir = false}) {
+    void walk(Directory d, {bool insideCacheDir = false, String? cacheKind}) {
       List<FileSystemEntity> entries;
       try {
         entries = d.listSync();
@@ -571,8 +571,16 @@ class _SettingsPageState extends State<SettingsPage> {
             (lower.contains('cache') ||
                 lower.contains('thumb') ||
                 lower.contains('tmp'))) {
-          // 目录整体计入：缩略图目录计缩略图，其余计临时文件。
-          add(e, lower.contains('thumb') ? 'thumb' : 'temp');
+          // SR2-30：cache/thumb/tmp 目录不再整体按 1 个计——递归进去，
+          // 里面的文件逐个按类计数（thumb 目录里的按缩略图计，其余按
+          // 临时文件计）；目录本身不再单独计 1，避免个数偏小。
+          // 旧代码在这里 add() 后 continue，`insideCacheDir` 从未为
+          // true，目录里的文件一个都没数上（8 个文件只算出 4 项）。
+          walk(
+            e,
+            insideCacheDir: true,
+            cacheKind: lower.contains('thumb') ? 'thumb' : 'temp',
+          );
           continue;
         }
         if (e is File) {
@@ -581,13 +589,13 @@ class _SettingsPageState extends State<SettingsPage> {
           } else if (lower.endsWith('.tmp') || lower.endsWith('.cache')) {
             add(e, 'temp');
           } else if (insideCacheDir) {
-            add(e, 'temp');
+            add(e, cacheKind ?? 'temp');
           }
         } else if (e is Directory) {
           // 普通子目录也要递归进入（SR-P2-50）：以前只扫顶层一层，
           // 藏在某子目录下的 cache/thumb/tmp 目录不会被发现，
           // 预览数字偏小、清理也删不到它们。
-          walk(e, insideCacheDir: insideCacheDir);
+          walk(e, insideCacheDir: insideCacheDir, cacheKind: cacheKind);
         }
       }
     }

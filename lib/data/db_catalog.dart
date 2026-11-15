@@ -159,8 +159,11 @@ String _likeEscape(String value) => value
 /// 同名文件夹，判重范围是整科、不是同层兄弟。新建 / 改名 / 移入
 /// 三处调用方先调它预检（提示“已经有了”），[upsertFolder] 再做
 /// 最终把关（见 [AppDatabaseCatalog.upsertFolder]）。
+/// 参数是 [DatabaseExecutor]（SR2-15：[upsertFolder] 在同一事务内
+/// 先判重后插入，须把事务句柄传进来；与 [_seedCauseRecordsFor]
+/// 同一放宽口径）。
 Future<bool> folderNameExistsInSubjectFromImpl(
-  Database db,
+  DatabaseExecutor db,
   String subjectId,
   String name, {
   String? excludeId,
@@ -462,23 +465,29 @@ extension AppDatabaseCatalog on AppDatabase {
   /// 这里是最后一道防线：绕过页内预检的写入也进不来。
   /// 同 id 原地更新（改排序、移回原父级等）不触发——查的是
   /// “别人家有没有同名”，自己不算。
+  /// SR2-15：判重 + 插入在同一事务里。旧写法两步都在事务外，
+  /// 中间有 await 间隙，两路并发同名写入可同时通过判重、先后插
+  /// 入成功，库里出现两个同名文件夹（单用户串行 UI 下难触发，
+  /// 但“防线”本身防不住它声称要防的情况）。
   Future<void> upsertFolder(Folder f) async {
     final d = await db;
-    if (await AppDatabase.folderNameExistsInSubjectFrom(
-      d,
-      f.subjectId,
-      f.name,
-      excludeId: f.id,
-    )) {
-      throw StateError('已经有了：同一学科下已有同名文件夹“${f.name}”');
-    }
-    await d.insert('folders', {
-      'id': f.id,
-      'name': f.name,
-      'subject_id': f.subjectId,
-      'parent_id': f.parentId,
-      'sort_order': f.sortOrder,
-    }, conflictAlgorithm: ConflictAlgorithm.replace);
+    await d.transaction((txn) async {
+      if (await folderNameExistsInSubjectFromImpl(
+        txn,
+        f.subjectId,
+        f.name,
+        excludeId: f.id,
+      )) {
+        throw StateError('已经有了：同一学科下已有同名文件夹“${f.name}”');
+      }
+      await txn.insert('folders', {
+        'id': f.id,
+        'name': f.name,
+        'subject_id': f.subjectId,
+        'parent_id': f.parentId,
+        'sort_order': f.sortOrder,
+      }, conflictAlgorithm: ConflictAlgorithm.replace);
+    });
     bumpBadgeVersion();
   }
 

@@ -89,6 +89,19 @@ void main() {
     expect(scan.files, isEmpty);
   });
 
+  test('SR2-69：旋转烘焙页图 pages/page-<p>-r<角度>.png 不在孤儿列表里', () async {
+    await seedTask(db,
+        id: 'pdf-task', sourcePath: 'imports/pdf-task/original.pdf');
+    writeDataFile(tmp, 'imports/pdf-task/original.pdf', [1]);
+    writeDataFile(tmp, 'imports/pdf-task/pages/page-001.png', [2]);
+    // 修框时旋转烘焙出的页图（ImportService.bakedPageRelative）：
+    // 与普通页图同属 pages/ 枚举口径，不应被当孤儿。
+    writeDataFile(tmp, 'imports/pdf-task/pages/page-1-r90.png', [3]);
+    writeDataFile(tmp, 'imports/pdf-task/pages/page-2-r270.png', [4]);
+    final scan = await AppDatabase.scanOrphanFilesFrom(db, dataDir: tmp.path);
+    expect(scan.files, isEmpty);
+  });
+
   test('SR-P0-1：真孤儿仍被列出，存续任务目录里的杂文件仍是孤儿', () async {
     await seedTask(db,
         id: 'pdf-task', sourcePath: 'imports/pdf-task/original.pdf');

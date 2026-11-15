@@ -81,6 +81,11 @@ Rect? layer2BoxToSliceRect(QuestionBox layer1, QuestionBox layer2) {
 /// 面积相等取列表第一个（不依赖库返回的行序；行序本身见
 /// boxesForPageImageFromImpl 的 ORDER BY，见 B5-P2-COLLECT 报告
 /// 转交项）。layer-2 之外（type 为 question 的）行忽略。
+/// SR2-24：只取切片来源父框（首个 1 层框）下的内框参与比较——切片
+/// 只按首个 1 层框裁出，挂在其他父框下的内框换算后的面积与首个框
+/// 下的不可比（小父框下的小内框换算后可能“更大”），跨父框比面积
+/// 会让不属于该切片的内框获胜。parentBoxId 为空的老数据行回退到
+/// 首个 1 层框，仍算它的。
 Map<String, Rect> realRegionRects(List<QuestionBox> boxes) {
   QuestionBox? firstLayer1;
   final layer1ById = <String, QuestionBox>{};
@@ -100,7 +105,12 @@ Map<String, Rect> realRegionRects(List<QuestionBox> boxes) {
     final parent = b.parentBoxId == null
         ? null
         : layer1ById[b.parentBoxId];
-    final rect = layer2BoxToSliceRect(parent ?? firstLayer1, b);
+    // SR2-24：只取切片来源父框（首个 1 层框）下的内框参与比较；
+    // parentBoxId 为空时回退到首个框（仍算它的），指向其他父框
+    // 的内框跳过——它不属于这张切片，换算面积再大也不参选。
+    final source = parent ?? firstLayer1;
+    if (source.id != firstLayer1.id) continue;
+    final rect = layer2BoxToSliceRect(source, b);
     if (rect == null) continue;
     final prev = out[b.type];
     // 同区域多框：面积大者胜，同面积保留先到的（确定性优先级）。
@@ -722,24 +732,28 @@ class CompactSliceThumb extends StatelessWidget {
 /// 不出现大块亮色。
 ///
 /// [stored] 是库里存的学科色（`Subject.color`，S8A2 的 stored 思路）：
-/// 预设三科忽略它，仍走主题感知的固定色；新学科没有预设项，直接用
-/// 库里存的轮换色。不传则按 id 查表（旧行为）。
+/// 预设三科忽略它，仍走主题感知的固定色；新学科没有预设项，亮色下
+/// 直接用库里存的轮换色，深色下走 [DesignTokens.subjectColor] 的
+/// 同一雾化（SR2-36：不再直接返回存色，不再另造第三份“存色深色
+/// 怎么处理”的规则）。不传则按 id 查表（旧行为）。
 Color subjectLabelColor(
   BuildContext context,
   String subjectId, [
   Color? stored,
 ]) {
-  final dark = Theme.of(context).brightness == Brightness.dark;
+  final brightness = Theme.of(context).brightness;
   if (stored != null &&
       subjectId != 'math' &&
       subjectId != 'english' &&
       subjectId != 'politics') {
-    return stored;
+    // SR2-36：委托 DesignTokens.subjectColor——亮色返回存色原值，
+    // 深色走与 subjectColor / subjectInk 同一雾化（45% 混 #DCE3EC）。
+    return DesignTokens.subjectColor(subjectId, brightness, stored);
   }
   // 没传存色时按 id 查表回退（未知 id 落到数学色）：调用方有库里的
   // Subject 时应传 stored（QuestionSlice / CompactSliceThumb /
   // SubjectLabel 都已传），新学科才不会落到数学色。
-  if (!dark) return Subject.byId(subjectId).color;
+  if (brightness != Brightness.dark) return Subject.byId(subjectId).color;
   return switch (subjectId) {
     'english' => AppTheme.darkEnglishMist,
     'politics' => AppTheme.darkPoliticsMist,

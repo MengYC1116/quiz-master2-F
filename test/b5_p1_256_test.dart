@@ -603,6 +603,104 @@ void main() {
       expect(qBoxes.map((b) => b.questionId), ['import-1']);
     });
 
+    test('SR2-11 事务中途写框失败：调用抛错，题/任务/框/原任务全部回滚', () async {
+      final db = await openMemoryDb();
+      final orig = CollectTask(
+        id: 'task-orig',
+        name: 'orig.pdf · 第1页 · 第1题',
+        fileName: 'orig.pdf',
+        subjectId: 'math',
+        status: CollectStatus.boxing,
+        pageCount: 3,
+        page: 1,
+        sourcePath: 'imports/task-orig/original.pdf',
+      );
+      await AppDatabase.instance.upsertCollectTask(orig);
+      await AppDatabase.saveDraftBoxesInto(
+        db,
+        taskId: 'task-orig',
+        boxesByPage: {
+          1: [_box(id: 'draft-1', collectTaskId: 'task-orig')],
+        },
+        inners: const {},
+        standaloneInner: const {},
+        rotations: const {},
+      );
+      // 触发器立在后半段写操作上：confirmSplitInto 插 question_boxes
+      // 时炸（草稿已种好，触发器立在种草稿之后，不影响种子数据）。
+      await db.execute('''
+        CREATE TRIGGER trg_sr2_11_fail_qbox
+        BEFORE INSERT ON question_boxes
+        BEGIN
+          SELECT RAISE(ABORT, 'simulated write failure');
+        END
+      ''');
+      // 调用抛错：insert questions 已跑、insert question_boxes 炸，
+      // 事务整体回滚（修前若退化为多步写库，这里会留下半截题/任务）。
+      await expectLater(
+        AppDatabase.confirmSplitInto(
+          db,
+          originalTask: orig,
+          questions: [
+            Question(
+              id: 'import-1',
+              title: 'orig.pdf · 第1页 · 第1题',
+              subjectId: 'math',
+              createdAt: DateTime(2026, 11, 14),
+              sourcePath: 'imports/task-orig/original.pdf',
+              sourceKind: 'pdf',
+              sourcePage: 1,
+              pageImagePath: 'imports/task-orig/original.pdf',
+              slicePath: 'slices/import-1.png',
+              sliceWidth: 200,
+              sliceHeight: 100,
+            ),
+          ],
+          splitTasks: [
+            CollectTask(
+              id: 'task-split-1',
+              name: 'orig.pdf · 第1页 · 第1题',
+              fileName: 'orig.pdf',
+              subjectId: 'math',
+              status: CollectStatus.pendingOrganize,
+              pageCount: 3,
+              page: 1,
+              questionId: 'import-1',
+              sourcePath: 'imports/task-orig/original.pdf',
+            ),
+          ],
+          boxesByQuestionId: {
+            'import-1': [_box(id: 'draft-1', questionId: 'import-1')],
+          },
+          retainedTask: CollectTask(
+            id: 'task-orig',
+            name: 'orig.pdf · 第1页 · 第1题',
+            fileName: 'orig.pdf',
+            subjectId: 'math',
+            status: CollectStatus.needBox,
+            progress: 100,
+            pageCount: 3,
+            page: 2,
+            createdAt: orig.createdAt,
+            sourcePath: 'imports/task-orig/original.pdf',
+          ),
+          retainedBoxesByPage: const {2: [], 3: []},
+          retainedInners: const {},
+          retainedStandaloneInner: const {},
+        ),
+        throwsA(isA<Exception>()),
+      );
+      // 全部回滚：题没建、拆分任务与保留任务都没建、原任务行仍在
+      // （仍是修框中，不是回待框选的保留任务）、草稿框还在。
+      expect(await AppDatabase.instance.questionById('import-1'), isNull);
+      final tasks = await AppDatabase.instance.allCollectTasks();
+      expect(tasks.map((t) => t.id), ['task-orig']);
+      expect(tasks.first.status, CollectStatus.boxing);
+      final drafts = await AppDatabase.boxesForTaskFrom(db, 'task-orig');
+      expect(drafts.map((b) => b.id), ['draft-1']);
+      expect(drafts.first.questionId, isNull);
+    });
+
     test('无未框页时不传保留任务：行为与原来一致，只剩拆分任务', () async {
       final db = await openMemoryDb();
       final orig = CollectTask(

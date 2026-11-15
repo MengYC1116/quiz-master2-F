@@ -18,6 +18,12 @@ Future<List<Question>> allQuestionsFromImpl(Database db) async {
 /// （错因是空的题加不进复习，与旧仓库口径一致）。
 /// 播种用 [_seedCauseRecordsFor]（ConflictAlgorithm.ignore，
 /// 已有记录不动；再加入时接着治）。
+/// SR2-14：题行只按列 UPDATE `review_joined`，不用整行 REPLACE——
+/// 旧写法 `_toRow(q.copyWith(reviewJoined: joined))` 会把内存旧快照
+/// 里的 `review_count`（如 5）写回库里，覆盖自查刚用 SQL `+1` 加
+/// 出来的 6。`review_count` 只应由 SQL `+1` 改，任何整行写都不应
+/// 带它（见 [upsertQuestionIntoImpl]）。题行不存在时才整行 INSERT
+/// （新题入库，快照值即初始值，无可覆盖的库内值）。
 Future<bool> setReviewJoinedIntoImpl(
   Database db,
   Question q,
@@ -26,11 +32,19 @@ Future<bool> setReviewJoinedIntoImpl(
   final causes = q.allCauses;
   if (joined && causes.isEmpty) return false;
   await db.transaction((txn) async {
-    await txn.insert(
+    final updated = await txn.update(
       'questions',
-      _toRow(q.copyWith(reviewJoined: joined)),
-      conflictAlgorithm: ConflictAlgorithm.replace,
+      {'review_joined': joined ? 1 : 0},
+      where: 'id = ?',
+      whereArgs: [q.id],
     );
+    if (updated == 0) {
+      await txn.insert(
+        'questions',
+        _toRow(q.copyWith(reviewJoined: joined)),
+        conflictAlgorithm: ConflictAlgorithm.replace,
+      );
+    }
     if (joined) {
       await _seedCauseRecordsFor(txn, q, joinedAt: DateTime.now());
     }
@@ -160,12 +174,29 @@ Future<CauseRecord> recordSelfCheckIntoImpl(
 }
 
 /// §8.1：写题（可单测版）：直接对传入的库句柄写，不碰单例、不 bump。
+/// SR2-14：UPDATE-first，且 UPDATE 的列里不含 `review_count`——
+/// 它只应由 [recordSelfCheckIntoImpl] 里的 SQL `+1` 改。旧写法是
+/// 整行 REPLACE：拿着旧快照（`reviewCount: 5`）的
+/// toggleFavorite / archive / save 会把自查刚加到 6 的库内值打回 5。
+/// 已存在的行只 UPDATE 其它列（标题、文件夹、标签、收藏/归档等编辑
+/// 内容照常写回）；不存在时才整行 INSERT（快照值即新题初始值）。
 Future<void> upsertQuestionIntoImpl(Database db, Question q) async {
-  await db.insert(
+  final values = _toRow(q)
+    ..remove('review_count')
+    ..remove('id');
+  final updated = await db.update(
     'questions',
-    _toRow(q),
-    conflictAlgorithm: ConflictAlgorithm.replace,
+    values,
+    where: 'id = ?',
+    whereArgs: [q.id],
   );
+  if (updated == 0) {
+    await db.insert(
+      'questions',
+      _toRow(q),
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+  }
 }
 
 /// §4.5：删题（可单测版）：一次事务，不 bump。事务提交后删该题
@@ -317,13 +348,29 @@ extension AppDatabaseQuestions on AppDatabase {
     await _seedCauseRecordsFor(d, q, joinedAt: DateTime.now());
   }
 
+  /// SR2-14：只改 `remedy_history` 列，不整行 REPLACE。唯一生产
+  /// 调用方是 `repository.saveRemedy`（只改补救历史）；状态 /
+  /// 计数 / 复查日的唯一写路径是 [recordSelfCheckIntoImpl]（事务内
+  /// 先读库内行再重算），`saveCauseRecord` 在 lib/test 里无调用方。
+  /// 旧写法整行 REPLACE 会用旧快照覆盖自查刚改掉的 `status` /
+  /// `solvedCount` / `recheckDate`。行不存在时才整行 INSERT。
   Future<void> upsertCauseRecord(CauseRecord r) async {
     final d = await db;
-    await d.insert(
+    final updated = await d.update(
       'cause_records',
-      _causeRecordToRow(r),
-      conflictAlgorithm: ConflictAlgorithm.replace,
+      {
+        'remedy_history': AppDatabase.encodeRemedyList(r.remedyHistory),
+      },
+      where: 'question_id = ? AND cause = ?',
+      whereArgs: [r.questionId, r.cause],
     );
+    if (updated == 0) {
+      await d.insert(
+        'cause_records',
+        _causeRecordToRow(r),
+        conflictAlgorithm: ConflictAlgorithm.replace,
+      );
+    }
     bumpBadgeVersion();
   }
 

@@ -231,6 +231,13 @@ class FakeDetailRepo extends QuestionRepository {
     replacedBoxes[questionId] = List.of(boxes);
   }
 
+  /// SR2-3：事务失败桩——置真时 replaceQuestionBoxesAndSlice 抛错，
+  /// 且不记框、不存题（与真实事务回滚语义对齐）。
+  bool replaceShouldThrow = false;
+
+  /// 最近一次 replaceQuestionBoxesAndSlice 是否被调用过。
+  bool replaceCalled = false;
+
   /// B3-P01：详情页重框走单事务入口——Fake 里同样一次记下框与
   /// 切片字段（与真实实现一次事务的语义对齐：框与切片要么一起
   /// 记下，要么都不记）。
@@ -242,6 +249,8 @@ class FakeDetailRepo extends QuestionRepository {
     required int sliceWidth,
     required int sliceHeight,
   }) async {
+    replaceCalled = true;
+    if (replaceShouldThrow) throw StateError('事务失败（测试桩）');
     replacedBoxes[questionId] = List.of(boxes);
     final q = questions.where((x) => x.id == questionId).firstOrNull;
     if (q != null) {
@@ -775,6 +784,70 @@ void main() {
       expect(savedQ.sliceHeight, greaterThan(0));
       final sliceAbs = AppDatabase.resolveDataPath(savedQ.slicePath!);
       expect(sliceAbs != null && File(sliceAbs).existsSync(), isTrue);
+    });
+
+    testWidgets('SR2-3：事务失败时旧切片字节完好、框与题不动（有旧切片）',
+        (tester) async {
+      // 旧切片事先存在：用真实页图字节当旧切片内容，失败后逐字节比对。
+      // B5 的 P2-3 回归测试夹具里 slices/q1.png 事先不存在，没覆盖
+      // 此场景——旧写法此时已把旧切片覆盖又删掉。
+      final slicesDir = Directory('${_testTmp.path}/slices');
+      slicesDir.createSync(recursive: true);
+      final oldSliceFile = File('${slicesDir.path}/q1.png');
+      final oldBytes =
+          File('${_testTmp.path}/$_pagePngRel').readAsBytesSync();
+      oldSliceFile.writeAsBytesSync(oldBytes);
+      final repo = detailRepo();
+      repo.questions[0] = repo.questions[0].copyWith(
+        pageImagePath: _pagePngRel,
+        sourcePath: _pagePngRel,
+        slicePath: 'slices/q1.png',
+        sliceWidth: 200,
+        sliceHeight: 100,
+      );
+      repo.pageBoxes = [
+        QuestionBox(
+          id: 'q1-box',
+          layer: 1,
+          type: 'question',
+          x: 0.06,
+          y: 0.05,
+          w: 0.88,
+          h: 0.4,
+          page: 1,
+          questionId: 'q1',
+        ),
+      ];
+      repo.replaceShouldThrow = true;
+      await pumpDetail(tester, repo: repo);
+      await openSection(tester, '题目信息');
+      await tapText(tester, '重新框选这道题');
+      expect(find.textContaining('修框 ·'), findsOneWidget);
+      await tester.runAsync(() async {
+        await tester.tap(find.text('确认修框，去整理'));
+        for (var i = 0; i < 20; i++) {
+          await tester.pump();
+          await Future<void>.delayed(const Duration(milliseconds: 200));
+        }
+        await tester.pumpAndSettle();
+      });
+      await tester.pumpAndSettle();
+      expect(find.textContaining('修框 ·'), findsNothing);
+      expect(repo.replaceCalled, isTrue);
+      expect(find.text('重新框选失败：保存失败，请重试'), findsOneWidget);
+      // 旧切片字节完好（SR2-3 的核心断言）。
+      expect(oldSliceFile.readAsBytesSync(), equals(oldBytes));
+      // 临时切片已清干净，不留 .tmp-*.png。
+      expect(
+        slicesDir
+            .listSync()
+            .where((f) => f.path.contains('.tmp-'))
+            .isEmpty,
+        isTrue,
+      );
+      // 框与题都没动：事务桩抛错前不记框、不存题。
+      expect(repo.replacedBoxes.containsKey('q1'), isFalse);
+      expect(repo.saved.where((q) => q.id == 'q1'), isEmpty);
     });
 
     testWidgets('SR-P1-8：源页 ≥2 的题重框无缩略图条，确认后框不丢失',

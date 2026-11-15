@@ -9,13 +9,19 @@
 //   凡是把状态写成 needBox 的 UPDATE 一律 RAISE(ABORT)——upsert 是
 //   UPDATE-first（见 db_collect.dart），初始 importing 行与进度更新
 //   （status 仍是 importing）不受影响，只有收尾写 needBox 会炸。
+//   Batch 6（SR2-1/SR2-2/SR2-60）补齐同款缺口：图片尾部 upsert、
+//   _failAndClean 自身写库失败、全部写操作失败时 enqueue 仍不抛。
 // - SR-P1-14：图片 20MB 上限只提示不执行。修后：enqueue 对图片也硬判
 //   20MB（与 PDF 50MB 同款），超限横幅文案同步改成“导入会失败”。
+//   Batch 6（SR2-71）补恰好 20MB / 恰好 50MB 的边界用例。
 // - SR-P1-17：enqueue 的重复判断是空分支。修后：同批按源路径去重，
 //   同一文件只建一个任务；跨批重复仍允许重导（D-08：收集页先弹
 //   “已经导入过”，用户确认后才进 enqueue）。
+//   Batch 6（SR2-72）补同文件不同写法（相对/绝对路径、符号链接、
+//   大小写）的去重用例，去重键改为规范化路径（见 import_service.dart）。
 // 内存库 + 临时数据目录，不碰真实用户库。
 import 'dart:io';
+import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:flutter_test/flutter_test.dart';
@@ -74,6 +80,15 @@ class _OkDoc implements PdfEngineDocument {
 class _OkEngine implements PdfEngine {
   @override
   Future<PdfEngineDocument> open(String path) async => _OkDoc();
+}
+
+/// 打开即抛损坏的假引擎（SR2-2：_importPdf 的 pageCount 失败进
+/// _failAndClean，触发器再让 _failAndClean 自己的写库也失败）。
+class _CorruptEngine implements PdfEngine {
+  @override
+  Future<PdfEngineDocument> open(String path) async {
+    throw const PdfCorruptException('假引擎：文件损坏');
+  }
 }
 
 ImportService _service() => ImportService(
@@ -152,6 +167,117 @@ void main() {
         isTrue,
       );
     });
+
+    test('图片尾部 upsert 失败（SR2-1）：enqueue 不抛、图片任务失败、整批继续',
+        () async {
+      final db = await openMemoryDb();
+      await db.execute('''
+        CREATE TRIGGER trg_p1_4_fail_needbox_upsert_img
+        BEFORE UPDATE ON collect_tasks
+        WHEN NEW.status = 'needBox'
+        BEGIN
+          SELECT RAISE(ABORT, 'simulated write failure');
+        END
+      ''');
+      final tasks = await ImportService(AppDatabase.instance).enqueue([
+        'test/fixtures/photo.jpg',
+        'test/fixtures/exif-orientation-6.jpg',
+      ], subjectId: 'math');
+      // 没修之前：第一张图的尾部 upsert 抛错逃出 enqueue，整个 await
+      // 抛错、一个任务都拿不到。修后：两个任务都在，且第二个也被处理。
+      expect(tasks.length, 2);
+      for (final t in tasks) {
+        expect(t.status, CollectStatus.failed);
+        expect(t.error, contains('写不进任务列表'));
+        expect(
+          Directory(
+            AppDatabase.resolveDataPath(ImportService.taskDirRelative(t.id))!,
+          ).existsSync(),
+          isFalse,
+        );
+      }
+      // 库里也是 failed 行（_failAndClean 的重试写成功了），
+      // 没有任务卡在 importing。
+      final stored = await AppDatabase.instance.allCollectTasks();
+      expect(stored.length, 2);
+      expect(stored.map((t) => t.status).toSet(), {CollectStatus.failed});
+    });
+
+    test('_failAndClean 自身写库失败（SR2-2）：仍返回内存 failed 任务、不抛',
+        () async {
+      final db = await openMemoryDb();
+      // 只让写 failed 的 UPDATE 炸：初始 importing 行（INSERT）不受
+      // 影响，_failAndClean 的 failed 写库必然失败。
+      await db.execute('''
+        CREATE TRIGGER trg_fail_failed_upsert
+        BEFORE UPDATE ON collect_tasks
+        WHEN NEW.status = 'failed'
+        BEGIN
+          SELECT RAISE(ABORT, 'simulated write failure');
+        END
+      ''');
+      final pdf = File('${_tmp.path}/p1-4-corrupt.pdf');
+      await pdf.writeAsBytes(List.generate(2000, (i) => i % 251));
+      final tasks = await ImportService(
+        AppDatabase.instance,
+        pdfRenderService: PdfRenderService(engine: _CorruptEngine()),
+      ).enqueue([pdf.path], subjectId: 'math');
+      // 没修之前：_importPdf → _failAndClean 的 upsert 抛错逃出
+      // enqueue，整个 await 抛错。修后：内存里仍返回 failed 任务。
+      expect(tasks.length, 1);
+      expect(tasks.first.status, CollectStatus.failed);
+      expect(tasks.first.error, contains('文件损坏'));
+      expect(
+        Directory(
+          AppDatabase.resolveDataPath(
+            ImportService.taskDirRelative(tasks.first.id),
+          )!,
+        ).existsSync(),
+        isFalse,
+      );
+      // 库里只剩初始 importing 行——failed 行写不进去是触发器模拟的
+      // “库已坏到 failed 行也写不进”的降级态，内存结果为准。
+      final stored = await AppDatabase.instance.allCollectTasks();
+      expect(stored.length, 1);
+      expect(stored.first.status, CollectStatus.importing);
+    });
+
+    test('全部 collect_tasks 写操作失败（SR2-60）：enqueue 不抛、返回 2 个内存 failed 任务',
+        () async {
+      final db = await openMemoryDb();
+      // INSERT 与 UPDATE 全炸：连初始 importing 行都写不进。
+      await db.execute('''
+        CREATE TRIGGER trg_fail_all_insert
+        BEFORE INSERT ON collect_tasks
+        BEGIN
+          SELECT RAISE(ABORT, 'simulated write failure');
+        END
+      ''');
+      await db.execute('''
+        CREATE TRIGGER trg_fail_all_update
+        BEFORE UPDATE ON collect_tasks
+        BEGIN
+          SELECT RAISE(ABORT, 'simulated write failure');
+        END
+      ''');
+      final pdf1 = File('${_tmp.path}/p1-4-all-fail-a.pdf');
+      final pdf2 = File('${_tmp.path}/p1-4-all-fail-b.pdf');
+      await pdf1.writeAsBytes(List.generate(2000, (i) => i % 251));
+      await pdf2.writeAsBytes(List.generate(2000, (i) => i % 251));
+      final tasks = await _service().enqueue([
+        pdf1.path,
+        pdf2.path,
+      ], subjectId: 'math');
+      // 没修之前：第一个文件的初始 upsert 就抛错逃出 enqueue，
+      // 整个 await 抛错、一个任务都拿不到。修后：两个内存 failed
+      // 任务都在（库里一行也写不进，这是触发器模拟的降级态）。
+      expect(tasks.length, 2);
+      for (final t in tasks) {
+        expect(t.status, CollectStatus.failed);
+        expect(t.error, isNotNull);
+      }
+      expect(await AppDatabase.instance.allCollectTasks(), isEmpty);
+    });
   });
 
   group('SR-P1-14 图片 20MB 硬判', () {
@@ -192,6 +318,33 @@ void main() {
         ImportService.oversizeHint(File('test/fixtures/photo.jpg')),
         isNull,
       );
+    });
+
+    test('恰好 20MB 图片（SR2-71，size == limit）：放行进 needBox', () async {
+      await openMemoryDb();
+      // photo.jpg 后补 0 到恰好 20MB：JPEG 解码在 EOI 后停，尾部
+      // 补零不影响解码；断言 size == limit 时 `size > limit` 不触发。
+      final bytes = await File('test/fixtures/photo.jpg').readAsBytes();
+      final padded = Uint8List(ImportService.maxImageBytes)
+        ..setRange(0, bytes.length, bytes);
+      final exact = File('${_tmp.path}/exact-20mb.jpg');
+      await exact.writeAsBytes(padded);
+      expect(await exact.length(), ImportService.maxImageBytes);
+      final tasks = await ImportService(AppDatabase.instance)
+          .enqueue([exact.path], subjectId: 'math');
+      expect(tasks.length, 1);
+      expect(tasks.first.status, CollectStatus.needBox);
+    });
+
+    test('恰好 50MB PDF（SR2-71，size == limit）：放行进 needBox', () async {
+      await openMemoryDb();
+      final exact = File('${_tmp.path}/exact-50mb.pdf');
+      await exact.writeAsBytes(List.filled(ImportService.maxPdfBytes, 0));
+      expect(await exact.length(), ImportService.maxPdfBytes);
+      final tasks = await _service().enqueue([exact.path], subjectId: 'math');
+      expect(tasks.length, 1);
+      expect(tasks.first.status, CollectStatus.needBox);
+      expect(tasks.first.pageCount, 1);
     });
   });
 
@@ -237,6 +390,44 @@ void main() {
       expect(first.first.id, isNot(second.first.id));
       final stored = await AppDatabase.instance.allCollectTasks();
       expect(stored.length, 2);
+    });
+
+    test('同文件相对路径与绝对路径写法（SR2-72）：只建一个任务', () async {
+      await openMemoryDb();
+      const relative = 'test/fixtures/photo.jpg';
+      final absolute = File(relative).absolute.path;
+      expect(absolute, isNot(relative));
+      final tasks = await ImportService(AppDatabase.instance)
+          .enqueue([relative, absolute], subjectId: 'math');
+      expect(tasks.length, 1);
+      expect(tasks.first.status, CollectStatus.needBox);
+      expect((await AppDatabase.instance.allCollectTasks()).length, 1);
+    });
+
+    test('同文件符号链接写法（SR2-72）：只建一个任务', () async {
+      await openMemoryDb();
+      const src = 'test/fixtures/photo.jpg';
+      final link = Link('${_tmp.path}/link-photo.jpg');
+      await link.create(File(src).absolute.path);
+      final tasks = await ImportService(AppDatabase.instance)
+          .enqueue([src, link.path], subjectId: 'math');
+      expect(tasks.length, 1);
+      expect(tasks.first.status, CollectStatus.needBox);
+      expect((await AppDatabase.instance.allCollectTasks()).length, 1);
+    });
+
+    test('同文件大小写不同写法（SR2-72）：只建一个任务', () async {
+      await openMemoryDb();
+      // Linux 文件系统区分大小写，大写路径本身打不开文件；但去重
+      // 发生在打开之前（只比规范化后的路径），所以同一文件换个
+      // 大小写写法仍只建一个任务（产品跑在不区分大小写的 Windows 上）。
+      final tasks = await ImportService(AppDatabase.instance).enqueue([
+        'test/fixtures/photo.jpg',
+        'TEST/FIXTURES/PHOTO.JPG',
+      ], subjectId: 'math');
+      expect(tasks.length, 1);
+      expect(tasks.first.status, CollectStatus.needBox);
+      expect((await AppDatabase.instance.allCollectTasks()).length, 1);
     });
   });
 }

@@ -4,6 +4,7 @@
 // 空间足够时仍把过小的宽/高补回 0.08。
 // SR-P2-77：真实模型冒烟 group 带 5 分钟超时余量（与 PDF 组并行跑时
 // 的 CPU 争用超时抖动同源，见 test/pdf_render_service_test.dart 头注）。
+import 'dart:async';
 import 'dart:io';
 import 'dart:ui' as ui;
 
@@ -22,6 +23,35 @@ void expectInPage(QuestionBox r) {
   expect(r.h, greaterThanOrEqualTo(0.0));
   expect(r.x + r.w, lessThanOrEqualTo(1.0 + 1e-9));
   expect(r.y + r.h, lessThanOrEqualTo(1.0 + 1e-9));
+}
+
+/// SR2-73：生成一张纯白 PNG 页图（100×100），供并发检测用例用。
+/// 与冒烟组同款画法抽成辅助函数，不复写三遍。
+Future<File> _whitePagePng(Directory dir, {String name = 'page.png'}) async {
+  final recorder = ui.PictureRecorder();
+  final canvas = ui.Canvas(recorder);
+  canvas.drawRect(
+    const ui.Rect.fromLTWH(0, 0, 100, 100),
+    ui.Paint()..color = const ui.Color(0xFFFFFFFF),
+  );
+  final img = await recorder.endRecording().toImage(100, 100);
+  final png = await img.toByteData(format: ui.ImageByteFormat.png);
+  img.dispose();
+  final file = File('${dir.path}/$name');
+  await file.writeAsBytes(png!.buffer.asUint8List());
+  return file;
+}
+
+/// SR2-73：轮询等条件成立（默认最多 5 秒），超时返回 false。
+/// 用在“等第一次检测进入 _loadOnce 并停在屏障处”。
+Future<bool> _waitFor(bool Function() cond,
+    {Duration timeout = const Duration(seconds: 5)}) async {
+  final deadline = DateTime.now().add(timeout);
+  while (!cond()) {
+    if (DateTime.now().isAfter(deadline)) return false;
+    await Future.delayed(const Duration(milliseconds: 10));
+  }
+  return true;
 }
 
 void main() {
@@ -77,13 +107,26 @@ void main() {
       expectInPage(r);
     });
 
-    test('负坐标：左上角收到 0，尺寸不变', () {
-      final r = YoloOnnxService.clampToPage(box(-0.2, -0.1, 0.5, 0.5));
-      expect(r.x, 0.0);
-      expect(r.y, 0.0);
-      expect(r.w, 0.5);
-      expect(r.h, 0.5);
-      expectInPage(r);
+    test('负坐标：minSize: false 时左溢出扣宽（交集语义），默认时尺寸不变', () {
+      // SR2-38：检测路径（minSize: false）改成交集语义——
+      // x=-0.2, w=0.5 → 交集 [0, 0.3]，宽扣到 0.3；
+      // y=-0.1, h=0.5 → 交集 [0, 0.4]，高扣到 0.4。
+      final detected = YoloOnnxService.clampToPage(
+          box(-0.2, -0.1, 0.5, 0.5),
+          minSize: false);
+      expect(detected.x, 0.0);
+      expect(detected.y, 0.0);
+      expect(detected.w, closeTo(0.3, 1e-9));
+      expect(detected.h, closeTo(0.4, 1e-9));
+      expectInPage(detected);
+      // 编辑器路径（默认 minSize: true）保持现状：左上角收到 0，
+      // 尺寸不变——框被拖出页边时不静默缩小、保持可抓取。
+      final edited = YoloOnnxService.clampToPage(box(-0.2, -0.1, 0.5, 0.5));
+      expect(edited.x, 0.0);
+      expect(edited.y, 0.0);
+      expect(edited.w, 0.5);
+      expect(edited.h, 0.5);
+      expectInPage(edited);
     });
 
     test('框完全在页外：收到右下角，宽/高为 0', () {
@@ -421,6 +464,104 @@ void main() {
         expect(third.usedFallback, isFalse);
         expect(stale.hasRealModel, isTrue);
       } finally {
+        await dir.delete(recursive: true);
+        YoloOnnxService.resetLoadStateForTest();
+      }
+    }, timeout: const Timeout(Duration(minutes: 5)));
+  });
+
+  group('SR2-73 并发检测共用 _loadFuture', () {
+    test('模型缺失路径：两次并发检测只加载一次，无原生库也可断言', () async {
+      TestWidgetsFlutterBinding.ensureInitialized();
+      YoloOnnxService.resetLoadStateForTest();
+      // 屏障：第一次加载停在 gate 处，第二次检测发起时它仍在进行中，
+      // 必须加入同一个 _loadFuture。无屏障时无原生库的加载在
+      // OrtEnv.init 处同步失败，两次检测几乎不可能在同一次加载内
+      // 重叠，计数断言会抖动——屏障只在测试里设置，生产恒为 null。
+      final gate = Completer<void>();
+      YoloOnnxService.loadGateForTest = gate;
+      final dir = await Directory.systemTemp.createTemp('yolo-concurrent');
+      try {
+        final file = await _whitePagePng(dir);
+        // 两个不同实例：_loadFuture 是静态的，跨实例也应共用。
+        final a = YoloOnnxService(
+          questionModelAsset: 'assets/models/question/does-not-exist.onnx',
+        );
+        final b = YoloOnnxService(
+          questionModelAsset: 'assets/models/question/does-not-exist.onnx',
+        );
+        final first = a.detectPage(imagePath: file.path, page: 1);
+        // 等第一次检测真正进入 _loadOnce 并停在屏障处。
+        expect(
+          await _waitFor(() => YoloOnnxService.loadAttemptsForTest == 1),
+          isTrue,
+          reason: '第一次检测应在超时前进入加载',
+        );
+        final second = b.detectPage(imagePath: file.path, page: 1);
+        // 给第二次检测留出解码 + 到达 _ensureLoaded 的时间（100×100
+        // PNG 解码是毫秒级，500ms 余量充足）：加载仍被屏障按住，
+        // 晚到也会加入同一个 _loadFuture，不会另起加载。
+        await Future.delayed(const Duration(milliseconds: 500));
+        gate.complete();
+        final results = await Future.wait([first, second]);
+        for (final r in results) {
+          expect(r.usedFallback, isTrue);
+          expect(r.error, contains('手动框选'));
+        }
+        // 两次并发检测只触发一次加载：第二次加入了第一次的 _loadFuture。
+        expect(YoloOnnxService.loadAttemptsForTest, 1);
+      } finally {
+        // 失败时也放行屏障，免得停在 gate 处的加载一直挂起。
+        if (!gate.isCompleted) gate.complete();
+        await dir.delete(recursive: true);
+        YoloOnnxService.resetLoadStateForTest();
+      }
+    }, timeout: const Timeout(Duration(minutes: 5)));
+
+    test('真实模型路径：两次并发检测只加载一次；无原生库时跳过原因可观测',
+        () async {
+      TestWidgetsFlutterBinding.ensureInitialized();
+      YoloOnnxService.resetLoadStateForTest();
+      final gate = Completer<void>();
+      YoloOnnxService.loadGateForTest = gate;
+      final dir =
+          await Directory.systemTemp.createTemp('yolo-concurrent-real');
+      try {
+        final file = await _whitePagePng(dir);
+        final a = YoloOnnxService();
+        final b = YoloOnnxService();
+        final first = a.detectPage(imagePath: file.path, page: 1);
+        expect(
+          await _waitFor(() => YoloOnnxService.loadAttemptsForTest == 1),
+          isTrue,
+          reason: '第一次检测应在超时前进入加载',
+        );
+        final second = b.detectPage(imagePath: file.path, page: 1);
+        await Future.delayed(const Duration(milliseconds: 500));
+        gate.complete();
+        final results = await Future.wait([first, second]);
+        // 共享加载的断言与原生库无关：有库无库都只加载一次。
+        expect(YoloOnnxService.loadAttemptsForTest, 1);
+        if (!a.hasRealModel) {
+          // 跳过原因可观测：先断言两次结果都是“加载失败 → fallback”
+          // 的确定行为，再记跳过——这次跳过不是关键断言空跑，而是
+          // 环境缺 onnxruntime 原生库；共享加载已由计数断言覆盖。
+          for (final r in results) {
+            expect(r.usedFallback, isTrue);
+            expect(r.error, contains('手动框选'));
+          }
+          markTestSkipped('SR2-73 并发真实推理：本机无 onnxruntime 原生库'
+              '（hasRealModel=false），成功路径不断言；共享加载已由'
+              'loadAttemptsForTest == 1 覆盖');
+          return;
+        }
+        for (final r in results) {
+          expect(r.usedFallback, isFalse);
+        }
+        expect(a.lastDetectStats, isNotNull);
+        expect(b.lastDetectStats, isNotNull);
+      } finally {
+        if (!gate.isCompleted) gate.complete();
         await dir.delete(recursive: true);
         YoloOnnxService.resetLoadStateForTest();
       }

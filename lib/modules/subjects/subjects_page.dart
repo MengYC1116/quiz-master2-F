@@ -39,7 +39,9 @@ const _newSubjectColors = [
   // P0B2-3（2026-11-14）：加青、粉两色，第 6、7 科不再回落数学蓝；
   // 青 0xFF06B6D4（cyan-500，色相约 192°，在蓝与绿之间）、
   // 粉 0xFFEC4899（pink-500，色相约 336°，在红与紫之间），
-  // 与现有 5 色同为 500 级明艳色，亮/深两主题都直接用存色画圆点。
+  // 与现有 5 色同为 500 级明艳色；圆点亮色用存色、深色走
+  // DesignTokens.subjectColor 的雾化（SR2-36），不再“两主题都
+  // 直接用存色”。
   // SR-P2-51：再加 5 色到 12 色（青绿/草绿/琥珀/靛蓝/玫红），
   // 第 8–12 科各有新色；12 色用完后按金角轮转生成，不再回落第一色。
   Color(0xFF2E7CF6),
@@ -55,6 +57,13 @@ const _newSubjectColors = [
   Color(0xFF6366F1),
   Color(0xFFF43F5E),
 ];
+
+/// 环形色相距离（0..180°）：SR2-31——金角生成色与任一已用色 hue 差
+/// 小于 25° 即视为撞色（Meng 已定阈值），继续步进直到拉开。
+double _hueDistance(double a, double b) {
+  final d = (a - b).abs() % 360;
+  return d > 180 ? 360 - d : d;
+}
 
 class _SubjectsPageState extends State<SubjectsPage> {
   String? _openSection; // subjects / knowledge / tags / exams
@@ -308,12 +317,19 @@ class _SubjectsPageState extends State<SubjectsPage> {
       (c) => !usedColors.contains(c),
       // 12 色用完后按金角（137.5°）轮转生成新色（SR-P2-51），
       // 不再回落到第一色（数学蓝）；撞色时再步进 37° 避开。
+      // SR2-31：只防精确相等不够——金角起点恰好落在既有色旁边
+      //（第 13 科 210° 距数学蓝仅 6.6°）；生成色与全部已用色算
+      // 环形 hue 距离，小于 25° 时继续步进 37° 直到拉开。
       orElse: () {
         var hue = (usedColors.length * 137.5) % 360;
         var candidate =
             HSVColor.fromAHSV(1, hue, 0.65, 0.85).toColor();
+        bool tooClose(double h) => usedColors.any(
+              (c) => _hueDistance(HSVColor.fromColor(c).hue, h) < 25,
+            );
         var guard = 0;
-        while (usedColors.contains(candidate) && guard < 12) {
+        while ((usedColors.contains(candidate) || tooClose(hue)) &&
+            guard < 36) {
           hue = (hue + 37) % 360;
           candidate =
               HSVColor.fromAHSV(1, hue, 0.65, 0.85).toColor();

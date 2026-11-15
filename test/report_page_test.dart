@@ -478,11 +478,42 @@ void main() {
       );
     });
 
-    testWidgets('分布只按学科：本周数学 3 · 英语 2 · 政治 3', (tester) async {
+    testWidgets('分布只按学科、扣已掌握：本周数学 3 · 英语 1 · 政治 3', (tester) async {
       await pumpReport(tester);
       expect(find.text('数学 · 3 道错题'), findsOneWidget);
-      expect(find.text('英语 · 2 道错题'), findsOneWidget);
+      expect(find.text('英语 · 1 道错题'), findsOneWidget);
       expect(find.text('政治 · 3 道错题'), findsOneWidget);
+    });
+
+    testWidgets('SR2-29 分布扣已掌握：全科已掌握的学科显示 0 道', (tester) async {
+      // 英语只有 q4 且已掌握（错因已解决 ×2）→ 分布英语 0 道，数学仍 3 道。
+      final repo = FakeReportRepo(
+        questions: [
+          tq('q1', '函数极限', errorTypes: ['概念不清'],
+              knowledgePointIds: ['kp-limit']),
+          tq('q2', '导数应用', errorTypes: ['方法不会'],
+              knowledgePointIds: ['kp-derivative']),
+          tq('q3', '定积分', errorTypes: ['计算错误'],
+              knowledgePointIds: ['kp-integral']),
+          tq('q4', '学术词汇', subjectId: 'english', errorTypes: ['概念不清'],
+              knowledgePointIds: ['kp-vocab']),
+        ],
+        records: [
+          trec('q1', '概念不清'),
+          trec('q2', '方法不会'),
+          trec('q3', '计算错误',
+              status: CauseStatus.inProgress, solvedCount: 1, lastCheck: _today),
+          trec('q4', '概念不清',
+              subjectId: 'english',
+              status: CauseStatus.solved,
+              solvedCount: 2,
+              lastCheck: _today),
+        ],
+        kps: const [],
+      );
+      await pumpReport(tester, repo: repo);
+      expect(find.text('数学 · 3 道错题'), findsOneWidget);
+      expect(find.text('英语 · 0 道错题'), findsOneWidget);
     });
 
     testWidgets('接下来练什么只有一句话，无按钮', (tester) async {

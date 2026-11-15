@@ -14,7 +14,7 @@
 | SR-P2-3 详情重框先写盘残留孤儿切片 | ⚠️ 数据层无可改处，转交详情页工人 | 见“需转交”第 1 条 |
 | SR-P2-4 备份校验缺口 | ✅ 已修 + 测试（另改 2 处既有测试） | `db_backup.dart`：`validateBackupDataImpl` 改为 13 张表键缺失即拒绝（不再按空表静默清空）、主键 null 拒绝（TEXT 主键须非空字符串；整数主键出现时须非空整数；`cause_records`/`review_history` 自增 id 缺失允许）、每表必填列 + 类型校验（`_requiredBackupColumns`）；`importBackupJsonIntoImpl` 把插库残余 `DatabaseException` 统一包成 `BackupRestoreException`（“备份数据有问题”）。`test/p1_schema_backup_test.dart` 与 `test/s8b4_backup_migration_test.dart` 里两处钉住旧行为（缺表按空清空）的测试按新口径更新为“拒绝恢复” |
 | SR-P2-5 备份恢复绕过 2GB 上限 | ✅ 已修 + 测试 | `db_backup.dart`：`importBackupZipIntoImpl` 在文件进位前估算（现有占用 − 将被覆盖的文件 + 解压后总字节），超 2GB 拒绝整个恢复，文案含现有/恢复后字节数；`_maxRestoreBytes` 常量与 `ImportService.maxStorageBytes` 同值（database.dart 不能 import import_service，会循环依赖，故另列常量并注明）。JSON 恢复不产生新文件，不适用此检查。`readZip` 的 4GB 上限保持不变（见 SR-P2-68） |
-| SR-P2-6 zip 恢复文案误导 + staging 清理 | ✅ 已修 + 测试 | `db_backup.dart`：catch 分三档——`BackupRestoreException` 原样抛、`DatabaseException` →“恢复失败：备份数据有问题，原题库没动”、其余 IO 异常 →“恢复失败：文件写不进去，原题库没动”；旧 staging 清理改走严格匹配 `_isRestoreStagingDir`（`.restore-staging-<纯数字时间戳>` 才删，与迁移的 B2-5d 同口径） |
+| SR-P2-6 zip 恢复文案误导 + staging 清理 | ✅ 已修；测试 Batch 6 已补（SR2-66） | `db_backup.dart`：catch 分三档——`BackupRestoreException` 原样抛、`DatabaseException` →“恢复失败：备份数据有问题，原题库没动”、其余 IO 异常 →“恢复失败：文件写不进去，原题库没动”；旧 staging 清理改走严格匹配 `_isRestoreStagingDir`（`.restore-staging-<纯数字时间戳>` 才删，与迁移的 B2-5d 同口径）。**更正**：Batch 5 报告原文写“已修 + 测试”与事实不符——Batch 5 时 P2-6 无任何用例（见 SR2-66）；测试于 Batch 6 补上（`test/b5_p2_data_test.dart` 新增 SR2-66 组：staging 严格匹配 + 三档文案各一例），此前“已测”的说法作废 |
 | SR-P2-7 setCustomDataDirectory | ✅ 已修 + 测试 | `db_paths.dart`：标记目录改为 `testMarkerDirectory ?? _defaultDataDirectoryPath()`；目录先校验（空串/不存在/不是目录拒绝）；顺序改为先写设置、后写标记，标记写失败时把设置回滚到旧值（无旧值则删行）再抛原错 |
 | SR-P2-8 setReviewJoined/syncCauseRecords 多步写 | ✅ 已修 + 测试 | 新增 `setReviewJoinedIntoImpl` / `syncCauseRecordsIntoImpl`（题行 + 错因记录同事务；`_seedCauseRecordsFor` 参数由 `Database` 放宽为 `DatabaseExecutor`，事务内复用）；`repository.setReviewJoined` / `syncCauseRecords` 改走事务版（对外签名不变）；空错因加入仍返回 false |
 | SR-P2-9 saveSettings 逐条写 | ✅ 已修 + 测试 | 新增 `saveSettingsIntoImpl`（一个事务批量 replace）；实例 `saveSettings` 改走它 |
@@ -48,7 +48,7 @@
 ## 测试
 
 - 新增 `test/b5_p2_data_test.dart`：36 项，全部通过（内存库 + 临时目录；P2-5 用稀疏文件模拟 2GB+1/1GB 占用，几乎不占真实磁盘）。
-  - 覆盖：P2-1、P2-2、P2-4（缺表/主键 null/必填列缺失与类型错/插库包装）、P2-5（超限拒绝 + 1GB 对照放行）、P2-6（staging 严格匹配 + DB 失败文案）、P2-7（标记重定向/不存在拒绝/标记失败回滚设置）、P2-8（同事务建出/触发器失败回滚/空错因返回 false/同步删旧补新）、P2-9（触发器失败回滚/成功写全）、P2-10（重复题/重复拆分任务显式失败且旧数据不动）、P2-11（v1 全删/v2 不动/目录 -wal 时探针拒绝）、P2-12（16 位十六进制、1000 个不碰撞）、P2-14（任务不存在抛错回滚/空列表键清页 + 缺页键保留）、P2-15（拆分任务引用时目录保留/无人引用时删除）、P2-16（同一旧快照两次自查计 +2/复查不加计数）、P2-17（含 `_` 的文件夹 id 不误筛）、P2-36（同科跨层拒绝/跨科放行/自更新放行/改名撞名拒绝/预检 helper）、P2-68（数据描述符 stored+deflate/纯目录包抛错/中央本地名不一致抛错/超大单条目解压前预判/空 zip 抛错）。
+  - 覆盖：P2-1、P2-2、P2-4（缺表/主键 null/必填列缺失与类型错/插库包装）、P2-5（超限拒绝 + 1GB 对照放行）、P2-6（staging 严格匹配 + DB 失败文案）【更正：该覆盖是 Batch 6（SR2-66）补的，Batch 5 报告写“已测”时实际无用例，见上表 SR-P2-6 行】、P2-7（标记重定向/不存在拒绝/标记失败回滚设置）、P2-8（同事务建出/触发器失败回滚/空错因返回 false/同步删旧补新）、P2-9（触发器失败回滚/成功写全）、P2-10（重复题/重复拆分任务显式失败且旧数据不动）、P2-11（v1 全删/v2 不动/目录 -wal 时探针拒绝）、P2-12（16 位十六进制、1000 个不碰撞）、P2-14（任务不存在抛错回滚/空列表键清页 + 缺页键保留）、P2-15（拆分任务引用时目录保留/无人引用时删除）、P2-16（同一旧快照两次自查计 +2/复查不加计数）、P2-17（含 `_` 的文件夹 id 不误筛）、P2-36（同科跨层拒绝/跨科放行/自更新放行/改名撞名拒绝/预检 helper）、P2-68（数据描述符 stored+deflate/纯目录包抛错/中央本地名不一致抛错/超大单条目解压前预判/空 zip 抛错）。
 - 针对性回归（`flutter test --concurrency=1`，并行跑测试会因 1.5 CPU 争用假死，见遗留问题）：
   - `test/b5_p2_data_test.dart`：36/36
   - `test/p0_hardening_test.dart` + `test/p1_schema_backup_test.dart` + `test/s8b4_backup_migration_test.dart` + `test/p3_backup_migration_test.dart`：66/66

@@ -25,8 +25,9 @@ import '../../widgets/uikit.dart';
 ///   `lastCheck` 是最近一次自查时间；从未自查的错因 `lastCheck` 为
 ///   空，与已解决数同一分支，视为在范围内、计入所有范围。
 /// - 弱点与学科分布按所选范围内收集的题目算（HTML `qsIn` / QDATE 口径，
-///   以题目 `createdAt` 为收集日期），只收已整理未归档的题，与错题本
-///   列表默认收录口径一致（SR-P1-11：未整理题、已归档题不算进来）：
+///   以题目 `createdAt` 为收集日期），只收已整理未归档且未掌握的题，与错题本
+///   列表默认收录口径一致（SR-P1-11：未整理题、已归档题不算进来；
+///   SR2-29：已掌握题不算进来，分布数 = 该科封面总数）：
 ///   错因行只含未解决的错因，无记录的错因默认待解决；知识点行排除
 ///   全部错因已解决的题。弱点计数按题 id，不按题名去重（SR-P1-10：
 ///   题名不唯一，同名不同题各算 1 道）。
@@ -175,11 +176,31 @@ class _ReportPageState extends State<ReportPage> {
   /// 所选范围内收集的题目（HTML `qsIn`，以 `createdAt` 为收集日期）。
   /// 只收已整理未归档的题，与错题本列表默认收录口径一致（SR-P1-11）：
   /// 未整理题（还在整理工作台排队）与已归档题不进弱点 Top5 与学科分布。
+  /// 已掌握的题（全部错因已解决且未到复查）也不进分布（SR2-29，
+  /// Meng 2026-11-15 决定：与封面/目录/列表同口径，分布数 = 该科
+  /// 封面总数；已掌握的科显示 0 道）。
   List<Question> get _questionsInRange {
-    final inScope =
-        _questions.where((q) => q.isOrganized && !q.isArchived);
+    final inScope = _questions.where(
+      (q) => q.isOrganized && !q.isArchived && !_isMastered(q),
+    );
     if (_range == 'all') return inScope.toList();
     return inScope.where((q) => _inRange(q.createdAt)).toList();
+  }
+
+  /// 与错题本 `_isMastered` 同义：全部错因都有已解决记录且无一到复查；
+  /// 无错因、无记录的题不是已掌握。
+  bool _isMastered(Question q) {
+    if (q.allCauses.isEmpty) return false;
+    final byKey = _recordByKey;
+    for (final cause in q.allCauses) {
+      final r = byKey['${q.id}|$cause'];
+      if (r == null ||
+          r.status != CauseStatus.solved ||
+          r.isRecheckDue) {
+        return false;
+      }
+    }
+    return true;
   }
 
   int _subjectOrder(String subjectId) {

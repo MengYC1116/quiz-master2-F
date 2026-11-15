@@ -14,6 +14,14 @@
 // - SR-P2-70：rotateBoxToRotatedPage 钳制时扣掉溢出侧的宽高。
 // - SR-P2-74：切片 cacheWidth 乘 devicePixelRatio。
 // - SR-P2-75：放大对话框的缩放因子不再在 build 里赋值（点 ＋/－ 仍可用）。
+// Batch 6（SELF-REVIEW-2）补项：SR2-13（＋/－ 读 % 徽标断言）、
+// SR2-24（realRegionRects 只取切片来源父框下的内框）、SR2-35（QmChip
+// 双区点内边距与间隙）、SR2-36（subjectLabelColor 深色雾化）、
+// SR2-54（SR-P2-59 拒绝侧）、SR2-55（SR-P2-66 期望写字面色 +
+// 第二输入色）、SR2-63（dpr=1.0 对照与封顶）、SR2-77（SR-P2-62
+// 回调 0→70 连续）、SR2-78（SR-P2-68 的 ZIP64 / 多盘 / EOCD
+// 注释拒绝路径；原 SR-P2-68 组在 test/b5_p2_data_test.dart，
+// 本文件只补缺口，不动该文件）。
 // 未单测：SR-P2-67（弹框失败路径无法从公开 API 模拟，见报告）、
 // SR-P2-72（删死代码 / 标注由 flutter analyze + 既有 yolo/pdf 测试覆盖）、
 // SR-P2-73（decision-log 文字补记）、SR-P2-76（维持现状的决定，见报告）、
@@ -31,6 +39,7 @@ import 'package:quiz_master2/models/models.dart';
 import 'package:quiz_master2/services/import_service.dart';
 import 'package:quiz_master2/services/page_image_pipeline.dart';
 import 'package:quiz_master2/services/pdf_render_service.dart';
+import 'package:quiz_master2/services/zip_archive.dart';
 import 'package:quiz_master2/theme/app_theme.dart';
 import 'package:quiz_master2/widgets/uikit.dart';
 import 'package:quiz_master2/widgets/widgets.dart';
@@ -143,6 +152,48 @@ Future<void> _pumpDpr(
   await tester.pump(const Duration(milliseconds: 100));
 }
 
+/// SR2-78：手工改 zip 字节的帮手（在 buildZip 的合法包上改字段）。
+int _zipFind(List<int> bytes, List<int> pattern) {
+  for (var i = 0; i + pattern.length <= bytes.length; i++) {
+    var match = true;
+    for (var j = 0; j < pattern.length; j++) {
+      if (bytes[i + j] != pattern[j]) {
+        match = false;
+        break;
+      }
+    }
+    if (match) return i;
+  }
+  return -1;
+}
+
+int _zipFindLast(List<int> bytes, List<int> pattern) {
+  var found = -1;
+  for (var i = 0; i + pattern.length <= bytes.length; i++) {
+    var match = true;
+    for (var j = 0; j < pattern.length; j++) {
+      if (bytes[i + j] != pattern[j]) {
+        match = false;
+        break;
+      }
+    }
+    if (match) found = i;
+  }
+  return found;
+}
+
+void _zipWriteU16(List<int> bytes, int off, int v) {
+  bytes[off] = v & 0xFF;
+  bytes[off + 1] = (v >> 8) & 0xFF;
+}
+
+void _zipWriteU32(List<int> bytes, int off, int v) {
+  bytes[off] = v & 0xFF;
+  bytes[off + 1] = (v >> 8) & 0xFF;
+  bytes[off + 2] = (v >> 16) & 0xFF;
+  bytes[off + 3] = (v >> 24) & 0xFF;
+}
+
 void main() {
   setUpAll(() async {
     _tmp = await Directory.systemTemp.createTemp('qm2-b5-p2-services');
@@ -176,6 +227,23 @@ void main() {
       expect(tasks.first.pageCount, 1);
       await filler.delete();
     });
+
+    test('SR2-54：占用 2GB−1MB + 2MB 的 PDF：拒绝进 failed，错误含存储上限提示',
+        () async {
+      await openMemoryDb();
+      final filler = File('${_tmp.path}/imports/filler.bin');
+      await filler.parent.create(recursive: true);
+      final raf = await filler.open(mode: FileMode.write);
+      await raf.truncate(ImportService.maxStorageBytes - 1 * 1024 * 1024);
+      await raf.close();
+      final pdf = File('${_tmp.path}/p2-59-reject.pdf');
+      await pdf.writeAsBytes(List.filled(2 * 1024 * 1024, 0x25));
+      final tasks = await _service().enqueue([pdf.path], subjectId: 'math');
+      expect(tasks.length, 1);
+      expect(tasks.first.status, CollectStatus.failed);
+      expect(tasks.first.error, contains('2GB'));
+      await filler.delete();
+    });
   });
 
   group('SR-P2-60 任务 id 加随机段', () {
@@ -189,9 +257,35 @@ void main() {
           await _service().enqueue([png.path], subjectId: 'math');
       expect(first.length, 1);
       expect(second.length, 1);
+      // SR2-12：只断言“两次 id 不同”钉不住随机段——旧“毫秒 + 序号”
+      // 方案两次调用落在不同毫秒时同样通过。格式正则才是防线：
+      // task-<毫秒>-<批内序号>-<6 位随机段>。
+      final idPattern = RegExp(r'^task-\d+-\d+-\d{6}$');
+      expect(first.first.id, matches(idPattern));
+      expect(second.first.id, matches(idPattern));
       expect(first.first.id, isNot(second.first.id));
       expect(first.first.status, CollectStatus.needBox);
       expect(second.first.status, CollectStatus.needBox);
+    });
+
+    test('同一毫秒内连续导入（SR2-12）：20 次快速导入 id 全不同', () async {
+      await openMemoryDb();
+      // 紧凑循环连续导入同一小文件：20 次调用中很可能有落在同一毫秒
+      // 的，随机段是唯一防线。公开 enqueue API 没有可注入的时钟，
+      // 同一毫秒无法确定性安排；用 20 次快速调用逼出同毫秒碰撞窗口，
+      // 断言全部 id 格式正确且互不相同。
+      final png = File('${_tmp.path}/p2-60-burst.jpg');
+      await png.writeAsBytes(await _pngBytes());
+      final idPattern = RegExp(r'^task-\d+-\d+-\d{6}$');
+      final ids = <String>{};
+      for (var n = 0; n < 20; n++) {
+        final tasks = await _service().enqueue([png.path], subjectId: 'math');
+        expect(tasks.length, 1);
+        expect(tasks.first.id, matches(idPattern));
+        ids.add(tasks.first.id);
+      }
+      expect(ids.length, 20);
+      expect((await AppDatabase.instance.allCollectTasks()).length, 20);
     });
 
     test('同批两次选同一文件：仍只建一个任务（SR-P1-17 去重不变）', () async {
@@ -261,8 +355,13 @@ void main() {
       // 未节流时 0→70% 每 1% 一次约 70 次写库 + 渲染 1 次；
       // 节流后复制约 15 次（0/5/…/70）+ 渲染 1 次。
       expect(writes, lessThanOrEqualTo(20));
-      // UI 回调保持逐次：复制过程报出多个中间百分比，最终到 100。
-      expect(reported.length, greaterThan(2));
+      // SR2-77：UI 回调保持逐次——复制过程 0→70% 每个整数百分比
+      // 都回调一次（只断言 length > 2 钉不住“每 1% 都回调”，
+      // 3 个值也能通过），再加渲染段与收尾 100。
+      for (var i = 0; i <= 70; i++) {
+        expect(reported, contains(i));
+      }
+      expect(reported.length, greaterThanOrEqualTo(71));
       expect(reported.last, 100);
     });
   });
@@ -289,17 +388,78 @@ void main() {
       const stored = Color(0xFF2E7CF6);
       final misted = DesignTokens.subjectColor(
           'chemistry', Brightness.dark, stored);
-      expect(misted,
-          Color.lerp(stored, const Color(0xFFDCE3EC), 0.45));
+      // SR2-55：期望值写算好的字面色，不再用与实现相同的
+      // Color.lerp 公式算期望（实现改常量仍会失败，但期望不是
+      // 独立字面量就钉不住雾化本身）。
+      // 0xFF2E7CF6 向 #DCE3EC 混 45%：(124, 170, 242) = #7CAAF2。
+      // 注意：Color.lerp 产出的是带小数通道的 Color（如蓝通道
+      // 241.5），与字面量 0xFF7CAAF2（蓝 242）按 Color== 不等；
+      // 8 位色值才是对外可见的约定，故断言 toARGB32()。
+      expect(misted.toARGB32(), 0xFF7CAAF2);
       expect(misted, isNot(stored));
       expect(DesignTokens.subjectColor('chemistry', Brightness.light, stored),
           stored);
-      expect(DesignTokens.subjectInk('chemistry', Brightness.dark, stored),
-          Color.lerp(stored, const Color(0xFFDCE3EC), 0.45));
+      expect(
+          DesignTokens.subjectInk('chemistry', Brightness.dark, stored)
+              .toARGB32(),
+          0xFF7CAAF2);
+      // 第二个输入色：饱和暖红 0xFFEF4444，雾化结果同样是字面值
+      // (230, 140, 144) = #E68C90。
+      const warm = Color(0xFFEF4444);
+      expect(
+          DesignTokens.subjectColor('chemistry', Brightness.dark, warm)
+              .toARGB32(),
+          0xFFE68C90);
+      expect(
+          DesignTokens.subjectInk('chemistry', Brightness.dark, warm)
+              .toARGB32(),
+          0xFFE68C90);
+      expect(DesignTokens.subjectColor('chemistry', Brightness.light, warm),
+          warm);
       expect(DesignTokens.subjectColor('math', Brightness.dark, stored),
           const Color(0xFF87A9CC));
       expect(DesignTokens.subjectInk('math', Brightness.dark, stored),
           const Color(0xFFACC8E2));
+    });
+
+    testWidgets('SR2-36：subjectLabelColor 深色下雾化，不再直接返回存色',
+        (tester) async {
+      const stored = Color(0xFF2E7CF6);
+      Color? dark;
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: AppTheme.light(),
+          darkTheme: AppTheme.dark(),
+          themeMode: ThemeMode.dark,
+          home: Builder(
+            builder: (context) {
+              dark = subjectLabelColor(context, 'chemistry', stored);
+              return const SizedBox();
+            },
+          ),
+        ),
+      );
+      await tester.pump();
+      // 深色下走与 subjectColor 同一雾化（#7CAAF2），不是存色原值。
+      // 与 SR-P2-66 同理：Color.lerp 产出带小数通道，断言 8 位色值。
+      expect(dark?.toARGB32(), 0xFF7CAAF2);
+      Color? light;
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: AppTheme.light(),
+          home: Builder(
+            builder: (context) {
+              light = subjectLabelColor(context, 'chemistry', stored);
+              return const SizedBox();
+            },
+          ),
+        ),
+      );
+      // 注意：换主题要等 AnimatedTheme 走完（默认 200ms），只 pump
+      // 一帧的话 Theme.of 仍是旧的深色主题——上面深色断言恰好不受
+      // 影响，亮色这里必须 pumpAndSettle。
+      await tester.pumpAndSettle();
+      expect(light, stored);
     });
   });
 
@@ -419,6 +579,40 @@ void main() {
       expect(tapped, 1);
       expect(deleted, 1);
     });
+
+    testWidgets('SR2-35：点左内边距与标签/× 间隙也触发标签回调', (tester) async {
+      var tapped = 0;
+      var deleted = 0;
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: AppTheme.light(),
+          home: Scaffold(
+            body: Center(
+              child: QmChip(
+                label: '自定义错因',
+                onTap: () => tapped++,
+                onDelete: () => deleted++,
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      final chipRect = tester.getRect(find.byType(QmChip));
+      final labelRect = tester.getRect(find.text('自定义错因'));
+      final crossRect = tester.getRect(find.text('×'));
+      // 左内边距（SR2-35 探针点位）：芯片左缘 + 3，归属标签区。
+      await tester.tapAt(Offset(chipRect.left + 3, chipRect.center.dy));
+      await tester.pump();
+      expect(tapped, 1);
+      expect(deleted, 0);
+      // 标签与 × 之间的间隙中点，归属标签区。
+      final gapX = (labelRect.right + crossRect.left) / 2;
+      await tester.tapAt(Offset(gapX, chipRect.center.dy));
+      await tester.pump();
+      expect(tapped, 2);
+      expect(deleted, 0);
+    });
   });
 
   group('SR-P2-74/75 切片与放大对话框', () {
@@ -449,6 +643,48 @@ void main() {
       );
       // maxHeight 默认 160：(160×2)×3 = 960，未到 2048 封顶。
       expect(_imageCacheWidth(tester), 960);
+    });
+
+    testWidgets('SR2-63：dpr=1.0 对照，dpr 4.0+ 时 cacheWidth 封顶',
+        (tester) async {
+      final sliceDir = Directory('${_tmp.path}/slices');
+      sliceDir.createSync(recursive: true);
+      File('${sliceDir.path}/q1.png').writeAsBytesSync(_onePixelPng);
+      final q = Question(
+        id: 'q1',
+        title: '第 1 题',
+        subjectId: 'math',
+        createdAt: DateTime.now(),
+        slicePath: 'slices/q1.png',
+        sourcePath: 'slices/q1.png',
+      );
+      // dpr=1.0 基准：Compact 128×1 = 128，QuestionSlice (160×2)×1 = 320。
+      await _pumpDpr(
+        tester,
+        CompactSliceThumb(question: q),
+        devicePixelRatio: 1.0,
+      );
+      expect(_imageCacheWidth(tester), 128);
+      await _pumpDpr(
+        tester,
+        QuestionSlice(question: q),
+        devicePixelRatio: 1.0,
+      );
+      expect(_imageCacheWidth(tester), 320);
+      // dpr=4.0：Compact 128×4 = 512 → 封顶 384。
+      await _pumpDpr(
+        tester,
+        CompactSliceThumb(question: q),
+        devicePixelRatio: 4.0,
+      );
+      expect(_imageCacheWidth(tester), 384);
+      // dpr=4.0 + maxHeight 480：(480×2)×4 = 3840 → 封顶 2048。
+      await _pumpDpr(
+        tester,
+        QuestionSlice(question: q, maxHeight: 480),
+        devicePixelRatio: 4.0,
+      );
+      expect(_imageCacheWidth(tester), 2048);
     });
 
     testWidgets('SR-P2-75：放大对话框点 ＋/－ 仍可用', (tester) async {
@@ -482,11 +718,171 @@ void main() {
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 100));
       expect(find.text('整题图 · 放大查看'), findsOneWidget);
+      // SR2-13：只断言对话框还在钉不住缩放——带 bug 时点 ＋ 会
+      // 触发重建、缩放被重置回初始值，对话框本身不会消失。
+      // 读 % 徽标：点 ＋ 后变大，点 － 后变小。
+      int badgePercent() {
+        final text = tester.widget<Text>(
+          find.textContaining(RegExp(r'^\d+%$')),
+        );
+        return int.parse(text.data!.replaceAll('%', ''));
+      }
+
+      final initial = badgePercent();
       await tester.tap(find.text('＋'));
       await tester.pump();
+      final afterPlus = badgePercent();
+      expect(afterPlus, greaterThan(initial));
       await tester.tap(find.text('－'));
       await tester.pump();
+      final afterMinus = badgePercent();
+      expect(afterMinus, lessThan(afterPlus));
       expect(find.text('整题图 · 放大查看'), findsOneWidget);
+    });
+  });
+
+  group('SR2-24 realRegionRects：只取切片来源父框下的内框', () {
+    test('两父框同区域内框，胜者应为切片来源父框下的那一个', () {
+      // 首个 1 层框 b1 (0,0,0.5,0.5) 是切片来源；b2 (0.5,0.5,0.5,0.5)
+      // 是第二个 1 层框。b1 下的 stem 换算后面积 0.04，b2 下的 stem
+      // 换算后面积 0.16——旧实现跨父框比面积会选 b2 下的（画在 b1
+      // 的切片上位置是错的）；修后只取 b1 下的内框参选。
+      final rects = realRegionRects([
+        const QuestionBox(
+            id: 'b1',
+            layer: 1,
+            type: 'question',
+            x: 0.0,
+            y: 0.0,
+            w: 0.5,
+            h: 0.5),
+        const QuestionBox(
+            id: 'b2',
+            layer: 1,
+            type: 'question',
+            x: 0.5,
+            y: 0.5,
+            w: 0.5,
+            h: 0.5),
+        const QuestionBox(
+            id: 's1',
+            layer: 2,
+            type: 'stem',
+            x: 0.1,
+            y: 0.1,
+            w: 0.1,
+            h: 0.1,
+            parentBoxId: 'b1'),
+        const QuestionBox(
+            id: 's2',
+            layer: 2,
+            type: 'stem',
+            x: 0.55,
+            y: 0.55,
+            w: 0.2,
+            h: 0.2,
+            parentBoxId: 'b2'),
+      ]);
+      final stem = rects['stem'];
+      expect(stem, isNotNull);
+      expect(stem!.left, closeTo(0.2, 1e-9));
+      expect(stem.top, closeTo(0.2, 1e-9));
+      expect(stem.width, closeTo(0.2, 1e-9));
+      expect(stem.height, closeTo(0.2, 1e-9));
+    });
+
+    test('只有非首个父框下的内框：该区域不出结果（不回退错位框）', () {
+      final rects = realRegionRects([
+        const QuestionBox(
+            id: 'b1',
+            layer: 1,
+            type: 'question',
+            x: 0.0,
+            y: 0.0,
+            w: 0.5,
+            h: 0.5),
+        const QuestionBox(
+            id: 'b2',
+            layer: 1,
+            type: 'question',
+            x: 0.5,
+            y: 0.5,
+            w: 0.5,
+            h: 0.5),
+        const QuestionBox(
+            id: 's2',
+            layer: 2,
+            type: 'stem',
+            x: 0.55,
+            y: 0.55,
+            w: 0.2,
+            h: 0.2,
+            parentBoxId: 'b2'),
+      ]);
+      expect(rects, isEmpty);
+    });
+  });
+
+  group('SR2-78 readZip 拒绝路径（SR-P2-68 补）', () {
+    List<int> validZip() => buildZip([
+      const ZipEntryData('backup.json', [0x7B, 0x7D]),
+    ]);
+
+    test('ZIP64：中央目录尺寸字段为 0xFFFFFFFF 时拒绝', () {
+      final bytes = List<int>.of(validZip());
+      final cd = _zipFind(bytes, [0x50, 0x4B, 0x01, 0x02]);
+      expect(cd, isNot(-1));
+      _zipWriteU32(bytes, cd + 24, 0xFFFFFFFF); // 中央目录 rawSize
+      expect(
+        () => readZip(bytes),
+        throwsA(isA<ZipFormatException>().having(
+          (e) => e.message,
+          'message',
+          contains('ZIP64'),
+        )),
+      );
+    });
+
+    test('多盘：EOCD 盘号非 0 时拒绝', () {
+      final bytes = List<int>.of(validZip());
+      final eocd = _zipFindLast(bytes, [0x50, 0x4B, 0x05, 0x06]);
+      expect(eocd, isNot(-1));
+      _zipWriteU16(bytes, eocd + 4, 1); // EOCD disk number
+      expect(
+        () => readZip(bytes),
+        throwsA(isA<ZipFormatException>().having(
+          (e) => e.message,
+          'message',
+          contains('多盘'),
+        )),
+      );
+    });
+
+    test('EOCD 带注释但长度与文件末尾对不上：拒绝', () {
+      final bytes = List<int>.of(validZip());
+      final eocd = _zipFindLast(bytes, [0x50, 0x4B, 0x05, 0x06]);
+      expect(eocd, isNot(-1));
+      _zipWriteU16(bytes, eocd + 20, 10); // 注释长 10
+      bytes.addAll('abc'.codeUnits); // 实际只补 3 字节
+      expect(
+        () => readZip(bytes),
+        throwsA(isA<ZipFormatException>().having(
+          (e) => e.message,
+          'message',
+          contains('找不到中央目录'),
+        )),
+      );
+    });
+
+    test('EOCD 带格式正确的注释：仍可读（对照）', () {
+      final bytes = List<int>.of(validZip());
+      final eocd = _zipFindLast(bytes, [0x50, 0x4B, 0x05, 0x06]);
+      expect(eocd, isNot(-1));
+      _zipWriteU16(bytes, eocd + 20, 5);
+      bytes.addAll('hello'.codeUnits);
+      final entries = readZip(bytes);
+      expect(entries.map((e) => e.name), ['backup.json']);
+      expect(entries.first.bytes, [0x7B, 0x7D]);
     });
   });
 }

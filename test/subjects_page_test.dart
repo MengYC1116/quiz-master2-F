@@ -683,6 +683,22 @@ void main() {
       final colors = repo.subjectsList.map((s) => s.color).toSet();
       expect(colors.length, 13);
       expect(repo.subjectsList[12].color, isNot(const Color(0xFF2E7CF6)));
+      // SR2-56：第 13 科颜色写字面值（金角 210° 距数学蓝仅 6.6°、
+      // 247° 距靛蓝仅 8.3°，SR2-31 的 25° 阈值步进两次后落在 284°）。
+      expect(repo.subjectsList[12].color, const Color(0xFFB34CD9));
+      // 生成色与全部已用色的环形 hue 距离不小于 25°（SR2-31）。
+      double hueDistance(Color a, Color b) {
+        final d =
+            (HSVColor.fromColor(a).hue - HSVColor.fromColor(b).hue).abs() %
+            360;
+        return d > 180 ? 360 - d : d;
+      }
+
+      final generated = repo.subjectsList[12].color;
+      for (final used
+          in repo.subjectsList.sublist(0, 12).map((s) => s.color)) {
+        expect(hueDistance(generated, used), greaterThanOrEqualTo(25));
+      }
     });
 
     testWidgets('SR-P2-55 点封面小图一次只保存一次：单套点按处理',

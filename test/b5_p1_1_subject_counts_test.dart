@@ -110,6 +110,32 @@ void main() {
     test('reviewBucketOf：四桶互斥，混合错因题只落待解决', () {
       final yesterday = DateTime.now().subtract(const Duration(days: 1));
       final nextWeek = DateTime.now().add(const Duration(days: 7));
+      // SR2-64：复查日恰好是今天——零点与当前时刻各一，都算到期。
+      // isRecheckDue 按日期比较（!d.isAfter(today)），当天任意时刻
+      // 都落 recheck 桶、isReviewDue 为真；这是“待复查”与“已解决”
+      // 的分界点。
+      final now = DateTime.now();
+      final todayMidnight = DateTime(now.year, now.month, now.day);
+      expect(
+          QuestionRepository.reviewBucketOf([
+            _r('x', status: CauseStatus.solved, recheckDate: todayMidnight),
+          ]),
+          ReviewBucket.recheck);
+      expect(
+          QuestionRepository.reviewBucketOf([
+            _r('x', status: CauseStatus.solved, recheckDate: now),
+          ]),
+          ReviewBucket.recheck);
+      expect(
+          QuestionRepository.isReviewDue([
+            _r('x', status: CauseStatus.solved, recheckDate: todayMidnight),
+          ]),
+          isTrue);
+      expect(
+          QuestionRepository.isReviewDue([
+            _r('x', status: CauseStatus.solved, recheckDate: now),
+          ]),
+          isTrue);
       expect(QuestionRepository.reviewBucketOf([]), ReviewBucket.none);
       expect(
           QuestionRepository.reviewBucketOf([_r('x')]), ReviewBucket.pending);
@@ -192,5 +218,55 @@ void main() {
       expect(find.text('4 道要复习'), findsOneWidget);
       expect(find.text('待解决 2 道 · 复查 2 道'), findsOneWidget);
     });
+
+    testWidgets('真实仓储泵首页：焦点卡待解决 2 道 · 复查 2 道（SR2-61）',
+        (tester) async {
+      // 真实 QuestionRepository + 内存库，不用手填的 FakeRepo：
+      // 钉住“仓储 → 首页焦点卡”这一段接线。openForTest 只建表不播种，
+      // 学科/题/错因记录都用仓库写方法播种（与仓储层单测同款做法）。
+      // sqflite_ffi 走 isolate：testWidgets 的 FakeAsync 下直接 await
+      // 播种永不完成（实测 10 分钟超时），播种与仓储层断言必须包在
+      // tester.runAsync 里（真实异步区）；泵首页本身仍走 tester。
+      await tester.runAsync(() async {
+        final db = await AppDatabase.openForTest();
+        AppDatabase.useDatabaseForTest(db);
+        final repo = QuestionRepository(AppDatabase.instance);
+        for (final s in Subject.all) {
+          await repo.saveSubject(s);
+        }
+        final s = _scenario();
+        for (final q in s.questions) {
+          await repo.save(q);
+        }
+        for (final r in s.records) {
+          await repo.saveCauseRecord(r);
+        }
+        // 先断言仓储层算出的数与 FakeRepo 手填数一致，再泵首页：
+        // 若文案不对，能分清是仓储算错还是首页渲染错。
+        expect((await repo.dueToday()).map((q) => q.id).toSet(),
+            {'q1', 'q2', 'q3', 'q8'});
+        expect(await repo.homeRevCounts(),
+            {'math': 3, 'english': 1, 'politics': 0});
+      });
+      addTearDown(() async => AppDatabase.resetForTest());
+      final repo = QuestionRepository(AppDatabase.instance);
+      // 真实仓储的 Future.wait 在 FakeAsync 下不完成：_load 挂起、
+      // 加载圈一直转，pumpAndSettle 会超时。改用真实时间驱动：
+      // 每轮先在真实异步区等 100ms（让 sqflite isolate 回包到达），
+      // 再 pump 一帧，直到焦点卡文案出现；30 轮（3 秒）没等到就
+      // 明确失败，不静默挂起。
+      await pumpHome(tester, repo: repo, settle: false);
+      var found = false;
+      for (var i = 0; i < 30 && !found; i++) {
+        await tester.runAsync(
+            () => Future<void>.delayed(const Duration(milliseconds: 100)));
+        await tester.pump();
+        found = find.text('4 道要复习').evaluate().isNotEmpty;
+      }
+      expect(found, isTrue, reason: '真实仓储加载后焦点卡应显示 4 道要复习');
+      // 焦点卡总数 4 = 封面数学（2 + 1）+ 英语（0 + 1），与手填
+      // FakeRepo 的用例同一文案，但数是真实仓储算出来的。
+      expect(find.text('待解决 2 道 · 复查 2 道'), findsOneWidget);
+    }, timeout: const Timeout(Duration(seconds: 90)));
   });
 }

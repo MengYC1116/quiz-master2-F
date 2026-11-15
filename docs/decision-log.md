@@ -33,8 +33,9 @@ Linux 验证时用 `~/.local/share/quiz-master2/`；
 数学 / 英语 / 政治各 3 道大学题，`is_demo = 1`；
 “清空演示数据”只删演示题。设置页有该入口，首页不再放。
 注（§6 第 1 条，2026-11-13/14）：新库建库时从空开始、不预置
-演示题；`demoQuestions()` 仅作定义保留，目前没有任何生产调用方，
-上面 9 道题是演示库 v1（老库）的口径，不是新库的初始内容。
+演示题；`demoQuestions()` 已于 Batch 5（SR-P2-13）删除，演示题的
+唯一合法来源是 v1 老库（已整体删除，不迁移）。上面 9 道题是演示库
+v1（老库）的口径，不是新库的初始内容。
 
 ## D-05 — 复习模型：错因治疗（已确认，预览定稿）
 
@@ -130,7 +131,7 @@ figure 辅助区，永不拆题。先用占位服务（一页一个整题框 + �
 
 ## D-15 — 收集中心（已确认，预览定稿）
 
-只收 PDF/JPG/PNG（PDF 50MB / 图片 20MB，超限只提示不硬拦）；
+只收 PDF/JPG/PNG（PDF 50MB / 图片 20MB，超限硬判进失败任务，可先压缩再重选）；
 导入学科每次都选（默认“请选择学科”，不默认上次/数学）；
 修框全鼠标操作（拖动移/改大小/重画，滚轮缩放），双击题框进内框
 模式；修框确认后按框生成待整理题进整理队列（任务与题目一对一）；
@@ -222,8 +223,8 @@ docs/ui-replication/YOLO-INTEGRATION-REPORT.md）。
 （`lib/services/yolo_onnx_service.dart`）：整页 letterbox 1280
 （灰边 114）；置信度 0.45，NMS IoU 0.5；按阅读顺序（先上后下、
 同行先左后右）编号；推理在 worker isolate 跑（`runAsync`），
-不卡 UI 线程。模型缺失、加载失败或图片文件不存在时回退占位
-（一页一个整题框），不抛错。`QuestionBox` 接口不变；
+不卡 UI 线程。模型缺失、加载失败或图片文件不存在时返回空框 +
+`usedFallback: true`，不回占位框，不抛错。`QuestionBox` 接口不变；
 `clampToPage` 只加了一个默认 true 的 `minSize` 可选参数
 （默认行为与 A3 回归测试完全一致）：检测输出的框是量出来的
 尺寸，用 `minSize: false` 原样保留，否则题行（实测高
@@ -248,6 +249,8 @@ docs/ui-replication/YOLO-INTEGRATION-REPORT.md）。
 `QuestionBox.layer`、修框内框模式、三色高亮、切片区都保留，
 没有模型时用户仍可手动框 stem / option / figure。
 
-导入流程仍只存文件名（`CollectTask.fileName` 为显示名，未改
-Schema）：`detectPage` 按传入路径找文件，找得到跑真实推理，
-找不到回占位。真实文件落盘 / PDF 渲染仍是待办，见 YOLO 报告。
+导入已真实落盘（`imports/<task-id>/`，`collect_tasks.source_path`
+写库内副本的相对路径，`CollectTask.fileName` 只做显示名）：
+`detectPage` 按传入路径找文件，找得到跑真实推理，找不到返回空框
++ `usedFallback: true`。PDF 由 `pdf_render_service.dart` 按页渲染，
+见 YOLO 报告。

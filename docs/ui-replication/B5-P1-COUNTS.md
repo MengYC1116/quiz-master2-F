@@ -1,7 +1,7 @@
 # 第五批第三阶段 P1 口径类修复报告（B5-P1-COUNTS）
 
 - 时间：2026-11-14
-- 范围：最终自审 P1 口径类 6 项（SR-P1-1、SR-P1-9、SR-P1-10、SR-P1-11、SR-P1-12、SR-P1-13、SR-P1-15）
+- 范围：最终自审 P1 口径类 7 项（SR-P1-1、SR-P1-9、SR-P1-10、SR-P1-11、SR-P1-12、SR-P1-13、SR-P1-15）
 - 分支：`ui-replication`；工作树 `~/workspace/quiz-master2-UI`
 - 状态：**全部完成，未推代码**
 

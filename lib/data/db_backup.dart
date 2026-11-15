@@ -134,8 +134,11 @@ void _validateBackupRow(String table, Map row) {
   // 必须是非空整数；cause_records / review_history 的自增 id
   // 缺失时允许（入库自动编号），review_state / recent_tasks
   // 的 id 由必填列检查覆盖（_requiredBackupColumns 里是 int）。
+  // SR2-16：`''` 是合法 String，旧写法只查 `is! String` 会放过
+  // 空串主键（SQLite 的 TEXT PRIMARY KEY 允许空串），恢复后库里
+  // 出现 `id: ''` 的脏行；必填 String 列同理。
   if (table == 'settings') {
-    if (row['key'] is! String) {
+    if (row['key'] is! String || (row['key'] as String).isEmpty) {
       throw BackupRestoreException('这份备份文件已损坏：settings 表里有行缺少主键 key');
     }
   } else if (_integerIdBackupTables.contains(table)) {
@@ -143,7 +146,7 @@ void _validateBackupRow(String table, Map row) {
       throw BackupRestoreException('这份备份文件已损坏：$table 表 $id 行的主键 id 为空或类型不对');
     }
   } else {
-    if (row['id'] is! String) {
+    if (row['id'] is! String || (row['id'] as String).isEmpty) {
       throw BackupRestoreException('这份备份文件已损坏：$table 表里有行缺少主键 id');
     }
   }
@@ -154,7 +157,13 @@ void _validateBackupRow(String table, Map row) {
     if (value == null) {
       throw BackupRestoreException('这份备份文件已损坏：$table 表 $id 行缺少必填列 ${e.key}');
     }
-    final ok = e.value == int ? value is int : value is String;
+    var ok = e.value == int ? value is int : value is String;
+    // SR2-16：必填 String 列空串也拒绝（与主键同口径）；例外是
+    // settings.value——它是通用值列，空串是合法设置值（如清空
+    // 问候语），只要求它是 String。
+    if (ok && e.value == String && value is String && value.isEmpty) {
+      if (table != 'settings' || e.key != 'value') ok = false;
+    }
     if (!ok) {
       throw BackupRestoreException('这份备份文件已损坏：$table 表 $id 行的 ${e.key} 类型不对');
     }
@@ -352,8 +361,9 @@ bool _isRestoreStagingDir(String name) {
 /// 1. 解包并校验每个条目路径（zip slip：任一条目非法 → 拒绝整个包，
 ///    见 zip_archive.dart；含 `imports/` / `slices/` 之外的文件
 ///    条目也拒绝）；
-/// 2. SR-P2-5：文件进位前估算恢复后占用（现有占用 − 将被覆盖的
-///    文件 + 解压后总字节），超 2GB 拒绝整个恢复；
+/// 2. SR-P2-5：文件进位前按峰值占用估算（现有占用 + 解压后总字节，
+///    SR2-19：staging 副本与原文件共存，峰值不是恢复后占用），
+///    超 2GB 拒绝整个恢复；
 /// 3. 先把文件解到 staging 目录（数据目录内的
 ///    `.restore-staging-<时间戳>`），再校验 backup.json；
 /// 4. 校验通过后：文件原子替换进位（先把被覆盖的原文件挪到
@@ -384,7 +394,13 @@ Future<void> importBackupZipIntoImpl(
       throw BackupRestoreException('这份备份里有不支持的文件：${e.name}');
     }
   }
-  // SR-P2-5：恢复前估算——现有占用 − 将被覆盖的文件 + 解压后总字节。
+  // SR-P2-5：恢复前估算——峰值口径（SR2-19）：恢复中 staging 里的
+  // 副本与原文件共存，峰值占用是 `现有占用 + 解压后总字节`，不是
+  // 恢复后占用（`现有 − 将被覆盖的文件 + 解压后总字节`）。旧估算
+  // 用恢复后口径：现有 1.5GB、备份带 0.9GB 文件、其中 0.5GB 会
+  // 覆盖旧文件时估算 1.9GB 放行，峰值却是 2.4GB，盘空间不足时
+  // staging 写一半失败。改后按峰值与 2GB 上限比较；将被覆盖的
+  // 文件不再抵扣估算（它在恢复完成前一直占着磁盘）。
   final fileEntries = [
     for (final e in entries)
       if (e.name != 'backup.json') e,
@@ -394,22 +410,11 @@ Future<void> importBackupZipIntoImpl(
     (sum, e) => sum + e.bytes.length,
   );
   final usedBytes = await _dataDirFileUsageBytes(dir);
-  var replacedBytes = 0;
-  for (final e in fileEntries) {
-    final destPath = _resolveInsideDir(dir, e.name);
-    if (destPath == null) continue;
-    final f = File(destPath);
-    if (f.existsSync()) {
-      try {
-        replacedBytes += f.lengthSync();
-      } catch (_) {}
-    }
-  }
-  final estimatedBytes = usedBytes - replacedBytes + incomingBytes;
-  if (estimatedBytes > _maxRestoreBytes) {
+  final peakBytes = usedBytes + incomingBytes;
+  if (peakBytes > _maxRestoreBytes) {
     throw BackupRestoreException(
-      '这份备份恢复后会超过 2GB 存储上限（现有 ${_formatBytes(usedBytes)}，'
-      '恢复后约 ${_formatBytes(estimatedBytes)}），请先清理孤儿文件或删掉'
+      '这份备份恢复时峰值占用会超过 2GB 存储上限（现有 ${_formatBytes(usedBytes)}，'
+      '恢复中峰值约 ${_formatBytes(peakBytes)}），请先清理孤儿文件或删掉'
       '不需要的题目再恢复',
     );
   }

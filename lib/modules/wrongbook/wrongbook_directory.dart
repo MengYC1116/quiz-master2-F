@@ -153,6 +153,15 @@ extension _WrongbookDirectoryBuild on _WrongbookPageState {
     final subjectId = _subjectId!;
     final tops = _topFolders(subjectId);
     final selN = _moveSelection.length;
+    // SR2-7：下拉当前值必须在选项里——与批量条同款防线
+    //（wrongbook_list.dart _buildBatchBar），不在 build 里写回状态。
+    // _moveTargetId 可能陈旧：换科后仍是上一科文件夹的 id、目标被删
+    // 或被拖成子文件夹后不在当前科顶层里，直接喂给 DropdownButton
+    // 会在 debug 下断言；无效时回落到“移到顶层”。
+    final effectiveTargetId =
+        _moveTargetId == '__top__' || tops.any((f) => f.id == _moveTargetId)
+            ? _moveTargetId
+            : '__top__';
     return Container(
       margin: EdgeInsets.only(top: 12 * scale),
       padding: EdgeInsets.symmetric(
@@ -173,7 +182,7 @@ extension _WrongbookDirectoryBuild on _WrongbookPageState {
           SizedBox(
             width: 220 * scale,
             child: _styledDropdown<String>(
-              value: _moveTargetId,
+              value: effectiveTargetId,
               items: [
                 const DropdownMenuItem(
                   value: '__top__',
@@ -259,12 +268,16 @@ extension _WrongbookDirectoryBuild on _WrongbookPageState {
   }
 
   /// 两行之间的拖放缝隙（调顺序用；平时只有 10px 高的透明条）。
+  /// SR2-28：文件夹搜索开着时缝隙下标按过滤后的可见列表算，
+  /// `_reorderFolder` 却按全量列表解释，落点与所见不符——搜索有
+  /// 关键词时缝隙一律拒收（拖到行上移进去仍可用），先搜后拖不移错。
   Widget _buildGapTarget(String? parentId, int index) {
     final scale = qmScaleOf(context);
     final palette = DesignTokens.of(Theme.of(context).brightness);
     final key = 'gap:${parentId ?? 'top'}:$index';
     return DragTarget<Folder>(
       onWillAcceptWithDetails: (d) {
+        if (_folderSearch.trim().isNotEmpty) return false;
         final dragged = d.data;
         if (dragged.parentId != parentId) return false;
         _update(() => _dragOverKey = key);

@@ -190,6 +190,12 @@ int _readU32(List<int> b, int off) =>
 /// 任一条目名非法（见 [validateZipEntryName]）或结构损坏 → 抛
 /// [ZipFormatException]，调用方拒绝整个包。另设解压后总大小上限
 /// （默认 4GB，防 zip 炸弹；合法备份上限 2GB，不会触及）。
+/// SR2-17：重名文件条目直接抛错——旧写法不判重，同名条目两次进位，
+/// 第二遍 staging 文件已被 rename 走、`staged.rename(dest.path)` 因
+/// 源文件不存在抛 FileSystemException，恢复入口又把它归为“文件写
+/// 不进去”，把结构损坏误报成磁盘问题。例外是 `backup.json` 重名：
+/// 恢复取最后一个，进位循环又跳过它，不触发本问题，故仍放行（调用
+/// 方按“取最后一个”处理）。
 /// SR-P2-68：中央目录是唯一可信的条目清单——
 /// - 流式写出的 zip（local header flag bit 3 置位、尺寸为 0、真实
 ///   尺寸在数据后的描述符里）按中央目录的尺寸读，不再误读；
@@ -205,12 +211,17 @@ List<ZipEntryData> readZip(List<int> bytes, {int maxTotalBytes = 4 * 1024 * 1024
   }
   final central = _parseCentralDirectory(bytes);
   final entries = <ZipEntryData>[];
+  final seenNames = <String>{};
   var total = 0;
   final inflate = ZLibCodec(raw: true);
   for (final entry in central) {
     if (entry.name.endsWith('/')) continue; // 目录条目跳过
     final bad = validateZipEntryName(entry.name);
     if (bad != null) throw ZipFormatException('备份里有非法路径：$bad');
+    // SR2-17：重名文件条目即结构损坏（`backup.json` 除外，见上）。
+    if (entry.name != 'backup.json' && !seenNames.add(entry.name)) {
+      throw ZipFormatException('ZIP 里有重复条目：${entry.name}');
+    }
     if ((entry.flags & 0x01) != 0) {
       throw ZipFormatException('不支持加密的 ZIP 备份');
     }

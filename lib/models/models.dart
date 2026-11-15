@@ -342,7 +342,10 @@ class Question {
   final int? sliceHeight;
 
   /// 全部错因（固定枚举 + 自定义）。
-  List<String> get allCauses => [...errorTypes, ...customErrorTypes];
+  /// SR2-23：保序去重——旧数据里同名自定义（如固定名“其他”又存了一份
+  /// 自定义）会在详情页与错题本重复显示；新入口已拦同名，但未重保存
+  /// 的旧题仍带重复。Set 保序（先固定、后自定义），一处修、全链路受益。
+  List<String> get allCauses => {...errorTypes, ...customErrorTypes}.toList();
 
   Question copyWith({
     List<String>? folderIds,

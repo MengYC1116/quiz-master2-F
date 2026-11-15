@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'dart:math' as math;
 import 'dart:ui' as ui;
@@ -106,6 +107,9 @@ class YoloOnnxService {
   static void resetLoadStateForTest() {
     _loadOk = false;
     _loadFuture = null;
+    // SR2-73：计数与屏障一并复位，免得漏到下一个测试。
+    _loadAttempts = 0;
+    loadGateForTest = null;
     try {
       _questionSession?.release();
     } catch (_) {}
@@ -126,6 +130,37 @@ class YoloOnnxService {
   /// 正在进行的加载（SR-P1-16）：并发检测共用一次加载，避免 38MB
   /// 模型被重复加载；加载失败后清空，下次检测重新尝试。
   static Future<bool>? _loadFuture;
+
+  /// SR2-73 测试用：累计 `_loadOnce` 被调用的次数（只增，
+  /// [resetLoadStateForTest] 时清零）。两次并发检测共用 `_loadFuture`
+  /// 时只触发一次加载，计数为 1；各调各的加载时为 2。
+  static int _loadAttempts = 0;
+
+  /// SR2-73 测试用：读 [_loadAttempts]。
+  @visibleForTesting
+  static int get loadAttemptsForTest => _loadAttempts;
+
+  /// SR2-73 测试用：并发加载的屏障，只在测试里设置。`_loadOnce`
+  /// 进入后先等这个 gate，测试借此让第一次加载停在“进行中”，
+  /// 再发起第二次检测，确定性地验证它加入同一个 `_loadFuture`
+  /// 而不是另起一次加载。生产恒为 null，不影响加载时序。
+  /// 不设屏障时无原生库的加载在 `OrtEnv.instance.init()` 处同步
+  /// 失败，两次检测几乎不可能在同一次加载内重叠，计数断言会抖动。
+  @visibleForTesting
+  static Completer<void>? loadGateForTest;
+
+  /// 推理串行化（SR2-73）：同一 OrtSession 上的两次并发 runAsync
+  /// 会让原生库段错误（flutter_tester 实测 SIGSEGV：单次推理正常，
+  /// 两次并发推理崩）。生产里检测本就是逐页串行，这里用一条 Future
+  /// 链把推理排成队；加载共享不受影响（并发检测仍共用一个 _loadFuture，
+  /// 只是推理依次执行）。链不断：某次抛错也不堵住后面的检测。
+  static Future<void> _detectQueue = Future.value();
+
+  Future<T> _serializedDetect<T>(Future<T> Function() fn) {
+    final run = _detectQueue.then((_) => fn());
+    _detectQueue = run.then<void>((_) {}, onError: (_) {});
+    return run;
+  }
 
   /// 对一页做检测，只返回第 1 层整题框。图片文件不存在、模型缺失
   /// 或推理中途出错时返回 `usedFallback: true` 的空结果（不回占位框，
@@ -168,7 +203,8 @@ class YoloOnnxService {
           );
         }
         final sw = Stopwatch()..start();
-        final boxes = await _detect(pageImage, page);
+        final boxes =
+            await _serializedDetect(() => _detect(pageImage, page));
         sw.stop();
         return DetectionResult(boxes: boxes, usedFallback: false);
       } finally {
@@ -200,6 +236,11 @@ class YoloOnnxService {
   }
 
   Future<bool> _loadOnce() async {
+    // SR2-73：先计数再等屏障——测试据此确认第一次加载已进入
+    // _loadOnce 并停在屏障处，再发起第二次检测。
+    _loadAttempts++;
+    final gate = loadGateForTest;
+    if (gate != null) await gate.future;
     try {
       if (!_envInitialized) {
         OrtEnv.instance.init();
@@ -568,7 +609,27 @@ class YoloOnnxService {
   /// （实测高 0.018~0.10，多在 0.08 以下）与选项框（约 0.04×0.03）
   /// 全被撑成 0.08，相邻题行互相重叠、确认被拦，真实推理没法用。
   /// 默认行为与 A3 的回归测试完全一致，只给检测管线多一个选择。
+  ///
+  /// SR2-38：`minSize: false` 的检测路径改成交集语义——框与页面
+  /// 求交，左/上溢出扣掉溢出的宽/高（`x=-0.1, w=0.5 → x=0,
+  /// w=0.4`），与 `rotateBoxToRotatedPage` 同一语义；编辑器路径
+  /// （默认 `minSize: true`）保持现状：左上角收到 0、尺寸不变，
+  /// 框被拖出页边时不静默缩小、保持可抓取。
   static QuestionBox clampToPage(QuestionBox box, {bool minSize = true}) {
+    if (!minSize) {
+      // 交集语义：框与 [0, 1] 页面求交，溢出侧扣宽/高。
+      final x1 = box.x.clamp(0.0, 1.0);
+      final y1 = box.y.clamp(0.0, 1.0);
+      final x2 = (box.x + box.w).clamp(0.0, 1.0);
+      final y2 = (box.y + box.h).clamp(0.0, 1.0);
+      return _rebuildClamped(
+        box,
+        x1,
+        y1,
+        math.max(0.0, x2 - x1),
+        math.max(0.0, y2 - y1),
+      );
+    }
     final x = box.x.clamp(0.0, 1.0);
     final y = box.y.clamp(0.0, 1.0);
     final maxW = 1.0 - x;
@@ -577,16 +638,26 @@ class YoloOnnxService {
     final h = box.h.clamp(0.0, maxH);
     final w2 = (minSize && maxW >= 0.08 && w < 0.08) ? 0.08 : w;
     final h2 = (minSize && maxH >= 0.08 && h < 0.08) ? 0.08 : h;
-    // 钳制只改坐标与尺寸，其余字段（置信度 / 来源 / 归属 / 页码）
-    // 原样保留——以前这里重建框会丢掉 confidence 与 origin。
+    return _rebuildClamped(box, x, y, w2, h2);
+  }
+
+  /// 钳制只改坐标与尺寸，其余字段（置信度 / 来源 / 归属 / 页码）
+  /// 原样保留——以前这里重建框会丢掉 confidence 与 origin。
+  static QuestionBox _rebuildClamped(
+    QuestionBox box,
+    double x,
+    double y,
+    double w,
+    double h,
+  ) {
     return QuestionBox(
       id: box.id,
       layer: box.layer,
       type: box.type,
       x: x,
       y: y,
-      w: w2,
-      h: h2,
+      w: w,
+      h: h,
       confidence: box.confidence,
       origin: box.origin,
       parentBoxId: box.parentBoxId,

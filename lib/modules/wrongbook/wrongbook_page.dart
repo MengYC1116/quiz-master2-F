@@ -162,17 +162,40 @@ class _WrongbookPageState extends State<WrongbookPage> {
 
   String _subjectInitial(String subjectId) {
     final name = _subjectOf(subjectId).name.trim();
-    if (name.isEmpty) return '';
+    // SR2-32：空名回退到 '{'（排在 Z 之后、最后），不再回退 '' 置顶。
+    if (name.isEmpty) return '{';
     final first = name[0];
     if (first.codeUnitAt(0) < 128) return first.toUpperCase();
     return _pinyinInitials[first] ?? first;
   }
 
-  /// 学科首字母 + 学科名比较（时间平局由调用方另行处理）。
+  /// 学科名逐字转首字母串（SR2-32：同首字母平局按它排，不再按 Unicode
+  /// 码点比全名——“生物” SHENGWU 排在“数学” SHUXUE 前面才是拼音序）。
+  /// 表外汉字仍回退为原字比较（码点序，不是拼音序，注释写明）；
+  /// 拉丁字母直接取大写。空名返回 ''，与回退到 '{' 的首字母一致排最后。
+  String _subjectPinyinKey(String subjectId) {
+    final name = _subjectOf(subjectId).name.trim();
+    if (name.isEmpty) return '';
+    final buf = StringBuffer();
+    for (var i = 0; i < name.length; i++) {
+      final ch = name[i];
+      if (ch.codeUnitAt(0) < 128) {
+        buf.write(ch.toUpperCase());
+      } else {
+        buf.write(_pinyinInitials[ch] ?? ch);
+      }
+    }
+    return buf.toString();
+  }
+
+  /// 学科首字母 + 全名拼音首字母串比较（时间平局由调用方另行处理）。
   int _subjectKeyCompare(Question a, Question b) {
     final c = _subjectInitial(a.subjectId)
         .compareTo(_subjectInitial(b.subjectId));
     if (c != 0) return c;
+    final k = _subjectPinyinKey(a.subjectId)
+        .compareTo(_subjectPinyinKey(b.subjectId));
+    if (k != 0) return k;
     return _subjectOf(a.subjectId).name.compareTo(_subjectOf(b.subjectId).name);
   }
 
@@ -296,6 +319,19 @@ class _WrongbookPageState extends State<WrongbookPage> {
         _kps = kps;
         _counts = counts;
         _recordsByQ = byQ;
+        // SR2-34：错误类型筛选的当前值可能在详情页删题后失效——选项 =
+        // 固定错因 + 现存题的全部错因；唯一带某自定义错因的题被删后，
+        // 旧值不在选项里，直接喂给 DropdownButton 会断言。无效时回落
+        // 到 null（“全部”）；下拉处另有就地 effectiveValue 兜底。
+        if (_filterErrorType != null) {
+          final validTypes = <String>{...ErrorTypes.fixed};
+          for (final q in questions) {
+            validTypes.addAll(q.allCauses);
+          }
+          if (!validTypes.contains(_filterErrorType)) {
+            _filterErrorType = null;
+          }
+        }
         if (!_pageSizeInitialized) {
           _pageSize = settings.pageSize;
           _pageSizeInitialized = true;
@@ -572,6 +608,8 @@ class _WrongbookPageState extends State<WrongbookPage> {
       final today = DateTime(now.year, now.month, now.day);
       // “最近一周”= 7 天含今天（SR-P2-45 决定）：age < 7，
       // 不是 age <= 7（那是 8 天）。
+      // “最近 30 天”= 30 天含今天（Meng 2026-11-15 决定，与周口径一致）：
+      // age < 30，不是 age <= 30（那是 31 天）；报告页“本月”是自然月，不动。
       final limit = _filterTimeRange == 'week' ? 7 : 30;
       list = list.where((q) {
         final d = DateTime(
@@ -580,8 +618,7 @@ class _WrongbookPageState extends State<WrongbookPage> {
           q.createdAt.day,
         );
         final age = today.difference(d).inDays;
-        return age >= 0 &&
-            (_filterTimeRange == 'week' ? age < limit : age <= limit);
+        return age >= 0 && age < limit;
       }).toList();
     }
     if (_view != _View.archived && !_inBookArchived) {
@@ -720,6 +757,8 @@ class _WrongbookPageState extends State<WrongbookPage> {
       _newFolderCtrl.clear();
       _selectingMove = false;
       _moveSelection.clear();
+      // SR2-7：换科时移动目标一并复位，不带上一科文件夹的 id 进新科。
+      _moveTargetId = '__top__';
       _renamingId = null;
       _draggingId = null;
       _dragOverKey = null;
@@ -734,6 +773,8 @@ class _WrongbookPageState extends State<WrongbookPage> {
       _folderId = null;
       _shelfPage = 0;
       _inBookArchived = false;
+      // SR2-7：回书架时移动目标一并复位。
+      _moveTargetId = '__top__';
     });
   }
 
@@ -821,6 +862,9 @@ class _WrongbookPageState extends State<WrongbookPage> {
 
   Future<void> _deleteFolderConfirmed(Folder f) async {
     await widget.repo.deleteFolder(f);
+    // SR2-7：删掉的可能是移动条正选中的目标；复位，下次开移动条不再
+    // 拿已删的 id 当下拉值（build 里另有回落兜底，见 _buildMoveSelBar）。
+    _moveTargetId = '__top__';
     await _load();
   }
 
@@ -891,7 +935,13 @@ class _WrongbookPageState extends State<WrongbookPage> {
           _subtreeIds(f.id).contains(targetParentId)) {
         return '不能移到自己下面';
       }
-      final target = _folders.firstWhere((x) => x.id == targetParentId);
+      // SR2-7：目标可能在选定后被删（或来自已换走的学科），无 orElse 的
+      // firstWhere 会抛 StateError 中断整批；找不到按“目标不存在”返回，
+      // 由 _moveSelected 计入汇总提示（与 SR-P2-41 的 _folderById 同款）。
+      final target = _folderById(targetParentId);
+      if (target == null || target.subjectId != f.subjectId) {
+        return '目标文件夹已经不存在了';
+      }
       if (target.parentId != null) return '子文件夹只能有一层';
       if (_subFolders(f.id).isNotEmpty) {
         return '「${f.name}」下面还有子文件夹，只留一层，不能再放进别的文件夹里';
@@ -948,7 +998,14 @@ class _WrongbookPageState extends State<WrongbookPage> {
           (f) => f.parentId == null || !_moveSelection.contains(f.parentId),
         )
         .toList();
-    final targetParentId = _moveTargetId == '__top__' ? null : _moveTargetId;
+    // SR2-7：下拉显示的值与实际移动的目标取同一口径——_moveTargetId
+    // 陈旧（换科 / 删目标后）时按下拉回落到顶层，不按旧 id 移动；
+    // _moveOneFolder 里仍有“目标不存在”的兜底，见该函数。
+    final effectiveTargetId = _moveTargetId == '__top__' ||
+            _topFolders(subjectId).any((f) => f.id == _moveTargetId)
+        ? _moveTargetId
+        : '__top__';
+    final targetParentId = effectiveTargetId == '__top__' ? null : effectiveTargetId;
     var okN = 0;
     final fails = <String>[];
     for (final f in effective) {

@@ -151,7 +151,12 @@ void main() {
   });
 
   group('SubjectLabel', () {
-    testWidgets('新学科：显示“化学”+存色紫（亮/深）', (tester) async {
+    // SR2-36：深色下 subjectLabelColor 雾化（与 subjectColor 同款），
+    // 不再直接返回存色；亮色下仍是存色。
+    // 雾化字面值：0xFF7C5CFC 向 #DCE3EC 混 45% → 0xFFA799F5（实测
+    // toARGB32）。Color.lerp 产出带小数通道，断言 8 位色值。
+    testWidgets('新学科：显示“化学”，亮色存色紫、深色雾化紫（SR2-36）',
+        (tester) async {
       for (final brightness in [Brightness.light, Brightness.dark]) {
         await _pumpChip(
           tester,
@@ -159,10 +164,12 @@ void main() {
           brightness: brightness,
         );
         expect(find.text('化学'), findsOneWidget);
-        expect(_labelDotColor(tester), chemPurple);
-        final text =
-            tester.widget<Text>(find.text('化学'));
-        expect(text.style?.color, chemPurple);
+        final expected = brightness == Brightness.light
+            ? chemPurple
+            : const Color(0xFFA799F5);
+        expect(_labelDotColor(tester)?.toARGB32(), expected.toARGB32());
+        final text = tester.widget<Text>(find.text('化学'));
+        expect(text.style?.color?.toARGB32(), expected.toARGB32());
       }
     });
 
@@ -174,7 +181,8 @@ void main() {
           DesignTokens.subjectColor('math', Brightness.light));
     });
 
-    testWidgets('subjectLabelColor：新学科传存色亮/深都直接用存色',
+    // SR2-36：亮色用存色、深色用雾化色（0xFFA799F5，见上）。
+    testWidgets('subjectLabelColor：新学科亮色用存色、深色用雾化色（SR2-36）',
         (tester) async {
       for (final brightness in [Brightness.light, Brightness.dark]) {
         await _pumpChip(
@@ -188,7 +196,10 @@ void main() {
           ),
           brightness: brightness,
         );
-        expect(find.text(chemPurple.toARGB32().toString()), findsOneWidget);
+        final expected = brightness == Brightness.light
+            ? chemPurple.toARGB32()
+            : const Color(0xFFA799F5).toARGB32();
+        expect(find.text(expected.toString()), findsOneWidget);
       }
     });
   });

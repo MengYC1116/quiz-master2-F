@@ -117,11 +117,14 @@ class _CollectPageState extends State<CollectPage> {
   Set<String> _hasAnyDraftBox = {};
 
   /// 有同 sourcePath 拆分任务（待整理/已整理）的任务 id（SR-P2-25
-  /// 补信号：P1-2 保留任务按同 id 重建回 needBox、未框页又没有草稿
-  /// 框——光看状态与草稿会误判为“从未打开”。但拆分任务只可能由编
-  /// 辑器确认产生，有拆分任务的同源任务一定打开过、应继续警告。
-  /// sourcePath 含原任务 id、重导入不串，与 _load 的 splitPagesBySource
-  /// 同口径）。
+  /// 补信号：P1-2 保留任务按同 id 重建、未框页又没有草稿框——光看状
+  /// 态与草稿会误判为“从未打开”。但拆分任务只可能由编辑器确认产生，
+  /// 有拆分任务的同源任务一定打开过、应继续警告。sourcePath 含原任
+  /// 务 id、重导入不串，与 _load 的 splitPagesBySource 同口径）。
+  /// SR2-22：这是派生信号，不是持久化信号——每次 _load 由当前任务
+  /// 表重算，没有字段落盘；删掉全部同源拆分任务行后它就消失。新修
+  /// 的保留任务不再靠它（重建时直接写 boxing 状态，见 _confirmSplit），
+  /// 它只为修前已重建回 needBox 的旧保留任务兜底。
   Set<String> _hasSplitSibling = {};
 
   Future<void> _load() async {
@@ -447,6 +450,12 @@ class _CollectPageState extends State<CollectPage> {
     await _confirmSplit(task, result);
   }
 
+  /// SR2-62：上一次确认的 `ts-rnd` 戳（只记这一个值，不作他用）。
+  /// 两次确认落在同一毫秒且随机段恰好撞上时，题 id 与拆分任务 id
+  /// 会全撞（SR-P2-60 的 6 位随机段只把概率压到 1e-6，不是保证）；
+  /// 撞上就重抽，直到与上一次不同，保证两次确认的 id 不同。
+  static String _lastSplitStamp = '';
+
   /// §1.5/§1.6：确认拆题——先写切片文件（失败不写库），再四步同事务。
   /// 每页：旋转角度 != 0 时把旋转烘焙进页图（生成
   /// `pages/page-<p>-r<角度>.png`，框坐标已是旋转后的坐标系，
@@ -454,8 +463,8 @@ class _CollectPageState extends State<CollectPage> {
   /// 页图按页取（PDF 多页任务每页一张页图，图片任务每页同一张）；
   /// 某页页图缺失时整单失败、库不动。
   /// P1-2：没框的页不丢——确认前先报未框页数让用户知情；确认后
-  /// 只拆有框的页，没框的页留在原任务里（同 id 重建回「待框选」，
-  /// 从首个未框页继续修，见方法尾部）。
+  /// 只拆有框的页，没框的页留在原任务里（同 id 重建、带上原任务的
+  /// 修框中状态，从首个未框页继续修，见方法尾部与 SR2-22）。
   /// SR-P2-22：按相对路径清单删文件（本次确认新写的切片/烘焙图）。
   /// 单个删失败不影响其余——清理本身走在失败处理里，静默跳过即可。
   Future<void> _deleteWrittenFiles(List<String> rels) async {
@@ -525,7 +534,12 @@ class _CollectPageState extends State<CollectPage> {
     }
     final ts = DateTime.now().millisecondsSinceEpoch;
     // SR-P2-60 同款：同一毫秒内两次确认会撞 id，补 6 位随机段（本次确认内共用）。
-    final rnd = math.Random().nextInt(1000000).toString().padLeft(6, '0');
+    // SR2-62：与上一次确认的戳撞上时重抽，保证两次确认的 id 不同。
+    var rnd = math.Random().nextInt(1000000).toString().padLeft(6, '0');
+    while ('$ts-$rnd' == _lastSplitStamp) {
+      rnd = math.Random().nextInt(1000000).toString().padLeft(6, '0');
+    }
+    _lastSplitStamp = '$ts-$rnd';
     final questions = <Question>[];
     final splitTasks = <CollectTask>[];
     final boxesByQuestionId = <String, List<QuestionBox>>{};
@@ -613,6 +627,23 @@ class _CollectPageState extends State<CollectPage> {
             ),
           );
         }
+        // SR2-4：有框页上的独立题内框（standaloneInner，无父框）
+        // 按中心点挂到最近/命中的题下，不再随确认静默丢弃。
+        // 落点规则与 box_editor `_confirmPendingType` 一致：
+        // 中心落在某题级框内即命中该题，否则取最近的题级框。
+        // 坐标原样保留、只补 parentBoxId：_clampInner 会把完全落在
+        // 框外的独立框压成 0.02 的细条（毁掉手画几何），下游
+        // layer2BoxToSliceRect 本就会把超框部分夹到 0..1 内。
+        for (final inner
+            in result.standaloneInner[p] ?? const <QuestionBox>[]) {
+          final target = _nearestLayer1Box(inner, layer1);
+          if (target == null) continue;
+          final targetQid = 'import-$ts-$rnd-$p-${layer1.indexOf(target)}';
+          boxesByQuestionId[targetQid] = [
+            ...?boxesByQuestionId[targetQid],
+            inner.copyWith(parentBoxId: target.id),
+          ];
+        }
       }
     } catch (e) {
       // SR-P2-22：裁剪/写盘失败——前面已写的新文件按清单删掉再提示，
@@ -632,15 +663,23 @@ class _CollectPageState extends State<CollectPage> {
     Map<String, List<QuestionBox>> retainedInners = const {};
     Map<int, List<QuestionBox>> retainedStandaloneInner = const {};
     if (unboxedPages.isNotEmpty) {
-      // 保留任务：按同 id 重建，页图目录 imports/<id>/ 不变，任务回
-      // 「待框选」、从首个未框页继续修；未框页的草稿（本就没有 1 层框，
-      // 只剩 2 层框）与旋转角一并写回。
+      // 保留任务：按同 id 重建，页图目录 imports/<id>/ 不变，从首个
+      // 未框页继续修；未框页的草稿（本就没有 1 层框，只剩 2 层框）
+      // 与旋转角一并写回。
+      // SR2-22：状态写 boxing，不重置回 needBox——boxing 就是“已打开过
+      // 修框”的持久化标志（_openBoxEditor 打开时置为 boxing 并落盘）；
+      // 保留任务只可能由编辑器确认产生，必定打开过，直接写 boxing，
+      // 不依赖调用方传进来的状态值。行上按“修框中”显示（文案“上次修
+      // 到一半，点「继续修框」接着修”正合此态），无框警告不再只靠派生
+      // 的 _hasSplitSibling；删掉全部同源拆分任务行后警告仍在。
+      // _hasSplitSibling 仍保留：它是修前已重建回 needBox 的旧保留
+      // 任务的唯一信号（见 _load）。
       retained = CollectTask(
         id: task.id,
         name: task.name,
         fileName: task.fileName,
         subjectId: task.subjectId,
-        status: CollectStatus.needBox,
+        status: CollectStatus.boxing,
         progress: 100,
         pageCount: task.pageCount,
         page: unboxedPages.first,
@@ -684,11 +723,17 @@ class _CollectPageState extends State<CollectPage> {
       await _load();
       return;
     }
-    await widget.repo.saveRecentTask(
-      kind: '收集',
-      subjectId: task.subjectId,
-      title: task.fileName,
-    );
+    // SR2-25：收尾写最近任务失败也不影响成功提示与列表刷新——
+    // 拆题已提交，记日志后继续。
+    try {
+      await widget.repo.saveRecentTask(
+        kind: '收集',
+        subjectId: task.subjectId,
+        title: task.fileName,
+      );
+    } catch (e) {
+      debugPrint('SR2-25：saveRecentTask 失败，已忽略：$e');
+    }
     await _load();
     if (mounted) {
       _snack(
@@ -716,6 +761,38 @@ class _CollectPageState extends State<CollectPage> {
 
   /// 题内框 key（`页:框 id`）里的页码；解析不出按 -1 算（不匹配任何页）。
   static int _innerPage(String key) => int.tryParse(key.split(':').first) ?? -1;
+
+  /// SR2-4：独立题内框按中心点找最近/命中的题级框。中心落在框内时
+  /// 距离为 0（命中）；否则取中心到框矩形的最短距离（最近）。
+  /// 平局取列表里先到的框。
+  static QuestionBox? _nearestLayer1Box(
+    QuestionBox inner,
+    List<QuestionBox> layer1,
+  ) {
+    if (layer1.isEmpty) return null;
+    final cx = inner.x + inner.w / 2;
+    final cy = inner.y + inner.h / 2;
+    QuestionBox? best;
+    var bestDist = double.infinity;
+    for (final b in layer1) {
+      final dx = cx < b.x
+          ? b.x - cx
+          : cx > b.x + b.w
+              ? cx - (b.x + b.w)
+              : 0.0;
+      final dy = cy < b.y
+          ? b.y - cy
+          : cy > b.y + b.h
+              ? cy - (b.y + b.h)
+              : 0.0;
+      final d = dx * dx + dy * dy;
+      if (d < bestDist) {
+        bestDist = d;
+        best = b;
+      }
+    }
+    return best;
+  }
 
   /// 页码清单：超过 5 页只列前 5 页加“等”，文案不刷屏。
   static String _pageListText(List<int> pages) {
@@ -1143,8 +1220,9 @@ class _CollectPageState extends State<CollectPage> {
     // “打开过”不用新字段：_openBoxEditor 打开时就把任务置为 boxing
     // 并落盘；needBox 任务有任意草稿框也一定打开过（草稿只由编辑器
     // 写；P1-2 保留任务的未框页草稿同样来自编辑器）。P1-2 保留任务
-    // 是例外：按同 id 重建回 needBox、未框页可能没有草稿框——但它有
-    // 同源拆分任务（_hasSplitSibling），一定打开并确认过，照样警告。
+    // 自 SR2-22 起重建时直接写 boxing，警告走状态本身，不再依赖拆分
+    // 任务行；_hasSplitSibling 只为修前已重建回 needBox 的旧保留任务
+    // 兜底（有同源拆分任务即一定打开并确认过）。
     final warnUnboxed =
         task.status == CollectStatus.boxing ||
         _hasAnyDraftBox.contains(task.id) ||

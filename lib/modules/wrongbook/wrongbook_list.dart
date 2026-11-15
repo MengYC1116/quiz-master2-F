@@ -194,6 +194,14 @@ extension _WrongbookListBuild on _WrongbookPageState {
     for (final q in _questions) {
       errorTypes.addAll(q.allCauses);
     }
+    // SR2-34：与批量条同款防线——_filterErrorType 可能在详情页删题后
+    // 失效（唯一带某自定义错因的题被删），不在 build 里写回状态；
+    // _load 里另有复位（见 wrongbook_page.dart _load），这里兜住
+    // _load 之前 / 之外的重建。
+    final effectiveErrorType =
+        _filterErrorType != null && errorTypes.contains(_filterErrorType)
+            ? _filterErrorType
+            : null;
     Widget cell(String label, Widget control) {
       return Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -253,7 +261,7 @@ extension _WrongbookListBuild on _WrongbookPageState {
                 cell(
                   '错误类型',
                   _styledDropdown<String>(
-                    value: _filterErrorType,
+                    value: effectiveErrorType,
                     items: [
                       const DropdownMenuItem<String>(
                         value: null,
@@ -275,7 +283,7 @@ extension _WrongbookListBuild on _WrongbookPageState {
                     items: const [
                       DropdownMenuItem(value: 'all', child: Text('收集时间：全部')),
                       DropdownMenuItem(value: 'week', child: Text('最近一周')),
-                      DropdownMenuItem(value: 'month', child: Text('最近一月')),
+                      DropdownMenuItem(value: 'month', child: Text('最近 30 天')),
                     ],
                     onChanged: (v) => _update(() {
                       if (v != null) {

@@ -19,6 +19,7 @@
 // 颜色只取 DesignTokens；文字符号（D3），不用图标字体；
 // 三档缩放 1.00/1.15/1.30 由 app.dart TextScaler + qmScaleOf 统一做。
 import 'dart:io';
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 
@@ -353,7 +354,10 @@ class _QuestionDetailPageState extends State<QuestionDetailPage> {
       _snack('至少保留一个题级框');
       return;
     }
-    // 重裁切片：先写盘再落库（切片写不进去不改库）。
+    // 重裁切片：先写临时文件再落库（SR2-3：旧写法先原地覆盖正式
+    // 切片，事务失败时 catch 删掉的是刚覆盖掉旧图的唯一一份切片，
+    // 题从此无图。改成临时文件 + 事务成功后 rename，失败只删临时
+    // 文件，旧切片字节完好、框与题不动）。
     final pageBytes = await File(pageAbs).readAsBytes();
     final first = newLayer1.first;
     final crop = await cropBoxPng(pageBytes, first);
@@ -363,23 +367,32 @@ class _QuestionDetailPageState extends State<QuestionDetailPage> {
       _snack('切片写不进去：数据目录不可用');
       return;
     }
+    // 临时切片与正式切片同目录，rename 是同文件系统内的原子替换；
+    // 随机后缀防两次重框撞名，也防失败残留被误删成他人的文件。
+    // 进程在写临时文件与 rename 之间被杀会留一个孤儿临时文件，
+    // 由 §4.5 孤儿扫描兜底（slices/ 下无引用文件）。
+    final tmpRel =
+        'slices/${q.id}.tmp-${DateTime.now().millisecondsSinceEpoch}-${math.Random().nextInt(1 << 32)}.png';
+    final tmpAbs = AppDatabase.resolveDataPath(tmpRel);
+    if (tmpAbs == null) {
+      _snack('切片写不进去：数据目录不可用');
+      return;
+    }
     try {
-      await File(sliceAbs).parent.create(recursive: true);
-      await File(sliceAbs).writeAsBytes(crop.png);
+      await File(tmpAbs).parent.create(recursive: true);
+      await File(tmpAbs).writeAsBytes(crop.png);
     } catch (_) {
       _snack('重新框选失败：切片写不进去');
       return;
     }
-    await evictCachedFileImage(sliceAbs);
     final innersFlat = <QuestionBox>[
       for (final e in result.inners.entries) ...e.value,
       ...result.standaloneInner.values.expand((v) => v),
     ];
     // B3-P01：换框 + 保存切片一个事务（任一步失败一起回滚，
     // 不留“框换了、切片还是旧的”的不一致）。
-    // SR-P2-3：切片在事务前写盘——事务失败时刚写的切片成孤儿文件
-    //（旧题 slicePath 为空时库里根本不引用它；有旧路径时也是新图
-    // 配旧框的错配），失败即删掉，再按现有失败路径提示、退出。
+    // SR2-3：事务失败时只删临时文件——正式路径上的旧切片从未被
+    // 动过；B5 的旧写法此时删的是刚覆盖掉旧图的正式文件。
     try {
       await widget.repo.replaceQuestionBoxesAndSlice(
         q.id,
@@ -390,12 +403,29 @@ class _QuestionDetailPageState extends State<QuestionDetailPage> {
       );
     } catch (e) {
       try {
-        final file = File(sliceAbs);
+        final file = File(tmpAbs);
         if (file.existsSync()) await file.delete();
       } catch (_) {}
       if (mounted) _snack('重新框选失败：保存失败，请重试');
       return;
     }
+    // 事务成功后再把临时切片 rename 到正式路径（同目录原子替换），
+    // 然后清 FileImage 缓存——缓存失效点随 rename 后移到此处
+    // （旧写法在事务前清缓存，事务失败后详情页会把仍是旧图的正式
+    // 文件当成新图重新解码，虽无数据丢失但缓存语义是错的）。
+    try {
+      await File(tmpAbs).rename(sliceAbs);
+    } catch (_) {
+      try {
+        final file = File(tmpAbs);
+        if (file.existsSync()) await file.delete();
+      } catch (_) {}
+      // 框与切片字段已提交，正式文件仍是旧切片：只报切片保存失败，
+      // 不谎称全失败；重试重框即可恢复一致。
+      if (mounted) _snack('重新框选失败：切片保存失败，框已更新，请重试');
+      return;
+    }
+    await evictCachedFileImage(sliceAbs);
     widget.onChanged();
     await _load();
     _snack('已重新框选，切片已更新');
