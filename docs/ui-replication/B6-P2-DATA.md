@@ -32,7 +32,7 @@
 - `lib/data/db_backup.dart`：`_validateBackupRow`（空串拒绝）；`importBackupZipIntoImpl`（峰值估算 + 文案，含步骤注释）
 - `lib/data/db_collect.dart`：`confirmSplitIntoImpl`（框回填 `seenBoxIds` 去重）；`replaceQuestionBoxesAndSliceIntoImpl` 注释（SR2-3 新口径）
 - `lib/services/zip_archive.dart`：`readZip`（`seenNames` 判重，`backup.json` 除外）及 doc 注释
-- `test/b5_p2_data_test.dart`：36 项 → 55 项（新增 19 项，见上表；另 SR2-59 改名 1 处）
+- `test/b5_p2_data_test.dart`：36 项 → 56 项（新增 19 项，见上表；另 SR2-59 改名 1 处；GAPS 的 SR2-27 补 1 项。成文时为 55 项，SR2-27 在后才加）
 - `test/b5_p0_1_orphan_test.dart`：3 项 → 4 项（新增 SR2-69 1 项）
 - `docs/ui-replication/B5-P2-DATA.md`：SR-P2-6 行与测试覆盖句更正（见下）
 

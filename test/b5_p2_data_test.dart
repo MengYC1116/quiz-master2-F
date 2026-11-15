@@ -11,6 +11,7 @@ import 'dart:typed_data';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path/path.dart' as p;
 import 'package:quiz_master2/data/database.dart';
+import 'package:quiz_master2/data/repository.dart';
 import 'package:quiz_master2/models/models.dart';
 import 'package:quiz_master2/services/zip_archive.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
@@ -684,7 +685,7 @@ void main() {
       expect(q['review_count'], 6);
     });
 
-    test('旧快照 upsertCauseRecord 只改 remedy_history，不覆盖自查改掉的状态/计数/复查日', () async {
+    test('旧快照 updateCauseRemedy 只改 remedy_history，不覆盖自查改掉的状态/计数/复查日', () async {
       final db = await openTestDb();
       AppDatabase.useDatabaseForTest(db);
       addTearDown(() async => db.close());
@@ -706,7 +707,7 @@ void main() {
         remedyHistory: ['2026-11-15：先列错因再算'],
         joinedAt: DateTime.fromMillisecondsSinceEpoch(1000),
       );
-      await AppDatabase.instance.upsertCauseRecord(stale);
+      await AppDatabase.instance.updateCauseRemedy(stale);
       final row = (await db.query('cause_records')).single;
       expect(row['status'], 'solved');
       expect(row['solved_count'], 2);
@@ -716,6 +717,65 @@ void main() {
         ['2026-11-15：先列错因再算'],
       );
     });
+
+    test('SR3-4：经 saveCauseRecord 改已存在行的 status 被丢弃（按设计），新行才整行写入', () async {
+      final db = await openTestDb();
+      AppDatabase.useDatabaseForTest(db);
+      addTearDown(() async => db.close());
+      final repo = QuestionRepository(AppDatabase.instance);
+      final recheck = DateTime.now().add(const Duration(days: 7));
+      await insertCauseRecord(
+        db,
+        'q1',
+        '计算错误',
+        status: 'solved',
+        solvedCount: 2,
+        recheckDate: recheck.millisecondsSinceEpoch,
+      );
+      // 已存在行：status / solvedCount 改动被丢弃，remedy_history 写入。
+      await repo.saveCauseRecord(
+        CauseRecord(
+          questionId: 'q1',
+          cause: '计算错误',
+          subjectId: 'math',
+          status: CauseStatus.pending,
+          solvedCount: 0,
+          remedyHistory: ['2026-11-15：先列错因再算'],
+          joinedAt: DateTime.fromMillisecondsSinceEpoch(1000),
+        ),
+      );
+      final row = (await db.query(
+        'cause_records',
+        where: 'question_id = ? AND cause = ?',
+        whereArgs: ['q1', '计算错误'],
+      )).single;
+      expect(row['status'], 'solved');
+      expect(row['solved_count'], 2);
+      expect(row['recheck_date'], recheck.millisecondsSinceEpoch);
+      expect(
+        AppDatabase.decodeRemedyList(row['remedy_history']),
+        ['2026-11-15：先列错因再算'],
+      );
+      // 不存在行：整行 INSERT，全列按传入值写（播种路径）。
+      await repo.saveCauseRecord(
+        CauseRecord(
+          questionId: 'q2',
+          cause: '概念不清',
+          subjectId: 'math',
+          status: CauseStatus.inProgress,
+          solvedCount: 1,
+          remedyHistory: const [],
+          joinedAt: DateTime.fromMillisecondsSinceEpoch(1000),
+        ),
+      );
+      final inserted = (await db.query(
+        'cause_records',
+        where: 'question_id = ? AND cause = ?',
+        whereArgs: ['q2', '概念不清'],
+      )).single;
+      expect(inserted['status'], 'inProgress');
+      expect(inserted['solved_count'], 1);
+    });
   });
 
   group('SR2-27 boxesForPageImageFrom 按页与 id 排序', () {
@@ -723,7 +783,10 @@ void main() {
       final db = await openTestDb();
       addTearDown(() async => db.close());
       const pageImage = 'imports/t1/original.jpg';
-      // 四题同页，题行本身也倒序插入，钉住题 id 列表的顺序。
+      // 四题同页，题行本身也倒序插入。注意：最终框顺序只由框查询的
+      // ORDER BY 决定，题 id 列表的 `orderBy: 'id ASC'` 经本测试不可
+      // 观测（它只影响中间 IN 列表，不影响输出顺序）；倒序插入只是
+      // 为了排除对插入/rowid 序的依赖，不要把它读成“钉住题 id 顺序”。
       // 注意：question_boxes 对 layer=1 框有“每题一框”的部分唯一索引，
       // 四个框必须挂四个不同的题，不能像草稿那样两框共用一题。
       await insertQuestion(db, 'q4', isOrganized: 1);
@@ -774,6 +837,45 @@ void main() {
       expect(
         await AppDatabase.boxesForPageImageFrom(db, 'imports/nope.jpg'),
         isEmpty,
+      );
+    });
+
+    test('boxesForQuestionFrom / boxesForTaskPageFrom 也按 page ASC, id ASC（SR3-3）',
+        () async {
+      final db = await openTestDb();
+      addTearDown(() async => db.close());
+      await insertQuestion(db, 'q1', isOrganized: 1);
+      // 同题多框故意按非排序顺序插入：无 ORDER BY 时行序通常是
+      // rowid 序（即插入序），与 page/id 序不同。用 layer=2 框——
+      // layer=1 框有“每题一框”的部分唯一索引，同题挂四个 1 层框
+      // 会违反约束（见 SR2-27 测试的注释）。
+      for (final b in [
+        box(id: 'b-p2-b', layer: 2, type: 'stem', page: 2, questionId: 'q1'),
+        box(id: 'b-p1-b', layer: 2, type: 'stem', page: 1, questionId: 'q1'),
+        box(id: 'b-p2-a', layer: 2, type: 'stem', page: 2, questionId: 'q1'),
+        box(id: 'b-p1-a', layer: 2, type: 'stem', page: 1, questionId: 'q1'),
+      ]) {
+        await db.insert('question_boxes', _boxRow(b));
+      }
+      expect(
+        (await AppDatabase.boxesForQuestionFrom(db, 'q1'))
+            .map((b) => b.id)
+            .toList(),
+        ['b-p1-a', 'b-p1-b', 'b-p2-a', 'b-p2-b'],
+      );
+      // 某任务某页的草稿框：同页内按 id 排；他页的框不混进来。
+      for (final b in [
+        box(id: 'd-b', page: 1, collectTaskId: 'task-1'),
+        box(id: 'd-a', page: 1, collectTaskId: 'task-1'),
+        box(id: 'd-p2', page: 2, collectTaskId: 'task-1'),
+      ]) {
+        await db.insert('question_boxes', _boxRow(b));
+      }
+      expect(
+        (await AppDatabase.boxesForTaskPageFrom(db, 'task-1', 1))
+            .map((b) => b.id)
+            .toList(),
+        ['d-a', 'd-b'],
       );
     });
   });
@@ -955,6 +1057,132 @@ void main() {
       expect(boxes, hasLength(1));
       expect(boxes.single.id, 'b1');
       expect(boxes.single.x, 0.1);
+    });
+
+    test('跨题重复 id 的框：只保留第一题的，不静默覆盖（SR3-9）', () async {
+      final db = await openTestDb();
+      addTearDown(() async => db.close());
+      final orig = await origTask(db);
+      await AppDatabase.confirmSplitInto(
+        db,
+        originalTask: orig,
+        questions: [
+          Question(
+            id: 'import-1',
+            title: '题一',
+            subjectId: 'math',
+            createdAt: DateTime.fromMillisecondsSinceEpoch(1000),
+          ),
+          Question(
+            id: 'import-2',
+            title: '题二',
+            subjectId: 'math',
+            createdAt: DateTime.fromMillisecondsSinceEpoch(1000),
+          ),
+        ],
+        splitTasks: [
+          CollectTask(
+            id: 'task-split-1',
+            name: 's1',
+            fileName: 'orig.jpg',
+            subjectId: 'math',
+          ),
+          CollectTask(
+            id: 'task-split-2',
+            name: 's2',
+            fileName: 'orig.jpg',
+            subjectId: 'math',
+          ),
+        ],
+        boxesByQuestionId: {
+          'import-1': [box(id: 'b1')],
+          // 同 id、不同坐标的框挂到第二题：旧写法按题建集合放行，
+          // REPLACE 会把第一题的框改写到第二题、第一题丢框。
+          'import-2': [
+            QuestionBox(
+              id: 'b1',
+              layer: 1,
+              type: 'question',
+              x: 0.5,
+              y: 0.5,
+              w: 0.4,
+              h: 0.2,
+              page: 1,
+            ),
+          ],
+        },
+      );
+      final first = await AppDatabase.boxesForQuestionFrom(db, 'import-1');
+      expect(first, hasLength(1));
+      expect(first.single.x, 0.1);
+      expect(
+        await AppDatabase.boxesForQuestionFrom(db, 'import-2'),
+        isEmpty,
+      );
+    });
+
+    test('保留任务跨页重复 id 的草稿框：只保留第一页的（SR3-9）', () async {
+      final db = await openTestDb();
+      addTearDown(() async => db.close());
+      final orig = await origTask(db);
+      final retained = CollectTask(
+        id: 'task-orig',
+        name: 'orig',
+        fileName: 'orig.jpg',
+        subjectId: 'math',
+        status: CollectStatus.needBox,
+        pageCount: 2,
+        page: 2,
+      );
+      await AppDatabase.confirmSplitInto(
+        db,
+        originalTask: orig,
+        questions: [
+          Question(
+            id: 'import-1',
+            title: '新题',
+            subjectId: 'math',
+            createdAt: DateTime.fromMillisecondsSinceEpoch(1000),
+          ),
+        ],
+        splitTasks: [
+          CollectTask(
+            id: 'task-split-1',
+            name: 's',
+            fileName: 'orig.jpg',
+            subjectId: 'math',
+          ),
+        ],
+        boxesByQuestionId: {
+          'import-1': [box(id: 'b-q')],
+        },
+        retainedTask: retained,
+        retainedBoxesByPage: {
+          1: [box(id: 'b-dup', page: 1, collectTaskId: 'task-orig')],
+          // 同 id 的草稿框又出现在第 2 页：旧写法按页建集合放行，
+          // REPLACE 会把它改写到第 2 页、第 1 页丢框。
+          2: [
+            QuestionBox(
+              id: 'b-dup',
+              layer: 1,
+              type: 'question',
+              x: 0.5,
+              y: 0.5,
+              w: 0.4,
+              h: 0.2,
+              page: 2,
+              collectTaskId: 'task-orig',
+            ),
+          ],
+        },
+      );
+      final page1 = await AppDatabase.boxesForTaskPageFrom(db, 'task-orig', 1);
+      expect(page1, hasLength(1));
+      expect(page1.single.x, 0.1);
+      expect(
+        await AppDatabase.boxesForTaskPageFrom(db, 'task-orig', 2),
+        isEmpty,
+      );
     });
   });
 
@@ -1627,6 +1855,72 @@ void main() {
       final zip = buildStoredZipForTest([
         ('backup.json', utf8.encode(jsonEncode(data))),
         ('slices/q1.png', [1, 2]),
+        ('slices/q1.png', [3, 4]),
+      ]);
+      await expectLater(
+        () => AppDatabase.importBackupZipInto(db, zip, dataDir: tmpDir.path),
+        throwsA(
+          isA<BackupRestoreException>().having(
+            (e) => e.message,
+            'message',
+            allOf(contains('已损坏'), isNot(contains('文件写不进去'))),
+          ),
+        ),
+      );
+      expect(await db.query('questions'), hasLength(1));
+    });
+
+    test('SR3-1：// 与 /. 变体、反斜杠与大小写变体同样判重', () {
+      void expectDup(List<(String, List<int>)> entries) {
+        expect(
+          () => readZip(buildStoredZipForTest(entries)),
+          throwsA(
+            isA<ZipFormatException>().having(
+              (e) => e.message,
+              'message',
+              contains('重复条目'),
+            ),
+          ),
+        );
+      }
+
+      // `//` 变体：与规范写法同一文件。
+      expectDup([
+        ('slices//q1.png', [1, 2]),
+        ('slices/q1.png', [3, 4]),
+      ]);
+      // `/.` 变体。
+      expectDup([
+        ('slices/./q1.png', [1, 2]),
+        ('slices/q1.png', [3, 4]),
+      ]);
+      // 反斜杠变体（Windows 分隔符）。
+      expectDup([
+        ('slices\\q1.png', [1, 2]),
+        ('slices/q1.png', [3, 4]),
+      ]);
+      // 大小写变体（Windows 大小写不敏感）。
+      expectDup([
+        ('Slices/Q1.png', [1, 2]),
+        ('slices/q1.png', [3, 4]),
+      ]);
+      // 单条变体本身不重名：可读出，存名原样保留（归一化只用于判重）。
+      final single = readZip(
+        buildStoredZipForTest([
+          ('slices//q1.png', [1, 2]),
+        ]),
+      );
+      expect(single.map((e) => e.name), ['slices//q1.png']);
+      expect(single.single.bytes, [1, 2]);
+    });
+
+    test('SR3-1：// 变体重名备份恢复报“已损坏”，不误报“文件写不进去”', () async {
+      final db = await openTestDb();
+      addTearDown(() async => db.close());
+      final data = await exportedJson(db);
+      final zip = buildStoredZipForTest([
+        ('backup.json', utf8.encode(jsonEncode(data))),
+        ('slices//q1.png', [1, 2]),
         ('slices/q1.png', [3, 4]),
       ]);
       await expectLater(

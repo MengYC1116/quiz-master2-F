@@ -551,6 +551,10 @@ class _CollectPageState extends State<CollectPage> {
     // 时 bakedRel 就是原页图，不记）。先记后写：写一半失败的残文件
     // 也一并清掉（delete 时文件不存在也无妨）。
     final writtenRels = <String>[];
+    // SR3-12：确认时未归属的独立题内框计数（跨页累计），成功后随
+    // 成功提示一起报，不静默丢弃。
+    var ambiguousCount = 0;
+    var tooFarCount = 0;
     try {
       for (final p in pages) {
         // 已拆过的页不再切（见方法头的 alreadySplit）。
@@ -636,8 +640,21 @@ class _CollectPageState extends State<CollectPage> {
         // layer2BoxToSliceRect 本就会把超框部分夹到 0..1 内。
         for (final inner
             in result.standaloneInner[p] ?? const <QuestionBox>[]) {
-          final target = _nearestLayer1Box(inner, layer1);
-          if (target == null) continue;
+          final match = _nearestLayer1Box(inner, layer1);
+          if (match.ambiguous) {
+            // SR3-12：中心同时落在两道题里且相交面积也平局——不挂，
+            // 留在 standaloneInner（本次确认不入库），成功后提示
+            // 用户手动指定归属。
+            ambiguousCount++;
+            continue;
+          }
+          final target = match.box;
+          if (target == null) {
+            // SR3-12：离所有题都太远（> 页宽/高的 0.25）——不挂，
+            // 成功后提示用户手动处理。
+            tooFarCount++;
+            continue;
+          }
           final targetQid = 'import-$ts-$rnd-$p-${layer1.indexOf(target)}';
           boxesByQuestionId[targetQid] = [
             ...?boxesByQuestionId[targetQid],
@@ -736,11 +753,17 @@ class _CollectPageState extends State<CollectPage> {
     }
     await _load();
     if (mounted) {
-      _snack(
-        unboxedPages.isNotEmpty
-            ? '已生成 $total 道题去整理，还有 ${unboxedPages.length} 页没框留在任务里'
-            : '已生成 $total 道题，去整理吧',
-      );
+      // SR3-12：未归属的独立题内框随成功提示一起报（不静默丢弃）。
+      final unattached = [
+        if (ambiguousCount > 0)
+          '有 $ambiguousCount 个题内框同时落在两道题里，请手动指定归属',
+        if (tooFarCount > 0)
+          '有 $tooFarCount 个题内框离所有题太远，未归属，请手动处理',
+      ].join('；');
+      final base = unboxedPages.isNotEmpty
+          ? '已生成 $total 道题去整理，还有 ${unboxedPages.length} 页没框留在任务里'
+          : '已生成 $total 道题，去整理吧';
+      _snack(unattached.isEmpty ? base : '$base；$unattached');
     }
   }
 
@@ -764,17 +787,20 @@ class _CollectPageState extends State<CollectPage> {
 
   /// SR2-4：独立题内框按中心点找最近/命中的题级框。中心落在框内时
   /// 距离为 0（命中）；否则取中心到框矩形的最短距离（最近）。
-  /// 平局取列表里先到的框。
-  static QuestionBox? _nearestLayer1Box(
+  /// SR3-12：返回三态——命中/最近（[box]）、歧义（[ambiguous]，
+  /// 中心同时落在两道题里且相交面积也平局）、过远（[box] 为 null
+  /// 且不歧义：中心离所有题都超过页宽/高的 0.25，归一化坐标下
+  /// 页宽/高为 1）。平局不再静默取列表先到者：距离相同时取内框
+  /// 与候选框的相交面积最大者（或面积最小的命中框的等价实现——
+  /// 相交面积越大越贴合）；仍平局时判歧义，由调用方留待手动处理。
+  static ({QuestionBox? box, bool ambiguous}) _nearestLayer1Box(
     QuestionBox inner,
     List<QuestionBox> layer1,
   ) {
-    if (layer1.isEmpty) return null;
+    if (layer1.isEmpty) return (box: null, ambiguous: false);
     final cx = inner.x + inner.w / 2;
     final cy = inner.y + inner.h / 2;
-    QuestionBox? best;
-    var bestDist = double.infinity;
-    for (final b in layer1) {
+    double dist2(QuestionBox b) {
       final dx = cx < b.x
           ? b.x - cx
           : cx > b.x + b.w
@@ -785,13 +811,44 @@ class _CollectPageState extends State<CollectPage> {
           : cy > b.y + b.h
               ? cy - (b.y + b.h)
               : 0.0;
-      final d = dx * dx + dy * dy;
-      if (d < bestDist) {
-        bestDist = d;
+      return dx * dx + dy * dy;
+    }
+
+    var bestDist2 = double.infinity;
+    for (final b in layer1) {
+      final d = dist2(b);
+      if (d < bestDist2) bestDist2 = d;
+    }
+    // 距离上限：中心离最近的题都超过页宽/高的 0.25 时不挂。
+    const maxDist = 0.25;
+    if (bestDist2 > maxDist * maxDist) {
+      return (box: null, ambiguous: false);
+    }
+    // 平局：距离相同的候选里取相交面积最大者；仍平局则判歧义。
+    QuestionBox? best;
+    var bestInter = -1.0;
+    var tied = false;
+    for (final b in layer1) {
+      if (dist2(b) != bestDist2) continue;
+      final inter = _intersectionArea(inner, b);
+      if (inter > bestInter) {
+        bestInter = inter;
         best = b;
+        tied = false;
+      } else if (inter == bestInter) {
+        tied = true;
       }
     }
-    return best;
+    if (tied) return (box: null, ambiguous: true);
+    return (box: best, ambiguous: false);
+  }
+
+  /// 两框的相交面积（无相交为 0），供 [_nearestLayer1Box] 平局判据用。
+  static double _intersectionArea(QuestionBox a, QuestionBox b) {
+    final w = math.min(a.x + a.w, b.x + b.w) - math.max(a.x, b.x);
+    final h = math.min(a.y + a.h, b.y + b.h) - math.max(a.y, b.y);
+    if (w <= 0 || h <= 0) return 0.0;
+    return w * h;
   }
 
   /// 页码清单：超过 5 页只列前 5 页加“等”，文案不刷屏。

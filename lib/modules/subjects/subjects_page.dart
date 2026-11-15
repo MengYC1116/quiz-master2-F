@@ -172,11 +172,7 @@ class _SubjectsPageState extends State<SubjectsPage> {
   }
 
   String _subjectName(String id) =>
-      _subjects
-          .where((s) => s.id == id)
-          .map((s) => s.name)
-          .firstOrNull ??
-      '数学';
+      _subjects.where((s) => s.id == id).map((s) => s.name).firstOrNull ?? '数学';
 
   // ---------- 内联改名 ----------
 
@@ -290,8 +286,10 @@ class _SubjectsPageState extends State<SubjectsPage> {
         await widget.repo.deleteSubject(s.id);
       case 'chapter':
         final sep = key.indexOf('|');
-        await widget.repo
-            .deleteChapter(key.substring(0, sep), key.substring(sep + 1));
+        await widget.repo.deleteChapter(
+          key.substring(0, sep),
+          key.substring(sep + 1),
+        );
         setState(() => _expandedChapters.remove(key.substring(sep + 1)));
       case 'kp':
         await widget.repo.deleteKnowledgePoint(key);
@@ -322,18 +320,39 @@ class _SubjectsPageState extends State<SubjectsPage> {
       // 环形 hue 距离，小于 25° 时继续步进 37° 直到拉开。
       orElse: () {
         var hue = (usedColors.length * 137.5) % 360;
-        var candidate =
-            HSVColor.fromAHSV(1, hue, 0.65, 0.85).toColor();
+        var candidate = HSVColor.fromAHSV(1, hue, 0.65, 0.85).toColor();
         bool tooClose(double h) => usedColors.any(
-              (c) => _hueDistance(HSVColor.fromColor(c).hue, h) < 25,
-            );
+          (c) => _hueDistance(HSVColor.fromColor(c).hue, h) < 25,
+        );
         var guard = 0;
         while ((usedColors.contains(candidate) || tooClose(hue)) &&
             guard < 36) {
           hue = (hue + 37) % 360;
-          candidate =
-              HSVColor.fromAHSV(1, hue, 0.65, 0.85).toColor();
+          candidate = HSVColor.fromAHSV(1, hue, 0.65, 0.85).toColor();
           guard++;
+        }
+        // SR3-21（Meng 定口径 (a)）：第 15 科起 37° 步进的 36 个格点
+        // 全部落在 25° 禁区内，耗尽后不再原样返回违规色；改在 1°
+        // 细粒度上扫描，取“与全部已用色最小色相距最大”的色相
+        //（15 科时仍可达约 25°，16 科约 23°，之后随科数递减，
+        // 但恒为当前最优而非任意色；第 23 科旧值只差 0.7° 的
+        // 撞色不再出现）。
+        if (usedColors.contains(candidate) || tooClose(hue)) {
+          var bestHue = 0.0;
+          var bestMin = -1.0;
+          for (var h = 0; h < 360; h++) {
+            var minDist = 180.0;
+            for (final c in usedColors) {
+              final d = _hueDistance(HSVColor.fromColor(c).hue, h.toDouble());
+              if (d < minDist) minDist = d;
+            }
+            if (minDist > bestMin) {
+              bestMin = minDist;
+              bestHue = h.toDouble();
+            }
+          }
+          hue = bestHue;
+          candidate = HSVColor.fromAHSV(1, hue, 0.65, 0.85).toColor();
         }
         return candidate;
       },
@@ -351,22 +370,26 @@ class _SubjectsPageState extends State<SubjectsPage> {
     await widget.repo.saveSubject(subject);
     // 新学科自动获得预置文件夹。
     for (var i = 0; i < _presetFolders.length; i++) {
-      await widget.repo.saveFolder(Folder(
-        id: 'folder-$id-${_presetFolders[i]}',
-        name: _presetFolders[i],
-        subjectId: id,
-        sortOrder: i,
-      ));
+      await widget.repo.saveFolder(
+        Folder(
+          id: 'folder-$id-${_presetFolders[i]}',
+          name: _presetFolders[i],
+          subjectId: id,
+          sortOrder: i,
+        ),
+      );
     }
     _newSubjectController.clear();
     await _load();
   }
 
   Future<void> _setCover(Subject s, {String? style, String? color}) async {
-    await widget.repo.saveSubject(s.copyWith(
-      coverStyle: style ?? s.coverStyle,
-      coverColor: color ?? s.coverColor,
-    ));
+    await widget.repo.saveSubject(
+      s.copyWith(
+        coverStyle: style ?? s.coverStyle,
+        coverColor: color ?? s.coverColor,
+      ),
+    );
     await _load();
   }
 
@@ -394,12 +417,14 @@ class _SubjectsPageState extends State<SubjectsPage> {
       _snack('已经有了这个章节');
       return;
     }
-    await widget.repo.addKnowledgePoint(KnowledgePoint(
-      id: 'kp-${DateTime.now().millisecondsSinceEpoch}',
-      subjectId: subjectId,
-      chapter: chapter,
-      name: kpName,
-    ));
+    await widget.repo.addKnowledgePoint(
+      KnowledgePoint(
+        id: 'kp-${DateTime.now().millisecondsSinceEpoch}',
+        subjectId: subjectId,
+        chapter: chapter,
+        name: kpName,
+      ),
+    );
     setState(() {
       _expandedChapters.add(chapter);
       _addingChapter = false;
@@ -412,12 +437,14 @@ class _SubjectsPageState extends State<SubjectsPage> {
   Future<void> _addKnowledgePoint(String chapter) async {
     final name = _newKpController.text.trim();
     if (name.isEmpty) return;
-    await widget.repo.addKnowledgePoint(KnowledgePoint(
-      id: 'kp-${DateTime.now().millisecondsSinceEpoch}',
-      subjectId: _kpSubjectId ?? 'math',
-      chapter: chapter,
-      name: name,
-    ));
+    await widget.repo.addKnowledgePoint(
+      KnowledgePoint(
+        id: 'kp-${DateTime.now().millisecondsSinceEpoch}',
+        subjectId: _kpSubjectId ?? 'math',
+        chapter: chapter,
+        name: name,
+      ),
+    );
     _newKpController.clear();
     setState(() => _kpAddChapter = null);
     await _load();
@@ -450,11 +477,13 @@ class _SubjectsPageState extends State<SubjectsPage> {
       _snack('已经有了这张试卷');
       return;
     }
-    await widget.repo.addExam(Exam(
-      id: 'exam-${DateTime.now().millisecondsSinceEpoch}',
-      name: name,
-      date: _newExamDate,
-    ));
+    await widget.repo.addExam(
+      Exam(
+        id: 'exam-${DateTime.now().millisecondsSinceEpoch}',
+        name: name,
+        date: _newExamDate,
+      ),
+    );
     _newExamController.clear();
     await _load();
   }
@@ -621,7 +650,8 @@ class _SubjectsPageState extends State<SubjectsPage> {
           if (_editTarget == 'subject:${s.id}')
             Padding(
               padding: EdgeInsets.symmetric(
-                  vertical: R10Tokens.subjectRowPaddingV * scale),
+                vertical: R10Tokens.subjectRowPaddingV * scale,
+              ),
               child: Row(
                 children: [
                   Container(
@@ -629,7 +659,10 @@ class _SubjectsPageState extends State<SubjectsPage> {
                     height: R10Tokens.subjectDotSize * scale,
                     decoration: BoxDecoration(
                       color: DesignTokens.subjectColor(
-                          s.id, Theme.of(context).brightness, s.color),
+                        s.id,
+                        Theme.of(context).brightness,
+                        s.color,
+                      ),
                       shape: BoxShape.circle,
                     ),
                   ),
@@ -641,7 +674,8 @@ class _SubjectsPageState extends State<SubjectsPage> {
           else
             Padding(
               padding: EdgeInsets.symmetric(
-                  vertical: R10Tokens.subjectRowPaddingV * scale),
+                vertical: R10Tokens.subjectRowPaddingV * scale,
+              ),
               child: Row(
                 children: [
                   Container(
@@ -649,7 +683,10 @@ class _SubjectsPageState extends State<SubjectsPage> {
                     height: R10Tokens.subjectDotSize * scale,
                     decoration: BoxDecoration(
                       color: DesignTokens.subjectColor(
-                          s.id, Theme.of(context).brightness, s.color),
+                        s.id,
+                        Theme.of(context).brightness,
+                        s.color,
+                      ),
                       shape: BoxShape.circle,
                     ),
                   ),
@@ -658,16 +695,20 @@ class _SubjectsPageState extends State<SubjectsPage> {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text(s.name,
-                            style: const TextStyle(
-                                fontSize:
-                                    R10Tokens.subjectNameFontSize,
-                                fontWeight: FontWeight.w700)),
-                        Text('${_questionCounts[s.id] ?? 0} 道题',
-                            style: TextStyle(
-                                fontSize:
-                                    R10Tokens.subjectCountFontSize,
-                                color: palette.muted)),
+                        Text(
+                          s.name,
+                          style: const TextStyle(
+                            fontSize: R10Tokens.subjectNameFontSize,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                        Text(
+                          '${_questionCounts[s.id] ?? 0} 道题',
+                          style: TextStyle(
+                            fontSize: R10Tokens.subjectCountFontSize,
+                            color: palette.muted,
+                          ),
+                        ),
                       ],
                     ),
                   ),
@@ -722,7 +763,10 @@ class _SubjectsPageState extends State<SubjectsPage> {
                 height: 8 * scale,
                 decoration: BoxDecoration(
                   color: DesignTokens.subjectColor(
-                      s.id, Theme.of(context).brightness, s.color),
+                    s.id,
+                    Theme.of(context).brightness,
+                    s.color,
+                  ),
                   shape: BoxShape.circle,
                 ),
               ),
@@ -734,8 +778,9 @@ class _SubjectsPageState extends State<SubjectsPage> {
                 child: Text(
                   '当前封面：${CoverStyles.labels[s.coverStyle] ?? '纯色折角'} · ${CoverColors.labels[s.coverColor] ?? '蓝'}色',
                   style: TextStyle(
-                      fontSize: R10Tokens.settingsRowDescFontSize,
-                      color: palette.muted),
+                    fontSize: R10Tokens.settingsRowDescFontSize,
+                    color: palette.muted,
+                  ),
                 ),
               ),
             ],
@@ -781,10 +826,13 @@ class _SubjectsPageState extends State<SubjectsPage> {
             spacing: 10 * scale,
             runSpacing: 8 * scale,
             children: [
-              Text('封面颜色',
-                  style: TextStyle(
-                      fontSize: R10Tokens.settingsRowDescFontSize,
-                      color: palette.muted)),
+              Text(
+                '封面颜色',
+                style: TextStyle(
+                  fontSize: R10Tokens.settingsRowDescFontSize,
+                  color: palette.muted,
+                ),
+              ),
               for (final colorKey in CoverColors.all)
                 GestureDetector(
                   onTap: () => _setCover(s, color: colorKey),
@@ -806,8 +854,11 @@ class _SubjectsPageState extends State<SubjectsPage> {
                         ),
                         alignment: Alignment.center,
                         child: s.coverColor == colorKey
-                            ? const QmGlyph(QmGlyphs.check,
-                                size: 13, color: Colors.white)
+                            ? const QmGlyph(
+                                QmGlyphs.check,
+                                size: 13,
+                                color: Colors.white,
+                              )
                             : null,
                       ),
                       SizedBox(width: 4 * scale),
@@ -876,10 +927,7 @@ class _SubjectsPageState extends State<SubjectsPage> {
             autofocus: true,
           ),
           SizedBox(height: 8 * scale),
-          QmTextField(
-            controller: _newChapterKpController,
-            hintText: '第一个知识点',
-          ),
+          QmTextField(controller: _newChapterKpController, hintText: '第一个知识点'),
           SizedBox(height: 8 * scale),
           Row(
             children: [
@@ -962,17 +1010,17 @@ class _SubjectsPageState extends State<SubjectsPage> {
                                 TextSpan(
                                   text: chapter,
                                   style: const TextStyle(
-                                      fontSize:
-                                          R10Tokens.kpChapterFontSize,
-                                      fontWeight: FontWeight.w700),
+                                    fontSize: R10Tokens.kpChapterFontSize,
+                                    fontWeight: FontWeight.w700,
+                                  ),
                                 ),
                                 TextSpan(
                                   text: ' · ${kps.length} 个知识点',
                                   style: TextStyle(
-                                      fontSize: R10Tokens
-                                          .subjectCountFontSize,
-                                      fontWeight: FontWeight.w600,
-                                      color: palette.muted),
+                                    fontSize: R10Tokens.subjectCountFontSize,
+                                    fontWeight: FontWeight.w600,
+                                    color: palette.muted,
+                                  ),
                                 ),
                               ],
                             ),
@@ -1000,30 +1048,37 @@ class _SubjectsPageState extends State<SubjectsPage> {
           if (kps.isEmpty)
             Padding(
               padding: EdgeInsets.only(
-                  left: R10Tokens.kpIndent * scale, bottom: 4 * scale),
+                left: R10Tokens.kpIndent * scale,
+                bottom: 4 * scale,
+              ),
               child: _noteText('这个章节还没有知识点，用下面加第一个。'),
             ),
           for (final kp in kps) ...[
             if (_editTarget == 'kp:${kp.id}')
               Padding(
                 padding: EdgeInsets.only(
-                    left: R10Tokens.kpIndent * scale,
-                    top: 2 * scale,
-                    bottom: 2 * scale),
+                  left: R10Tokens.kpIndent * scale,
+                  top: 2 * scale,
+                  bottom: 2 * scale,
+                ),
                 child: _editRow(confirmLabel: '保存改名'),
               )
             else
               Padding(
                 padding: EdgeInsets.only(
-                    left: R10Tokens.kpIndent * scale,
-                    top: 2 * scale,
-                    bottom: 2 * scale),
+                  left: R10Tokens.kpIndent * scale,
+                  top: 2 * scale,
+                  bottom: 2 * scale,
+                ),
                 child: Row(
                   children: [
                     Expanded(
-                      child: Text(kp.name,
-                          style: const TextStyle(
-                              fontSize: R10Tokens.kpNameFontSize)),
+                      child: Text(
+                        kp.name,
+                        style: const TextStyle(
+                          fontSize: R10Tokens.kpNameFontSize,
+                        ),
+                      ),
                     ),
                     _rowActions(
                       editTarget: 'kp:${kp.id}',
@@ -1041,7 +1096,9 @@ class _SubjectsPageState extends State<SubjectsPage> {
           ],
           Padding(
             padding: EdgeInsets.only(
-                left: R10Tokens.kpIndent * scale, bottom: 8 * scale),
+              left: R10Tokens.kpIndent * scale,
+              bottom: 8 * scale,
+            ),
             child: _kpAddChapter == chapter
                 ? Row(
                     children: [
@@ -1130,9 +1187,12 @@ class _SubjectsPageState extends State<SubjectsPage> {
               child: Row(
                 children: [
                   Expanded(
-                    child: Text('#$t · ${_tagCounts[t] ?? 0} 道',
-                        style: const TextStyle(
-                            fontSize: R10Tokens.subjectNameFontSize)),
+                    child: Text(
+                      '#$t · ${_tagCounts[t] ?? 0} 道',
+                      style: const TextStyle(
+                        fontSize: R10Tokens.subjectNameFontSize,
+                      ),
+                    ),
                   ),
                   _rowActions(
                     editTarget: 'tag:$t',
@@ -1219,7 +1279,8 @@ class _SubjectsPageState extends State<SubjectsPage> {
                             ? '${e.name} · ${_examCounts[e.id] ?? 0} 道题来自这张试卷'
                             : '${e.name} · ${_dateText(e.date)} · ${_examCounts[e.id] ?? 0} 道题来自这张试卷',
                         style: const TextStyle(
-                            fontSize: R10Tokens.subjectNameFontSize),
+                          fontSize: R10Tokens.subjectNameFontSize,
+                        ),
                       ),
                     ),
                     _rowActions(

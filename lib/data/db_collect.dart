@@ -183,6 +183,8 @@ Future<List<QuestionBox>> boxesForQuestionFromImpl(
     'question_boxes',
     where: 'question_id = ?',
     whereArgs: [questionId],
+    // SR3-3：与 boxesForTask 同口径，按页、id 排序。
+    orderBy: 'page ASC, id ASC',
   );
   return rows.map(_questionBoxFromRow).toList();
 }
@@ -211,6 +213,8 @@ Future<List<QuestionBox>> boxesForTaskPageFromImpl(
     'question_boxes',
     where: 'collect_task_id = ? AND page = ? AND question_id IS NULL',
     whereArgs: [taskId, page],
+    // SR3-3：与 boxesForTask 同口径，按页、id 排序。
+    orderBy: 'page ASC, id ASC',
   );
   return rows.map(_questionBoxFromRow).toList();
 }
@@ -416,8 +420,9 @@ Future<void> _deleteBoxesForQuestionTxn(
 /// 建题 + 回填 `question_boxes.question_id` + 建拆分任务 + 删原任务。
 /// 框的回填：先删该题已有的旧框（防重复确认/重检测产生两个
 /// layer = 1 框，partial unique 的防呆），再把传入的框逐行
-/// upsert（question_id 回填、collect_task_id 置空）；同一题内
-/// 重复 id 的框只保留第一个（SR2-18，与保留任务草稿同口径）。
+/// upsert（question_id 回填、collect_task_id 置空）；同一事务内
+/// 重复 id 的框只保留第一个（SR2-18 同题内 + SR3-9 跨题/跨页：
+/// 一个去重集合覆盖全部题与保留分支）。
 /// 拆分任务行同样写 source_path / created_at / page_count
 /// （§1.2(b)，调用方在 splitTasks 里给好）。
 ///
@@ -474,6 +479,12 @@ Future<void> confirmSplitIntoImpl(
         throw StateError('拆题失败：拆分任务已存在，请勿重复确认：${t.id}');
       }
     }
+    // SR3-9：去重集合提到事务级——一个集合覆盖全部题 + 保留分支
+    // （见下）。旧写法每题 / 每页各建一个集合，同一框 id 出现在
+    // 两道题（或保留任务的两页）时，第二处插入会 REPLACE 掉第一行
+    // （改写 question_id / page），第一题静默丢框；这里跨题/跨页
+    // 重复也跳过，保留第一个。
+    final seenBoxIds = <String>{};
     for (final q in questions) {
       await txn.insert(
         'questions',
@@ -481,12 +492,11 @@ Future<void> confirmSplitIntoImpl(
         conflictAlgorithm: ConflictAlgorithm.fail,
       );
       await _deleteBoxesForQuestionTxn(txn, q.id);
-      // SR2-18：框回填也去重——与保留任务草稿的 seenIds 同口径
-      // （见下）：同一题的入参里若有两个同 id 框，旧写法用 REPLACE
-      // 让后者静默覆盖前者，与 SR-P2-10“重复确认显式失败而不是
-      // 静默覆盖”的防呆口径不一致；这里直接跳过重复 id（保留第一
-      // 个），与保留任务分支一致。
-      final seenBoxIds = <String>{};
+      // SR2-18：框回填也去重——与保留任务草稿的 seenBoxIds 同口径
+      // （同一个事务级集合，见上）：同一题的入参里若有两个同 id 框，
+      // 旧写法用 REPLACE 让后者静默覆盖前者，与 SR-P2-10“重复确认
+      // 显式失败而不是静默覆盖”的防呆口径不一致；这里直接跳过重复
+      // id（保留第一个），与保留任务分支一致。
       for (final b in boxesByQuestionId[q.id] ?? const <QuestionBox>[]) {
         if (!seenBoxIds.add(b.id)) continue;
         await txn.insert(
@@ -548,9 +558,10 @@ Future<void> confirmSplitIntoImpl(
             if (_innerKeyPage(e.key) == page) ...e.value,
           ...?retainedStandaloneInner[page],
         ];
-        final seenIds = <String>{};
+        // SR3-9：与题回填共用同一个事务级 seenBoxIds（见上）：跨页
+        // 重复 id 也跳过（保留第一个），且不与已回填的题框撞 id。
         for (final b in flat) {
-          if (!seenIds.add(b.id)) continue;
+          if (!seenBoxIds.add(b.id)) continue;
           await txn.insert(
             'question_boxes',
             _questionBoxToRow(

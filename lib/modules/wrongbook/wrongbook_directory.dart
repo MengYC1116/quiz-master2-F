@@ -43,6 +43,21 @@ extension _WrongbookDirectoryBuild on _WrongbookPageState {
           ),
           SizedBox(height: 14 * scale),
           _buildDirectoryTools(),
+          // SR3-18：搜索有关键词时缝隙一律拒收（SR2-28）却零反馈，
+          // 易被当成拖拽坏了——搜索态直接在工具条下写明，静态常驻；
+          // 不改拖拽结构，不改拒收行为。
+          if (kw.isNotEmpty)
+            Padding(
+              padding: EdgeInsets.only(top: 8 * scale),
+              child: Text(
+                '搜索时不能调顺序，先清空搜索',
+                style: TextStyle(
+                  fontSize: 12.5,
+                  color: DesignTokens.of(Theme.of(context).brightness)
+                      .muted,
+                ),
+              ),
+            ),
           if (_selectingMove) _buildMoveSelBar(),
           SizedBox(height: 12 * scale),
           _openBookFrame(

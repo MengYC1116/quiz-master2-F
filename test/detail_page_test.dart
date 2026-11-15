@@ -393,6 +393,14 @@ Future<void> tapText(WidgetTester tester, String text,
   await tester.pumpAndSettle();
 }
 
+/// SR3-10：读 PNG 的 IHDR 宽/高（与产品侧 pngDimensions 同款解析，
+/// 测试里独立实现，避免用被测函数断言被测函数）。
+({int width, int height}) pngSize(List<int> bytes) {
+  int be32(int at) =>
+      (bytes[at] << 24) | (bytes[at + 1] << 16) |
+      (bytes[at + 2] << 8) | bytes[at + 3];
+  return (width: be32(16), height: be32(20));
+}
 
 void main() {
   setUpAll(() async {
@@ -820,6 +828,24 @@ void main() {
       ];
       repo.replaceShouldThrow = true;
       await pumpDetail(tester, repo: repo);
+      // SR3-10：本用例的夹具（库里记 200×100、磁盘是 560×700 的旧图）
+      // 正是自愈要修的“库新图旧”状态——打开详情页时自愈会先按当前
+      // 框把它重裁一次。先在 runAsync 内把自愈跑完（生产上用户打开
+      // 页到点重框之间自愈早已完成），再以自愈后的切片为基线：
+      // 本用例断言的是“事务失败不碰切片”，基线是自愈后的切片。
+      await tester.runAsync(() async {
+        for (var i = 0; i < 30; i++) {
+          await tester.pump();
+          await Future<void>.delayed(const Duration(milliseconds: 200));
+        }
+        await tester.pumpAndSettle();
+      });
+      await tester.pumpAndSettle();
+      final healedBytes = oldSliceFile.readAsBytesSync();
+      expect(pngSize(healedBytes).width, 492);
+      // 自愈会调一次 repo.save（把库里尺寸改成重裁尺寸），清掉它，
+      // 后面“事务失败不存题”的断言才只量本次重框。
+      repo.saved.clear();
       await openSection(tester, '题目信息');
       await tapText(tester, '重新框选这道题');
       expect(find.textContaining('修框 ·'), findsOneWidget);
@@ -835,8 +861,9 @@ void main() {
       expect(find.textContaining('修框 ·'), findsNothing);
       expect(repo.replaceCalled, isTrue);
       expect(find.text('重新框选失败：保存失败，请重试'), findsOneWidget);
-      // 旧切片字节完好（SR2-3 的核心断言）。
-      expect(oldSliceFile.readAsBytesSync(), equals(oldBytes));
+      // 旧切片字节完好（SR2-3 的核心断言；基线是打开页时自愈后的切片，
+      // 见本用例开头的说明——事务失败只保证不碰当时的切片）。
+      expect(oldSliceFile.readAsBytesSync(), equals(healedBytes));
       // 临时切片已清干净，不留 .tmp-*.png。
       expect(
         slicesDir
@@ -908,6 +935,133 @@ void main() {
       await pumpDetail(tester, repo: detailRepo());
       await openSection(tester, '题目信息');
       expect(find.text('重新框选这道题'), findsNothing);
+    });
+  });
+
+  group('SR3-10/SR3-11 重框崩溃窗口与读图失败', () {
+    testWidgets('SR3-10：打开详情页时切片实际尺寸与库里不符，按当前框重裁自愈',
+        (tester) async {
+      // 旧切片事先存在：用真实页图字节（560×700）当旧切片内容，
+      // 库里记的却是 200×100——模拟事务提交后、rename 前被杀的残留。
+      final slicesDir = Directory('${_testTmp.path}/slices');
+      slicesDir.createSync(recursive: true);
+      final sliceFile = File('${slicesDir.path}/q1.png');
+      final oldBytes =
+          File('${_testTmp.path}/$_pagePngRel').readAsBytesSync();
+      sliceFile.writeAsBytesSync(oldBytes);
+      final repo = detailRepo();
+      repo.questions[0] = repo.questions[0].copyWith(
+        pageImagePath: _pagePngRel,
+        sourcePath: _pagePngRel,
+        slicePath: 'slices/q1.png',
+        sliceWidth: 200,
+        sliceHeight: 100,
+      );
+      repo.pageBoxes = [
+        QuestionBox(
+          id: 'q1-box',
+          layer: 1,
+          type: 'question',
+          x: 0.06,
+          y: 0.05,
+          w: 0.88,
+          h: 0.4,
+          page: 1,
+          questionId: 'q1',
+        ),
+      ];
+      await pumpDetail(tester, repo: repo);
+      // 自愈是后台文件 IO + 图片解码，须在 runAsync 内反复 pump +
+      // 真实延时推进（同组重框测试的同款做法）。
+      await tester.runAsync(() async {
+        for (var i = 0; i < 30; i++) {
+          await tester.pump();
+          await Future<void>.delayed(const Duration(milliseconds: 200));
+        }
+        await tester.pumpAndSettle();
+      });
+      await tester.pumpAndSettle();
+      // 切片已按当前框重裁：left=(0.06×560).round()=34、
+      // right=(0.94×560).round()=526 → 宽 492；高 0.4×700=280。
+      final newBytes = sliceFile.readAsBytesSync();
+      final size = pngSize(newBytes);
+      expect(size.width, 492);
+      expect(size.height, 280);
+      final savedQ = repo.saved.lastWhere((q) => q.id == 'q1');
+      expect(savedQ.sliceWidth, 492);
+      expect(savedQ.sliceHeight, 280);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('SR3-11：重框确认时页图读不出来/裁不出来，给提示、不抛异常',
+        (tester) async {
+      // 本用例单独的页图文件：先是有效页图（编辑器能打开），
+      // 编辑器打开后再写坏——_reworkBoxes 确认时重新读盘即读到坏字节。
+      // 切片文件先清掉（同目录的 SR2-3 用例会留下 slices/q1.png），
+      // 免得后台自愈在本用例里抢先重裁、干扰断言。
+      final slicesDir = Directory('${_testTmp.path}/slices');
+      final staleSlice = File('${slicesDir.path}/q1.png');
+      if (staleSlice.existsSync()) staleSlice.deleteSync();
+      final pageDir = Directory('${_testTmp.path}/imports/rework-task');
+      final corruptRel = 'imports/rework-task/corrupt-page.png';
+      final corruptFile = File('${pageDir.path}/corrupt-page.png');
+      corruptFile.writeAsBytesSync(
+        File('${_testTmp.path}/$_pagePngRel').readAsBytesSync(),
+      );
+      final repo = detailRepo();
+      repo.questions[0] = repo.questions[0].copyWith(
+        pageImagePath: corruptRel,
+        sourcePath: corruptRel,
+        slicePath: 'slices/q1.png',
+        sliceWidth: 200,
+        sliceHeight: 100,
+      );
+      repo.pageBoxes = [
+        QuestionBox(
+          id: 'q1-box',
+          layer: 1,
+          type: 'question',
+          x: 0.06,
+          y: 0.05,
+          w: 0.88,
+          h: 0.4,
+          page: 1,
+          questionId: 'q1',
+        ),
+      ];
+      await pumpDetail(tester, repo: repo);
+      await openSection(tester, '题目信息');
+      await tapText(tester, '重新框选这道题');
+      expect(find.textContaining('修框 ·'), findsOneWidget);
+      // 先让编辑器的页图加载完成并进图片缓存（真实文件 IO + 解码，
+      // 须在 runAsync 内推进），再写坏文件——否则编辑器待决的图片
+      // 加载会读到坏字节、报一次框架级解码错误，与被测的回调异常混淆。
+      await tester.runAsync(() async {
+        for (var i = 0; i < 10; i++) {
+          await tester.pump();
+          await Future<void>.delayed(const Duration(milliseconds: 200));
+        }
+        await tester.pumpAndSettle();
+      });
+      await tester.pumpAndSettle();
+      // 编辑器打开后把页图写坏（同步 IO，不走 fake async）。
+      corruptFile.writeAsBytesSync([0, 1, 2, 3, 4, 5, 6, 7]);
+      await tester.runAsync(() async {
+        await tester.tap(find.text('确认修框，去整理'));
+        for (var i = 0; i < 20; i++) {
+          await tester.pump();
+          await Future<void>.delayed(const Duration(milliseconds: 200));
+        }
+        await tester.pumpAndSettle();
+      });
+      await tester.pumpAndSettle();
+      expect(find.textContaining('修框 ·'), findsNothing);
+      expect(
+        find.text('重新框选失败：页图读不出来/切片裁不出来，请重试'),
+        findsOneWidget,
+      );
+      expect(repo.replaceCalled, isFalse);
+      expect(tester.takeException(), isNull);
     });
   });
 

@@ -31,6 +31,10 @@ import '../../widgets/uikit.dart';
 ///   错因行只含未解决的错因，无记录的错因默认待解决；知识点行排除
 ///   全部错因已解决的题。弱点计数按题 id，不按题名去重（SR-P1-10：
 ///   题名不唯一，同名不同题各算 1 道）。
+///   已掌握的定义与错题本 / 首页同一口径：按该题现存的全部错因记录算
+///   `QuestionRepository.reviewBucketOf(records) == ReviewBucket.solved`，
+///   不按当前错因逐因查记录——退出复习后改错因会留下陈旧记录（已删错因
+///   的记录残留、新错因无记录），逐因查会与错题本双向偏离 1 道（SR3-2）。
 /// - 本周 = 本周一到今天（基线口径；HTML 是今天往前 7 天，见报告）。
 class ReportPage extends StatefulWidget {
   const ReportPage({
@@ -176,8 +180,8 @@ class _ReportPageState extends State<ReportPage> {
   /// 所选范围内收集的题目（HTML `qsIn`，以 `createdAt` 为收集日期）。
   /// 只收已整理未归档的题，与错题本列表默认收录口径一致（SR-P1-11）：
   /// 未整理题（还在整理工作台排队）与已归档题不进弱点 Top5 与学科分布。
-  /// 已掌握的题（全部错因已解决且未到复查）也不进分布（SR2-29，
-  /// Meng 2026-11-15 决定：与封面/目录/列表同口径，分布数 = 该科
+  /// 已掌握的题（该题现存错因记录全部已解决且无一到复查）也不进分布
+  /// （SR2-29，Meng 2026-11-15 决定：与封面/目录/列表同口径，分布数 = 该科
   /// 封面总数；已掌握的科显示 0 道）。
   List<Question> get _questionsInRange {
     final inScope = _questions.where(
@@ -187,20 +191,14 @@ class _ReportPageState extends State<ReportPage> {
     return inScope.where((q) => _inRange(q.createdAt)).toList();
   }
 
-  /// 与错题本 `_isMastered` 同义：全部错因都有已解决记录且无一到复查；
-  /// 无错因、无记录的题不是已掌握。
+  /// 与错题本 / 首页同一口径（SR3-2）：按该题现存的全部错因记录算
+  /// `QuestionRepository.reviewBucketOf(records) == ReviewBucket.solved`，
+  /// 不再按 `allCauses` 逐因查记录。退出复习后改错因会留下陈旧记录
+  /// （已删错因的记录残留、新错因无记录），逐因查会与错题本双向偏离
+  /// 1 道，打破“分布数 = 该科封面总数”；无记录的题不是已掌握。
   bool _isMastered(Question q) {
-    if (q.allCauses.isEmpty) return false;
-    final byKey = _recordByKey;
-    for (final cause in q.allCauses) {
-      final r = byKey['${q.id}|$cause'];
-      if (r == null ||
-          r.status != CauseStatus.solved ||
-          r.isRecheckDue) {
-        return false;
-      }
-    }
-    return true;
+    final rs = _records.where((r) => r.questionId == q.id).toList();
+    return QuestionRepository.reviewBucketOf(rs) == ReviewBucket.solved;
   }
 
   int _subjectOrder(String subjectId) {

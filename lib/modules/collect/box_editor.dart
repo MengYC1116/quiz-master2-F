@@ -742,13 +742,33 @@ class _BoxEditorDialogState extends State<_BoxEditorDialog> {
     }
     // 逐个目标框做 IoU 匹配：与当前框重叠度最大的检测框才是这道题。
     // 全部候选按 IoU 从大到小贪心认领，每个检测框只用一次，避免两道
-    // 题抢到同一个检测框；IoU ≤ 0.05 的不认领（找不到就手动框选）。
-    final detected = result.boxes.where((b) => b.layer == 1).toList();
+    // 题抢到同一个检测框；IoU ≤ 0.3 的不认领（找不到就手动框选）。
+    // SR3-13：阈值从 0.05 提到 0.3——0.05 时角上轻微搭边的邻题检测
+    // 框就能把目标框拽到邻题位置上；另把候选池里中心落在同页其他题
+    // 只读框内的检测框排除（那是邻题的框，重框模式下邻题不是 target，
+    // 不参与认领，池子也不应对它开放）。
+    final readOnlyLayer1 =
+        widget.readOnlyBoxes.where((b) => b.layer == 1).toList();
+    bool centerInReadOnly(QuestionBox b) {
+      final cx = b.x + b.w / 2;
+      final cy = b.y + b.h / 2;
+      return readOnlyLayer1.any(
+        (r) =>
+            cx >= r.x &&
+            cx <= r.x + r.w &&
+            cy >= r.y &&
+            cy <= r.y + r.h,
+      );
+    }
+
+    final detected = result.boxes
+        .where((b) => b.layer == 1 && !centerInReadOnly(b))
+        .toList();
     final scored = <({QuestionBox target, QuestionBox picked, double iou})>[];
     for (final target in targets) {
       for (final b in detected) {
         final iou = _iou(target, b);
-        if (iou > 0.05) scored.add((target: target, picked: b, iou: iou));
+        if (iou > 0.3) scored.add((target: target, picked: b, iou: iou));
       }
     }
     scored.sort((a, b) => b.iou.compareTo(a.iou));
@@ -761,8 +781,11 @@ class _BoxEditorDialogState extends State<_BoxEditorDialog> {
       matches.add((target: s.target, picked: s.picked));
     }
     if (matches.isEmpty) {
-      ScaffoldMessenger.of(context)
-          .showSnackBar(const SnackBar(content: Text('没找到对应的题，请手动框选')));
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('没找到对应的检测框（重叠度需超过 0.3），请手动框选'),
+        ),
+      );
       return;
     }
     setState(() {
@@ -800,6 +823,35 @@ class _BoxEditorDialogState extends State<_BoxEditorDialog> {
             return _clampInner(moved, newBox);
           }).toList();
         }
+        // SR3-14：无父框的独立题内框也要跟随——重框模式下它们本就属于
+        // 当前题。中心落在旧目标框内的，按与有父框内框相同的相对位置
+        // 换算再钳进新框；中心落在旧框外的保持不动（不属于这道框）。
+        final standalone = _standaloneInner[_currentPage];
+        if (standalone != null) {
+          _standaloneInner[_currentPage] = standalone.map((b) {
+            final cx = b.x + b.w / 2;
+            final cy = b.y + b.h / 2;
+            if (cx < target.x ||
+                cx > target.x + target.w ||
+                cy < target.y ||
+                cy > target.y + target.h) {
+              return b;
+            }
+            final moved = target.w > 0 && target.h > 0
+                ? b.copyWith(
+                    x:
+                        newBox.x +
+                        ((b.x - target.x) / target.w) * newBox.w,
+                    y:
+                        newBox.y +
+                        ((b.y - target.y) / target.h) * newBox.h,
+                    w: (b.w / target.w) * newBox.w,
+                    h: (b.h / target.h) * newBox.h,
+                  )
+                : b;
+            return _clampInner(moved, newBox);
+          }).toList();
+        }
       }
       _selectedId = null;
       _selectedInnerId = null;
@@ -810,7 +862,11 @@ class _BoxEditorDialogState extends State<_BoxEditorDialog> {
     final missed = targets.length - matches.length;
     if (missed > 0 && mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('有 $missed 道框没找到对应的检测框，已恢复其余框，请手动框选')),
+        SnackBar(
+          content: Text(
+            '有 $missed 道框没找到对应的检测框（重叠度需超过 0.3），已恢复其余框，请手动框选',
+          ),
+        ),
       );
     }
   }

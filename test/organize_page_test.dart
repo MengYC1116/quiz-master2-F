@@ -84,8 +84,14 @@ class FakeOrganizeRepo extends QuestionRepository {
   @override
   Future<List<String>> tags() async => List.of(tagList);
 
+  /// SR3-15：指定 id 的 save 抛错（批量打标签部分保存失败路径用）。
+  final Set<String> failSaveIds = {};
+
   @override
   Future<void> save(Question question) async {
+    if (failSaveIds.contains(question.id)) {
+      throw StateError('模拟写库失败');
+    }
     saved.add(question);
     final i = questions.indexWhere((x) => x.id == question.id);
     if (i >= 0) {
@@ -574,6 +580,39 @@ void main() {
         isTrue,
       );
       expect(find.textContaining('已给 1 道题打上 #需重做'), findsOneWidget);
+    });
+
+    testWidgets('SR3-15：批量打标签中途写库失败，已保存题的标签仍在快照里、后续批量加文件夹不丢',
+        (tester) async {
+      final repo = threeQuestionRepo();
+      repo.failSaveIds.add('q2');
+      await pumpOrganize(tester, repo: repo);
+      await openQueue(tester);
+      // 勾选前两道（时间降序：q1、q2）；q2 的 save 会抛错。
+      await tester.tap(popupCheckboxes(tester).first);
+      await tester.pumpAndSettle();
+      await tester.tap(popupCheckboxes(tester).at(1));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('批量打标签 #需重做'));
+      await tester.pumpAndSettle();
+      // 部分失败提示出现，异常没逃出按钮回调。
+      expect(find.textContaining('部分保存失败'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+      // 第一题已落盘。
+      expect(
+        repo.saved.any((x) => x.id == 'q1' && x.tags.contains('需重做')),
+        isTrue,
+      );
+      // 后续批量加文件夹：文件夹下拉默认已选中首个文件夹（f1“试卷”），
+      // 直接点加入——保存用的是弹窗快照里的行，q1 的标签应还在。
+      repo.failSaveIds.clear();
+      await tester.tap(find.text('批量加入该文件夹'));
+      await tester.pumpAndSettle();
+      // 加文件夹的保存用的是弹窗快照里的行：q1 的标签还在。
+      final q1 = repo.saved.lastWhere((x) => x.id == 'q1');
+      expect(q1.tags, contains('需重做'));
+      expect(q1.folderIds, contains('f1'));
+      expect(tester.takeException(), isNull);
     });
 
     testWidgets('批量删除要二次确认；确认后题被删', (tester) async {

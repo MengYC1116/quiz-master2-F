@@ -227,6 +227,8 @@ void main() {
       // sqflite_ffi 走 isolate：testWidgets 的 FakeAsync 下直接 await
       // 播种永不完成（实测 10 分钟超时），播种与仓储层断言必须包在
       // tester.runAsync 里（真实异步区）；泵首页本身仍走 tester。
+      // SR3-20：tearDown 注册在播种之前——播种抛错时测试库单例也不残留。
+      addTearDown(() async => AppDatabase.resetForTest());
       await tester.runAsync(() async {
         final db = await AppDatabase.openForTest();
         AppDatabase.useDatabaseForTest(db);
@@ -248,7 +250,6 @@ void main() {
         expect(await repo.homeRevCounts(),
             {'math': 3, 'english': 1, 'politics': 0});
       });
-      addTearDown(() async => AppDatabase.resetForTest());
       final repo = QuestionRepository(AppDatabase.instance);
       // 真实仓储的 Future.wait 在 FakeAsync 下不完成：_load 挂起、
       // 加载圈一直转，pumpAndSettle 会超时。改用真实时间驱动：
@@ -267,6 +268,12 @@ void main() {
       // 焦点卡总数 4 = 封面数学（2 + 1）+ 英语（0 + 1），与手填
       // FakeRepo 的用例同一文案，但数是真实仓储算出来的。
       expect(find.text('待解决 2 道 · 复查 2 道'), findsOneWidget);
+      // SR3-20：补断言分科行文案（与 FakeRepo 的“下方 4 格”用例同款）：
+      // 数学要复习 3 道（q1/q2/q3）· 待整理 1 道（q6 未整理）；
+      // 英语要复习 1 道（q8）· 待整理 0 道；政治 0 道 · 待整理 0 道。
+      expect(find.text('要复习 3 道 · 待整理 1 道'), findsOneWidget);
+      expect(find.text('要复习 1 道 · 待整理 0 道'), findsOneWidget);
+      expect(find.text('要复习 0 道 · 待整理 0 道'), findsOneWidget);
     }, timeout: const Timeout(Duration(seconds: 90)));
   });
 }

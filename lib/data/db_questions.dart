@@ -348,13 +348,17 @@ extension AppDatabaseQuestions on AppDatabase {
     await _seedCauseRecordsFor(d, q, joinedAt: DateTime.now());
   }
 
-  /// SR2-14：只改 `remedy_history` 列，不整行 REPLACE。唯一生产
-  /// 调用方是 `repository.saveRemedy`（只改补救历史）；状态 /
-  /// 计数 / 复查日的唯一写路径是 [recordSelfCheckIntoImpl]（事务内
-  /// 先读库内行再重算），`saveCauseRecord` 在 lib/test 里无调用方。
-  /// 旧写法整行 REPLACE 会用旧快照覆盖自查刚改掉的 `status` /
-  /// `solvedCount` / `recheckDate`。行不存在时才整行 INSERT。
-  Future<void> upsertCauseRecord(CauseRecord r) async {
+  /// SR3-4：方法名即语义——只改 `remedy_history` 列，不整行
+  /// REPLACE。唯一生产调用方是 `repository.saveRemedy`（只改补救
+  /// 历史）；状态 / 计数 / 复查日 / 上次自查的唯一写路径是
+  /// [recordSelfCheckIntoImpl]（事务内先读库内行再重算），
+  /// `saveCauseRecord` 只是本方法的仓库层转发（测试播种走 INSERT
+  /// 路径时用）。旧名 `upsertCauseRecord` 暗示全量 upsert，但行
+  /// 已存在时 `status` / `solvedCount` / `recheckDate` /
+  /// `lastCheck` 的改动会被静默丢弃——改名让窄化显性化：经本方法
+  /// 改状态是“按设计丢弃”，不是“写入失败”。行不存在时才整行
+  /// INSERT（新记录无可覆盖的库内值，全列写无 SR2-14 同类风险）。
+  Future<void> updateCauseRemedy(CauseRecord r) async {
     final d = await db;
     final updated = await d.update(
       'cause_records',

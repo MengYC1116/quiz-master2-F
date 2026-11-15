@@ -43,16 +43,39 @@ bool isZipBytes(List<int> bytes) =>
     bytes[2] == 0x03 &&
     bytes[3] == 0x04;
 
+/// 归一化 ZIP 条目名：`\`→`/`、折叠连续 `/`、消解 `.` 段。
+/// 只用于比较与校验，不改存名与落盘路径；`..` 段保留，由
+/// [validateZipEntryName] 拒绝（消解 `..` 会掩盖穿越）。
+/// SR3-1：[readZip] 的判重键用它（再小写折叠），与 [validateZipEntryName]
+/// 共用同一函数——`slices//q1.png` / `slices/./q1.png` / `slices\q1.png` /
+/// `Slices/Q1.png` 在文件系统上与 `slices/q1.png` 是同一文件，原始字符
+/// 串判重会放行，恢复进位时第二遍 rename 因源文件已被第一遍 rename 走
+/// 而抛错，又被误报为“文件写不进去”（SR2-17 的误报回归）。
+String normalizeZipEntryName(String name) {
+  final kept = <String>[];
+  for (final part in name.replaceAll('\\', '/').split('/')) {
+    if (part.isEmpty || part == '.') continue;
+    kept.add(part);
+  }
+  return kept.join('/');
+}
+
 /// 校验一个 ZIP 条目名是否可安全解压到数据目录内。
 /// 返回 null 表示通过；否则返回拒绝原因（调用方拒绝整个恢复包，
 /// 不许跳过坏条目继续解——跳过会让恢复结果不可预期，见 §4.6）。
 /// 拒绝：绝对路径（含盘符 `C:` / 以 `/` 开头）、`..` 段（含 `..\`）、
 /// 空名、反斜杠分隔的穿越（Windows 上 `\` 也是分隔符）。
+/// 空段（`//`）与 `.` 段不拒绝：归一化后它们与规范写法同一文件，
+/// 重名时由 [readZip] 的判重拒绝，单条时落盘由路径解析折叠（SR3-1）。
 String? validateZipEntryName(String name) {
   if (name.isEmpty) return '条目名为空';
-  final normalized = name.replaceAll('\\', '/');
-  if (normalized.startsWith('/')) return '条目是绝对路径：$name';
-  if (normalized.contains(':')) return '条目含盘符：$name';
+  // 绝对路径与盘符在归一化前判（归一化会折叠掉开头的空段，
+  // `//slices/q1.png` 归一化后不再以 `/` 开头）。
+  final slashified = name.replaceAll('\\', '/');
+  if (slashified.startsWith('/')) return '条目是绝对路径：$name';
+  if (slashified.contains(':')) return '条目含盘符：$name';
+  final normalized = normalizeZipEntryName(name);
+  if (normalized.isEmpty) return '条目名为空：$name';
   for (final part in normalized.split('/')) {
     if (part == '..') return '条目穿越出数据目录：$name';
   }
@@ -196,6 +219,9 @@ int _readU32(List<int> b, int off) =>
 /// 不进去”，把结构损坏误报成磁盘问题。例外是 `backup.json` 重名：
 /// 恢复取最后一个，进位循环又跳过它，不触发本问题，故仍放行（调用
 /// 方按“取最后一个”处理）。
+/// SR3-1：判重键是归一化后的条目名再小写折叠（见 [normalizeZipEntryName]），
+/// 仅用于比较，不改存名与落盘路径；单条变体（如单独一个 `slices//q1.png`）
+/// 不重名，照常读出，落盘由路径解析折叠。
 /// SR-P2-68：中央目录是唯一可信的条目清单——
 /// - 流式写出的 zip（local header flag bit 3 置位、尺寸为 0、真实
 ///   尺寸在数据后的描述符里）按中央目录的尺寸读，不再误读；
@@ -219,7 +245,11 @@ List<ZipEntryData> readZip(List<int> bytes, {int maxTotalBytes = 4 * 1024 * 1024
     final bad = validateZipEntryName(entry.name);
     if (bad != null) throw ZipFormatException('备份里有非法路径：$bad');
     // SR2-17：重名文件条目即结构损坏（`backup.json` 除外，见上）。
-    if (entry.name != 'backup.json' && !seenNames.add(entry.name)) {
+    // SR3-1：判重键是归一化 + 小写折叠后的条目名——`//` / `/.` /
+    // `\` / 大小写变体在文件系统上是同一文件，原始字符串判重会
+    // 放行，恢复进位时第二遍 rename 抛错又被误报为“文件写不进去”。
+    if (entry.name != 'backup.json' &&
+        !seenNames.add(normalizeZipEntryName(entry.name).toLowerCase())) {
       throw ZipFormatException('ZIP 里有重复条目：${entry.name}');
     }
     if ((entry.flags & 0x01) != 0) {

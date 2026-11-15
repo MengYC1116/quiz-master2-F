@@ -169,21 +169,28 @@ class ImportService {
     return result.files.where((f) => f.path != null).map((f) => f.path!).toList();
   }
 
-  /// SR2-72：同批去重键——同一文件的不同写法只建一个任务。
+  /// SR2-72 / SR3-5：同批去重键——同一文件的不同写法只建一个任务。
   /// `resolveSymbolicLinks` 同时完成绝对化（相对路径 → 绝对路径）
-  /// 与链接解析（符号链接 → 目标路径）；再整体小写折叠，覆盖
-  /// Windows/macOS 不区分大小写的文件系统（产品跑在 Windows 上；
-  /// Linux 下同目录仅大小写不同的两个文件是病态构造）。去重键只
-  /// 用于比较，实际打开的仍是调用方传的原路径。解析失败（如文件
-  /// 不存在）时回退到绝对路径小写，仍能覆盖相对 / 大小写写法。
+  /// 与链接解析（符号链接 → 目标路径）；可解析时再整体小写折叠，
+  /// 覆盖 Windows/macOS 不区分大小写的文件系统（产品跑在 Windows
+  /// 上；Linux 下同目录仅大小写不同的两个真实文件是病态构造，
+  /// 折叠后仍会被当成同一文件，这是已确认的取舍）。
+  /// 解析失败（文件不存在）时回退键用原始路径、不折叠小写：不存在
+  /// 的大写拼写（如 `TEST/FIXTURES/PHOTO.JPG`）若也折叠，会与真实
+  /// 文件解析出的键撞键，排在前面时先建失败任务、真实文件随后被当
+  /// 作重复跳过（SR3-5）。回退不折叠后，不存在的拼写只与它自身的
+  /// 写法撞键；Linux 下 [真实, 不存在的大写] 会建两个任务（一个
+  /// needBox、一个 failed），这是诚实行为。去重键只用于比较，实际
+  /// 打开的仍是调用方传的原路径。
   Future<String> _dedupKey(String path) async {
     try {
       return (await File(path).resolveSymbolicLinks()).toLowerCase();
     } catch (_) {
       try {
-        return File(path).absolute.path.toLowerCase();
+        // SR3-5：回退分支不折叠小写（见上）。
+        return File(path).absolute.path;
       } catch (_) {
-        return path.toLowerCase();
+        return path;
       }
     }
   }
@@ -202,6 +209,20 @@ class ImportService {
     void Function(String taskId, int progress)? onProgress,
   }) async {
     final tasks = <CollectTask>[];
+    // SR3-6：进度回调永不抛错的转发。收集页的回调（setState 等）在
+    // dispose 竞态下仍可抛错；直接调 onProgress 时，复制循环的
+    // catch 会把它当成“文件复制不进去”、_importPdf 的渲染 catch
+    // 会把它当成“渲染失败”，好文件被判失败、目录被删。在入口包
+    // 一处，五处调用点（复制循环 / 图片 90% / 图片 100% /
+    // PDF 渲染回调 / PDF 100%）全部受益；尾部三处原有的
+    // try/catch 保留作双保险。
+    final safeOnProgress = onProgress == null
+        ? null
+        : (String taskId, int progress) {
+            try {
+              onProgress(taskId, progress);
+            } catch (_) {}
+          };
     // SR-P1-17：同批去重。同一文件在一次多选里出现两次时只建一个
     // 任务，后面的直接跳过。跨批重复不在这里拦：D-08 定了重复导入
     // 允许重导，收集页先弹“已经导入过”提示，用户点“仍然再导一份”
@@ -307,7 +328,7 @@ class ImportService {
                 : (copied * 70 ~/ total).clamp(0, 70);
             if (pct != lastReported) {
               lastReported = pct;
-              onProgress?.call(id, pct);
+              safeOnProgress?.call(id, pct);
               if (lastDbPct < 0 || pct - lastDbPct >= 5) {
                 lastDbPct = pct;
                 await _updateProgress(task, pct);
@@ -342,7 +363,7 @@ class ImportService {
             task,
             targetAbs,
             dirAbs,
-            onProgress,
+            safeOnProgress,
           );
         } catch (e) {
           done = await _failAndClean(
@@ -416,7 +437,7 @@ class ImportService {
       // 失败，上面 canDecodeImageBytes 已先行拦截，走到这里的不是
       // 解码失败，而是读盘 / 写盘等不明确的原因。
       try {
-        onProgress?.call(id, 90);
+        safeOnProgress?.call(id, 90);
       } catch (_) {}
       try {
         await _updateProgress(task, 90);
@@ -446,7 +467,7 @@ class ImportService {
         continue;
       }
       try {
-        onProgress?.call(id, 100);
+        safeOnProgress?.call(id, 100);
       } catch (_) {}
       tasks[tasks.length - 1] = task;
       } catch (e) {
@@ -575,8 +596,8 @@ class ImportService {
   }
 
   /// 失败任务 + 删任务目录（不留半截文件），返回已写库的失败任务。
-  /// SR2-2：自身的写库也包进 try——9 处调用点只有尾部 1 处有保护，
-  /// 在这里包一处，九处受益；写不进时只返回内存里的 failed 任务，
+  /// SR2-2：自身的写库也包进 try——13 处调用点只有尾部 1 处有保护，
+  /// 在这里包一处，十三处受益；写不进时只返回内存里的 failed 任务，
   /// 本函数绝不抛错。
   Future<CollectTask> _failAndClean(
     CollectTask task,

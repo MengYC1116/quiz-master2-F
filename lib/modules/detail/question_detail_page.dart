@@ -20,6 +20,7 @@
 // 三档缩放 1.00/1.15/1.30 由 app.dart TextScaler + qmScaleOf 统一做。
 import 'dart:io';
 import 'dart:math' as math;
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 
@@ -95,6 +96,12 @@ class _QuestionDetailPageState extends State<QuestionDetailPage> {
         orElse: () => Subject.byId(id),
       );
 
+  /// SR3-10：切片自愈的去重键（题 id + 切片路径 + 库里记的尺寸）与
+  /// 进行中标志。只对同一组合校验一次：尺寸相符或自愈成功后不再
+  /// 重复读盘；自愈失败时不记键，下次 _load 再试（用户仍可手动重框）。
+  String? _sliceHealCheckedKey;
+  bool _sliceHealRunning = false;
+
   bool _editing = false;
   bool _dirty = false;
   bool _answerVisible = false;
@@ -169,6 +176,80 @@ class _QuestionDetailPageState extends State<QuestionDetailPage> {
       _subjects = subjects.isEmpty ? Subject.all : subjects;
       _loading = false;
     });
+    // SR3-10：打开详情页时自愈“库新图旧”的崩溃窗口（事务提交后、
+    // rename 前被杀）。不 await：自愈是后台修复，不挡页面渲染；
+    // 失败静默（见方法内注释），下次打开再试。
+    if (q != null) _healSliceIfNeeded(q);
+  }
+
+  /// SR3-10（a）：校验磁盘切片的实际尺寸与库里 [sliceWidth] /
+  /// [sliceHeight] 是否一致。不一致时按当前第一个 1 层框重裁一次、
+  /// 原子替换切片文件；重裁尺寸与库里记的不一样时再把库里尺寸改成
+  /// 重裁尺寸（框可能在崩溃后又被改过）。切片文件不存在时不处理
+  /// （仍走原有的图加载失败占位）；页图缺失/损坏、框缺失时同样
+  /// 静默放弃——用户仍可手动“重新框选”，打开页时不弹提示打扰。
+  Future<void> _healSliceIfNeeded(Question q) async {
+    if (q.slicePath == null ||
+        q.sliceWidth == null ||
+        q.sliceHeight == null) {
+      return;
+    }
+    final key = '${q.id}|${q.slicePath}|${q.sliceWidth}x${q.sliceHeight}';
+    if (key == _sliceHealCheckedKey || _sliceHealRunning) return;
+    _sliceHealRunning = true;
+    try {
+      final sliceAbs = AppDatabase.resolveDataPath(q.slicePath!);
+      if (sliceAbs == null) return;
+      final sliceFile = File(sliceAbs);
+      if (!sliceFile.existsSync()) return;
+      final dims = pngDimensions(await sliceFile.readAsBytes());
+      if (dims != null &&
+          dims.width == q.sliceWidth &&
+          dims.height == q.sliceHeight) {
+        _sliceHealCheckedKey = key;
+        return;
+      }
+      // 尺寸不符（或切片已不是合法 PNG）：按当前框重裁。
+      if (q.pageImagePath == null) return;
+      final pageAbs = AppDatabase.resolveDataPath(q.pageImagePath!);
+      if (pageAbs == null || !File(pageAbs).existsSync()) return;
+      final pageBytes = await File(pageAbs).readAsBytes();
+      final boxes = await widget.repo.boxesForPageImage(q.pageImagePath!);
+      final first = boxes
+          .where((b) => b.questionId == q.id && b.layer == 1)
+          .firstOrNull;
+      if (first == null) return;
+      final crop = await cropBoxPng(pageBytes, first);
+      final tmpRel =
+          'slices/${q.id}.tmp-heal-${DateTime.now().millisecondsSinceEpoch}-${math.Random().nextInt(1 << 32)}.png';
+      final tmpAbs = AppDatabase.resolveDataPath(tmpRel);
+      if (tmpAbs == null) return;
+      await File(tmpAbs).parent.create(recursive: true);
+      await File(tmpAbs).writeAsBytes(crop.png);
+      try {
+        await File(tmpAbs).rename(sliceAbs);
+      } catch (_) {
+        try {
+          if (File(tmpAbs).existsSync()) await File(tmpAbs).delete();
+        } catch (_) {}
+        return;
+      }
+      await evictCachedFileImage(sliceAbs);
+      if (crop.width != q.sliceWidth || crop.height != q.sliceHeight) {
+        await widget.repo.save(
+          q.copyWith(sliceWidth: crop.width, sliceHeight: crop.height),
+        );
+      }
+      _sliceHealCheckedKey =
+          '${q.id}|${q.slicePath}|${crop.width}x${crop.height}';
+      if (mounted) await _load();
+    } catch (e) {
+      // 自愈是后台兜底：任何一步失败都不打扰用户、不抛到界面，
+      // 只记日志；下次打开详情页（_load）会再试一次。
+      debugPrint('SR3-10：切片自愈失败（${q.id}）：$e');
+    } finally {
+      _sliceHealRunning = false;
+    }
   }
 
   String _fmtDate(DateTime d) => '${d.year}年${d.month}月${d.day}日';
@@ -358,9 +439,18 @@ class _QuestionDetailPageState extends State<QuestionDetailPage> {
     // 切片，事务失败时 catch 删掉的是刚覆盖掉旧图的唯一一份切片，
     // 题从此无图。改成临时文件 + 事务成功后 rename，失败只删临时
     // 文件，旧切片字节完好、框与题不动）。
-    final pageBytes = await File(pageAbs).readAsBytes();
-    final first = newLayer1.first;
-    final crop = await cropBoxPng(pageBytes, first);
+    // SR3-11：读页图 + 裁切片同样可能失败（页图损坏截断、框落在图外），
+    // 与写临时文件/事务/rename 三处同款包 try/catch，失败给提示并
+    // return——旧代码这两步在 try 外，异常直接抛到按钮回调、无反馈。
+    final ({Uint8List png, int width, int height}) crop;
+    try {
+      final pageBytes = await File(pageAbs).readAsBytes();
+      final first = newLayer1.first;
+      crop = await cropBoxPng(pageBytes, first);
+    } catch (_) {
+      if (mounted) _snack('重新框选失败：页图读不出来/切片裁不出来，请重试');
+      return;
+    }
     final sliceRel = ImportService.sliceRelative(q.id);
     final sliceAbs = AppDatabase.resolveDataPath(sliceRel);
     if (sliceAbs == null) {
@@ -371,6 +461,10 @@ class _QuestionDetailPageState extends State<QuestionDetailPage> {
     // 随机后缀防两次重框撞名，也防失败残留被误删成他人的文件。
     // 进程在写临时文件与 rename 之间被杀会留一个孤儿临时文件，
     // 由 §4.5 孤儿扫描兜底（slices/ 下无引用文件）。
+    // SR3-10：进程在事务提交后、rename 前被杀是另一个崩溃窗口——
+    // 库里已是新切片尺寸、磁盘仍是旧图；孤儿扫描扫不到它（旧图仍被
+    // slice_path 引用）。自愈在打开详情页时做（见 _healSliceIfNeeded）：
+    // 切片实际尺寸与库里 sliceWidth/sliceHeight 不符就按当前框重裁。
     final tmpRel =
         'slices/${q.id}.tmp-${DateTime.now().millisecondsSinceEpoch}-${math.Random().nextInt(1 << 32)}.png';
     final tmpAbs = AppDatabase.resolveDataPath(tmpRel);

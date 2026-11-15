@@ -1918,6 +1918,19 @@ void main() {
       expect(repo.savedFolders, isEmpty);
     });
 
+    testWidgets('SR3-18 搜索文件夹时显示“不能调顺序”提示，清空后消失',
+        (tester) async {
+      final repo = threeSubjectRepo();
+      await pumpWrongbook(tester, repo: repo, initialSubjectId: 'math');
+      expect(find.text('搜索时不能调顺序，先清空搜索'), findsNothing);
+      await tester.enterText(find.byType(TextField).first, '卷');
+      await tester.pumpAndSettle();
+      expect(find.text('搜索时不能调顺序，先清空搜索'), findsOneWidget);
+      await tester.enterText(find.byType(TextField).first, '');
+      await tester.pumpAndSettle();
+      expect(find.text('搜索时不能调顺序，先清空搜索'), findsNothing);
+    });
+
     testWidgets('SR-P2-44 换科/换文件夹时搜索与筛选清零', (tester) async {
       await pumpWrongbook(tester);
       await openMathListCompact(tester);

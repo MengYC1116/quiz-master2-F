@@ -44,8 +44,10 @@ Future<File> _whitePagePng(Directory dir, {String name = 'page.png'}) async {
 
 /// SR2-73：轮询等条件成立（默认最多 5 秒），超时返回 false。
 /// 用在“等第一次检测进入 _loadOnce 并停在屏障处”。
-Future<bool> _waitFor(bool Function() cond,
-    {Duration timeout = const Duration(seconds: 5)}) async {
+Future<bool> _waitFor(
+  bool Function() cond, {
+  Duration timeout = const Duration(seconds: 5),
+}) async {
   final deadline = DateTime.now().add(timeout);
   while (!cond()) {
     if (DateTime.now().isAfter(deadline)) return false;
@@ -112,8 +114,9 @@ void main() {
       // x=-0.2, w=0.5 → 交集 [0, 0.3]，宽扣到 0.3；
       // y=-0.1, h=0.5 → 交集 [0, 0.4]，高扣到 0.4。
       final detected = YoloOnnxService.clampToPage(
-          box(-0.2, -0.1, 0.5, 0.5),
-          minSize: false);
+        box(-0.2, -0.1, 0.5, 0.5),
+        minSize: false,
+      );
       expect(detected.x, 0.0);
       expect(detected.y, 0.0);
       expect(detected.w, closeTo(0.3, 1e-9));
@@ -166,16 +169,19 @@ void main() {
     test('minSize: false：检测输出的薄框原样保留，不补 0.08', () {
       // 题行实测高 0.018~0.10、选项框约 0.04×0.03：默认补 0.08 会让
       // 相邻题行互相重叠、确认被拦；检测管线用 minSize: false。
-      final r = YoloOnnxService.clampToPage(box(0.13, 0.26, 0.8, 0.041),
-          minSize: false);
+      final r = YoloOnnxService.clampToPage(
+        box(0.13, 0.26, 0.8, 0.041),
+        minSize: false,
+      );
       expect(r.h, closeTo(0.041, 1e-9));
-      final opt = YoloOnnxService.clampToPage(box(0.15, 0.11, 0.044, 0.03),
-          minSize: false);
+      final opt = YoloOnnxService.clampToPage(
+        box(0.15, 0.11, 0.044, 0.03),
+        minSize: false,
+      );
       expect(opt.w, closeTo(0.044, 1e-9));
       expect(opt.h, closeTo(0.03, 1e-9));
       // 默认行为不变：同样输入不传参仍补回 0.08。
-      expect(YoloOnnxService.clampToPage(box(0.13, 0.26, 0.8, 0.041)).h,
-          0.08);
+      expect(YoloOnnxService.clampToPage(box(0.13, 0.26, 0.8, 0.041)).h, 0.08);
       expectInPage(r);
       expectInPage(opt);
     });
@@ -320,15 +326,50 @@ void main() {
     test('中心点在整题框内：归属该题；落不到任何题里：进 orphans', () {
       final boxes = [
         const QuestionBox(
-            id: 'q1', layer: 1, type: 'question', x: 0.1, y: 0.1, w: 0.8, h: 0.3),
+          id: 'q1',
+          layer: 1,
+          type: 'question',
+          x: 0.1,
+          y: 0.1,
+          w: 0.8,
+          h: 0.3,
+        ),
         const QuestionBox(
-            id: 'q2', layer: 1, type: 'question', x: 0.1, y: 0.5, w: 0.8, h: 0.3),
+          id: 'q2',
+          layer: 1,
+          type: 'question',
+          x: 0.1,
+          y: 0.5,
+          w: 0.8,
+          h: 0.3,
+        ),
         const QuestionBox(
-            id: 'q1-stem-1', layer: 2, type: 'stem', x: 0.2, y: 0.15, w: 0.5, h: 0.1),
+          id: 'q1-stem-1',
+          layer: 2,
+          type: 'stem',
+          x: 0.2,
+          y: 0.15,
+          w: 0.5,
+          h: 0.1,
+        ),
         const QuestionBox(
-            id: 'q2-option-1', layer: 2, type: 'option', x: 0.2, y: 0.6, w: 0.2, h: 0.1),
+          id: 'q2-option-1',
+          layer: 2,
+          type: 'option',
+          x: 0.2,
+          y: 0.6,
+          w: 0.2,
+          h: 0.1,
+        ),
         const QuestionBox(
-            id: 'orphan', layer: 2, type: 'figure', x: 0.2, y: 0.85, w: 0.2, h: 0.1),
+          id: 'orphan',
+          layer: 2,
+          type: 'figure',
+          x: 0.2,
+          y: 0.85,
+          w: 0.2,
+          h: 0.1,
+        ),
       ];
       final grouped = YoloOnnxService.groupInners(boxes);
       expect(grouped.inners['q1']!.map((b) => b.id), ['q1-stem-1']);
@@ -352,17 +393,17 @@ void main() {
         );
         final bar = ui.Paint()..color = const ui.Color(0xFF000000);
         for (var i = 0; i < 10; i++) {
-          canvas.drawRect(
-              ui.Rect.fromLTWH(80, 80.0 + i * 90, 640, 12), bar);
+          canvas.drawRect(ui.Rect.fromLTWH(80, 80.0 + i * 90, 640, 12), bar);
         }
-        final img =
-            await recorder.endRecording().toImage(800, 1000);
-        final png =
-            await img.toByteData(format: ui.ImageByteFormat.png);
+        final img = await recorder.endRecording().toImage(800, 1000);
+        final png = await img.toByteData(format: ui.ImageByteFormat.png);
         img.dispose();
         final file = File('${dir.path}/page.png');
         await file.writeAsBytes(png!.buffer.asUint8List());
-        final boxes = (await service.detectPage(imagePath: file.path, page: 1)).boxes;
+        final boxes = (await service.detectPage(
+          imagePath: file.path,
+          page: 1,
+        )).boxes;
         if (!service.hasRealModel) {
           markTestSkipped('本机无 onnxruntime 原生库，跳过真实推理');
           return;
@@ -406,8 +447,7 @@ void main() {
         img.dispose();
         final file = File('${dir.path}/page.png');
         await file.writeAsBytes(png!.buffer.asUint8List());
-        final result =
-            await service.detectPage(imagePath: file.path, page: 1);
+        final result = await service.detectPage(imagePath: file.path, page: 1);
         expect(result.usedFallback, isTrue);
         expect(result.boxes, isEmpty);
         expect(result.error, contains('手动框选'));
@@ -437,8 +477,7 @@ void main() {
         final missing = YoloOnnxService(
           questionModelAsset: 'assets/models/question/does-not-exist.onnx',
         );
-        final first =
-            await missing.detectPage(imagePath: file.path, page: 1);
+        final first = await missing.detectPage(imagePath: file.path, page: 1);
         expect(first.usedFallback, isTrue);
         expect(first.boxes, isEmpty);
         expect(first.error, contains('手动框选'));
@@ -518,14 +557,12 @@ void main() {
       }
     }, timeout: const Timeout(Duration(minutes: 5)));
 
-    test('真实模型路径：两次并发检测只加载一次；无原生库时跳过原因可观测',
-        () async {
+    test('真实模型路径：两次并发检测只加载一次；无原生库时跳过原因可观测', () async {
       TestWidgetsFlutterBinding.ensureInitialized();
       YoloOnnxService.resetLoadStateForTest();
       final gate = Completer<void>();
       YoloOnnxService.loadGateForTest = gate;
-      final dir =
-          await Directory.systemTemp.createTemp('yolo-concurrent-real');
+      final dir = await Directory.systemTemp.createTemp('yolo-concurrent-real');
       try {
         final file = await _whitePagePng(dir);
         final a = YoloOnnxService();
@@ -550,9 +587,11 @@ void main() {
             expect(r.usedFallback, isTrue);
             expect(r.error, contains('手动框选'));
           }
-          markTestSkipped('SR2-73 并发真实推理：本机无 onnxruntime 原生库'
-              '（hasRealModel=false），成功路径不断言；共享加载已由'
-              'loadAttemptsForTest == 1 覆盖');
+          markTestSkipped(
+            'SR2-73 并发真实推理：本机无 onnxruntime 原生库'
+            '（hasRealModel=false），成功路径不断言；共享加载已由'
+            'loadAttemptsForTest == 1 覆盖',
+          );
           return;
         }
         for (final r in results) {
@@ -562,6 +601,86 @@ void main() {
         expect(b.lastDetectStats, isNotNull);
       } finally {
         if (!gate.isCompleted) gate.complete();
+        await dir.delete(recursive: true);
+        YoloOnnxService.resetLoadStateForTest();
+      }
+    }, timeout: const Timeout(Duration(minutes: 5)));
+
+    test('SR3-23：测试屏障以 error 完成时 _loadFuture 不被毒化，下次检测重试加载', () async {
+      TestWidgetsFlutterBinding.ensureInitialized();
+      YoloOnnxService.resetLoadStateForTest();
+      final gate = Completer<void>();
+      YoloOnnxService.loadGateForTest = gate;
+      final dir = await Directory.systemTemp.createTemp('yolo-gate-error');
+      try {
+        final file = await _whitePagePng(dir);
+        final service = YoloOnnxService(
+          questionModelAsset: 'assets/models/question/does-not-exist.onnx',
+        );
+        final first = service.detectPage(imagePath: file.path, page: 1);
+        expect(
+          await _waitFor(() => YoloOnnxService.loadAttemptsForTest == 1),
+          isTrue,
+          reason: '第一次检测应在超时前进入加载',
+        );
+        gate.completeError(StateError('gate boom'));
+        final firstResult = await first;
+        expect(firstResult.usedFallback, isTrue);
+        expect(firstResult.error, contains('手动框选'));
+        expect(YoloOnnxService.loadAttemptsForTest, 1);
+        // 第二次检测：屏障换成已正常完成的 completer，加载应重试
+        //（旧实现里 gate 在 try 外抛错，失败的 _loadFuture 永远留在
+        // 原地，计数恒为 1、加载永不重试）。
+        YoloOnnxService.loadGateForTest = Completer<void>()..complete();
+        final second = await service.detectPage(imagePath: file.path, page: 1);
+        expect(second.usedFallback, isTrue);
+        expect(YoloOnnxService.loadAttemptsForTest, 2);
+      } finally {
+        if (!gate.isCompleted) gate.complete();
+        await dir.delete(recursive: true);
+        YoloOnnxService.resetLoadStateForTest();
+      }
+    }, timeout: const Timeout(Duration(minutes: 5)));
+
+    test('SR3-24：单次推理超时走 fallback，队列不被堵住，下次检测仍能跑', () async {
+      TestWidgetsFlutterBinding.ensureInitialized();
+      YoloOnnxService.resetLoadStateForTest();
+      final dir = await Directory.systemTemp.createTemp('yolo-detect-timeout');
+      try {
+        final file = await _whitePagePng(dir);
+        final service = YoloOnnxService();
+        // 先跑一次正常检测把模型加载好（超时只包推理，不包加载）；
+        // 无原生库时跳过：超时路径须真实推理才可达。
+        final warmup = await service.detectPage(imagePath: file.path, page: 1);
+        if (!service.hasRealModel) {
+          markTestSkipped('本机无 onnxruntime 原生库，跳过推理超时验证');
+          return;
+        }
+        expect(warmup.usedFallback, isFalse);
+        // 超时缩到 1ms：这次推理必超时 → fallback。原生推理仍在后台
+        // 跑（不取消），等它跑完（lastDetectStats 晚到）再发起下一次，
+        // 避免两次原生 runAsync 重叠（SR2-73 的 SIGSEGV 起因）。
+        YoloOnnxService.detectTimeoutForTest = const Duration(milliseconds: 1);
+        final timedOut = await service.detectPage(
+          imagePath: file.path,
+          page: 1,
+        );
+        expect(timedOut.usedFallback, isTrue);
+        expect(timedOut.error, contains('手动框选'));
+        expect(
+          await _waitFor(
+            () => service.lastDetectStats != null,
+            timeout: const Duration(seconds: 30),
+          ),
+          isTrue,
+          reason: '后台超时的推理应在 30 秒内跑完',
+        );
+        // 队列未被超时毒化：恢复 60 秒后下一次检测正常成功。
+        YoloOnnxService.detectTimeoutForTest = YoloOnnxService.detectTimeout;
+        final second = await service.detectPage(imagePath: file.path, page: 1);
+        expect(second.usedFallback, isFalse);
+        expect(service.lastDetectStats, isNotNull);
+      } finally {
         await dir.delete(recursive: true);
         YoloOnnxService.resetLoadStateForTest();
       }

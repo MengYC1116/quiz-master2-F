@@ -12,21 +12,23 @@ import 'package:quiz_master2/modules/subjects/subjects_page.dart';
 import 'package:quiz_master2/theme/app_theme.dart';
 import 'package:quiz_master2/widgets/uikit.dart';
 
-Question _tq(String id, String title,
-        {String subjectId = 'math',
-        List<String> tags = const [],
-        String? examId}) =>
-    Question(
-      id: id,
-      title: title,
-      subjectId: subjectId,
-      tags: tags,
-      examId: examId,
-      createdAt: DateTime.now(),
-      isOrganized: true,
-      sliceKind: 'material',
-      sliceText: '题：$title',
-    );
+Question _tq(
+  String id,
+  String title, {
+  String subjectId = 'math',
+  List<String> tags = const [],
+  String? examId,
+}) => Question(
+  id: id,
+  title: title,
+  subjectId: subjectId,
+  tags: tags,
+  examId: examId,
+  createdAt: DateTime.now(),
+  isOrganized: true,
+  sliceKind: 'material',
+  sliceText: '题：$title',
+);
 
 class FakeSubjectsRepo extends QuestionRepository {
   FakeSubjectsRepo({this.throwOnLoad = false})
@@ -46,10 +48,30 @@ class FakeSubjectsRepo extends QuestionRepository {
     _tq('q6', '史纲时间轴', subjectId: 'politics', examId: 'exam-1'),
   ];
   List<KnowledgePoint> kps = [
-    KnowledgePoint(id: 'kp-1', subjectId: 'math', chapter: '函数与极限', name: '函数极限'),
-    KnowledgePoint(id: 'kp-2', subjectId: 'math', chapter: '函数与极限', name: '导数应用'),
-    KnowledgePoint(id: 'kp-3', subjectId: 'math', chapter: '定积分', name: '定积分应用'),
-    KnowledgePoint(id: 'kp-4', subjectId: 'english', chapter: '词汇', name: '学术词汇'),
+    KnowledgePoint(
+      id: 'kp-1',
+      subjectId: 'math',
+      chapter: '函数与极限',
+      name: '函数极限',
+    ),
+    KnowledgePoint(
+      id: 'kp-2',
+      subjectId: 'math',
+      chapter: '函数与极限',
+      name: '导数应用',
+    ),
+    KnowledgePoint(
+      id: 'kp-3',
+      subjectId: 'math',
+      chapter: '定积分',
+      name: '定积分应用',
+    ),
+    KnowledgePoint(
+      id: 'kp-4',
+      subjectId: 'english',
+      chapter: '词汇',
+      name: '学术词汇',
+    ),
   ];
   List<String> tagsList = ['易错', '常考', '需重做'];
   List<Exam> examsList = [
@@ -124,10 +146,11 @@ class FakeSubjectsRepo extends QuestionRepository {
     final i = kps.indexWhere((e) => e.id == id);
     if (i >= 0) {
       kps[i] = KnowledgePoint(
-          id: id,
-          subjectId: kps[i].subjectId,
-          chapter: kps[i].chapter,
-          name: newName);
+        id: id,
+        subjectId: kps[i].subjectId,
+        chapter: kps[i].chapter,
+        name: newName,
+      );
     }
   }
 
@@ -138,22 +161,25 @@ class FakeSubjectsRepo extends QuestionRepository {
 
   @override
   Future<void> renameChapter(
-      String subjectId, String oldChapter, String newChapter) async {
+    String subjectId,
+    String oldChapter,
+    String newChapter,
+  ) async {
     for (var i = 0; i < kps.length; i++) {
       if (kps[i].subjectId == subjectId && kps[i].chapter == oldChapter) {
         kps[i] = KnowledgePoint(
-            id: kps[i].id,
-            subjectId: subjectId,
-            chapter: newChapter,
-            name: kps[i].name);
+          id: kps[i].id,
+          subjectId: subjectId,
+          chapter: newChapter,
+          name: kps[i].name,
+        );
       }
     }
   }
 
   @override
   Future<void> deleteChapter(String subjectId, String chapter) async {
-    kps.removeWhere(
-        (e) => e.subjectId == subjectId && e.chapter == chapter);
+    kps.removeWhere((e) => e.subjectId == subjectId && e.chapter == chapter);
   }
 
   @override
@@ -326,16 +352,22 @@ void main() {
       // 列表里新学科的圆点必须真画成紫色（R1 前圆点直接读 s.color；
       // R1 改成按 id 查表后新学科永远是数学蓝，2026-11-13 修回）。
       expect(
-          find.byWidgetPredicate((w) =>
+        find.byWidgetPredicate(
+          (w) =>
               w is Container &&
               w.decoration is BoxDecoration &&
-              (w.decoration as BoxDecoration).color ==
-                  const Color(0xFF7C5CFC)),
-          findsOneWidget);
-      expect(repo.savedFolders.map((f) => f.name),
-          containsAll(['试卷', '平时作业', '模拟卷']));
-      expect(repo.savedFolders.every((f) => f.subjectId.startsWith('subject-')),
-          isTrue);
+              (w.decoration as BoxDecoration).color == const Color(0xFF7C5CFC),
+        ),
+        findsOneWidget,
+      );
+      expect(
+        repo.savedFolders.map((f) => f.name),
+        containsAll(['试卷', '平时作业', '模拟卷']),
+      );
+      expect(
+        repo.savedFolders.every((f) => f.subjectId.startsWith('subject-')),
+        isTrue,
+      );
     });
 
     testWidgets('添加重名学科提示已经有了', (tester) async {
@@ -371,11 +403,8 @@ void main() {
       await tester.tap(find.text('删除').first);
       await tester.pumpAndSettle();
       expect(find.textContaining('删除学科「数学」，确定吗？'), findsOneWidget);
-      expect(
-          find.textContaining('这一科现在有 3 道题，会全部一起删掉'),
-          findsOneWidget);
-      expect(find.textContaining('这一科自己的文件夹也跟着一起删掉'),
-          findsOneWidget);
+      expect(find.textContaining('这一科现在有 3 道题，会全部一起删掉'), findsOneWidget);
+      expect(find.textContaining('这一科自己的文件夹也跟着一起删掉'), findsOneWidget);
       expect(find.text('确认删除这一科和全部 3 道题'), findsOneWidget);
       await tester.tap(find.text('确认删除这一科和全部 3 道题'));
       await tester.pumpAndSettle();
@@ -651,8 +680,7 @@ void main() {
   });
 
   group('B5-P2 学科管理', () {
-    testWidgets('SR-P2-51 第 8 科起仍有新色：12 色轮完按金角生成，不回落第一色',
-        (tester) async {
+    testWidgets('SR-P2-51 第 8 科起仍有新色：12 色轮完按金角生成，不回落第一色', (tester) async {
       final repo = FakeSubjectsRepo();
       await pumpSubjects(tester, repo: repo);
       await openSection(tester, '学科');
@@ -686,23 +714,53 @@ void main() {
       // SR2-56：第 13 科颜色写字面值（金角 210° 距数学蓝仅 6.6°、
       // 247° 距靛蓝仅 8.3°，SR2-31 的 25° 阈值步进两次后落在 284°）。
       expect(repo.subjectsList[12].color, const Color(0xFFB34CD9));
-      // 生成色与全部已用色的环形 hue 距离不小于 25°（SR2-31）。
-      double hueDistance(Color a, Color b) {
-        final d =
-            (HSVColor.fromColor(a).hue - HSVColor.fromColor(b).hue).abs() %
-            360;
-        return d > 180 ? 360 - d : d;
-      }
-
-      final generated = repo.subjectsList[12].color;
-      for (final used
-          in repo.subjectsList.sublist(0, 12).map((s) => s.color)) {
-        expect(hueDistance(generated, used), greaterThanOrEqualTo(25));
-      }
+      // SR3-34：生成色与已用色的环形 hue 距离只断言字面值，不再在
+      // 测试内复写产品公式（复写了与实现相同的公式时，产品公式
+      // 算错测试会同错）。25° 阈值的覆盖由第 13 科字面值钉住。
     });
 
-    testWidgets('SR-P2-55 点封面小图一次只保存一次：单套点按处理',
-        (tester) async {
+    testWidgets('SR3-21 第 15 科起 36 步耗尽后细扫取最优色，不静默返回违规色', (tester) async {
+      final repo = FakeSubjectsRepo();
+      await pumpSubjects(tester, repo: repo);
+      await openSection(tester, '学科');
+      const names = [
+        '物理',
+        '化学',
+        '生物',
+        '地理',
+        '历史',
+        '计算机',
+        '音乐',
+        '美术',
+        '体育',
+        '外语',
+        '天文',
+        '哲学',
+        '法学',
+      ];
+      for (final name in names) {
+        await tester.enterText(find.byType(TextField).first, name);
+        await tester.tap(find.text('＋ 添加学科'));
+        await tester.pumpAndSettle();
+      }
+      expect(repo.subjectsList.length, 16);
+      // 13–16 科颜色全写字面值（SR3-34：只断言字面值）。
+      expect(repo.subjectsList[12].color, const Color(0xFFB34CD9));
+      expect(repo.subjectsList[13].color, const Color(0xFF4CD970));
+      // 第 15 科：37° 步进 36 步耗尽，旧实现原样返回 0xFFD9744C
+      //（17°，与橙 0xFFF08A1D 只差 14°）；细扫 1° 后取与全部已用色最小
+      // 色相距最大的 110°，不再是耗尽时的违规色。
+      expect(repo.subjectsList[14].color, const Color(0xFF63D94C));
+      expect(repo.subjectsList[14].color, isNot(const Color(0xFFD9744C)));
+      // 第 16 科：同样耗尽，细扫取 307°（最小色相距约 23°，
+      // 为 15 色下的最优而非任意色）。
+      expect(repo.subjectsList[15].color, const Color(0xFFD94CC8));
+      // 16 科颜色全不相同。
+      final colors = repo.subjectsList.map((s) => s.color).toSet();
+      expect(colors.length, 16);
+    });
+
+    testWidgets('SR-P2-55 点封面小图一次只保存一次：单套点按处理', (tester) async {
       final repo = FakeSubjectsRepo();
       await pumpSubjects(tester, repo: repo);
       await openSection(tester, '学科');

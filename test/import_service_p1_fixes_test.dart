@@ -416,17 +416,68 @@ void main() {
       expect((await AppDatabase.instance.allCollectTasks()).length, 1);
     });
 
-    test('同文件大小写不同写法（SR2-72）：只建一个任务', () async {
+    test('同文件大小写不同写法（SR2-72/SR3-5）：Linux 下不存在的大写拼写是独立任务', () async {
       await openMemoryDb();
-      // Linux 文件系统区分大小写，大写路径本身打不开文件；但去重
-      // 发生在打开之前（只比规范化后的路径），所以同一文件换个
-      // 大小写写法仍只建一个任务（产品跑在不区分大小写的 Windows 上）。
+      // SR3-5：Linux 文件系统区分大小写，大写路径本身打不开文件；
+      // 去重键的回退分支不再折叠小写，不存在的大写拼写不再与真实
+      // 文件撞键，所以建两个任务：一个 needBox、一个 failed（诚实
+      // 行为）。产品跑在不区分大小写的 Windows 上，那里两种拼写
+      // 打开同一文件，仍只建一个任务。
       final tasks = await ImportService(AppDatabase.instance).enqueue([
         'test/fixtures/photo.jpg',
         'TEST/FIXTURES/PHOTO.JPG',
       ], subjectId: 'math');
+      expect(tasks.length, 2);
+      expect(
+        tasks.map((t) => t.status).toSet(),
+        {CollectStatus.needBox, CollectStatus.failed},
+      );
+      expect((await AppDatabase.instance.allCollectTasks()).length, 2);
+    });
+
+    test('不存在的大写拼写在前（SR3-5）：真实文件仍导入，不被遮蔽', () async {
+      await openMemoryDb();
+      // 旧行为：不存在的大写拼写回退键折叠后与真实文件同键，先建
+      // 失败任务、真实文件被当作重复跳过，只剩一个失败任务。修后：
+      // 两个任务，真实文件正常进 needBox。
+      final tasks = await ImportService(AppDatabase.instance).enqueue([
+        'TEST/FIXTURES/PHOTO.JPG',
+        'test/fixtures/photo.jpg',
+      ], subjectId: 'math');
+      expect(tasks.length, 2);
+      final real = tasks.firstWhere((t) => t.fileName == 'photo.jpg');
+      expect(real.status, CollectStatus.needBox);
+      final ghost = tasks.firstWhere((t) => t.fileName == 'PHOTO.JPG');
+      expect(ghost.status, CollectStatus.failed);
+      expect((await AppDatabase.instance.allCollectTasks()).length, 2);
+    });
+  });
+
+  group('SR3-6 onProgress 抛错不翻转任务状态', () {
+    test('图片复制循环内回调抛错：任务仍进 needBox，不判复制失败', () async {
+      await openMemoryDb();
+      final tasks = await ImportService(AppDatabase.instance).enqueue(
+        ['test/fixtures/photo.jpg'],
+        subjectId: 'math',
+        onProgress: (_, _) => throw StateError('UI 回调炸了'),
+      );
       expect(tasks.length, 1);
       expect(tasks.first.status, CollectStatus.needBox);
+      expect((await AppDatabase.instance.allCollectTasks()).length, 1);
+    });
+
+    test('PDF 渲染回调内抛错：任务仍进 needBox，不判渲染失败', () async {
+      await openMemoryDb();
+      final pdf = File('${_tmp.path}/sr3-6.pdf');
+      await pdf.writeAsBytes(List.generate(2000, (i) => i % 251));
+      final tasks = await _service().enqueue(
+        [pdf.path],
+        subjectId: 'math',
+        onProgress: (_, _) => throw StateError('UI 回调炸了'),
+      );
+      expect(tasks.length, 1);
+      expect(tasks.first.status, CollectStatus.needBox);
+      expect(tasks.first.pageCount, 1);
       expect((await AppDatabase.instance.allCollectTasks()).length, 1);
     });
   });

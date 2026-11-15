@@ -367,6 +367,48 @@ void main() {
           findsOneWidget);
     });
 
+    testWidgets('SR3-19 缓存预览：failed 目录递归进、文件逐个计，清理数按文件算',
+        (tester) async {
+      final prev = AppDatabase.testDataDirectory;
+      final tmp = Directory.systemTemp.createTempSync('b7-sr3-19-cache-');
+      addTearDown(() {
+        AppDatabase.testDataDirectory = prev;
+        try {
+          tmp.deleteSync(recursive: true);
+        } catch (_) {}
+      });
+      AppDatabase.testDataDirectory = tmp.path;
+      // failed 目录含 2 个文件：旧实现把目录整个按 1 项算（failedCount
+      // 为 1、清理提示“已清理 1 项缓存”）；修后逐个计，failedCount 为 2。
+      Directory('${tmp.path}/failed-import').createSync(recursive: true);
+      File('${tmp.path}/failed-import/a.png').writeAsBytesSync([0, 1, 2]);
+      File('${tmp.path}/failed-import/b.png').writeAsBytesSync([3, 4]);
+      await pumpSettings(tester);
+      await openGroup(tester, '数据');
+      // 预览行只写临时/缩略图两数（failed 不单列），只断言它出现；
+      // failed 个数写在下面的备注行里，是本条的判据。
+      expect(find.textContaining('临时文件 0 个、缩略图缓存 0 张'),
+          findsOneWidget);
+      expect(find.textContaining('其中含导入失败的残留文件 2 个'),
+          findsOneWidget);
+      // 清理按钮与行标题同名，用 QmButton 精确定位。
+      final clearButton =
+          find.widgetWithText(QmButton, '清理缓存');
+      await tester.ensureVisible(clearButton);
+      await tester.pumpAndSettle();
+      await tester.tap(clearButton);
+      // _clearCache 的 await e.delete() 是真实异步 IO：FakeAsync 下
+      // 直接 pump 等不到它完成，用真实时间驱动（SR2-61 同款做法）。
+      var cleared = false;
+      for (var i = 0; i < 30 && !cleared; i++) {
+        await tester.runAsync(
+            () => Future<void>.delayed(const Duration(milliseconds: 100)));
+        await tester.pump();
+        cleared = find.text('已清理 2 项缓存').evaluate().isNotEmpty;
+      }
+      expect(cleared, isTrue, reason: 'failed 目录里的 2 个文件应逐个计');
+    });
+
     testWidgets('清空演示数据：模态弹窗确认，确认后清掉并提示', (tester) async {
       final repo = FakeSettingsRepo(demoCount: 3);
       await pumpSettings(tester, repo: repo);

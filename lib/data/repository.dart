@@ -63,7 +63,11 @@ class QuestionRepository {
   Future<List<CauseRecord>> causeRecordsFor(String questionId) =>
       _db.causeRecordsForQuestion(questionId);
 
-  Future<void> saveCauseRecord(CauseRecord r) => _db.upsertCauseRecord(r);
+  /// SR3-4：只写补救历史（见 [_db.updateCauseRemedy]）。行已存在
+  /// 时 `status` / `solvedCount` / `recheckDate` / `lastCheck`
+  /// 的改动按设计丢弃、不写入——改状态走 [recordSelfCheck]；
+  /// 行不存在时整行 INSERT，全列按传入值写。
+  Future<void> saveCauseRecord(CauseRecord r) => _db.updateCauseRemedy(r);
 
   /// 手动加入 / 取消加入复习：加入时给这道题建解决记录（每个错因一条）；
   /// 取消后记录保留，再加入时接着治。错因是空的题加不进复习，返回 false。
@@ -238,7 +242,7 @@ class QuestionRepository {
     final now = DateTime.now();
     final entry = '${now.year}-${now.month}-${now.day}：$trimmed';
     final updated = r.copyWith(remedyHistory: [entry, ...r.remedyHistory]);
-    await _db.upsertCauseRecord(updated);
+    await _db.updateCauseRemedy(updated);
     return updated;
   }
 

@@ -29,9 +29,7 @@ Future<void> pumpUi(
           return MediaQuery(
             data: data.copyWith(textScaler: TextScaler.linear(scale)),
             child: Scaffold(
-              body: Center(
-                child: SizedBox(width: 320, child: child),
-              ),
+              body: Center(child: SizedBox(width: 320, child: child)),
             ),
           );
         },
@@ -106,12 +104,16 @@ void main() {
       final secondary = bodyDecoration(tester, '次按钮');
       expect(secondary.color, const Color(0xFFFFFEF9));
       expect((secondary.border as Border).top.color, const Color(0xFF2E7CF6));
-      expect(tester.widget<Text>(find.text('次按钮')).style?.color,
-          const Color(0xFF175CD3));
+      expect(
+        tester.widget<Text>(find.text('次按钮')).style?.color,
+        const Color(0xFF175CD3),
+      );
       final danger = bodyDecoration(tester, '删除');
       expect((danger.border as Border).top.color, const Color(0xFFF5B8AE));
-      expect(tester.widget<Text>(find.text('删除')).style?.color,
-          const Color(0xFFB42318));
+      expect(
+        tester.widget<Text>(find.text('删除')).style?.color,
+        const Color(0xFFB42318),
+      );
       final ghost = bodyDecoration(tester, '取消');
       expect(ghost.color, Colors.transparent);
       expect(ghost.border, isNull);
@@ -120,17 +122,15 @@ void main() {
     testWidgets('普通按钮：surface 底 + ink 字 + line-strong 边', (tester) async {
       await pumpUi(
         tester,
-        QmButton(
-          label: '返回',
-          variant: QmButtonVariant.plain,
-          onPressed: () {},
-        ),
+        QmButton(label: '返回', variant: QmButtonVariant.plain, onPressed: () {}),
       );
       final d = bodyDecoration(tester, '返回');
       expect(d.color, const Color(0xFFFFFEF9));
       expect((d.border as Border).top.color, const Color(0xFFCFC39E));
-      expect(tester.widget<Text>(find.text('返回')).style?.color,
-          const Color(0xFF17233B));
+      expect(
+        tester.widget<Text>(find.text('返回')).style?.color,
+        const Color(0xFF17233B),
+      );
     });
 
     testWidgets('小按钮与大按钮尺寸', (tester) async {
@@ -139,11 +139,7 @@ void main() {
         Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            QmButton(
-              label: '小',
-              size: QmButtonSize.small,
-              onPressed: () {},
-            ),
+            QmButton(label: '小', size: QmButtonSize.small, onPressed: () {}),
             QmButton(
               label: '确认整理，去下一道',
               size: QmButtonSize.large,
@@ -153,18 +149,35 @@ void main() {
           ],
         ),
       );
-      expect(tester.getSize(find.ancestor(
-        of: find.text('小'),
-        matching: find.byType(Container),
-      ).first).height, 34);
+      expect(
+        tester
+            .getSize(
+              find
+                  .ancestor(
+                    of: find.text('小'),
+                    matching: find.byType(Container),
+                  )
+                  .first,
+            )
+            .height,
+        34,
+      );
       final large = bodyDecoration(tester, '确认整理，去下一道');
       expect((large.borderRadius as BorderRadius).topLeft.x, 14);
-      expect(tester.getSize(find.ancestor(
-        of: find.text('确认整理，去下一道'),
-        matching: find.byType(Container),
-      ).first).height, 56);
-      expect(tester.widget<Text>(find.text('确认整理，去下一道')).style?.fontSize,
-          17.5);
+      expect(
+        tester
+            .getSize(
+              find
+                  .ancestor(
+                    of: find.text('确认整理，去下一道'),
+                    matching: find.byType(Container),
+                  )
+                  .first,
+            )
+            .height,
+        56,
+      );
+      expect(tester.widget<Text>(find.text('确认整理，去下一道')).style?.fontSize, 17.5);
     });
 
     testWidgets('Hover：主按钮提亮 7%', (tester) async {
@@ -175,8 +188,10 @@ void main() {
       await tester.pump();
       await gesture.moveTo(tester.getCenter(find.text('确定')));
       await tester.pump();
-      expect(bodyDecoration(tester, '确定').color,
-          lighten(const Color(0xFF2E7CF6), 0.07));
+      expect(
+        bodyDecoration(tester, '确定').color,
+        lighten(const Color(0xFF2E7CF6), 0.07),
+      );
       await gesture.removePointer();
     });
 
@@ -187,20 +202,26 @@ void main() {
         tester,
         QmButton(label: '确定', onPressed: () {}, focusNode: node),
       );
-      expect((ringDecoration(tester, '确定').border as Border).top.color,
-          Colors.transparent);
+      expect(
+        (ringDecoration(tester, '确定').border as Border).top.color,
+        Colors.transparent,
+      );
       node.requestFocus();
       // 焦点变化在第一帧生效，onFocusChange → setState 的重建要第二帧。
       await tester.pump();
       await tester.pump();
-      expect((ringDecoration(tester, '确定').border as Border).top.color,
-          const Color(0xFF2E7CF6));
+      expect(
+        (ringDecoration(tester, '确定').border as Border).top.color,
+        const Color(0xFF2E7CF6),
+      );
       expect((ringDecoration(tester, '确定').border as Border).top.width, 2);
       node.unfocus();
       await tester.pump();
       await tester.pump();
-      expect((ringDecoration(tester, '确定').border as Border).top.color,
-          Colors.transparent);
+      expect(
+        (ringDecoration(tester, '确定').border as Border).top.color,
+        Colors.transparent,
+      );
     });
 
     testWidgets('Pressed：主按钮加深 10%，松开后恢复并触发 onPressed',
@@ -212,8 +233,10 @@ void main() {
       );
       final gesture = await tester.press(find.text('确定'));
       await tester.pump();
-      expect(bodyDecoration(tester, '确定').color,
-          darken(const Color(0xFF2E7CF6), 0.10));
+      expect(
+        bodyDecoration(tester, '确定').color,
+        darken(const Color(0xFF2E7CF6), 0.10),
+      );
       await gesture.up();
       await tester.pump();
       expect(tapped, isTrue);
@@ -222,12 +245,11 @@ void main() {
 
     testWidgets('Disabled：opacity .45、不可点、颜色仍是正常态', (tester) async {
       var tapped = false;
-      await pumpUi(
-        tester,
-        QmButton(label: '不可点', onPressed: null),
-      );
+      await pumpUi(tester, QmButton(label: '不可点', onPressed: null));
       final opacity = tester.widget<Opacity>(
-        find.ancestor(of: find.text('不可点'), matching: find.byType(Opacity)).first,
+        find
+            .ancestor(of: find.text('不可点'), matching: find.byType(Opacity))
+            .first,
       );
       expect(opacity.opacity, 0.45);
       expect(bodyDecoration(tester, '不可点').color, const Color(0xFF2E7CF6));
@@ -242,11 +264,7 @@ void main() {
       addTearDown(node.dispose);
       await pumpUi(
         tester,
-        QmButton(
-          label: '确定',
-          onPressed: () => tapped = true,
-          focusNode: node,
-        ),
+        QmButton(label: '确定', onPressed: () => tapped = true, focusNode: node),
       );
       node.requestFocus();
       await tester.pump();
@@ -265,8 +283,10 @@ void main() {
       );
       final d = bodyDecoration(tester, '确定');
       expect(d.color, const Color(0xFF7FA8D0));
-      expect(tester.widget<Text>(find.text('确定')).style?.color,
-          const Color(0xFF131A24));
+      expect(
+        tester.widget<Text>(find.text('确定')).style?.color,
+        const Color(0xFF131A24),
+      );
     });
 
     testWidgets('次按钮深色：surface 底 + accent-text 字 + accent 边',
@@ -283,8 +303,10 @@ void main() {
       final d = bodyDecoration(tester, '次按钮');
       expect(d.color, const Color(0xFF262B33));
       expect((d.border as Border).top.color, const Color(0xFF7FA8D0));
-      expect(tester.widget<Text>(find.text('次按钮')).style?.color,
-          const Color(0xFFA9C6E4));
+      expect(
+        tester.widget<Text>(find.text('次按钮')).style?.color,
+        const Color(0xFFA9C6E4),
+      );
     });
   });
 
@@ -296,21 +318,35 @@ void main() {
         QmButton(label: '确定', onPressed: () {}),
         scale: 1.15,
       );
-      expect(tester.getSize(find.ancestor(
-        of: find.text('确定'),
-        matching: find.byType(Container),
-      ).first).height, closeTo(46, 0.5));
+      expect(
+        tester
+            .getSize(
+              find
+                  .ancestor(
+                    of: find.text('确定'),
+                    matching: find.byType(Container),
+                  )
+                  .first,
+            )
+            .height,
+        closeTo(46, 0.5),
+      );
       expect(tester.widget<Text>(find.text('确定')).style?.fontSize, 14);
 
-      await pumpUi(
-        tester,
-        QmButton(label: '确定', onPressed: () {}),
-        scale: 1.3,
+      await pumpUi(tester, QmButton(label: '确定', onPressed: () {}), scale: 1.3);
+      expect(
+        tester
+            .getSize(
+              find
+                  .ancestor(
+                    of: find.text('确定'),
+                    matching: find.byType(Container),
+                  )
+                  .first,
+            )
+            .height,
+        closeTo(52, 0.5),
       );
-      expect(tester.getSize(find.ancestor(
-        of: find.text('确定'),
-        matching: find.byType(Container),
-      ).first).height, closeTo(52, 0.5));
       expect(tester.widget<Text>(find.text('确定')).style?.fontSize, 14);
     });
 
@@ -334,15 +370,21 @@ void main() {
         scale: 1.3,
       );
       // 芯片本体高度 = 字行 + 上下内边距，均按 1.3 缩放。
-      final chipHeight = tester.getSize(find.ancestor(
-        of: find.text('易错'),
-        matching: find.byType(Container),
-      ).first).height;
+      final chipHeight = tester
+          .getSize(
+            find
+                .ancestor(of: find.text('易错'), matching: find.byType(Container))
+                .first,
+          )
+          .height;
       expect(chipHeight, greaterThan(30));
-      final segHeight = tester.getSize(find.ancestor(
-        of: find.text('亮色'),
-        matching: find.byType(Container),
-      ).first).height;
+      final segHeight = tester
+          .getSize(
+            find
+                .ancestor(of: find.text('亮色'), matching: find.byType(Container))
+                .first,
+          )
+          .height;
       expect(segHeight, greaterThan(30));
       // 字号样式本身仍是基准值（缩放只由 TextScaler 做一次）。
       expect(tester.widget<Text>(find.text('易错')).style?.fontSize, 13);
@@ -351,8 +393,9 @@ void main() {
   });
 
   group('QmChip', () {
-    testWidgets('未选中：surface 底 + line-strong 边 + ink-2 字；选中：accent 填充',
-        (tester) async {
+    testWidgets('未选中：surface 底 + line-strong 边 + ink-2 字；选中：accent 填充', (
+      tester,
+    ) async {
       var tapped = false;
       await pumpUi(
         tester,
@@ -367,8 +410,10 @@ void main() {
       final unselected = bodyDecoration(tester, '易错');
       expect(unselected.color, const Color(0xFFFFFEF9));
       expect((unselected.border as Border).top.color, const Color(0xFFCFC39E));
-      expect(tester.widget<Text>(find.text('易错')).style?.color,
-          const Color(0xFF3D4E6B));
+      expect(
+        tester.widget<Text>(find.text('易错')).style?.color,
+        const Color(0xFF3D4E6B),
+      );
       final selected = bodyDecoration(tester, '常考');
       expect(selected.color, const Color(0xFF2E7CF6));
       expect(find.text('✓'), findsOneWidget);
@@ -394,8 +439,10 @@ void main() {
         brightness: Brightness.dark,
       );
       expect(bodyDecoration(tester, '数学').color, const Color(0xFF87A9CC));
-      expect(tester.widget<Text>(find.text('数学')).style?.color,
-          const Color(0xFF1E2228));
+      expect(
+        tester.widget<Text>(find.text('数学')).style?.color,
+        const Color(0xFF1E2228),
+      );
     });
 
     testWidgets('可删除芯片：accent-soft 底 + ×，点整片删除', (tester) async {
@@ -410,6 +457,40 @@ void main() {
       await tester.tap(find.text('审题失误 ✕'));
       await tester.pump();
       expect(deleted, isTrue);
+    });
+
+    testWidgets('SR3-22 双区芯片：点 × 区顶部/底部边缘也删除，不留死区', (tester) async {
+      var tapped = false;
+      var deleted = 0;
+      await pumpUi(
+        tester,
+        QmChip(
+          label: '审题失误',
+          onTap: () => tapped = true,
+          onDelete: () => deleted++,
+        ),
+      );
+      // 芯片本体矩形：标签文字最近的祖先 Container（带 1px 边框的
+      // 装饰容器）。注：find.byType(QmChip) 在这里会取到外层
+      // SizedBox（320×600），不能当芯片矩形用。
+      final chipRect = tester.getRect(find.ancestor(
+        of: find.text('审题失误'),
+        matching: find.byType(Container),
+      ).first);
+      final closeX = tester.getCenter(find.byType(QmGlyph)).dx;
+      // × 区顶部/底部边缘：旧布局这里上下各留约 1.55px 死区，点缝
+      // 无回调但仍有按压视觉。顶部取 top + 1（内容区首行），底部取
+      // bottom - 2（内容区末行）——bottom - 1 恰是 1px 边框线本身，
+      // 命中测试上边为排他边界，容器内任何识别器都点不到它，标签区
+      // 同样点不到，不属于 × 区死区。
+      await tester.tapAt(Offset(closeX, chipRect.top + 1));
+      await tester.pump();
+      expect(deleted, 1);
+      await tester.tapAt(Offset(closeX, chipRect.bottom - 2));
+      await tester.pump();
+      expect(deleted, 2);
+      // 点中的是 × 区，不是标签区：标签回调一次也没触发。
+      expect(tapped, isFalse);
     });
   });
 
@@ -431,8 +512,10 @@ void main() {
         ),
       );
       expect(bodyDecoration(tester, '亮色').color, const Color(0xFF2E7CF6));
-      expect(tester.widget<Text>(find.text('深色')).style?.color,
-          const Color(0xFF5F718E));
+      expect(
+        tester.widget<Text>(find.text('深色')).style?.color,
+        const Color(0xFF5F718E),
+      );
       await tester.tap(find.text('深色'));
       await tester.pump();
       expect(value, 'dark');
@@ -449,7 +532,9 @@ void main() {
         ),
       );
       final opacity = tester.widget<Opacity>(
-        find.ancestor(of: find.text('亮色'), matching: find.byType(Opacity)).first,
+        find
+            .ancestor(of: find.text('亮色'), matching: find.byType(Opacity))
+            .first,
       );
       expect(opacity.opacity, 0.45);
     });
@@ -473,10 +558,14 @@ void main() {
       expect(bodyDecoration(tester, '解决中').color, const Color(0xFFE1EDFF));
       expect(bodyDecoration(tester, '已解决').color, const Color(0xFFE1EDFF));
       expect(bodyDecoration(tester, '复查').color, const Color(0xFFFFE9E5));
-      expect(tester.widget<Text>(find.text('待解决')).style?.color,
-          const Color(0xFF8A5A00));
-      expect(tester.widget<Text>(find.text('复查')).style?.color,
-          const Color(0xFFB42318));
+      expect(
+        tester.widget<Text>(find.text('待解决')).style?.color,
+        const Color(0xFF8A5A00),
+      );
+      expect(
+        tester.widget<Text>(find.text('复查')).style?.color,
+        const Color(0xFFB42318),
+      );
     });
 
     testWidgets('错因四态深色', (tester) async {
@@ -486,8 +575,10 @@ void main() {
         brightness: Brightness.dark,
       );
       expect(bodyDecoration(tester, '复查').color, const Color(0xFF352C31));
-      expect(tester.widget<Text>(find.text('复查')).style?.color,
-          const Color(0xFFD2A3AC));
+      expect(
+        tester.widget<Text>(find.text('复查')).style?.color,
+        const Color(0xFFD2A3AC),
+      );
     });
 
     testWidgets('warn / err / info 三色提示', (tester) async {
@@ -599,10 +690,7 @@ void main() {
       );
       expect(find.byType(QmRowLine), findsNWidgets(2));
       expect(find.byType(CustomPaint), findsWidgets);
-      expect(
-        tester.getSize(find.byType(QmRowLine).first).height,
-        1,
-      );
+      expect(tester.getSize(find.byType(QmRowLine).first).height, 1);
     });
   });
 

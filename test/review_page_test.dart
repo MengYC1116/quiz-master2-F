@@ -247,6 +247,28 @@ FakeReviewRepo reviewRepo({int pageSize = 10}) {
   );
 }
 
+/// SR3-17：跨学科同错因库——在 reviewRepo() 基础上加一道英语题 q6，
+/// 待治错因同样是“计算错误”。点数学“计算错误”组进会话时，块集是
+///（当前筛选 × 计算错误）= q2（数学）+ q6（英语），共 2 块。
+FakeReviewRepo crossSubjectRepo() {
+  final repo = reviewRepo();
+  final now = DateTime(2026, 11, 10);
+  repo.questions = [
+    ...repo.questions,
+    rq('q6', '英语完形填空',
+        subjectId: 'english',
+        errorTypes: const ['计算错误'],
+        createdAt: DateTime(2026, 11, 9),
+        reviewJoined: true),
+  ];
+  repo.records = [
+    ...repo.records,
+    rec('q6', '计算错误',
+        subjectId: 'english', joinedAt: now.add(const Duration(hours: 2))),
+  ];
+  return repo;
+}
+
 /// 只有 q1 一道待治题的库（单块会话、治愈路径短）。
 FakeReviewRepo singleRepo({int solvedCount = 0}) {
   final repo = reviewRepo();
@@ -713,6 +735,30 @@ void main() {
       // SR2-33：按组进会话的范围文案按该组写（数学 · 计算错误），
       // 不再写筛选口径的“全部待解决错因”。
       expect(find.textContaining('第 1 / 1 道题 · 数学 · 计算错误'),
+          findsOneWidget);
+    });
+
+    testWidgets('SR3-17 按组进会话跨学科同错因：文案退为错因「…」，会话共 2 道题',
+        (tester) async {
+      await pumpReview(tester, repo: crossSubjectRepo());
+      // 第 4 个“开始解决”按钮 = 数学“计算错误”组（顶栏 1 个 + 四组各 1 个）。
+      await tapButton(tester, '开始解决', at: 3);
+      // 会话块是（当前筛选 × 计算错误）：q2（数学）+ q6（英语），共 2 块；
+      // 文案按实际块集算，跨学科单错因退为“错因「计算错误」”，不再写
+      // “数学 · 计算错误”（旧文案只在单科单错因时才成立）。
+      expect(find.textContaining('第 1 / 2 道题 · 错因「计算错误」'),
+          findsOneWidget);
+      expect(find.textContaining('数学 · 计算错误'), findsNothing);
+      // 走完 q2 的单个错因，到第 2 道题：是英语题，文案仍是错因口径。
+      await tapButton(tester, '下一步：写补救');
+      await tapButton(tester, '下一步：重做');
+      await tapButton(tester, '看答案');
+      await tapButton(tester, '下一步：自查');
+      await tapText(tester, '已解决');
+      await tapButton(tester, '下一题');
+      expect(find.textContaining('第 2 / 2 道题 · 错因「计算错误」'),
+          findsOneWidget);
+      expect(find.textContaining('英语 · 材料题｜英语完形填空'),
           findsOneWidget);
     });
 

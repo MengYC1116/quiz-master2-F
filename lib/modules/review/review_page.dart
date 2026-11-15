@@ -507,11 +507,12 @@ class _ReviewPageState extends State<ReviewPage> {
             break;
           }
         }
-        // SR2-33：按组进会话只治该组一个错因，范围文案按该组写
-        //（与 _scopeLabelForBlocks 的单科单错因分支同款），不再写
-        // 筛选口径（“全部待解决错因”/“数学这一科”都夸大了范围）。
-        scopeLabel =
-            '${_subjectOf(fromGroup.subjectId).name} · ${fromGroup.cause}';
+        // SR3-17：按组进会话的文案按实际块集算（_scopeLabelForBlocks），
+        // 不再一律按该组写。块集是（当前筛选 × 该错因）：跨学科同错因
+        // 时自动退为“错因「…」”；单科单错因时仍是“学科名 · 错因”。
+        // causesPerSession 截断后的块集也被如实描述（截断后可能不含
+        // 该组任何题，旧文案仍写该组是同一类失真）。
+        scopeLabel = _scopeLabelForBlocks(blocks);
       } else {
         scopeLabel = _scopeLabelForFilters();
       }

@@ -11,7 +11,7 @@
 
 - `flutter analyze lib/services/import_service.dart test/import_service_p1_fixes_test.dart test/b5_p2_services_test.dart`：**0 问题**。
 - `LD_LIBRARY_PATH=$HOME/.pub-cache/hosted/pub.dev/onnxruntime-1.4.1/linux flutter test --concurrency=1 test/import_service_p1_fixes_test.dart`：**16/16 通过**（约 14 秒）。
-- 同命令跑 `test/b5_p2_services_test.dart`：**15/15 通过**（约 5 秒）。
+- 同命令跑 `test/b5_p2_services_test.dart`：**25/25 通过**（Batch 7 文档修复时实跑复核；A-import 成文时文件为 15 项，D-services 随后追加至 25 项）。
 - 未跑全量测试（总协调在阶段关口统一跑）。测试串行跑，无挂起、无需杀进程。
 
 ## SR2-1 — 图片分支尾部 upsert 仍在 try 之外（含亚型 a/b）
@@ -50,7 +50,7 @@
 `lib/services/import_service.dart:581-594`
 
 - `_failAndClean` 内部把 upsert 包进 try（:590-592），失败时返回内存里的
-  `_failed(task, error)`，本函数绝不抛错。一处修、九处调用点受益。
+  `_failed(task, error)`，本函数绝不抛错。一处修、十三处调用点受益。
 - `_importPdf` 尾部因此去掉内层 `try { _failAndClean } catch { _failed }`
   （:566-570 现为直接 `return _failAndClean(...)`），与 SR2-2 修法一致。
 
@@ -150,7 +150,7 @@
 | SR-P1-17 | 同文件符号链接写法（SR2-72）：只建一个任务（新增） | 通过 |
 | SR-P1-17 | 同文件大小写不同写法（SR2-72）：只建一个任务（新增） | 通过 |
 
-`test/b5_p2_services_test.dart`：15/15 通过（含 SR-P2-60 组新增 1 个、改动 1 个）
+`test/b5_p2_services_test.dart`：25/25 通过（成文时 15 项，含 SR-P2-60 组新增 1 个、改动 1 个；D-services 随后追加至 25 项，Batch 7 实跑 25/25）
 
 | 组 | 用例 | 结果 |
 | --- | --- | --- |

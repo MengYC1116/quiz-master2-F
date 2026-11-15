@@ -18,18 +18,18 @@
 ### A-import — SR2-1、SR2-2、SR2-12、SR2-60、SR2-71、SR2-72（`B6-P1-IMPORT.md`）
 
 - SR2-1：图片分支尾部 upsert 包进与 PDF 分支相同的 `_failAndClean` 保护；`enqueue` 外层加 per-file try；EXIF 分支区分“解不出图”（永不回 needBox）与“磁盘失败”。
-- SR2-2：`_failAndClean` 自身的写库加守卫；9 个调用点只有尾部一个受保护的问题已消除。
+- SR2-2：`_failAndClean` 自身的写库加守卫；13 个调用点只有尾部一个受保护的问题已消除。
 - SR2-12：任务 id 格式正则 `^task-\d+-\d+-\d{6}$`，20 次快速导入 id 全不同。同一毫秒确定性覆盖做不到（无可注入时钟），20 次快速调用是最强覆盖。
 - SR2-60：`_dedupKey` 归一化（解析符号链接 + 小写）——超出原处方的一处产品改动，已在报告中标出。
 - SR2-71：20MB 边界用例；SR2-72：同文件不同拼写（大小写/符号链接/相对路径）去重。
-- 验证：`import_service_p1_fixes_test` 16/16；`b5_p2_services_test` 15/15。
+- 验证：`import_service_p1_fixes_test` 16/16；`b5_p2_services_test` 25/25（A-import 成文时文件为 15 项；D-services 随后追加 SR2-24/SR2-78 等分组至 25 项，Batch 7 文档修复时实跑复核 25/25）。
 - 遗留：失败行本身写不进库时，DB 里的任务仍卡在 `importing`（处方内的降级行为，已有测试钉住）。
 
 ### A-detail — SR2-3（Batch 5 新回归，`B6-P1-DETAIL.md`）
 
 - 详情页重框：新切片先写临时文件 `slices/<qid>.tmp-<ms>-<32-bit random>.png`，事务成功后才重命名为正式路径；`evictCachedFileImage` 移到重命名之后；重命名失败报“切片保存失败，框已更新，请重试”，旧切片不丢。
 - 验证：`detail_page_test` 28/28（含新增旧切片场景）。
-- 备注：`replaceQuestionBoxesAndSlice` 实际在 `db_collect.dart:325`（不在 `db_questions.dart`）；`db_collect.dart:340-343` 注释（“切片由调用方在事务前写盘”）已过时——C-data 阶段已随手修正；B5 的 P2-3 回归测试实际在 `test/b5_p2_collect_test.dart`（约 :891-960），不在 detail_page_test。
+- 备注：`replaceQuestionBoxesAndSlice` 实际在 `db_collect.dart:338`（不在 `db_questions.dart`）；`db_collect.dart:340-343` 注释（“切片由调用方在事务前写盘”）已过时——C-data 阶段已随手修正；B5 的 P2-3 回归测试实际在 `test/b5_p2_collect_test.dart`（约 :891-960），不在 detail_page_test。（SR3-33：B6 各报告其余漂移的行号不逐条改旧报告，后续引用以 grep/符号为准。）
 - 遗留：重命名失败分支未测（需文件系统故障注入）；进程在中途被杀会留 `.tmp` 孤儿文件（孤儿扫描 §4.5 覆盖）。
 
 ### A-split — SR2-4、SR2-11、SR2-25（`B6-P1-SPLIT.md`）
@@ -44,7 +44,7 @@
 - SR2-5：`_batchTagRedo` 保存后同步 `_questions`（与 `_batchAddFolder` 同款）。
 - SR2-6：`_saveCurrent` 把保存后的行写回 `_queue`（根治；B5 的 `_openQueue` 一次性补丁已删，多余）。
 - SR2-26：新增 `_trySaveCurrent()`（try/catch，失败提示“保存失败，请重试”并返回 false），`_goTo` / `_openQueue` / `_jumpToQuestion` / `_applyQueueSort` 都走它；**有意偏离：SR2-26 选了“拦住”而不是“放行”**——放行会立刻经 `_loadForm` / `_refresh` 用旧行重建表单，丢掉未保存的编辑，“编辑留在内存里”不成立；`_saveDraft`（不再谎报“草稿已保存”）与 `_openDetail` 也走了 `_trySaveCurrent`。
-- 验证：整理页测试 38/38（30 + 9 新增，含 1 个对照）；回滚检查（去掉修复 → 8 个新测试失败）。
+- 验证：整理页测试 38/38（原 29 + 新增 9 = 38，含 1 个对照）；回滚检查（去掉修复 → 8 个新测试失败）。
 - 测试技巧备注：队列层 `DropdownButton` 菜单点击在测试里落不下去（OverlayEntry + PopupRoute 的测试绑定问题，疑似测试侧而非产品问题）——排序失败测试改用键盘（Tab + Enter）。
 - 遗留：`_confirmCurrent` 自身的保存（`repo.save` + `syncCauseRecords` + `saveRecentTask`）仍无 try——SR2-26 没点名的第 5 处，未动。
 
@@ -71,7 +71,7 @@
 - SR2-17：`readZip` 拒绝重名条目（`backup.json` 重名仍允许，后者为准）。
 - SR2-18：确认拆题的框回填复用保留任务的 `seenIds` 去重。
 - SR2-19：恢复估算改峰值口径 `usedBytes + incomingBytes`（不再扣已替换文件）。
-- 测试：`b5_p2_data_test` 36→55；`b5_p0_1_orphan_test` 3→4。
+- 测试：`b5_p2_data_test` 36→56（C-data 新增 19 项 + GAPS 的 SR2-27 补 1 项）；`b5_p0_1_orphan_test` 3→4。
 - **B5-P2-DATA.md 已纠正：SR-P2-6 的“已测”说法是假的——覆盖到 Batch 6（SR2-66）才来。**
 - 偏离：`toggleFavorite` / `archive` / `save` 在共享 choke 点修，未按仓库层逐列方法做（`repository.dart` 不在本批范围）；SR2-19 峰值口径偏保守（最终体积 < 2GB 但峰值 > 2GB 的备份现在会被拒——Meng 如不同意需他定）。
 - 遗留：SR2-16 对既有备份 fixture 的影响面需全量跑确认；SR2-15 并发测试依赖 sqflite 事务串行化。
@@ -205,7 +205,16 @@
 - `_clearCache` 只删文件、留空缓存目录（下次扫描为 0，无害）。
 - `toggleFavorite` / `archive` / `save` 在共享 choke 点修，未按仓库层逐列方法做（如要，另立项）。
 - SR2-62 同毫秒场景未确定性覆盖。
-- SR2-15 并发测试依赖 sqflite 事务串行化；SR2-16 对既有备份 fixture 的影响面待全量确认。
+- SR2-15：并发用例依赖串行化语义，换库后端时需复核（已知脆弱性，非待办）。
+- SR2-16 对既有备份 fixture 的影响面：第三次全量 852/852 已确认，无回归（原待办已过时，移出待办、仅留此注）。
+- 另见第三次自审补收的 7 处阶段报告级遗留（SR3-28，原文在各阶段报告的“遗留问题”小节，总结此前未收录）：
+  1. A-import：EXIF 镜像方向分支的“失败写库”未单独立用例（与“解不开图片”分支共用路径，未做触发器用例）。
+  2. A-detail：B5 的旧 P2-3 测试仍只覆盖“无旧切片”场景，有旧切片的覆盖在 `detail_page_test.dart`，两处未合并。
+  3. A-split：已拆过的页（`alreadySplit`）上后画的独立内框，确认时仍随 `continue` 静默丢弃。
+  4. A-queue：`_jumpToQuestion` 失败时弹出层已先关闭，用户需重开队列再跳。
+  5. D-services：SR2-38 的 `minSize: true` 分支里 `(minSize && …)` 判断恒为真（`!minSize` 已提前返回），留作原样。
+  6. D-services：SR2-31 的金角步进只在第 13 科钉死字面值，第 14、15…科未逐个断言。
+  7. GAPS：SR2-73 的 500ms 等待是“等第二次检测到达 `_ensureLoaded`”的经验余量，解码极慢的环境下计数可能为 2。
 - 历史报告里的过时措辞有意不动（历史记录）。
 - `double` 封面折角：Meng 自己与 CodeBuddy 协调，Muse 不做（原决定不变）。
 - 检测质量（密集排版重叠框）不在本批范围；P3(b) 孤儿目标迁移（需合并语义）仍待定。

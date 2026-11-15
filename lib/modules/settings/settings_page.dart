@@ -564,7 +564,18 @@ class _SettingsPageState extends State<SettingsPage> {
         if (name == 'quiz-master2.db') continue;
         final lower = name.toLowerCase();
         if (lower.contains('failed') || lower.contains('import-error')) {
-          add(e, 'failed');
+          // SR3-19：failed 目录也与 cache 分支同款——递归进去、文件逐个计，
+          // 目录本身不再按 1 项算（B6 只改了 cache/thumb/tmp 分支）。
+          // 之后 preview.items 里只有文件，与“不再有目录本身”对齐。
+          if (e is Directory) {
+            try {
+              for (final f in e.listSync(recursive: true)) {
+                if (f is File) add(f, 'failed');
+              }
+            } catch (_) {}
+          } else {
+            add(e, 'failed');
+          }
           continue;
         }
         if (e is Directory &&

@@ -36,8 +36,11 @@
 ### SR2-29 — 学习报告学科分布扣已掌握（Meng 已定 (a)）
 
 - `lib/modules/report/report_page.dart:182-205`：`_questionsInRange` 增加
-  `!_isMastered(q)` 过滤；新增 `_isMastered`（与错题本同义：全部错因都有
-  已解决记录且无一到复查；无错因、无记录的题不是已掌握）。分布行直接用
+  `!_isMastered(q)` 过滤；新增 `_isMastered`（SR3-2 修正：原“与错题本同义”
+  的说法不准确——报告版曾按当前错因逐因查记录，错题本版只看该题现存的
+  全部记录，陈旧记录下两者双向偏离 1 道；现已改用与错题本/首页同一的
+  记录口径 `QuestionRepository.reviewBucketOf(records) == ReviewBucket.solved`，
+  不再按 `allCauses` 逐因查记录；无记录的题不是已掌握）。分布行直接用
   `qsIn` 计数，改一处即全改；弱点 Top5 本来就跳过已解决/已掌握题，不受影响；
   三个核心数按 `_records` 直接算，不受影响。
 - `lib/modules/report/report_page.dart:28-35`（文件头口径注释）同步改写：

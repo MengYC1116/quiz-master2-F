@@ -229,14 +229,18 @@ class _QmPressableState extends State<_QmPressable> {
         onKeyEvent: _onKeyEvent,
         child: GestureDetector(
           behavior: HitTestBehavior.opaque,
-          onTapDown: _tapEnabled ? (_) => setState(() => _pressed = true) : null,
+          onTapDown: _tapEnabled
+              ? (_) => setState(() => _pressed = true)
+              : null,
           onTapUp: _tapEnabled
               ? (_) {
                   setState(() => _pressed = false);
                   widget.onTap!();
                 }
               : null,
-          onTapCancel: _tapEnabled ? () => setState(() => _pressed = false) : null,
+          onTapCancel: _tapEnabled
+              ? () => setState(() => _pressed = false)
+              : null,
           // SR-P2-64：子层处理点按时，本层不装 Tap 识别器；按压视觉
           // 改由 Listener 驱动（Listener 不进手势竞技场，不与内层竞争）。
           child: Listener(
@@ -400,8 +404,11 @@ class QmButton extends StatelessWidget {
       autofocus: autofocus,
       semanticLabel: semanticLabel ?? label,
       builder: (context, state) {
-        final (Color bg, Color fg, Color? border) =
-            _resolve(palette, state, variant);
+        final (Color bg, Color fg, Color? border) = _resolve(
+          palette,
+          state,
+          variant,
+        );
         return Container(
           constraints: BoxConstraints(
             minHeight: minHeight * scale,
@@ -605,8 +612,11 @@ class QmChip extends StatelessWidget {
           mainAxisSize: MainAxisSize.min,
           children: [
             if (selected) ...[
-              QmGlyph(QmGlyphs.check,
-                  size: DesignTokens.chipFontSize, color: fg),
+              QmGlyph(
+                QmGlyphs.check,
+                size: DesignTokens.chipFontSize,
+                color: fg,
+              ),
               SizedBox(width: 4 * scale),
             ],
             labelText(fg),
@@ -637,12 +647,14 @@ class QmChip extends StatelessWidget {
           final bg = state.pressed
               ? _mix(palette.errBg, palette.errInk, 0.18)
               : state.hovered
-                  ? palette.errBg
-                  : palette.accentSoft;
-          final fg =
-              state.hovered || state.pressed ? palette.errInk : palette.accentText;
-          final border =
-              state.hovered || state.pressed ? palette.errLine : palette.accent;
+              ? palette.errBg
+              : palette.accentSoft;
+          final fg = state.hovered || state.pressed
+              ? palette.errInk
+              : palette.accentText;
+          final border = state.hovered || state.pressed
+              ? palette.errLine
+              : palette.accent;
           return Container(
             decoration: BoxDecoration(
               color: bg,
@@ -650,41 +662,53 @@ class QmChip extends StatelessWidget {
               borderRadius: BorderRadius.circular(999 * scale),
             ),
             child: bothZones
-                ? Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      GestureDetector(
-                        behavior: HitTestBehavior.opaque,
-                        onTap: onTap,
-                        child: Padding(
-                          padding: EdgeInsets.fromLTRB(
-                            DesignTokens.deletableChipPaddingH * scale,
-                            DesignTokens.deletableChipPaddingV * scale,
-                            4 * scale,
-                            DesignTokens.deletableChipPaddingV * scale,
-                          ),
-                          child: labelText(fg),
-                        ),
-                      ),
-                      GestureDetector(
-                        behavior: HitTestBehavior.opaque,
-                        onTap: onDelete,
-                        child: Padding(
-                          padding: EdgeInsets.fromLTRB(
-                            0,
-                            DesignTokens.deletableChipPaddingV * scale,
-                            DesignTokens.deletableChipPaddingH * scale,
-                            DesignTokens.deletableChipPaddingV * scale,
-                          ),
-                          child: QmGlyph(
-                            QmGlyphs.close,
-                            size: DesignTokens.captionFontSize,
-                            color: fg,
-                            fontWeight: FontWeight.w700,
+                ? IntrinsicHeight(
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        GestureDetector(
+                          behavior: HitTestBehavior.opaque,
+                          onTap: onTap,
+                          child: Padding(
+                            padding: EdgeInsets.fromLTRB(
+                              DesignTokens.deletableChipPaddingH * scale,
+                              DesignTokens.deletableChipPaddingV * scale,
+                              4 * scale,
+                              DesignTokens.deletableChipPaddingV * scale,
+                            ),
+                            child: labelText(fg),
                           ),
                         ),
-                      ),
-                    ],
+                        // SR3-22：× 区识别器比标签区矮约 3.1px，上下各留
+                        // 约 1.55px 死区（点缝无回调但仍有按压视觉）。
+                        // 不能只加 Row stretch（松约束下它会把芯片撑到
+                        // 约束最大高，实测在 Center 里变成 600px）；
+                        // 也不能用算出的 23.6px 定高 SizedBox（Text
+                        // 实际行高会向上取整，标签区实为 24px，仍差
+                        // 0.4px）；改用 IntrinsicHeight + stretch，
+                        // 行高由最高的标签区内在高度决定，两识别器
+                        // 精确撑满行高，芯片总尺寸不变。
+                        GestureDetector(
+                          behavior: HitTestBehavior.opaque,
+                          onTap: onDelete,
+                          child: Padding(
+                            padding: EdgeInsets.fromLTRB(
+                              0,
+                              DesignTokens.deletableChipPaddingV * scale,
+                              DesignTokens.deletableChipPaddingH * scale,
+                              DesignTokens.deletableChipPaddingV * scale,
+                            ),
+                            child: QmGlyph(
+                              QmGlyphs.close,
+                              size: DesignTokens.captionFontSize,
+                              color: fg,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
                   )
                 : Padding(
                     padding: EdgeInsets.symmetric(
@@ -716,8 +740,8 @@ class QmChip extends StatelessWidget {
           bg = state.pressed
               ? palette.surface3
               : state.hovered
-                  ? palette.surface2
-                  : palette.surface;
+              ? palette.surface2
+              : palette.surface;
           fg = palette.ink2;
           border = palette.lineStrong;
         }
@@ -735,8 +759,11 @@ class QmChip extends StatelessWidget {
             mainAxisSize: MainAxisSize.min,
             children: [
               if (selected) ...[
-                QmGlyph(QmGlyphs.check,
-                    size: DesignTokens.chipFontSize, color: fg),
+                QmGlyph(
+                  QmGlyphs.check,
+                  size: DesignTokens.chipFontSize,
+                  color: fg,
+                ),
                 SizedBox(width: 4 * scale),
               ],
               labelText(fg),
@@ -812,8 +839,9 @@ class _QmTextFieldState extends State<QmTextField> {
     return Opacity(
       opacity: widget.enabled ? 1 : 0.45,
       child: Container(
-        constraints:
-            BoxConstraints(minHeight: R10Tokens.inputMinHeight * scale),
+        constraints: BoxConstraints(
+          minHeight: R10Tokens.inputMinHeight * scale,
+        ),
         padding: EdgeInsets.symmetric(
           horizontal: R10Tokens.inputPaddingH * scale,
           vertical: R10Tokens.inputPaddingV * scale,
@@ -824,8 +852,9 @@ class _QmTextFieldState extends State<QmTextField> {
             color: _focused ? palette.accent : palette.lineStrong,
             width: _focused ? 2 : 1,
           ),
-          borderRadius:
-              BorderRadius.circular(DesignTokens.scaled(scale).radiusLg),
+          borderRadius: BorderRadius.circular(
+            DesignTokens.scaled(scale).radiusLg,
+          ),
         ),
         alignment: Alignment.centerLeft,
         child: TextField(
@@ -1304,8 +1333,13 @@ class QmBanner extends StatelessWidget {
   Widget build(BuildContext context) {
     final scale = qmScaleOf(context);
     final palette = DesignTokens.of(Theme.of(context).brightness);
-    final (Color bg, Color fg, Color line, double lineWidth, String glyph) =
-        switch (tone) {
+    final (
+      Color bg,
+      Color fg,
+      Color line,
+      double lineWidth,
+      String glyph,
+    ) = switch (tone) {
       QmBannerTone.error => (
           palette.errBg,
           palette.errInk,
@@ -1357,11 +1391,7 @@ class QmBanner extends StatelessWidget {
           color: fg,
         ),
       if (onDismiss != null)
-        _BannerButton(
-          label: dismissLabel,
-          onPressed: onDismiss!,
-          color: fg,
-        ),
+        _BannerButton(label: dismissLabel, onPressed: onDismiss!, color: fg),
     ];
     return Container(
       margin: margin ?? EdgeInsets.only(bottom: 18 * scale),
@@ -1372,9 +1402,7 @@ class QmBanner extends StatelessWidget {
       decoration: BoxDecoration(
         color: bg,
         border: Border.all(color: line, width: lineWidth),
-        borderRadius: BorderRadius.circular(
-          DesignTokens.scaled(scale).radius,
-        ),
+        borderRadius: BorderRadius.circular(DesignTokens.scaled(scale).radius),
       ),
       child: LayoutBuilder(
         builder: (context, constraints) {
@@ -1464,18 +1492,16 @@ bool _bannerFitsOneLine(
   var buttonsWidth = 0.0;
   for (final label in labels) {
     // 文本宽 + 横向内边距 + 8px 余量（按钮外圈 2px 焦点边框等实测占位）。
-    buttonsWidth += textWidth(
-          label,
-          DesignTokens.captionFontSize,
-          FontWeight.w700,
-        ) +
+    buttonsWidth +=
+        textWidth(label, DesignTokens.captionFontSize, FontWeight.w700) +
         2 * DesignTokens.bannerButtonPaddingH * scale +
         8;
   }
   if (buttonCount > 1) {
     buttonsWidth += (buttonCount - 1) * 6 * scale;
   }
-  final needed = 2 * DesignTokens.bannerPaddingH * scale +
+  final needed =
+      2 * DesignTokens.bannerPaddingH * scale +
       textWidth('⚠', 15, FontWeight.w400) +
       2 * 10 * scale +
       buttonsWidth +

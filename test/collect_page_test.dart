@@ -1317,6 +1317,129 @@ void main() {
     });
   });
 
+  group('SR3-12 独立题内框挂接：重叠平局与距离上限', () {
+    QuestionBox box(
+      String id,
+      int layer,
+      String type,
+      double x,
+      double y,
+      double w,
+      double h,
+    ) => QuestionBox(
+      id: id,
+      layer: layer,
+      type: type,
+      x: x,
+      y: y,
+      w: w,
+      h: h,
+      page: 1,
+    );
+
+    testWidgets('中心在两道题正中间、距离与相交面积都平局：不挂，提示手动指定归属',
+        (tester) async {
+      final repo = FakeRepo([
+        task(
+          't-needbox',
+          '待框选文件.pdf · 第1页 · 第1题',
+          status: CollectStatus.needBox,
+        ),
+      ]);
+      // 两道题级框上下分开（b1 到 0.25、b2 从 0.75 起）；独立 stem
+      // 中心 (0.30, 0.50) 正好在正中间：离两框都是 0.25，与两框
+      // 的相交面积同为 0——判歧义，不静默取先到者。
+      // 注：坐标全取二进制精确值（0.25/0.5/0.75/0.4375/0.125），
+      // 避免 0.45/0.55 这类十进制小数的浮点差把平局打破。
+      // 另：中心落在框内的内框在打开编辑器时就被 groupInners 按
+      // 中心点收归首道框、到不了 standaloneInner，所以歧义分支
+      // 用“等距间隙”构造——走的是同一条平局判据（距离相等 +
+      // 相交面积相等 → 歧义）。
+      repo.draftBoxes['t-needbox'] = [
+        box('b1', 1, 'question', 0.0, 0.0, 1.0, 0.25),
+        box('b2', 1, 'question', 0.0, 0.75, 1.0, 0.25),
+        box('orphan-stem', 2, 'stem', 0.10, 0.4375, 0.40, 0.125),
+      ];
+      await pumpCollect(tester, repo: repo);
+      await openEditor(tester, '修框');
+      await tapConfirmAndWait(tester, '确认修框，拆成 2 个待整理任务');
+      expect(repo.savedQuestions.length, 2);
+      // 歧义的内框没挂到任何题下（本次确认不入库）。
+      expect(
+        repo.lastBoxesByQuestionId.values
+            .expand((v) => v)
+            .where((b) => b.id == 'orphan-stem'),
+        isEmpty,
+      );
+      expect(find.textContaining('同时落在两道题里'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('中心离所有题都超过页宽/高的 0.25：不挂，提示手动处理',
+        (tester) async {
+      final repo = FakeRepo([
+        task(
+          't-needbox',
+          '待框选文件.pdf · 第1页 · 第1题',
+          status: CollectStatus.needBox,
+        ),
+      ]);
+      // 两道小题框都在页顶；独立 stem 在页底，中心 (0.50, 0.85)
+      // 离最近的题约 0.6，超过 0.25 上限——以前会被强制挂到最近题下。
+      repo.draftBoxes['t-needbox'] = [
+        box('b1', 1, 'question', 0.10, 0.05, 0.30, 0.20),
+        box('b2', 1, 'question', 0.60, 0.05, 0.30, 0.20),
+        box('orphan-stem', 2, 'stem', 0.40, 0.80, 0.20, 0.10),
+      ];
+      await pumpCollect(tester, repo: repo);
+      await openEditor(tester, '修框');
+      await tapConfirmAndWait(tester, '确认修框，拆成 2 个待整理任务');
+      expect(repo.savedQuestions.length, 2);
+      expect(
+        repo.lastBoxesByQuestionId.values
+            .expand((v) => v)
+            .where((b) => b.id == 'orphan-stem'),
+        isEmpty,
+      );
+      expect(find.textContaining('离所有题太远'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('中心落在两道题里但相交面积不等：挂到相交面积大的一道',
+        (tester) async {
+      final repo = FakeRepo([
+        task(
+          't-needbox',
+          '待框选文件.pdf · 第1页 · 第1题',
+          status: CollectStatus.needBox,
+        ),
+      ]);
+      // 两道题级框共用 y=0.5 的边（y 不重叠，编辑器放行确认），
+      // x 向右沿不对称：b1 右沿 0.58、b2 左沿 0.46；独立 stem 中心
+      // (0.50, 0.50) 两框距离同为 0，与 b1 相交 0.28×0.1、
+      // 与 b2 相交 0.24×0.1——判给 b1，不取列表先到者当运气。
+      repo.draftBoxes['t-needbox'] = [
+        box('b1', 1, 'question', 0.0, 0.0, 0.58, 0.5),
+        box('b2', 1, 'question', 0.46, 0.5, 0.54, 0.5),
+        box('orphan-stem', 2, 'stem', 0.30, 0.40, 0.40, 0.20),
+      ];
+      await pumpCollect(tester, repo: repo);
+      await openEditor(tester, '修框');
+      await tapConfirmAndWait(tester, '确认修框，拆成 2 个待整理任务');
+      expect(repo.savedQuestions.length, 2);
+      final withOrphan = repo.lastBoxesByQuestionId.entries.singleWhere(
+        (e) => e.value.any((b) => b.id == 'orphan-stem'),
+      );
+      expect(
+        withOrphan.value.firstWhere((b) => b.layer == 1).id,
+        'b1',
+      );
+      expect(find.textContaining('同时落在两道题里'), findsNothing);
+      expect(find.textContaining('离所有题太远'), findsNothing);
+      expect(tester.takeException(), isNull);
+    });
+  });
+
   group('SR2-25 确认拆题后 saveRecentTask 失败不影响成功提示与刷新', () {
     testWidgets('最近任务写库失败：仍拆题成功，列表刷新到待整理', (tester) async {
       final repo = FakeRepo([

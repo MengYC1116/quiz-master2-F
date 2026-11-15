@@ -140,6 +140,30 @@ Future<Uint8List> rotateImageBytes(
   }
 }
 
+/// SR3-10：只读 PNG 的像素尺寸（解析 IHDR，不解码整图）。
+/// 切片文件损坏/截断/不是 PNG 时返回 null——调用方按“尺寸不符”
+/// 处理（重裁一次），不把解析失败当成正常尺寸。
+/// PNG 文件头：8 字节签名 + 4 字节长度 + 'IHDR' + 宽/高（各 4 字节大端）。
+({int width, int height})? pngDimensions(Uint8List bytes) {
+  if (bytes.length < 24) return null;
+  const signature = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
+  for (var i = 0; i < signature.length; i++) {
+    if (bytes[i] != signature[i]) return null;
+  }
+  // IHDR 块：长度在 [8..12)，类型在 [12..16) 应为 'IHDR'。
+  if (bytes[12] != 0x49 || bytes[13] != 0x48 ||
+      bytes[14] != 0x44 || bytes[15] != 0x52) {
+    return null;
+  }
+  int be32(int at) =>
+      (bytes[at] << 24) | (bytes[at + 1] << 16) |
+      (bytes[at + 2] << 8) | bytes[at + 3];
+  final width = be32(16);
+  final height = be32(20);
+  if (width <= 0 || height <= 0) return null;
+  return (width: width, height: height);
+}
+
 /// 按 0..1 相对框 [box] 从页图字节裁剪，返回 PNG 与像素尺寸。
 /// 矩形按像素四舍五入后钳制进图内；框落在图外时抛 [ArgumentError]。
 Future<({Uint8List png, int width, int height})> cropBoxPng(

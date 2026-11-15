@@ -2285,23 +2285,41 @@ class _QueuePopupState extends State<_QueuePopup> {
 
   Future<void> _batchTagRedo() async {
     final selected = _selectedQuestions;
-    for (final q in selected) {
-      final tags = {...q.tags, '需重做'}.toList();
-      await widget.repo.save(q.copyWith(tags: tags));
+    // SR3-15：循环中途某题写库失败时，已保存的题也必须同步回弹窗内
+    // 的 `_questions`，否则后续批量加文件夹 / 批量确认拿旧行整行
+    // 覆盖，会把刚落盘的标签抹掉。已保存的 id 记下来，同步放在
+    // finally 里保证执行；失败不抛到按钮回调，给“部分保存失败”提示。
+    final savedIds = <String>{};
+    try {
+      for (final q in selected) {
+        final tags = {...q.tags, '需重做'}.toList();
+        await widget.repo.save(q.copyWith(tags: tags));
+        savedIds.add(q.id);
+      }
+    } catch (_) {
+      // 落到 finally 同步已保存子集，再由下面的分支报部分失败。
+    } finally {
+      // SR2-5：保存后把标签同步回弹窗内的 `_questions`（与
+      // `_batchAddFolder` 同款 `setState` map），否则同一次弹窗里
+      // 再做批量加文件夹 / 批量确认时，拿的仍是打标签前的旧
+      // `Question` 整行覆盖，标签被抹掉。
+      if (mounted && savedIds.isNotEmpty) {
+        setState(() {
+          _questions = _questions.map((q) {
+            if (savedIds.contains(q.id) && !q.tags.contains('需重做')) {
+              return q.copyWith(tags: [...q.tags, '需重做']);
+            }
+            return q;
+          }).toList();
+        });
+      }
     }
-    // SR2-5：保存后把标签同步回弹窗内的 `_questions`（与
-    // `_batchAddFolder` 同款 `setState` map），否则同一次弹窗里
-    // 再做批量加文件夹 / 批量确认时，拿的仍是打标签前的旧
-    // `Question` 整行覆盖，标签被抹掉。
-    if (!mounted) return;
-    setState(() {
-      _questions = _questions.map((q) {
-        if (_selected.contains(q.id) && !q.tags.contains('需重做')) {
-          return q.copyWith(tags: [...q.tags, '需重做']);
-        }
-        return q;
-      }).toList();
-    });
+    if (savedIds.length < selected.length) {
+      widget.onNotify(
+        '部分保存失败：已给 ${savedIds.length} 道题打上 #需重做，其余请重试',
+      );
+      return;
+    }
     widget.onNotify('已给 ${selected.length} 道题打上 #需重做');
   }
 

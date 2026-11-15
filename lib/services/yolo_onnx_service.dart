@@ -47,8 +47,7 @@ class DetectionResult {
 /// `hasRealModel` 为真当且仅当第 1 层模型已成功加载。
 class YoloOnnxService {
   YoloOnnxService({
-    this.questionModelAsset =
-        'assets/models/question/yolo11s-question-v1.onnx',
+    this.questionModelAsset = 'assets/models/question/yolo11s-question-v1.onnx',
   });
 
   /// 第 1 层模型（整题检测）。
@@ -110,6 +109,7 @@ class YoloOnnxService {
     // SR2-73：计数与屏障一并复位，免得漏到下一个测试。
     _loadAttempts = 0;
     loadGateForTest = null;
+    _detectTimeout = detectTimeout;
     try {
       _questionSession?.release();
     } catch (_) {}
@@ -154,10 +154,29 @@ class YoloOnnxService {
   /// 两次并发推理崩）。生产里检测本就是逐页串行，这里用一条 Future
   /// 链把推理排成队；加载共享不受影响（并发检测仍共用一个 _loadFuture，
   /// 只是推理依次执行）。链不断：某次抛错也不堵住后面的检测。
+  ///
+  /// SR3-24（Meng 定口径 (a)）：单次推理加 60 秒超时——超时按推理
+  /// 异常走 fallback 并放行队列，之后的检测不再被一次卡死的推理
+  /// 堵住。超时只放行队列，不取消原生推理（onnxruntime 无取消语义）：
+  /// 超时的那次推理仍在后台跑完，只是调用方不再等它、也不假装它
+  /// 已结束（其 `lastDetectStats` 可能晚到覆盖，不作为成功依据）。
+  static const Duration detectTimeout = Duration(seconds: 60);
+
+  /// SR3-24 测试用：覆盖 [detectTimeout]（默认 60 秒）。仅测试调用，
+  /// [resetLoadStateForTest] 时恢复 60 秒。
+  @visibleForTesting
+  static Duration get detectTimeoutForTest => _detectTimeout;
+
+  /// SR3-24 测试用：见 [detectTimeoutForTest]。
+  @visibleForTesting
+  static set detectTimeoutForTest(Duration value) => _detectTimeout = value;
+
+  static Duration _detectTimeout = detectTimeout;
+
   static Future<void> _detectQueue = Future.value();
 
   Future<T> _serializedDetect<T>(Future<T> Function() fn) {
-    final run = _detectQueue.then((_) => fn());
+    final run = _detectQueue.then((_) => fn().timeout(_detectTimeout));
     _detectQueue = run.then<void>((_) {}, onError: (_) {});
     return run;
   }
@@ -203,8 +222,7 @@ class YoloOnnxService {
           );
         }
         final sw = Stopwatch()..start();
-        final boxes =
-            await _serializedDetect(() => _detect(pageImage, page));
+        final boxes = await _serializedDetect(() => _detect(pageImage, page));
         sw.stop();
         return DetectionResult(boxes: boxes, usedFallback: false);
       } finally {
@@ -239,17 +257,24 @@ class YoloOnnxService {
     // SR2-73：先计数再等屏障——测试据此确认第一次加载已进入
     // _loadOnce 并停在屏障处，再发起第二次检测。
     _loadAttempts++;
-    final gate = loadGateForTest;
-    if (gate != null) await gate.future;
     try {
+      // SR3-23：屏障等待须在 try 内——gate 以 error 完成时旧代码
+      // 在 try 外抛错，`_ensureLoaded` 的清 future 一行被跳过，
+      // 失败的 `_loadFuture` 永远留在原地、加载永不重试。
+      // 移进 try 后 gate 报错走与加载失败同一路径：返回 false，
+      // `_ensureLoaded` 清掉 `_loadFuture`，下次检测重新加载。
+      final gate = loadGateForTest;
+      if (gate != null) await gate.future;
       if (!_envInitialized) {
         OrtEnv.instance.init();
         _envInitialized = true;
       }
-      final questionBytes =
-          (await rootBundle.load(questionModelAsset)).buffer.asUint8List();
-      _questionSession =
-          OrtSession.fromBuffer(questionBytes, OrtSessionOptions());
+      final questionBytes = (await rootBundle.load(questionModelAsset)).buffer
+          .asUint8List();
+      _questionSession = OrtSession.fromBuffer(
+        questionBytes,
+        OrtSessionOptions(),
+      );
       _loadOk = true;
     } catch (_) {
       _loadOk = false;
@@ -278,15 +303,17 @@ class YoloOnnxService {
     final fit1 = letterboxFit(pageW, pageH, questionInputSize);
     final questions = <QuestionBox>[];
     for (final d in dets1) {
-      questions.add(_toPageBox(
-        d,
-        fit: fit1,
-        pageW: pageW,
-        pageH: pageH,
-        id: '', // 先占位，按阅读顺序排好后再编号
-        layer: 1,
-        type: 'question',
-      ));
+      questions.add(
+        _toPageBox(
+          d,
+          fit: fit1,
+          pageW: pageW,
+          pageH: pageH,
+          id: '', // 先占位，按阅读顺序排好后再编号
+          layer: 1,
+          type: 'question',
+        ),
+      );
     }
     // 阅读顺序：先上后下、同行先左后右，再按顺序编号 box-q1…。
     // 编号只换 id，置信度 / 来源 / 页码原样保留（§1.2(c) 小项-1：
@@ -298,18 +325,20 @@ class YoloOnnxService {
     final numbered = <QuestionBox>[];
     for (var i = 0; i < questions.length; i++) {
       final q = questions[i];
-      numbered.add(QuestionBox(
-        id: 'box-q${i + 1}',
-        layer: 1,
-        type: 'question',
-        x: q.x,
-        y: q.y,
-        w: q.w,
-        h: q.h,
-        confidence: q.confidence,
-        origin: q.origin,
-        page: page,
-      ));
+      numbered.add(
+        QuestionBox(
+          id: 'box-q${i + 1}',
+          layer: 1,
+          type: 'question',
+          x: q.x,
+          y: q.y,
+          w: q.w,
+          h: q.h,
+          confidence: q.confidence,
+          origin: q.origin,
+          page: page,
+        ),
+      );
     }
 
     // —— 第 2 层：暂缓（见 intraEnabled）。再接入时在这里调
@@ -354,15 +383,17 @@ class YoloOnnxService {
     Float32List input,
     int size,
   ) async {
-    final inputOrt = OrtValueTensor.createTensorWithDataList(
-      input,
-      [1, 3, size, size],
-    );
+    final inputOrt = OrtValueTensor.createTensorWithDataList(input, [
+      1,
+      3,
+      size,
+      size,
+    ]);
     final runOptions = OrtRunOptions();
     try {
       final outputs =
           await session.runAsync(runOptions, {'images': inputOrt}) ??
-              session.run(runOptions, {'images': inputOrt});
+          session.run(runOptions, {'images': inputOrt});
       final first = outputs.firstOrNull;
       if (first == null) return const [];
       // .value 是按输出形状 reshape 后的嵌套 List：[1][4+nc][anchors]。
@@ -387,7 +418,8 @@ class YoloOnnxService {
     ui.Rect? srcRect,
     int size,
   ) async {
-    final srcR = srcRect ??
+    final srcR =
+        srcRect ??
         ui.Rect.fromLTWH(0, 0, src.width.toDouble(), src.height.toDouble());
     final fit = letterboxFit(srcR.width, srcR.height, size);
     final recorder = ui.PictureRecorder();
@@ -395,8 +427,12 @@ class YoloOnnxService {
     canvas.drawRect(
       ui.Rect.fromLTWH(0, 0, size.toDouble(), size.toDouble()),
       ui.Paint()
-        ..color = const ui.Color.fromARGB(255, letterboxPad, letterboxPad,
-            letterboxPad),
+        ..color = const ui.Color.fromARGB(
+          255,
+          letterboxPad,
+          letterboxPad,
+          letterboxPad,
+        ),
     );
     final dst = ui.Rect.fromLTWH(
       fit.dx,
@@ -412,8 +448,7 @@ class YoloOnnxService {
     );
     final img = await recorder.endRecording().toImage(size, size);
     try {
-      final bytes =
-          await img.toByteData(format: ui.ImageByteFormat.rawRgba);
+      final bytes = await img.toByteData(format: ui.ImageByteFormat.rawRgba);
       if (bytes == null) return Float32List(3 * size * size);
       final rgba = bytes.buffer.asUint8List();
       final out = Float32List(3 * size * size);
@@ -469,19 +504,20 @@ class YoloOnnxService {
   }) {
     final src = _letterboxToSource(d, fit);
     return clampToPage(
-        QuestionBox(
-          id: id,
-          layer: layer,
-          type: type,
-          x: src.x1 / pageW,
-          y: src.y1 / pageH,
-          w: (src.x2 - src.x1) / pageW,
-          h: (src.y2 - src.y1) / pageH,
-          // §1.2(c) 小项-1：检测框填置信度与来源；手画框为 NULL/'manual'。
-          confidence: d.score,
-          origin: 'yolo',
-        ),
-        minSize: false);
+      QuestionBox(
+        id: id,
+        layer: layer,
+        type: type,
+        x: src.x1 / pageW,
+        y: src.y1 / pageH,
+        w: (src.x2 - src.x1) / pageW,
+        h: (src.y2 - src.y1) / pageH,
+        // §1.2(c) 小项-1：检测框填置信度与来源；手画框为 NULL/'manual'。
+        confidence: d.score,
+        origin: 'yolo',
+      ),
+      minSize: false,
+    );
   }
 
   /// YOLO11 输出后处理（纯函数，可单测）：输入为输出张量的通道
@@ -506,14 +542,16 @@ class YoloOnnxService {
       for (var a = 0; a < anchors; a++) {
         final score = clsScores[a].toDouble();
         if (score < confThreshold) continue;
-        dets.add(YoloRawDet(
-          cx: channels[0][a].toDouble(),
-          cy: channels[1][a].toDouble(),
-          w: channels[2][a].toDouble(),
-          h: channels[3][a].toDouble(),
-          cls: c,
-          score: score,
-        ));
+        dets.add(
+          YoloRawDet(
+            cx: channels[0][a].toDouble(),
+            cy: channels[1][a].toDouble(),
+            w: channels[2][a].toDouble(),
+            h: channels[3][a].toDouble(),
+            cls: c,
+            score: score,
+          ),
+        );
       }
       kept.addAll(_nms(dets, nmsIou));
     }
@@ -545,8 +583,7 @@ class YoloOnnxService {
   static List<YoloRawDet> _crossClassNms(
     List<YoloRawDet> dets,
     double iouThreshold,
-  ) =>
-      _nms(dets, iouThreshold);
+  ) => _nms(dets, iouThreshold);
 
   static double _iou(YoloRawDet a, YoloRawDet b) {
     final interX1 = math.max(a.x1, b.x1);
@@ -557,8 +594,7 @@ class YoloOnnxService {
     final interH = interY2 - interY1;
     if (interW <= 0 || interH <= 0) return 0.0;
     final inter = interW * interH;
-    final union =
-        a.w * a.h + b.w * b.h - inter;
+    final union = a.w * a.h + b.w * b.h - inter;
     return union <= 0 ? 0.0 : inter / union;
   }
 
@@ -568,7 +604,7 @@ class YoloOnnxService {
   /// 当前检测只出第 1 层框，本函数返回空归属，供第 2 层再接入
   /// 与修框编辑器复用。
   static ({Map<String, List<QuestionBox>> inners, List<QuestionBox> orphans})
-      groupInners(List<QuestionBox> boxes) {
+  groupInners(List<QuestionBox> boxes) {
     final questions = boxes.where((b) => b.layer == 1).toList();
     final inners = <String, List<QuestionBox>>{};
     final orphans = <QuestionBox>[];
@@ -577,10 +613,7 @@ class YoloOnnxService {
       final cy = b.y + b.h / 2;
       QuestionBox? owner;
       for (final q in questions) {
-        if (cx >= q.x &&
-            cx <= q.x + q.w &&
-            cy >= q.y &&
-            cy <= q.y + q.h) {
+        if (cx >= q.x && cx <= q.x + q.w && cy >= q.y && cy <= q.y + q.h) {
           owner = q;
           break;
         }

@@ -118,6 +118,7 @@ Future<void> _openEditorDialog(
   Map<int, List<QuestionBox>> initialStandalone = const {},
   String taskId = 'task-test',
   String? reworkQuestionId,
+  List<QuestionBox> readOnlyBoxes = const [],
   YoloOnnxService? yoloService,
   Future<void> Function(BoxEditorResult draft)? onSaveDraft,
 }) async {
@@ -147,6 +148,7 @@ Future<void> _openEditorDialog(
                 initialInners: initialInners,
                 initialStandalone: initialStandalone,
                 reworkQuestionId: reworkQuestionId,
+                readOnlyBoxes: readOnlyBoxes,
                 yoloService: yoloService ?? _EmptyYolo(),
                 onSaveDraft: onSaveDraft,
               );
@@ -656,6 +658,143 @@ void main() {
       final stem2 = result.inners['2:b2']!.firstWhere((b) => b.id == 's2');
       expect(stem2.x, closeTo(0.65, 1e-9));
       expect(stem2.y, closeTo(0.15, 1e-9));
+    });
+  });
+
+  group('SR3-13 重框恢复不认邻题检测框', () {
+    testWidgets('阈值 0.3：与目标框 IoU 0.23 的检测框不再认领，目标框不动',
+        (tester) async {
+      // 检测框与目标框 IoU ≈ 0.231（> 旧阈值 0.05、< 新阈值 0.3）：
+      // 旧逻辑会把它认领、把目标框拽到 0.30 处；新逻辑不认领。
+      final yolo = _CountingYolo(
+        boxes: [
+          _box(id: 'yolo-1', x: 0.30, y: 0.05, w: 0.4, h: 0.3, origin: 'yolo'),
+        ],
+      );
+      await _openEditorDialog(
+        tester,
+        page: 2,
+        mode: BoxEditorMode.rework,
+        initialBoxesByPage: {
+          2: [_box(id: 'b1', page: 2, x: 0.05, y: 0.05, w: 0.4, h: 0.3)],
+        },
+        taskId: 'rework-q1',
+        reworkQuestionId: 'q1',
+        yoloService: yolo,
+      );
+      await tester.tap(find.text('恢复自动框'));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('没找到对应的检测框'), findsOneWidget);
+      // SnackBar 默认 4 秒后消失：等它走完再点确认，否则会被盖住。
+      await tester.pump(const Duration(seconds: 5));
+      await tester.pumpAndSettle();
+      await _tapConfirm(tester);
+      final result = _capturedResult!;
+      final layer1 = result.boxesByPage[2]!.firstWhere((b) => b.layer == 1);
+      expect(layer1.x, closeTo(0.05, 1e-9));
+      expect(layer1.y, closeTo(0.05, 1e-9));
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('候选池过滤：中心落在邻题只读框内的检测框不参与认领',
+        (tester) async {
+      // 检测框与目标框 IoU ≈ 0.389（> 0.3，单看阈值会被认领），
+      // 但它的中心 (0.47, 0.20) 落在邻题只读框（0.46–0.86）内——
+      // 那是邻题的框，不在候选池里，目标框应原地不动。
+      // 只读框与目标框留 0.01 缝隙（不重叠，确认不被拦下）。
+      final yolo = _CountingYolo(
+        boxes: [
+          _box(id: 'yolo-1', x: 0.17, y: 0.05, w: 0.6, h: 0.3, origin: 'yolo'),
+        ],
+      );
+      await _openEditorDialog(
+        tester,
+        page: 2,
+        mode: BoxEditorMode.rework,
+        initialBoxesByPage: {
+          2: [_box(id: 'b1', page: 2, x: 0.05, y: 0.05, w: 0.4, h: 0.3)],
+        },
+        taskId: 'rework-q1',
+        reworkQuestionId: 'q1',
+        readOnlyBoxes: [
+          _box(id: 'q2-box', page: 2, x: 0.46, y: 0.05, w: 0.4, h: 0.3,
+              questionId: 'q2'),
+        ],
+        yoloService: yolo,
+      );
+      await tester.tap(find.text('恢复自动框'));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('没找到对应的检测框'), findsOneWidget);
+      // SnackBar 默认 4 秒后消失：等它走完再点确认，否则会被盖住。
+      await tester.pump(const Duration(seconds: 5));
+      await tester.pumpAndSettle();
+      await _tapConfirm(tester);
+      final result = _capturedResult!;
+      final layer1 = result.boxesByPage[2]!.firstWhere((b) => b.layer == 1);
+      expect(layer1.x, closeTo(0.05, 1e-9));
+      expect(layer1.y, closeTo(0.05, 1e-9));
+      expect(tester.takeException(), isNull);
+    });
+  });
+
+  group('SR3-14 重框恢复时独立题内框跟随 1 层框移动', () {
+    testWidgets('中心在旧框内的独立内框同向移动，框外的不动', (tester) async {
+      final yolo = _CountingYolo(
+        boxes: [
+          _box(id: 'yolo-1', x: 0.2, y: 0.2, w: 0.5, h: 0.4, origin: 'yolo'),
+        ],
+      );
+      await _openEditorDialog(
+        tester,
+        page: 2,
+        mode: BoxEditorMode.rework,
+        initialBoxesByPage: {
+          2: [_box(id: 'q1-box', page: 2, x: 0.1, y: 0.1, w: 0.5, h: 0.4)],
+        },
+        initialStandalone: {
+          2: [
+            _box(
+              id: 'q1-stem',
+              layer: 2,
+              type: 'stem',
+              page: 2,
+              x: 0.2,
+              y: 0.2,
+              w: 0.2,
+              h: 0.1,
+            ),
+            _box(
+              id: 'q1-outside',
+              layer: 2,
+              type: 'stem',
+              page: 2,
+              x: 0.7,
+              y: 0.7,
+              w: 0.1,
+              h: 0.1,
+            ),
+          ],
+        },
+        taskId: 'rework-q1',
+        reworkQuestionId: 'q1',
+        yoloService: yolo,
+      );
+      await tester.tap(find.text('恢复自动框'));
+      await tester.pumpAndSettle();
+      await _tapConfirm(tester);
+      final result = _capturedResult!;
+      final standalone = result.standaloneInner[2]!;
+      // 框内独立内框相对位置不变：旧框内 (0.2, 0.2) → 新框内 (0.3, 0.3)。
+      final stem = standalone.firstWhere((b) => b.id == 'q1-stem');
+      expect(stem.x, closeTo(0.3, 1e-9));
+      expect(stem.y, closeTo(0.3, 1e-9));
+      expect(stem.w, closeTo(0.2, 1e-9));
+      expect(stem.h, closeTo(0.1, 1e-9));
+      // 中心在旧框外的独立内框保持不动。
+      final outside = standalone.firstWhere((b) => b.id == 'q1-outside');
+      expect(outside.x, closeTo(0.7, 1e-9));
+      expect(outside.y, closeTo(0.7, 1e-9));
+      expect(tester.takeException(), isNull);
     });
   });
 
