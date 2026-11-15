@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:math' as math;
 
 import 'package:file_picker/file_picker.dart';
 
@@ -26,6 +27,9 @@ class ImportService {
       : _pdfRenderService = pdfRenderService ?? PdfRenderService();
   final AppDatabase _db;
   final PdfRenderService _pdfRenderService;
+
+  /// SR-P2-60：任务 id 的随机段来源（见 enqueue 的 id 生成）。
+  static final _idRandom = math.Random();
 
   static const allowedExtensions = ['pdf', 'jpg', 'jpeg', 'png'];
   static const maxPdfBytes = 50 * 1024 * 1024;
@@ -68,6 +72,11 @@ class ImportService {
   /// 某任务某页的页图相对路径。
   /// - PDF：渲染出的 `pages/page-<页码>.png`（[page] 默认任务当前页）；
   /// - 图片：归一化副本存在时用它，否则用源文件副本。
+  ///
+  /// SR-P2-76：这里的 `existsSync` 是有意的同步读。P0.5 实测同步读
+  /// 一张 1653×2200 PNG 约 0.22–3.2ms，打开慢的主因是 YOLO 推理
+  /// 约 3–6 秒，不是同步读；后续优化打开体感时优先把推理放后台、
+  /// 先显页图，而不是只改读图方式。本处维持同步，不改异步。
   static String pageImageRelativeForTask(CollectTask task, {int? page}) {
     if (isPdfTask(task)) {
       return renderedPageRelative(task.id, page ?? task.page);
@@ -136,18 +145,14 @@ class ImportService {
         '先清理孤儿文件或删掉不需要的题目，再导入新题。';
   }
 
-  static bool isAllowed(String path) {
-    final ext = path.split('.').last.toLowerCase();
-    return allowedExtensions.contains(ext);
-  }
-
-  /// 超限只提示不硬拦；返回提示文案，null 表示不超限。
+  /// 超限硬判（与 enqueue 的失败行为一致，见 SR-P1-14）；
+  /// 返回提示文案，null 表示不超限。
   static String? oversizeHint(File file) {
     final ext = file.path.split('.').last.toLowerCase();
     final limit = ext == 'pdf' ? maxPdfBytes : maxImageBytes;
     if (file.lengthSync() > limit) {
       return '文件较大（${(file.lengthSync() / 1024 / 1024).toStringAsFixed(1)}MB），'
-          '超过建议上限 ${limit ~/ 1024 ~/ 1024}MB，仍可继续导入。';
+          '超过 ${limit ~/ 1024 ~/ 1024}MB 上限，导入会失败。';
     }
     return null;
   }
@@ -177,12 +182,20 @@ class ImportService {
     void Function(String taskId, int progress)? onProgress,
   }) async {
     final tasks = <CollectTask>[];
-    final existing = await _db.allCollectTasks();
+    // SR-P1-17：同批去重（按源文件路径）。同一文件在一次多选里
+    // 出现两次时只建一个任务，后面的直接跳过。
+    // 跨批重复不在这里拦：D-08 定了重复导入允许重导，收集页先弹
+    // “已经导入过”提示，用户点“仍然再导一份”才进 enqueue。
+    final seenPaths = <String>{};
     for (var i = 0; i < paths.length; i++) {
+      if (!seenPaths.add(paths[i])) continue;
       final file = File(paths[i]);
       final name = file.uri.pathSegments.last;
-      final id = 'task-${DateTime.now().millisecondsSinceEpoch}-$i';
-      final duplicate = existing.any((t) => t.fileName == name);
+      // SR-P2-60：id 后缀加 6 位随机段。旧 id 是“毫秒时间戳 + 批内序号”，
+      // 两次 enqueue 在同一毫秒启动且序号相同时会撞 id，后一次
+      // upsert 会覆盖前一次的任务行（丢任务且无报错）。
+      final id =
+          'task-${DateTime.now().millisecondsSinceEpoch}-$i-${_idRandom.nextInt(1000000).toString().padLeft(6, '0')}';
       var task = CollectTask(
         id: id,
         // 任务名 = 文件名 + 页 + 题号；此处先按第 1 页第 1 题，修框确认后拆题改名。
@@ -193,28 +206,29 @@ class ImportService {
         progress: 0,
         createdAt: DateTime.now(),
       );
-      // 重复导入提示“已经导入过”，仍可再次导入（由调用方弹提示，见 D-08）。
-      if (duplicate) {
-        // 保留任务，仅标记；UI 层据此弹“已经导入过”提示。
-      }
       await _db.upsertCollectTask(task);
       tasks.add(task);
 
       final ext = name.split('.').last.toLowerCase();
-      // PDF 50MB 上限（§6 第 3 条）：复制前先判，超了直接失败，
-      // 不复制、不渲染；文案说清怎么分批（拆成多个小 PDF）。
-      if (ext == 'pdf') {
-        try {
-          final size = await file.length();
-          if (size > maxPdfBytes) {
-            task = _failed(task,
-                '这个 PDF 有 ${(size / 1024 / 1024).toStringAsFixed(1)}MB，超过 50MB 上限，请拆成多个小 PDF 再导入');
-            await _db.upsertCollectTask(task);
-            tasks[tasks.length - 1] = task;
-            continue;
-          }
-        } catch (_) {}
-      }
+      // 单文件大小上限（§6 第 3 条）：PDF 50MB / 图片 20MB，复制前
+      // 先判，超了直接失败，不复制、不渲染；文案说清怎么处理
+      //（PDF 拆成多个小 PDF，图片压缩到 20MB 以内）。
+      // SR-P1-14：图片与 PDF 同款硬判，不再只提示不执行。
+      try {
+        final size = await file.length();
+        final limit = ext == 'pdf' ? maxPdfBytes : maxImageBytes;
+        if (size > limit) {
+          task = _failed(
+            task,
+            ext == 'pdf'
+                ? '这个 PDF 有 ${(size / 1024 / 1024).toStringAsFixed(1)}MB，超过 50MB 上限，请拆成多个小 PDF 再导入'
+                : '这张图片有 ${(size / 1024 / 1024).toStringAsFixed(1)}MB，超过 20MB 上限，请压缩到 20MB 以内再导入',
+          );
+          await _db.upsertCollectTask(task);
+          tasks[tasks.length - 1] = task;
+          continue;
+        }
+      } catch (_) {}
       // 空间上限 2GB：导入前估算（已有占用 + 本文件），超了直接失败。
       try {
         final used = await storageUsageBytes();
@@ -234,6 +248,9 @@ class ImportService {
         final total = await file.length();
         var copied = 0;
         var lastReported = -1;
+        // SR-P2-62：进度写库节流到每 5 个百分点一次（0→70% 原来最多
+        // 约 70 次写库，现约 15 次）；UI 回调 onProgress 保持逐次。
+        var lastDbPct = -1;
         final sink = File(targetAbs).openWrite();
         try {
           await for (final chunk in file.openRead()) {
@@ -245,7 +262,10 @@ class ImportService {
             if (pct != lastReported) {
               lastReported = pct;
               onProgress?.call(id, pct);
-              await _updateProgress(task, pct);
+              if (lastDbPct < 0 || pct - lastDbPct >= 5) {
+                lastDbPct = pct;
+                await _updateProgress(task, pct);
+              }
             }
           }
         } finally {
@@ -270,13 +290,30 @@ class ImportService {
           dirAbs,
           onProgress,
         );
-        await _db.upsertCollectTask(done);
+        try {
+          await _db.upsertCollectTask(done);
+        } catch (_) {
+          // SR-P1-4：收尾重写失败也不中断整批；_importPdf 返回的
+          // 任务状态即为准（内存里），继续下一个文件。
+        }
         tasks[tasks.length - 1] = done;
         continue;
       }
       // EXIF 方向归一化（仅 != 1 时生成副本；镜像方向显式失败）。
       try {
         final bytes = await File(targetAbs).readAsBytes();
+        // SR-P2-61：先校验图片能不能解码。改后缀的非图片文件（如 .txt
+        // 改 .jpg）能通过扩展名检查，解不开时不再静默按原图进 needBox，
+        // 任务直接失败并提示“这张图片打不开”（修框时才暴露太晚了）。
+        if (!await canDecodeImageBytes(bytes)) {
+          try {
+            await Directory(dirAbs).delete(recursive: true);
+          } catch (_) {}
+          task = _failed(task, '这张图片打不开，请确认文件是完好的图片再导入');
+          await _db.upsertCollectTask(task);
+          tasks[tasks.length - 1] = task;
+          continue;
+        }
         final normalized = await normalizeExifImageBytes(bytes);
         if (normalized.orientation >= 2 && normalized.orientation <= 7 &&
             exifOrientationToClockwiseDegrees(normalized.orientation) ==
@@ -299,7 +336,10 @@ class ImportService {
         onProgress?.call(id, 90);
         await _updateProgress(task, 90);
       } catch (e) {
-        // 读不到 / 解码失败：原图已拷进库，仍可继续（修框时按原图走）。
+        // 读不到 / 归一化失败等原因不明的失败：保留旧降级（原图已拷进
+        // 库，修框时按原图走）。SR-P2-61 只把“确实解不开的图片”判
+        // 失败，上面 canDecodeImageBytes 已先行拦截，走到这里的不是
+        // 解码失败，而是读盘 / 写盘等不明确的原因。
         onProgress?.call(id, 90);
         await _updateProgress(task, 90);
       }
@@ -340,6 +380,10 @@ class ImportService {
       return _failAndClean(task, dirAbs, '这个 PDF 带密码，解开密码再导');
     } on PdfCorruptException catch (e) {
       return _failAndClean(task, dirAbs, '文件损坏：${e.reason}');
+    } catch (e) {
+      // 兜底（磁盘满等 FileSystemException）：不让异常逃出 enqueue，
+      // 任务进 failed 并清掉半写目录，不卡在导入中。
+      return _failAndClean(task, dirAbs, '导入失败：这个 PDF 没导进去（$e）');
     }
     if (total == 0) {
       return _failAndClean(task, dirAbs, '文件损坏：这个 PDF 没有页面');
@@ -348,13 +392,15 @@ class ImportService {
       return _failAndClean(task, dirAbs,
           '这份 PDF 有 $total 页，超过 20 页上限，请分批导入：拆成每份不超过 20 页再导入');
     }
-    // 空间上限 2GB：已有占用 + 原文件 + 预估页图（每页约 2MB）。
+    // 空间上限 2GB：已有占用 + 预估页图（每页约 2MB）。
+    // SR-P2-59：只加页图，不再加原文件——原文件在进 _importPdf 之前
+    // 已复制进库，storageUsageBytes() 的 used 里已经含它，再加一次
+    // fileSize 是把原文件算了两次，接近 2GB 上限时会误拒合法 PDF。
     var storageFull = false;
     try {
       final used = await storageUsageBytes();
-      final fileSize = await File(originalAbs).length();
-      storageFull = used + fileSize + total * estimatedBytesPerRenderedPage >
-          maxStorageBytes;
+      storageFull =
+          used + total * estimatedBytesPerRenderedPage > maxStorageBytes;
     } catch (_) {}
     if (storageFull) {
       return _failAndClean(task, dirAbs,
@@ -378,6 +424,10 @@ class ImportService {
       return _failAndClean(task, dirAbs, '这个 PDF 带密码，解开密码再导');
     } on PdfCorruptException catch (e) {
       return _failAndClean(task, dirAbs, '文件损坏：${e.reason}');
+    } catch (e) {
+      // 兜底（渲染中途磁盘满等）：同上，失败任务 + 清半写目录，
+      // 不让任务卡在导入中。
+      return _failAndClean(task, dirAbs, '导入失败：渲染这份 PDF 时出了问题（$e）');
     }
     final done = CollectTask(
       id: task.id,
@@ -392,7 +442,19 @@ class ImportService {
       sourcePath: originalRelative(task.id, 'pdf'),
     );
     // 状态变化（importing → needBox）才 bump（见 §4.3 节流）。
-    await _db.upsertCollectTask(done);
+    // SR-P1-4：这一步写库失败也不能逃出 enqueue——先走
+    // _failAndClean（失败任务 + 清目录）；其自身写库再失败时
+    // 返回内存里的 failed 任务，绝不抛到 enqueue 外卡住整批。
+    try {
+      await _db.upsertCollectTask(done);
+    } catch (e) {
+      try {
+        return await _failAndClean(
+            done, dirAbs, '导入失败：这个 PDF 渲完了，但写不进任务列表（$e）');
+      } catch (_) {
+        return _failed(done, '导入失败：这个 PDF 渲完了，但写不进任务列表（$e）');
+      }
+    }
     onProgress?.call(task.id, 100);
     return done;
   }

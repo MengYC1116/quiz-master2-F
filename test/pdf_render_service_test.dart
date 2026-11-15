@@ -4,6 +4,10 @@
 // 手写最小 PDF 生成器（与 /tmp 夹具脚本同算法，见 gen_pdf.py 思路）：
 // 每页一段文字 + 一个黑色实心矩形，渲染后可断言非白像素。
 // 内存库 + 临时数据目录，不碰真实用户库。
+// SR-P2-77：各 group 带 5 分钟超时余量——本文件与 YOLO 真实推理、
+// P05 两组首次并行跑时曾出现 10 项超时失败（1.5 CPU 下 YOLO 推理
+// 每页 3–6 秒与 PDF 渲染抢 CPU），复跑全过，是并行抖动不是回归；
+// 超时余量只动测试侧，不动产品代码。
 import 'dart:io';
 import 'dart:typed_data';
 import 'dart:ui' as ui;
@@ -190,7 +194,7 @@ void main() {
       expect(rendered.width, 1932);
       expect(rendered.height, 2500);
       expect(await pngHasDarkPixels(rendered.png), isTrue);
-    });
+    }, timeout: const Timeout(Duration(minutes: 5)));
 
     test('renderAllPagesToDir：写出 page-001..003.png，进度走到 (3,3)',
         () async {
@@ -213,7 +217,7 @@ void main() {
         expect(f.existsSync(), isTrue);
         expect(f.lengthSync(), greaterThan(10000));
       }
-    });
+    }, timeout: const Timeout(Duration(minutes: 5)));
 
     test('页码越界：渲染第 0 页 / 第 4 页抛 PdfCorruptException', () async {
       final pdf = File('${_tmp.path}/three3.pdf');
@@ -227,7 +231,7 @@ void main() {
         service.renderPagePng(pdf.path, 4),
         throwsA(isA<PdfCorruptException>()),
       );
-    });
+    }, timeout: const Timeout(Duration(minutes: 5)));
   });
 
   group('加密 / 损坏 PDF', () {
@@ -241,7 +245,7 @@ void main() {
         service.renderPagePng('test/fixtures/pdf-encrypted.pdf', 1),
         throwsA(isA<PdfEncryptedException>()),
       );
-    });
+    }, timeout: const Timeout(Duration(minutes: 5)));
 
     test('损坏 PDF：随机字节 / 空文件 / 截断都抛 PdfCorruptException',
         () async {
@@ -265,7 +269,7 @@ void main() {
         service.pageCount(truncated.path),
         throwsA(isA<PdfCorruptException>()),
       );
-    });
+    }, timeout: const Timeout(Duration(minutes: 5)));
   });
 
   group('导入：PDF 整本渲染进库', () {
@@ -304,7 +308,7 @@ void main() {
       );
       expect(progress, isNotEmpty);
       expect(progress.last, 100);
-    });
+    }, timeout: const Timeout(Duration(minutes: 5)));
 
     test('21 页 PDF：失败、提示 21 页超 20 页上限、不建任务目录',
         () async {
@@ -325,7 +329,7 @@ void main() {
             .existsSync(),
         isFalse,
       );
-    });
+    }, timeout: const Timeout(Duration(minutes: 5)));
 
     test('51MB PDF：失败、提示超 50MB 上限、不建任务目录', () async {
       await openMemoryDb();
@@ -346,7 +350,7 @@ void main() {
             .existsSync(),
         isFalse,
       );
-    });
+    }, timeout: const Timeout(Duration(minutes: 5)));
 
     test('加密 PDF 导入：失败、提示“这个 PDF 带密码，解开密码再导”',
         () async {
@@ -366,7 +370,7 @@ void main() {
             .existsSync(),
         isFalse,
       );
-    });
+    }, timeout: const Timeout(Duration(minutes: 5)));
 
     test('损坏 PDF 导入：失败、提示具体原因、不建任务目录', () async {
       await openMemoryDb();
@@ -383,7 +387,7 @@ void main() {
             .existsSync(),
         isFalse,
       );
-    });
+    }, timeout: const Timeout(Duration(minutes: 5)));
   });
 
   group('导入：假引擎注入', () {
@@ -409,7 +413,7 @@ void main() {
       expect(frame.image.width, 10);
       expect(frame.image.height, 10);
       frame.image.dispose();
-    });
+    }, timeout: const Timeout(Duration(minutes: 5)));
 
     test('假引擎第 2 页渲染失败：失败任务、目录已删，不建无页图任务',
         () async {
@@ -432,7 +436,7 @@ void main() {
             .existsSync(),
         isFalse,
       );
-    });
+    }, timeout: const Timeout(Duration(minutes: 5)));
 
     test('假引擎打开即加密错：失败任务、提示带密码', () async {
       await openMemoryDb();
@@ -448,6 +452,6 @@ void main() {
       final t = tasks.first;
       expect(t.status, CollectStatus.failed);
       expect(t.error, '这个 PDF 带密码，解开密码再导');
-    });
+    }, timeout: const Timeout(Duration(minutes: 5)));
   });
 }

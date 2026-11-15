@@ -1,8 +1,10 @@
 // P0 数据层加固（DB-CHANGE-PLAN.md §4.1–§4.5）回归测试。
 // 全部用内存库（createTables 建表，不播种演示数据），不碰真实库；
 // 只有 §4.1 一项走 AppDatabase.instance.db（验证并发只 open 一次），
-// 该调用只读真实库（旧库缺 created_at 列时补一列，见 §4.3）。
+// 此时 testDataDirectory 指向临时目录，单例在临时目录建全新 v2 库，
+// 不碰真实数据目录；tearDown 用 resetForTest() 复位单例与重定向。
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:quiz_master2/data/database.dart';
@@ -56,7 +58,27 @@ Future<void> insertHistory(Database db, String questionId,
 }
 
 void main() {
+  // 全文件：每个测试前把 testDataDirectory 指到 fresh 临时目录，
+  // 任何落盘路径都不碰真实数据目录；测后 resetForTest() 复位单例
+  // 与重定向并删临时目录。§4.1 以外各组只用内存库，本重定向是兜底。
+  late Directory tmpDir;
+
+  setUp(() async {
+    tmpDir = await Directory.systemTemp.createTemp('p0-hardening-');
+    AppDatabase.testDataDirectory = tmpDir.path;
+    addTearDown(() async {
+      await AppDatabase.resetForTest();
+      try {
+        await tmpDir.delete(recursive: true);
+      } catch (_) {}
+    });
+  });
+
   group('§4.1 db 缓存 Future', () {
+    // 意图保留：并发 await instance.db 必须只触发一次 _openDb，
+    // 返回同一 Database 对象。单例不预置（不用 useDatabaseForTest），
+    // 否则缓存已命中、测不到打开路径；_openDb 在上面的临时目录
+    // 建全新 v2 库，不碰真实库。
     test('并发 await db 只打开一次（同一 Database 对象）', () async {
       final results = await Future.wait([
         AppDatabase.instance.db,
@@ -420,8 +442,7 @@ void main() {
       expect(await db.query('folders'), isEmpty);
     });
 
-    test('clearDemoDataFrom：清演示复习历史与 recent_tasks，非演示不动',
-        () async {
+    test('SR-P2-2 clearDemoDataFrom：演示题走删题事务，非演示一律不动', () async {
       final db = await openTestDb();
       addTearDown(() async => db.close());
       await insertQuestion(db, 'demo1', isDemo: 1);
@@ -458,8 +479,12 @@ void main() {
               .map((r) => r['question_id'])
               .toList(),
           ['real1']);
-      expect(await db.query('recent_tasks'), isEmpty);
-      expect(await db.query('review_state'), isEmpty);
+      // recent_tasks 不动：旧写法整表删，会把非演示的“最近任务”也抹掉。
+      expect(await db.query('recent_tasks'), hasLength(1));
+      // review_state 不整行删：演示题只从队列里摘掉，断点行还在。
+      final state = await db.query('review_state');
+      expect(state, hasLength(1));
+      expect(state.single['queue'], '[]');
     });
   });
 }

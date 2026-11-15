@@ -130,7 +130,7 @@ void main() {
   });
 
   group('P0B2-3 调色板：加青、粉', () {
-    testWidgets('加到 7 科颜色各不相同，第 6、7 科不是数学蓝；第 8 科回落首色',
+    testWidgets('加到 8 科颜色各不相同，第 6、7、8 科不是数学蓝（SR-P2-51：12 色 + 金角轮转，不再回落首色）',
         (tester) async {
       final repo = _FakePaletteRepo();
       await _pumpSubjects(tester, repo: repo);
@@ -143,17 +143,18 @@ void main() {
       }
       final colors = repo.subjectsList.map((s) => s.color).toList();
       expect(colors, hasLength(8));
-      // 轮换顺序：蓝 / 绿 / 红 / 紫 / 橙 / 青 / 粉。
+      // 轮换顺序：蓝 / 绿 / 红 / 紫 / 橙 / 青 / 粉 / 青绿。
       expect(colors[3], const Color(0xFF7C5CFC));
       expect(colors[4], const Color(0xFFF08A1D));
       expect(colors[5], _cyan);
       expect(colors[6], _pink);
-      // 前 7 科颜色各不相同；第 6、7 科不是数学蓝。
-      expect(colors.sublist(0, 7).toSet(), hasLength(7));
+      // 前 8 科颜色各不相同；第 6、7、8 科不是数学蓝。
+      expect(colors.sublist(0, 8).toSet(), hasLength(8));
       expect(colors[5], isNot(_mathBlue));
       expect(colors[6], isNot(_mathBlue));
-      // 第 8 科无新色可用，回落首色（orElse 保留）。
-      expect(colors[7], _mathBlue);
+      // 第 8 科拿 12 色表的第 8 色（青绿），不再回落首色（数学蓝）。
+      expect(colors[7], const Color(0xFF14B8A6));
+      expect(colors[7], isNot(_mathBlue));
     });
   });
 }

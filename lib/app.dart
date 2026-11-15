@@ -148,9 +148,10 @@ class _QuizMasterAppState extends State<QuizMasterApp> {
 
   /// B4.1：复查提醒（应用内、进入应用时一次）。
   /// 条件见 services/recheck_reminder.dart：开关开、有错因到复查
-  /// 时间、已到当日提醒时间、今天没提醒过。弹之前先把今天的日期
-  /// 写进库（一天一次；弹框本身失败也不再重复弹）。点“去复习”
-  /// 进复习页；点“稍后再说”只关掉，今天不再弹。
+  /// 时间、已到当日提醒时间、今天没提醒过。弹框成功展示后才把今天
+  /// 的日期写进库（一天一次；SR-P2-67：旧顺序先写库再弹框，弹框
+  /// 失败则当天提醒永久丢失）。点“去复习”进复习页；点“稍后再说”
+  /// 只关掉，今天不再弹。
   /// 提醒是锦上添花：读库失败也不影响启动，静默跳过。
   Future<void> _maybeShowRecheckReminder() async {
     if (_reminderChecked) return;
@@ -168,27 +169,39 @@ class _QuizMasterAppState extends State<QuizMasterApp> {
       )) {
         return;
       }
-      await repo.saveLastRecheckReminderDate(recheckReminderDateString(now));
       if (!mounted) return;
       final ctx = _navigatorKey.currentContext;
       if (ctx == null || !ctx.mounted) return;
-      final go = await showDialog<bool>(
-        context: ctx,
-        builder: (dctx) => AlertDialog(
-          title: const Text('该复查了'),
-          content: Text('有 $due 个错因到了复查时间，去复习看一下吧。'),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(dctx).pop(false),
-              child: const Text('稍后再说'),
-            ),
-            FilledButton(
-              onPressed: () => Navigator.of(dctx).pop(true),
-              child: const Text('去复习'),
-            ),
-          ],
-        ),
-      );
+      bool? go;
+      try {
+        go = await showDialog<bool>(
+          context: ctx,
+          builder: (dctx) => AlertDialog(
+            title: const Text('该复查了'),
+            content: Text('有 $due 个错因到了复查时间，去复习看一下吧。'),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(dctx).pop(false),
+                child: const Text('稍后再说'),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.of(dctx).pop(true),
+                child: const Text('去复习'),
+              ),
+            ],
+          ),
+        );
+      } catch (_) {
+        // SR-P2-67：弹框本身失败（上下文失效等）时不写“今天已提醒”，
+        // 下次启动仍可再提醒；当天提醒不因一次弹框失败永久丢失。
+        return;
+      }
+      // 弹框已展示（无论点哪个按钮、按 Esc 关掉），再写今天已提醒。
+      try {
+        await repo.saveLastRecheckReminderDate(recheckReminderDateString(now));
+      } catch (_) {
+        // 写库失败也不影响已展示的提醒，下次启动按库里旧值再判断。
+      }
       if (go == true && mounted) _goReview();
     } catch (_) {
       // 提醒失败不影响启动。
@@ -398,9 +411,6 @@ class _QuizMasterAppState extends State<QuizMasterApp> {
           onOpenDetail: (q, ids) => _openDetail(q, ids, sourceLabel: '复习'),
           initialSubjectId: _reviewSubjectArg,
           onGoWrongbook: () => _go('/wrongbook'),
-          // P0B2：复习页“每页”下拉已改成本地行为，不再改设置；
-          // onSettingsChanged 保留传入（参数兼容），页内已无使用。
-          onSettingsChanged: _updateSettings,
         );
       case '/report':
         return ReportPage(

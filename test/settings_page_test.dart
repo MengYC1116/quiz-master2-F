@@ -3,6 +3,8 @@
 // 数据组（备份/恢复入口、数据库位置、缓存预览、清空演示数据确认）、
 // 启动页 + 关于、加载失败横幅、亮/深 × 三档无溢出、不用图标字体。
 // 用 FakeRepo 覆盖 repository 调用（不碰真实数据库，不弹文件选择器）。
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:quiz_master2/data/database.dart';
@@ -269,6 +271,42 @@ void main() {
       expect(applied.last.pageSize, 50);
     });
 
+    // SR-P0-2：设置页“默认排序”不再提供列表下拉没有的 'subject'，
+    // 改为与列表页一致的 subj-asc / subj-desc 两项。
+    testWidgets('默认排序：学科首字母 A→Z / Z→A 回调 subj-asc / subj-desc',
+        (tester) async {
+      final applied = await pumpSettings(tester);
+      await openGroup(tester, '错题本');
+      await tester.tap(find.text('学科首字母 A → Z'));
+      await tester.pumpAndSettle();
+      expect(applied.last.wrongbookSort, 'subj-asc');
+      await tester.tap(find.text('学科首字母 Z → A'));
+      await tester.pumpAndSettle();
+      expect(applied.last.wrongbookSort, 'subj-desc');
+      expect(find.text('学科首字母'), findsNothing);
+    });
+
+    test('AppSettings 归一：旧值 subject → subj-asc，未知值 → new', () {
+      expect(
+          AppSettings.fromMap(const {'wrongbookSort': 'subject'})
+              .wrongbookSort,
+          'subj-asc');
+      expect(
+          AppSettings.fromMap(const {'wrongbookSort': 'bogus'})
+              .wrongbookSort,
+          'new');
+      expect(
+          AppSettings.defaults
+              .copyWith(wrongbookSort: 'subject')
+              .wrongbookSort,
+          'subj-asc');
+      expect(
+          AppSettings.defaults
+              .copyWith(wrongbookSort: 'status-desc')
+              .wrongbookSort,
+          'status-desc');
+    });
+
     testWidgets('启动页切换与关于', (tester) async {
       final applied = await pumpSettings(tester);
       await openGroup(tester, '启动与关于');
@@ -303,7 +341,33 @@ void main() {
       expect(tester.takeException(), isNull);
     });
 
-    testWidgets('清空演示数据：内联确认，确认后清掉并提示', (tester) async {
+    testWidgets('SR-P2-50 缓存预览递归扫子目录：深层 thumb 目录与 .tmp 文件都计入',
+        (tester) async {
+      final prev = AppDatabase.testDataDirectory;
+      // testWidgets 体内异步文件 IO 会在 FakeAsync 下挂起（本批另两名工人
+      // 已探针证实），此处改同步 IO；扫描逻辑本身另有纯 Dart 脚本验证。
+      final tmp = Directory.systemTemp.createTempSync('b5-p2-50-cache-');
+      addTearDown(() {
+        AppDatabase.testDataDirectory = prev;
+        try {
+          tmp.deleteSync(recursive: true);
+        } catch (_) {}
+      });
+      AppDatabase.testDataDirectory = tmp.path;
+      // 藏在子目录下：旧实现只扫顶层一层，这两个都发现不了。
+      Directory('${tmp.path}/work/thumb-cache')
+          .createSync(recursive: true);
+      File('${tmp.path}/work/thumb-cache/a.png')
+          .writeAsBytesSync([0, 1, 2]);
+      Directory('${tmp.path}/work/deep').createSync(recursive: true);
+      File('${tmp.path}/work/deep/x.tmp').writeAsStringSync('tmp');
+      await pumpSettings(tester);
+      await openGroup(tester, '数据');
+      expect(find.textContaining('临时文件 1 个、缩略图缓存 1 张'),
+          findsOneWidget);
+    });
+
+    testWidgets('清空演示数据：模态弹窗确认，确认后清掉并提示', (tester) async {
       final repo = FakeSettingsRepo(demoCount: 3);
       await pumpSettings(tester, repo: repo);
       await openGroup(tester, '数据');

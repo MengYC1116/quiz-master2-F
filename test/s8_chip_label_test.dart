@@ -69,7 +69,7 @@ Future<void> _pumpChip(
 
 void main() {
   group('QmChip', () {
-    testWidgets('新学科：选中填充等于存色紫，不等于数学色（亮/深）',
+    testWidgets('新学科：选中填充亮色等于存色紫、深色等于雾化存色（SR-P2-66），都不等于数学色',
         (tester) async {
       for (final brightness in [Brightness.light, Brightness.dark]) {
         await _pumpChip(
@@ -84,7 +84,12 @@ void main() {
           brightness: brightness,
         );
         final fills = _chipFillColors(tester);
-        expect(fills, contains(chemPurple));
+        // SR-P2-66：深色下存色雾化后用（向 #DCE3EC 混 45%），亮色仍用存色原值。
+        final expected = brightness == Brightness.dark
+            ? DesignTokens.subjectColor(
+                'subject-chem', brightness, chemPurple)
+            : chemPurple;
+        expect(fills, contains(expected));
         expect(
           fills,
           isNot(contains(

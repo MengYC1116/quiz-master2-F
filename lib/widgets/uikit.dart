@@ -140,6 +140,11 @@ class QmPressState {
 /// - Pressed：GestureDetector 的 onTapDown / onTapUp / onTapCancel。
 /// - Disabled（onTap == null）：外包 Opacity .45（HTML
 ///   `.btn:disabled{opacity:.45}`），不响应悬停/按压/聚焦，鼠标为默认箭头。
+/// - [childHandlesTap] 为真时：子 widget 自己处理点按（内层
+///   GestureDetector），本层不装 Tap 识别器、不与子层竞争同一手势
+///   （SR-P2-64）；悬停/聚焦/按压视觉仍按可交互处理（按压态改由
+///   Listener 驱动，不进手势竞技场）。[onTap] 仍保留：键盘 Enter /
+///   空格与无障碍点按走它（主操作），只是不经手势触发。
 class _QmPressable extends StatefulWidget {
   const _QmPressable({
     required this.builder,
@@ -149,6 +154,7 @@ class _QmPressable extends StatefulWidget {
     this.autofocus = false,
     this.semanticLabel,
     this.expanded,
+    this.childHandlesTap = false,
   });
 
   final Widget Function(BuildContext context, QmPressState state) builder;
@@ -161,6 +167,9 @@ class _QmPressable extends StatefulWidget {
   final String? semanticLabel;
   final bool? expanded;
 
+  /// 子层处理点按时为真（见类注释）；为真时 [onTap] 应传 null。
+  final bool childHandlesTap;
+
   @override
   State<_QmPressable> createState() => _QmPressableState();
 }
@@ -172,7 +181,12 @@ class _QmPressableState extends State<_QmPressable> {
   bool _pressed = false;
 
   FocusNode get _node => widget.focusNode ?? (_ownNode ??= FocusNode());
-  bool get _enabled => widget.onTap != null;
+
+  /// 视觉/焦点上可交互：自己有 onTap，或子层处理点按。
+  bool get _enabled => widget.onTap != null || widget.childHandlesTap;
+
+  /// 手势上由本层处理点按：有 onTap 且子层不接管时才装 Tap 识别器。
+  bool get _tapEnabled => widget.onTap != null && !widget.childHandlesTap;
 
   @override
   void dispose() {
@@ -181,7 +195,7 @@ class _QmPressableState extends State<_QmPressable> {
   }
 
   KeyEventResult _onKeyEvent(FocusNode node, KeyEvent event) {
-    if (!_enabled) return KeyEventResult.ignored;
+    if (widget.onTap == null) return KeyEventResult.ignored;
     if (event is KeyDownEvent &&
         (event.logicalKey == LogicalKeyboardKey.enter ||
             event.logicalKey == LogicalKeyboardKey.space)) {
@@ -215,23 +229,36 @@ class _QmPressableState extends State<_QmPressable> {
         onKeyEvent: _onKeyEvent,
         child: GestureDetector(
           behavior: HitTestBehavior.opaque,
-          onTapDown: _enabled ? (_) => setState(() => _pressed = true) : null,
-          onTapUp: _enabled
+          onTapDown: _tapEnabled ? (_) => setState(() => _pressed = true) : null,
+          onTapUp: _tapEnabled
               ? (_) {
                   setState(() => _pressed = false);
                   widget.onTap!();
                 }
               : null,
-          onTapCancel: _enabled ? () => setState(() => _pressed = false) : null,
-          child: Container(
-            decoration: BoxDecoration(
-              border: Border.all(
-                color: _focused ? palette.accent : Colors.transparent,
-                width: 2,
+          onTapCancel: _tapEnabled ? () => setState(() => _pressed = false) : null,
+          // SR-P2-64：子层处理点按时，本层不装 Tap 识别器；按压视觉
+          // 改由 Listener 驱动（Listener 不进手势竞技场，不与内层竞争）。
+          child: Listener(
+            onPointerDown: widget.childHandlesTap
+                ? (_) => setState(() => _pressed = true)
+                : null,
+            onPointerUp: widget.childHandlesTap
+                ? (_) => setState(() => _pressed = false)
+                : null,
+            onPointerCancel: widget.childHandlesTap
+                ? (_) => setState(() => _pressed = false)
+                : null,
+            child: Container(
+              decoration: BoxDecoration(
+                border: Border.all(
+                  color: _focused ? palette.accent : Colors.transparent,
+                  width: 2,
+                ),
+                borderRadius: BorderRadius.circular(widget.ringRadius * scale),
               ),
-              borderRadius: BorderRadius.circular(widget.ringRadius * scale),
+              child: widget.builder(context, state),
             ),
-            child: widget.builder(context, state),
           ),
         ),
       ),
@@ -241,7 +268,7 @@ class _QmPressableState extends State<_QmPressable> {
       enabled: _enabled,
       label: widget.semanticLabel,
       expanded: widget.expanded,
-      onTap: _enabled ? widget.onTap : null,
+      onTap: widget.onTap,
       child: body,
     );
     if (!_enabled) {
@@ -590,10 +617,15 @@ class QmChip extends StatelessWidget {
 
     // 可删除芯片：.err-sel-chip 形态（accent-soft 底 / accent 边 /
     // accent-text 字，悬停 err 系）。
+    // SR-P2-64：可删除 + 可点双区时只留一层手势——外层 _QmPressable
+    // 不装 Tap 识别器（childHandlesTap），点按全由内层两个
+    // GestureDetector 承担（点片身切换、点 × 删除），不再内外两层
+    // Tap 识别器竞争同一手势；键盘/无障碍仍走外层的 onTap（主操作）。
     if (deletable) {
       final chip = _QmPressable(
         ringRadius: 999,
-        onTap: onTap ?? onDelete,
+        onTap: bothZones ? onTap : (onTap ?? onDelete),
+        childHandlesTap: bothZones,
         focusNode: focusNode,
         semanticLabel: semanticLabel ?? label,
         builder: (context, state) {
@@ -1070,9 +1102,9 @@ class QmSegmented<T> extends StatelessWidget {
         ),
       ),
     );
-    if (!enabled) {
-      return Opacity(opacity: 0.45, child: body);
-    }
+    // SR-P2-63：禁用态只有一层 0.45 透明度——每段的 _QmPressable 在
+    // onTap == null 时已包 Opacity(0.45)，这里不再另包一层（旧写法
+    // 外层再乘 0.45，整体约 0.20，远低于 HTML .btn:disabled 的 .45）。
     return body;
   }
 }
@@ -1682,9 +1714,11 @@ enum QmFoldVariant { group, form, detail }
 
 /// 折叠段。
 ///
-/// 一次只开一段的互斥逻辑由调用方控制：调用方持有各段的展开态，
-/// 本组件只提供展开态展示与 [onToggle] 回调（点头部时调用，
-/// 调用方翻转该段的展开态并收起其他段）。
+/// 各段独立展开 / 收起：本组件不做互斥，只按传入的 [expanded] 展示，
+/// 点头部时调 [onToggle]，展开态由调用方各自维护。调用方做法不一：
+/// 整理表单 / 详情三段 / 收集说明用每段独立的布尔值，可多段同开；
+/// 设置五组 / 学科管理四组用单个 open key，只开一段——互斥是调用方
+/// 自己的选择，不是本组件的行为。
 class QmFoldSection extends StatelessWidget {
   const QmFoldSection({
     super.key,

@@ -21,7 +21,7 @@ import '../../widgets/uikit.dart';
 /// 外观三段 + 问候语（保存/恢复默认，留空保存不生效）；复习含加入方式
 /// 说明行、复查间隔/自查次数/每轮错因数/跳过次数/重做答案默认/通知
 /// 开关 + 提醒时间/复习列表排序；错题本默认视图/排序/每页数量；
-/// 数据备份/恢复（恢复先选文件再内联确认，含备份题数与当前题数）、
+/// 数据备份/恢复（恢复先选文件再弹窗确认，含备份题数与当前题数）、
 /// 数据库位置（改后提示重启才生效）、空间占用与孤儿清理（P3 §4.5：
 /// 打开数据组时统计/扫描，清理前预览确认）、缓存清理（先预览临时文件数 +
 /// 缩略图数 + 约多少 MB，再确认）、清除演示数据；启动页 + 关于
@@ -94,7 +94,6 @@ class _SettingsPageState extends State<SettingsPage> {
   // 空间占用与孤儿清理：只在打开数据组时扫描一次。
   ({int importsBytes, int slicesBytes})? _storageUsage;
   OrphanScan? _orphanScan;
-  bool _orphanConfirm = false;
 
   // 迁移进度：搬库进行中显示百分比，可取消。
   bool _migrating = false;
@@ -106,20 +105,19 @@ class _SettingsPageState extends State<SettingsPage> {
   bool _cacheScanned = false;
   String? _cacheCleanedMb;
 
-  // 清空演示数据：内联确认。
-  bool _confirmClearDemo = false;
-  int _demoCountForConfirm = 0;
-
+  /// B3：清空演示数据确认改模态弹窗（文案与原来行内条一致）。
   Future<void> _askClearDemo() async {
     final count = await widget.repo.demoQuestionCount();
     if (count == 0) {
       _snack('没有演示数据');
       return;
     }
-    setState(() {
-      _demoCountForConfirm = count;
-      _confirmClearDemo = true;
-    });
+    final ok = await _showConfirmDialog(
+      title: '清空演示数据，确定吗？',
+      detail: '三科共 $count 道演示题会全部删掉，删了就没了，确定吗？',
+      confirmLabel: '确认清空',
+    );
+    if (ok && mounted) await _clearDemo();
   }
 
   @override
@@ -183,11 +181,23 @@ class _SettingsPageState extends State<SettingsPage> {
     } catch (_) {}
   }
 
+  /// B3：孤儿清理确认改模态弹窗（文案与原来行内条一致）。
+  Future<void> _askOrphanCleanup() async {
+    final scan = _orphanScan;
+    if (scan == null || scan.files.isEmpty) return;
+    final ok = await _showConfirmDialog(
+      title: '清理无用文件，确定吗？',
+      detail:
+          '将删掉 ${scan.count} 个没人用的文件（共约 ${ImportService.formatBytes(scan.totalBytes)}），题目和数据不动，删了找不回来。确定清理吗？',
+      confirmLabel: '确认清理',
+    );
+    if (ok && mounted) await _clearOrphans();
+  }
+
   /// P3 §4.5：孤儿清理——确认后执行，只删预览里列出的无引用文件。
   Future<void> _clearOrphans() async {
     final scan = _orphanScan;
     if (scan == null || scan.files.isEmpty) return;
-    setState(() => _orphanConfirm = false);
     try {
       final result = await widget.repo.deleteOrphanFiles(
         scan.files.map((f) => f.relativePath).toList(),
@@ -313,6 +323,30 @@ class _SettingsPageState extends State<SettingsPage> {
     }
   }
 
+  /// B3：恢复确认改模态弹窗（文案与原来行内条一致；恢复是覆盖不是
+  /// 删除，但共用同一行内确认条，按“行内确认条全部改掉”一并改）。
+  /// 选完文件即弹确认；取消则丢弃刚选的文件（与原来行内条的取消一致）。
+  Future<void> _askRestore() async {
+    final data = _restoreData;
+    if (data == null) return;
+    final pendingQuestions = (data['questions'] as List?)?.length ?? 0;
+    final ok = await _showConfirmDialog(
+      title: '恢复会覆盖当前题库，确定吗？',
+      detail:
+          '将用备份文件「${_restoreFileName ?? '备份文件'}」（$pendingQuestions 道题）覆盖现在的题库（当前 $_questionCount 道题）：现在的题会被替换掉，覆盖后找不回来。确定恢复吗？',
+      confirmLabel: '确认恢复，覆盖当前题库',
+    );
+    if (!ok) {
+      setState(() {
+        _restoreData = null;
+        _restoreFileName = null;
+        _restoreZipPath = null;
+      });
+      return;
+    }
+    await _confirmRestore();
+  }
+
   Future<void> _pickRestoreFile() async {
     final result = await FilePicker.platform.pickFiles(
       dialogTitle: '选择备份文件',
@@ -349,6 +383,7 @@ class _SettingsPageState extends State<SettingsPage> {
         _restoreData = data;
         _restoreZipPath = path;
       });
+      await _askRestore();
       return;
     }
     Map<String, dynamic> data;
@@ -374,6 +409,7 @@ class _SettingsPageState extends State<SettingsPage> {
       _restoreData = data;
       _restoreZipPath = null;
     });
+    await _askRestore();
   }
 
   String get _dbPath {
@@ -547,6 +583,11 @@ class _SettingsPageState extends State<SettingsPage> {
           } else if (insideCacheDir) {
             add(e, 'temp');
           }
+        } else if (e is Directory) {
+          // 普通子目录也要递归进入（SR-P2-50）：以前只扫顶层一层，
+          // 藏在某子目录下的 cache/thumb/tmp 目录不会被发现，
+          // 预览数字偏小、清理也删不到它们。
+          walk(e, insideCacheDir: insideCacheDir);
         }
       }
     }
@@ -594,7 +635,6 @@ class _SettingsPageState extends State<SettingsPage> {
 
   Future<void> _clearDemo() async {
     final n = await widget.repo.clearDemoData();
-    setState(() => _confirmClearDemo = false);
     await _loadQuestionCount();
     _snack('已清空 $n 道演示题');
   }
@@ -672,69 +712,31 @@ class _SettingsPageState extends State<SettingsPage> {
     );
   }
 
-  /// 内联确认框（HTML `.confirmbox`；与学科管理页、详情页同款）。
-  Widget _confirmBox({
+  /// B3：删除/覆盖类确认统一用模态 AlertDialog（原来是行内确认条）。
+  /// 只统一形式，标题/后果文案/确认按钮文案沿用原字句。
+  Future<bool> _showConfirmDialog({
     required String title,
     required String detail,
     required String confirmLabel,
-    required VoidCallback onConfirm,
-    required VoidCallback onCancel,
-  }) {
-    final palette = DesignTokens.of(Theme.of(context).brightness);
-    final scale = qmScaleOf(context);
-    return Container(
-      margin: EdgeInsets.only(top: 10 * scale),
-      padding: EdgeInsets.symmetric(
-        horizontal: DesignTokens.detailConfirmPaddingH * scale,
-        vertical: DesignTokens.detailConfirmPaddingV * scale,
-      ),
-      decoration: BoxDecoration(
-        color: palette.errBg,
-        border: Border.all(color: palette.errLine),
-        borderRadius: BorderRadius.circular(
-          DesignTokens.scaled(scale).radius,
-        ),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text.rich(
-            TextSpan(
-              style: TextStyle(
-                fontSize: DesignTokens.bannerFontSize,
-                color: palette.errInk,
-                height: DesignTokens.bodyLineHeight,
-              ),
-              children: [
-                TextSpan(
-                  text: title,
-                  style: const TextStyle(fontWeight: FontWeight.w700),
-                ),
-                if (detail.isNotEmpty) TextSpan(text: detail),
-              ],
-            ),
+  }) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (dctx) => AlertDialog(
+        title: Text(title),
+        content: Text(detail),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dctx).pop(false),
+            child: const Text('取消'),
           ),
-          SizedBox(height: 8 * scale),
-          Wrap(
-            spacing: 8 * scale,
-            runSpacing: 8 * scale,
-            children: [
-              QmButton(
-                label: confirmLabel,
-                size: QmButtonSize.small,
-                onPressed: onConfirm,
-              ),
-              QmButton(
-                label: '取消',
-                variant: QmButtonVariant.plain,
-                size: QmButtonSize.small,
-                onPressed: onCancel,
-              ),
-            ],
+          TextButton(
+            onPressed: () => Navigator.of(dctx).pop(true),
+            child: Text(confirmLabel),
           ),
         ],
       ),
     );
+    return ok == true;
   }
 
   /// 设置行：标题 + 一行短说明 + 右侧控件；窄屏时控件换到下一行。
@@ -1006,7 +1008,8 @@ class _SettingsPageState extends State<SettingsPage> {
             options: const [
               QmSegmentOption(value: 'new', label: '时间新 → 旧'),
               QmSegmentOption(value: 'old', label: '时间旧 → 新'),
-              QmSegmentOption(value: 'subject', label: '学科首字母'),
+              QmSegmentOption(value: 'subj-asc', label: '学科首字母 A → Z'),
+              QmSegmentOption(value: 'subj-desc', label: '学科首字母 Z → A'),
             ],
             onChanged: (v) => _apply(_s.copyWith(wrongbookSort: v)),
           ),
@@ -1033,8 +1036,6 @@ class _SettingsPageState extends State<SettingsPage> {
   Widget _buildData() {
     final scale = qmScaleOf(context);
     final preview = _cachePreview;
-    final pendingQuestions =
-        (_restoreData?['questions'] as List?)?.length ?? 0;
     // P3 §6 第 9 条：空间占用与上限提示（打开数据组时统计）。
     final storageTotal = _storageUsage == null
         ? null
@@ -1065,19 +1066,6 @@ class _SettingsPageState extends State<SettingsPage> {
             onPressed: _busy ? null : _pickRestoreFile,
           ),
         ),
-        if (_restoreData != null)
-          _confirmBox(
-            title: '恢复会覆盖当前题库，确定吗？',
-            detail:
-                '将用备份文件「${_restoreFileName ?? '备份文件'}」（$pendingQuestions 道题）覆盖现在的题库（当前 $_questionCount 道题）：现在的题会被替换掉，覆盖后找不回来。确定恢复吗？',
-            confirmLabel: '确认恢复，覆盖当前题库',
-            onConfirm: _confirmRestore,
-            onCancel: () => setState(() {
-              _restoreData = null;
-              _restoreFileName = null;
-              _restoreZipPath = null;
-            }),
-          ),
         _row(
           '数据库位置',
           '数据库文件 quiz-master2.db 就放在这个文件夹里，全部题和设置都存在里面。改完位置，要重启软件才生效。',
@@ -1138,18 +1126,9 @@ class _SettingsPageState extends State<SettingsPage> {
             size: QmButtonSize.small,
             onPressed: orphanScan == null || orphanScan.files.isEmpty
                 ? null
-                : () => setState(() => _orphanConfirm = true),
+                : () => _askOrphanCleanup(),
           ),
         ),
-        if (_orphanConfirm && orphanScan != null && orphanScan.files.isNotEmpty)
-          _confirmBox(
-            title: '清理无用文件，确定吗？',
-            detail:
-                '将删掉 ${orphanScan.count} 个没人用的文件（共约 ${ImportService.formatBytes(orphanScan.totalBytes)}），题目和数据不动，删了找不回来。确定清理吗？',
-            confirmLabel: '确认清理',
-            onConfirm: _clearOrphans,
-            onCancel: () => setState(() => _orphanConfirm = false),
-          ),
         _row(
           '清理缓存',
           preview == null
@@ -1187,15 +1166,6 @@ class _SettingsPageState extends State<SettingsPage> {
             onPressed: _askClearDemo,
           ),
         ),
-        if (_confirmClearDemo)
-          _confirmBox(
-            title: '清空演示数据，确定吗？',
-            detail:
-                '三科共 $_demoCountForConfirm 道演示题会全部删掉，删了就没了，确定吗？',
-            confirmLabel: '确认清空',
-            onConfirm: _clearDemo,
-            onCancel: () => setState(() => _confirmClearDemo = false),
-          ),
       ],
     );
   }

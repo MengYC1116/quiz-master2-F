@@ -10,7 +10,7 @@
 // - 大/特大字号（1.15/1.30）下 pump 不抛错、不溢出。
 //
 // 文案以代码现状为准：收集页重复横幅标题「这个文件已经导入过。」、
-// 超限横幅标题「文件超过大小上限，只是提示，不直接判失败。」
+// 超限横幅标题「文件超过大小上限，导入会失败。」
 // （collect_page.dart 约 398–430 行）。
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -140,13 +140,12 @@ void main() {
         tester,
         const QmBanner(
           tone: QmBannerTone.warning,
-          title: '文件超过大小上限，只是提示，不直接判失败。',
-          message: '文件较大（25.0MB），超过建议上限 20MB，仍可继续导入。可以先压缩再重新选，也可以仍要导入，大文件检测会慢一些。',
+          title: '文件超过大小上限，导入会失败。',
+          message: '文件较大（25.0MB），超过 20MB 上限，导入会失败。可以先压缩再重新选；如果仍要导入，超限的文件会记为失败任务，其他文件正常导入。',
         ),
       );
-      expect(find.textContaining('文件超过大小上限，只是提示，不直接判失败。'),
-          findsOneWidget);
-      expect(find.textContaining('超过建议上限 20MB'), findsOneWidget);
+      expect(find.textContaining('文件超过大小上限，导入会失败。'), findsOneWidget);
+      expect(find.textContaining('超过 20MB 上限'), findsOneWidget);
     });
 
     testWidgets('无标题时只渲染正文', (tester) async {
@@ -194,8 +193,8 @@ void main() {
         tester,
         QmBanner(
           tone: QmBannerTone.warning,
-          title: '文件超过大小上限，只是提示，不直接判失败。',
-          message: '可以先压缩再重新选，也可以仍要导入。',
+          title: '文件超过大小上限，导入会失败。',
+          message: '可以先压缩再重新选；如果仍要导入，超限的文件会记为失败任务。',
           actions: [
             QmBannerAction(label: '仍然再导一份', onPressed: () => goOn = true),
             QmBannerAction(label: '不导了', onPressed: () => holdOff = true),
@@ -348,8 +347,8 @@ void main() {
         tester,
         QmBanner(
           tone: QmBannerTone.warning,
-          title: '文件超过大小上限，只是提示，不直接判失败。',
-          message: '文件较大（25.0MB），超过建议上限 20MB，仍可继续导入。可以先压缩再重新选，也可以仍要导入，大文件检测会慢一些。',
+          title: '文件超过大小上限，导入会失败。',
+          message: '文件较大（25.0MB），超过 20MB 上限，导入会失败。可以先压缩再重新选；如果仍要导入，超限的文件会记为失败任务，其他文件正常导入。',
           actions: [
             QmBannerAction(label: '仍然再导一份', onPressed: () {}),
             QmBannerAction(label: '不导了', onPressed: () {}),

@@ -4,8 +4,10 @@
 // 绕过了 app 的 `_updateSettings`，app 的 `_settings` 快照仍是旧
 // pageSize；设置页 initState 取 `widget.settings`（旧快照）显示旧值，
 // 再改别的项时 `_apply(_s.copyWith(...))` 全量写回，把旧 pageSize
-// 覆盖回去。修法：复习页改分页也走 `onSettingsChanged` 回调
-// （app 传 `_updateSettings`），写库 + 同步快照同一条路。
+// 覆盖回去。P0B1-4 的修法是复习页改分页走 `onSettingsChanged` 回调
+// （app 传 `_updateSettings`），写库 + 同步快照同一条路；P0B2 又
+// 把复习页分页改成本地行为，回调参数随之删除（见 B2 报告），
+// 以下两测按本地口径重写。
 // 用 FakeRepo + 模拟的 app 快照复现完整场景，不碰真实数据库。
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -102,7 +104,6 @@ class FakeOwnerRepo extends QuestionRepository {
 Future<void> pumpReview(
   WidgetTester tester, {
   required FakeOwnerRepo repo,
-  Future<void> Function(AppSettings s)? onSettingsChanged,
 }) async {
   tester.view.physicalSize = const Size(1280, 720);
   tester.view.devicePixelRatio = 1.0;
@@ -117,7 +118,6 @@ Future<void> pumpReview(
           repo: repo,
           onOpenDetail: (q, ids) async {},
           onGoWrongbook: () {},
-          onSettingsChanged: onSettingsChanged,
         ),
       ),
     ),
@@ -175,38 +175,25 @@ Future<void> openGroup(WidgetTester tester, String title) async {
 
 void main() {
   // P0B2 已取代 P0B1-4 的复习分页口径：复习页“每页”下拉改成本地行为
-  // （与错题本一致），不再经 onSettingsChanged 改设置、不写库；
-  // 设置页 #17 仍是改默认值的唯一入口。以下两测按新口径重写，
-  // 设置页本身那测不变。
+  // （与错题本一致），不改设置、不写库；ReviewPage 已无
+  // onSettingsChanged 参数。设置页 #17 仍是改默认值的唯一入口。
+  // 以下两测按新口径重写，设置页本身那测不变。
   group('P0B2 复习分页本地化：复习分页 ↔ 设置页', () {
-    testWidgets('复习页改每页数量：本页显示变了，回调不触发、库与快照不动',
+    testWidgets('复习页改每页数量：本页显示变了，库与设置默认值不动',
         (tester) async {
-      // 模拟 app：_updateSettings（写库 + 更新 _settings 快照）。
       final repo = FakeOwnerRepo(
         settings: AppSettings.defaults.copyWith(pageSize: 2),
       );
-      var appSnapshot = AppSettings.defaults.copyWith(pageSize: 2);
-      final notified = <AppSettings>[];
-      await pumpReview(
-        tester,
-        repo: repo,
-        onSettingsChanged: (s) async {
-          notified.add(s);
-          appSnapshot = s;
-          await repo.saveSettings(s);
-        },
-      );
+      await pumpReview(tester, repo: repo);
       expect(find.text('共 3 条 · 第 1 / 2 页'), findsOneWidget);
 
       await pickMenuItem<int>(
           tester, find.byType(DropdownButton<int>), 20);
       expect(find.text('共 3 条 · 第 1 / 1 页'), findsOneWidget);
 
-      // 本地行为：回调收不到、库不写、app 快照仍是 2。
+      // 本地行为：库不写、设置默认值仍是 2。
       expect(repo.settingsValue.pageSize, 2);
       expect(repo.saveSettingsCalls, 0);
-      expect(notified, isEmpty);
-      expect(appSnapshot.pageSize, 2);
     });
 
     testWidgets('设置页：拿到新快照后显示 20，改主题不再把 pageSize 覆盖回去',
@@ -237,7 +224,7 @@ void main() {
       expect(applied.last.pageSize, 20);
     });
 
-    testWidgets('未接回调时也不写库（P0B2：本地行为，无回退写库）',
+    testWidgets('改每页数量不写库、不持久化：重开复习页仍跟默认值',
         (tester) async {
       final repo = FakeOwnerRepo(
         settings: AppSettings.defaults.copyWith(pageSize: 2),
@@ -248,6 +235,10 @@ void main() {
       expect(find.text('共 3 条 · 第 1 / 1 页'), findsOneWidget);
       expect(repo.settingsValue.pageSize, 2);
       expect(repo.saveSettingsCalls, 0);
+
+      // 本地改动不持久化：重开一页仍是默认值 2（2 页）。
+      await pumpReview(tester, repo: repo);
+      expect(find.text('共 3 条 · 第 1 / 2 页'), findsOneWidget);
     });
   });
 }

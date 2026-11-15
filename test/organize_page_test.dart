@@ -107,6 +107,21 @@ class FakeOrganizeRepo extends QuestionRepository {
     folderList.add(folder);
   }
 
+  /// SR-P2-36：整科同名预检的内存版（与 upsertFolder 的把关同语义：
+  /// 同一学科、同名、id 不是 excludeId 即命中）。
+  @override
+  Future<bool> folderNameExistsInSubject(
+    String subjectId,
+    String name, {
+    String? excludeId,
+  }) async =>
+      folderList.any(
+        (f) =>
+            f.subjectId == subjectId &&
+            f.name == name &&
+            f.id != excludeId,
+      );
+
   @override
   Future<void> addExam(Exam exam) async {
     examList.add(exam);
@@ -594,6 +609,78 @@ void main() {
     });
   });
 
+  group('SR-P1-7 打开队列前保存当前表单', () {
+    /// 改当前题表单：选文件夹「平时作业」+ 填答案。只改表单 state，
+    /// 不点保存/确认——复现报告里的丢改动路径。
+    Future<void> editCurrentForm(WidgetTester tester) async {
+      await tester.ensureVisible(find.text('平时作业').first);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('平时作业').first);
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(find.text('答案 · 解析 · 笔记（可选）'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('答案 · 解析 · 笔记（可选）'));
+      await tester.pumpAndSettle();
+      final answerField = find.byWidgetPredicate(
+        (w) =>
+            w is TextField && w.decoration?.hintText == '还没想好可留空',
+      );
+      await tester.enterText(answerField, '答案：1');
+      await tester.pumpAndSettle();
+      // 填答案时页面滚到底了，顶栏「队列」按钮已滚出视口，先滚回去。
+      await tester.ensureVisible(find.text('队列'));
+      await tester.pumpAndSettle();
+    }
+
+    testWidgets('打开队列前改动已落盘（还没做批量操作）', (tester) async {
+      final repo = threeQuestionRepo();
+      await pumpOrganize(tester, repo: repo);
+      await editCurrentForm(tester);
+      // 改动只在表单 state，还没落盘。
+      expect(repo.saved, isEmpty);
+      await openQueue(tester);
+      final saved = repo.saved.where((x) => x.id == 'q1').toList();
+      expect(saved, isNotEmpty);
+      expect(saved.last.folderIds, contains('f2'));
+      expect(saved.last.answer, '答案：1');
+    });
+
+    testWidgets('批量打标签后，打开队列前的表单改动仍在', (tester) async {
+      final repo = threeQuestionRepo();
+      await pumpOrganize(tester, repo: repo);
+      await editCurrentForm(tester);
+      await openQueue(tester);
+      await tester.tap(popupCheckboxes(tester).first);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('批量打标签 #需重做'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('关闭 ×'));
+      await tester.pumpAndSettle();
+      final q1 = repo.questions.firstWhere((x) => x.id == 'q1');
+      expect(q1.tags, contains('需重做'));
+      expect(q1.folderIds, contains('f2'));
+      expect(q1.answer, '答案：1');
+      // 关队列回来，表单里仍是改动后的值（不是打开前的旧快照）。
+      expect(find.textContaining('本题必填已齐'), findsOneWidget);
+    });
+
+    testWidgets('批量确认整理后，打开队列前的表单改动仍在', (tester) async {
+      final repo = threeQuestionRepo();
+      await pumpOrganize(tester, repo: repo);
+      await editCurrentForm(tester);
+      await openQueue(tester);
+      await tester.tap(popupCheckboxes(tester).first);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('批量确认整理'));
+      await tester.pumpAndSettle();
+      final q1 = repo.questions.firstWhere((x) => x.id == 'q1');
+      expect(q1.isOrganized, isTrue);
+      expect(q1.folderIds, contains('f2'));
+      expect(q1.answer, '答案：1');
+      expect(find.text('还剩 2 道'), findsOneWidget);
+    });
+  });
+
   group('空状态与失败态', () {
     testWidgets('从未有题：去收集', (tester) async {
       await pumpOrganize(
@@ -664,6 +751,47 @@ void main() {
           await tester.pumpAndSettle();
         }
       }
+    });
+  });
+
+  group('P1-1 二层切片降级', () {
+    testWidgets('真实题（空 sliceText）：不显示 region 开关，只留整题切片', (
+      tester,
+    ) async {
+      await pumpOrganize(
+        tester,
+        repo: FakeOrganizeRepo(
+          questions: [
+            q('qr', '真实题', sliceText: '', sliceKind: 'limit'),
+          ],
+          folderList: const [
+            Folder(id: 'f1', name: '试卷', subjectId: 'math'),
+          ],
+        ),
+      );
+      expect(find.text('stem 题干'), findsNothing);
+      expect(find.text('option 选项'), findsNothing);
+      expect(find.text('figure 插图'), findsNothing);
+      expect(find.text('区域仅作辅助定位，整题图始终是主体'), findsNothing);
+      expect(find.byType(Checkbox), findsNothing);
+      // 只留整题切片一张卡，题干 / 选项 / 配图卡不出现。
+      expect(find.text('修框切片'), findsOneWidget);
+      expect(find.text('整题框切片'), findsOneWidget);
+      expect(find.text('题干框切片'), findsNothing);
+      expect(find.text('选项框切片'), findsNothing);
+      expect(find.text('配图框切片'), findsNothing);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('演示题（有 sliceText）：region 开关仍在（对照）', (tester) async {
+      await pumpOrganize(tester);
+      // 开关行在：复选框 2 个（stem + option）+ 说明文字；叠加层也画
+      // 同名区域标签，所以 'stem 题干' / 'option 选项' 各出现 2 次
+      //（开关标签 + 叠加层标签）。
+      expect(find.byType(Checkbox), findsNWidgets(2));
+      expect(find.text('区域仅作辅助定位，整题图始终是主体'), findsOneWidget);
+      expect(find.text('stem 题干'), findsNWidgets(2));
+      expect(find.text('option 选项'), findsNWidgets(2));
     });
   });
 }

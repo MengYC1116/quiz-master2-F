@@ -164,8 +164,8 @@ class ScaledTokens {
   const ScaledTokens(this.scale);
   final double scale;
 
-  double s(double base) => base * scale;
-
+  // SR-P2-72：旧的通用缩放 `s(double base)` 已删，全仓库零调用；
+  // 各 token 都有具名 getter，不要再加通用乘法入口。
   double get radius => DesignTokens.radius * scale;
   double get radiusLg => DesignTokens.radiusLg * scale;
   double get buttonRadius => DesignTokens.buttonRadius * scale;
@@ -332,16 +332,21 @@ class DesignTokens {
   // [stored] 是库里存的学科色（`Subject.color`，新学科由
   // `_newSubjectColors` 轮换产生）。预设三科（math/english/
   // politics）忽略它，仍走主题感知的固定色（深色下是雾色版）；
-  // 新学科没有预设项，直接用库里存的轮换色——v2 基线圆点就是
-  // 直接用 s.color。R1 改成按 id 查表后，新学科永远落到默认分支
+  // 新学科没有预设项，亮色下直接用库里存的轮换色，深色下雾化后用
+  // （SR-P2-66：存色是饱和亮色，深色下直接用会刺眼；见 [_darkStoredMist]）。
+  // R1 改成按 id 查表后，新学科永远落到默认分支
   // （数学蓝），轮换表写了库却不显示；2026-11-13 修回（见
   // S8A2-SUBJECT-COLORS-REPORT.md）。
-  static Color subjectColor(String subjectId, Brightness brightness,
-      [Color? stored]) {
+  static Color subjectColor(
+    String subjectId,
+    Brightness brightness, [
+    Color? stored,
+  ]) {
     if (stored != null &&
         subjectId != 'math' &&
         subjectId != 'english' &&
         subjectId != 'politics') {
+      if (brightness == Brightness.dark) return _darkStoredMist(stored);
       return stored;
     }
     final p = of(brightness);
@@ -352,15 +357,28 @@ class DesignTokens {
     };
   }
 
+  /// 深色下新学科存色的雾化（SR-P2-66）：存色是亮色系饱和色，向浅灰
+  /// 雾色（#DCE3EC）混 45%，色相不变、明度进雾色档，与预设三科深色
+  /// 雾色（#87A9CC / #8AB5A3 / #C295A5）同档。
+  /// 不复用 [subjectSoft] 的深色做法（深底混 15% 存色是底色 tint，
+  /// 用在圆点 / 标签字色上会暗到看不清）。
+  static Color _darkStoredMist(Color stored) =>
+      Color.lerp(stored, const Color(0xFFDCE3EC), 0.45)!;
+
   // [stored] 与 [subjectColor] 同理：预设三科忽略它，仍走主题感知的
-  // 固定色；新学科没有预设项，直接用库里存的轮换色作标题色
+  // 固定色；新学科没有预设项，亮色下直接用库里存的轮换色作标题色，
+  // 深色下雾化后用（SR-P2-66，同 [subjectColor]）。
   //（S8A2 圆点已是此做法；B2 把首页的标题色 / 底色一并补上）。
-  static Color subjectInk(String subjectId, Brightness brightness,
-      [Color? stored]) {
+  static Color subjectInk(
+    String subjectId,
+    Brightness brightness, [
+    Color? stored,
+  ]) {
     if (stored != null &&
         subjectId != 'math' &&
         subjectId != 'english' &&
         subjectId != 'politics') {
+      if (brightness == Brightness.dark) return _darkStoredMist(stored);
       return stored;
     }
     final p = of(brightness);
@@ -375,8 +393,11 @@ class DesignTokens {
   // 亮色 = 白底混 12% 存色（数学蓝算出约 #E6EFFE，与 --math-soft
   // #E1EDFF 同档）；深色 = 深灰底（#262B33，三科深色 soft 本就是
   // 同一值）混 15% 存色，带一点本科的色调。预设三科仍走固定值。
-  static Color subjectSoft(String subjectId, Brightness brightness,
-      [Color? stored]) {
+  static Color subjectSoft(
+    String subjectId,
+    Brightness brightness, [
+    Color? stored,
+  ]) {
     if (stored != null &&
         subjectId != 'math' &&
         subjectId != 'english' &&
@@ -536,7 +557,6 @@ class DesignTokens {
   // `.page-thumb` 宽 62px、图高 34px；画布基准 560×700（题页竖版，
   // 滚轮缩放改的是画布布局尺寸，不用 Transform.scale）。
   static const double collectEditorDialogWidth = 860;
-  static const double collectEditorDialogHeight = 648;
   static const double collectEditorThumbWidth = 62;
   static const double collectEditorThumbHeight = 34;
   static const double collectEditorCanvasWidth = 560;

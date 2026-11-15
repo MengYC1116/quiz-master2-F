@@ -24,6 +24,8 @@ Question tq(
   List<String> errorTypes = const [],
   List<String> knowledgePointIds = const [],
   DateTime? createdAt,
+  bool isOrganized = true,
+  bool isArchived = false,
 }) =>
     Question(
       id: id,
@@ -32,7 +34,8 @@ Question tq(
       errorTypes: errorTypes,
       knowledgePointIds: knowledgePointIds,
       createdAt: createdAt ?? _today,
-      isOrganized: true,
+      isOrganized: isOrganized,
+      isArchived: isArchived,
       reviewJoined: true,
       sliceKind: 'material',
       sliceText: '题：$title',
@@ -413,6 +416,51 @@ void main() {
       expect(_lastCalls, hasLength(1));
       expect(_lastCalls.single.subjectId, 'politics');
       expect(_lastCalls.single.kp, 'kp-marx');
+    });
+  });
+
+  group('SR-P1-10 / SR-P1-11 口径', () {
+    testWidgets('SR-P1-10：同名不同题各算 1 道，原因组与知识点组都计 2 道',
+        (tester) async {
+      final repo = FakeReportRepo(
+        questions: [
+          tq('qA', '选择题', errorTypes: ['概念不清'],
+              knowledgePointIds: ['kp-limit']),
+          tq('qB', '选择题', errorTypes: ['概念不清'],
+              knowledgePointIds: ['kp-limit']),
+        ],
+        records: [
+          trec('qA', '概念不清'),
+          trec('qB', '概念不清'),
+        ],
+        kps: [tkp('kp-limit', 'math', '函数与极限', '函数极限')],
+      );
+      await pumpReport(tester, repo: repo);
+      expect(find.text('2 道题'), findsOneWidget);
+      expect(find.text('还没解决 2 道'), findsOneWidget);
+      expect(find.text('数学 · 2 道错题'), findsOneWidget);
+    });
+
+    testWidgets('SR-P1-11：未整理题与已归档题不进弱点 Top5 与学科分布',
+        (tester) async {
+      final repo = FakeReportRepo(
+        questions: [
+          tq('q1', '已整理题', errorTypes: ['概念不清'],
+              knowledgePointIds: ['kp-limit']),
+          tq('q2', '未整理题', errorTypes: ['概念不清'],
+              knowledgePointIds: ['kp-limit'], isOrganized: false),
+          tq('q3', '已归档题', errorTypes: ['概念不清'],
+              knowledgePointIds: ['kp-limit'], isArchived: true),
+        ],
+        records: [trec('q1', '概念不清')],
+        kps: [tkp('kp-limit', 'math', '函数与极限', '函数极限')],
+      );
+      await pumpReport(tester, repo: repo);
+      expect(find.text('1 道题'), findsOneWidget);
+      expect(find.text('还没解决 1 道'), findsOneWidget);
+      expect(find.text('数学 · 1 道错题'), findsOneWidget);
+      expect(find.textContaining('未整理题'), findsNothing);
+      expect(find.textContaining('已归档题'), findsNothing);
     });
   });
 

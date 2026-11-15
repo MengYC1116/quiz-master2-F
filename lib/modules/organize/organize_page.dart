@@ -1,19 +1,41 @@
+import 'dart:async';
+import 'dart:io';
+
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../../data/database.dart';
 import '../../data/repository.dart';
 import '../../models/models.dart';
 import '../../theme/design_tokens.dart';
 import '../../widgets/uikit.dart';
 import '../../widgets/widgets.dart';
 
+/// 学科首字母：数学 S / 英语 Y / 政治 Z。
+/// 父页与队列弹窗共用（SR-P2-35：原来两处各一份，一字相同）。
+String _subjectInitial(String subjectId) => switch (subjectId) {
+  'english' => 'Y',
+  'politics' => 'Z',
+  _ => 'S',
+};
+
+/// 日期文本：2026-11-14（月、日零补齐）。
+/// 父页与队列弹窗共用（SR-P2-35；队列弹窗旧实现不补零，统一用补零版）。
+String _dateText(DateTime d) =>
+    '${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
+
 /// 整理工作台 H 布局：左图右表，整页滚动，无固定高度容器。
 /// 队列藏在左上角「队列」按钮后，点开弹出 D 极简式队列层（Overlay 定位
 /// 在按钮正下方，见 [_openQueue]）。
 /// 表单里不显示学科（导入时已定，不可改）；只有文件夹是必填。
-/// 区域高亮 / 修框切片按题型与题干文字推导（见 widgets.dart 的
-/// [regionsOfQuestion]；演示数据没有真实框坐标）。
+/// P1-1 降级（2026-11-14）：区域高亮 / 修框切片的二层区域只对演示题 /
+/// 老题按题干文字推导（见 widgets.dart 的 [regionsOfQuestion]；演示
+/// 数据没有真实框坐标）；真实题（空 `sliceText`）没有 region 开关，
+/// 只留整题切片展示。
+/// B3 追加项 1：叠加层改用库里真实的 layer-2 框坐标——有真实框时按
+/// [realRegionRects] 换算后的切片坐标画框，无框时回退示意框；是否显示
+/// 仍由 [regionsOfQuestion] 决定，真实题仍不显示区域。
 class OrganizePage extends StatefulWidget {
   const OrganizePage({
     super.key,
@@ -55,10 +77,8 @@ class _OrganizePageState extends State<OrganizePage> {
   List<Subject> _subjects = Subject.all;
   // 库里找学科：新学科用库里的名与色；找不到才回退 Subject.byId
   //（数学兜底，只发生在数据不一致时）。
-  Subject _subjectOf(String id) => _subjects.firstWhere(
-        (s) => s.id == id,
-        orElse: () => Subject.byId(id),
-      );
+  Subject _subjectOf(String id) =>
+      _subjects.firstWhere((s) => s.id == id, orElse: () => Subject.byId(id));
 
   // 表单状态（当前题）。
   List<String> _folderIds = [];
@@ -88,6 +108,12 @@ class _OrganizePageState extends State<OrganizePage> {
   bool _showOption = true;
   bool _showFigure = true;
 
+  // 当前题的二层真实框：各区域在整题切片内的 0..1 矩形（键 stem /
+  // option / figure，见 widgets.dart 的 [realRegionRects]）。缺失
+  // 的区域回退示意框；真实题的 _visibleRegions 为空，本值即使非空
+  // 也不画框。
+  Map<String, Rect> _realRegionRects = {};
+
   // 内联新建表单的展开态。
   bool _addingFolder = false;
   bool _addingTag = false;
@@ -104,13 +130,6 @@ class _OrganizePageState extends State<OrganizePage> {
       _queue.isEmpty ? null : _queue[_index.clamp(0, _queue.length - 1)];
 
   List<String> get _orderIds => _queue.map((q) => q.id).toList();
-
-  /// 学科首字母：数学 S / 英语 Y / 政治 Z。
-  static String _subjectInitial(String subjectId) => switch (subjectId) {
-        'english' => 'Y',
-        'politics' => 'Z',
-        _ => 'S',
-      };
 
   Set<String> get _visibleRegions {
     final regions = regionsOfQuestion(_current!);
@@ -165,8 +184,7 @@ class _OrganizePageState extends State<OrganizePage> {
 
   Future<void> _refresh() async {
     final all = await widget.repo.all();
-    final pending =
-        all.where((q) => !q.isOrganized && !q.isArchived).toList();
+    final pending = all.where((q) => !q.isOrganized && !q.isArchived).toList();
     final exams = await widget.repo.exams();
     final kps = await widget.repo.knowledgePoints();
     final tags = await widget.repo.tags();
@@ -180,7 +198,9 @@ class _OrganizePageState extends State<OrganizePage> {
       _hasAnyQuestion = all.isNotEmpty;
       _queue = pending;
       _sortQueue();
-      if (_index >= _queue.length) _index = _queue.isEmpty ? 0 : _queue.length - 1;
+      if (_index >= _queue.length) {
+        _index = _queue.isEmpty ? 0 : _queue.length - 1;
+      }
       _exams = exams;
       _kps = kps;
       _allTags = tags;
@@ -195,21 +215,30 @@ class _OrganizePageState extends State<OrganizePage> {
   Future<void> _loadFolders() async {
     final current = _current;
     if (current == null) return;
-    final folders =
-        await widget.repo.folders(subjectId: current.subjectId);
+    final folders = await widget.repo.folders(subjectId: current.subjectId);
     if (!mounted) return;
     setState(() => _folders = folders);
   }
 
   void _loadForm() {
     final q = _current;
-    if (q == null) return;
+    if (q == null) {
+      _realRegionRects = {};
+      return;
+    }
     setState(() {
       _folderIds = List.of(q.folderIds);
       _examId = q.examId;
       _kpIds = List.of(q.knowledgePointIds);
-      _errorTypes = List.of(q.errorTypes);
-      _customTypes = List.of(q.customErrorTypes);
+      // SR-P2-27：旧数据里与固定枚举同名的自定义错因，在读表单时就
+      // 合并进固定项（不丢错因、不在界面上重复出现）；下次保存即写回。
+      _errorTypes = {
+        ...q.errorTypes,
+        ...q.customErrorTypes.where((t) => ErrorTypes.fixed.contains(t)),
+      }.toList();
+      _customTypes = q.customErrorTypes
+          .where((t) => !ErrorTypes.fixed.contains(t))
+          .toList();
       _tags = List.of(q.tags);
       _answerCtrl.text = q.answer ?? '';
       _explanationCtrl.text = q.explanation ?? '';
@@ -221,6 +250,29 @@ class _OrganizePageState extends State<OrganizePage> {
       _newTagCtrl.clear();
       _newExamNameCtrl.clear();
       _newExamDate = null;
+      // 切题先清掉上道题的真实框，避免新题框未到之前闪现旧框。
+      _realRegionRects = {};
+    });
+    _loadRealBoxes();
+  }
+
+  /// 读当前题的真实二层框（B3 追加项 1）：`pageImagePath` 为空
+  /// （演示题 / 老题无页图）时不读库，直接留空回退示意框；有页图
+  /// 时走仓库已有的 [QuestionRepository.boxesForPageImage]（同页
+  /// 各题的 1 层 + 2 层框），只取本题（`questionId` 匹配）的行再
+  /// 换算到切片坐标。是否显示仍由 [_visibleRegions] 决定——真实题
+  /// 即使库里有框也不画框（P1-1 红线）。
+  Future<void> _loadRealBoxes() async {
+    final q = _current;
+    final pageImagePath = q?.pageImagePath;
+    if (q == null || pageImagePath == null) return;
+    final id = q.id;
+    final boxes = await widget.repo.boxesForPageImage(pageImagePath);
+    if (!mounted || _current?.id != id) return;
+    setState(() {
+      _realRegionRects = realRegionRects(
+        boxes.where((b) => b.questionId == id).toList(),
+      );
     });
   }
 
@@ -228,12 +280,21 @@ class _OrganizePageState extends State<OrganizePage> {
     final answer = _answerCtrl.text.trim();
     final explanation = _explanationCtrl.text.trim();
     final notes = _notesCtrl.text.trim();
+    // SR-P2-27：保存兜底——表单里万一还有与固定枚举同名的自定义项
+    //（如别处入口带进来的旧数据），合并进固定项再写库，不丢、不重复。
+    final errorTypes = {
+      ..._errorTypes,
+      ..._customTypes.where((t) => ErrorTypes.fixed.contains(t)),
+    }.toList();
+    final customTypes = _customTypes
+        .where((t) => !ErrorTypes.fixed.contains(t))
+        .toList();
     return q.copyWith(
       folderIds: _folderIds,
       examId: _examId,
       knowledgePointIds: _kpIds,
-      errorTypes: _errorTypes,
-      customErrorTypes: _customTypes,
+      errorTypes: errorTypes,
+      customErrorTypes: customTypes,
       tags: _tags,
       answer: answer.isEmpty ? null : answer,
       explanation: explanation.isEmpty ? null : explanation,
@@ -303,7 +364,28 @@ class _OrganizePageState extends State<OrganizePage> {
   /// 打开 D 极简式队列层：Overlay 定位在「队列」按钮正下方（HTML
   /// `.org-queue-pop` 的 `top:54px; left:0`，相对工作区左上角）。
   /// 勾选状态只活在弹出层内，关闭即丢弃（见 [_closeQueue]）。
-  void _openQueue() {
+  /// SR-P1-7：打开前先把当前表单落盘（与 [_jumpToQuestion] /
+  /// [_applyQueueSort] 同款），再给弹出层拍快照——批量操作拿快照里
+  /// 的旧 `Question` 整行覆盖，不先保存就会把表单里未保存的改动
+  /// （文件夹、标签、答案、错因等）静默抹掉；随后 `_closeQueue` →
+  /// `_refresh` → `_loadForm` 从库重读，改动就再也回不来了。
+  Future<void> _openQueue() async {
+    if (_queue.isEmpty || _queueEntry != null) return;
+    await _saveCurrent();
+    if (!mounted) return;
+    // 只落盘还不够：[_saveCurrent] 只写库，内存里的 `_queue` 仍是
+    // 打开前的旧对象；弹出层拿 `List.of(_queue)` 拍快照，批量操作
+    // 再用旧对象 `copyWith` 整行覆盖，刚保存的改动一样会被抹掉。
+    // 所以把刚保存的表单行写回 `_queue`，再拍快照。
+    final current = _current;
+    if (current != null) {
+      final i = _queue.indexWhere((q) => q.id == current.id);
+      if (i >= 0) {
+        setState(() => _queue[i] = _formQuestion(current));
+      }
+    }
+    // 保存是异步的：等的过程中用户可能又点了一次「队列」，上面的
+    // 首道 guard 拦不住第二次调用，这里再拦一次，避免插两个层。
     if (_queue.isEmpty || _queueEntry != null) return;
     final box =
         _queueButtonKey.currentContext?.findRenderObject() as RenderBox?;
@@ -314,10 +396,11 @@ class _OrganizePageState extends State<OrganizePage> {
     final left = offset.dx;
     final top = offset.dy + box.size.height + 8 * scale;
     final availableWidth = size.width - left - 16;
-    final width = (DesignTokens.organizeQueuePopWidth * scale)
-        .clamp(280.0, availableWidth > 280 ? availableWidth : 280.0);
-    final maxHeight =
-        (size.height - top - 16).clamp(200.0, 760.0 * scale);
+    final width = (DesignTokens.organizeQueuePopWidth * scale).clamp(
+      280.0,
+      availableWidth > 280 ? availableWidth : 280.0,
+    );
+    final maxHeight = (size.height - top - 16).clamp(200.0, 760.0 * scale);
     late final OverlayEntry entry;
     entry = OverlayEntry(
       builder: (overlayContext) => _QueuePopup(
@@ -394,7 +477,9 @@ class _OrganizePageState extends State<OrganizePage> {
       (f) => f.id == folder.parentId,
       orElse: () => folder,
     );
-    return parent.id == folder.id ? folder.name : '${parent.name} / ${folder.name}';
+    return parent.id == folder.id
+        ? folder.name
+        : '${parent.name} / ${folder.name}';
   }
 
   Future<void> _submitNewFolder() async {
@@ -402,17 +487,28 @@ class _OrganizePageState extends State<OrganizePage> {
     if (q == null) return;
     final name = _newFolderCtrl.text.trim();
     if (name.isEmpty) return;
-    if (_folders.any((f) => f.name == name && f.parentId == null)) {
+    // SR-P2-36：整科同名预检（新建不传 excludeId）——旧代码只查顶层
+    // 同名，跨层同名会一路写到 upsertFolder 才被 StateError 拦下。
+    // 预检命中即提示“已经有了”并中止；仍留 StateError 捕获作兜底
+    //（竞态：预检与写入之间别人建了同名）。
+    if (await widget.repo.folderNameExistsInSubject(q.subjectId, name)) {
       _snack('已经有了');
       return;
     }
     final folder = Folder(
-      id: 'folder-${DateTime.now().millisecondsSinceEpoch}',
+      // SR-P2-28：id 用 newEntityId（毫秒 + 随机后缀）；纯毫秒在同一
+      // 毫秒内连点两次会撞主键、后一次覆盖前一次。
+      id: newEntityId('folder'),
       name: name,
       subjectId: q.subjectId,
       sortOrder: _folders.length,
     );
-    await widget.repo.saveFolder(folder);
+    try {
+      await widget.repo.saveFolder(folder);
+    } on StateError {
+      if (mounted) _snack('已经有了');
+      return;
+    }
     await _loadFolders();
     if (!mounted) return;
     setState(() {
@@ -426,7 +522,8 @@ class _OrganizePageState extends State<OrganizePage> {
     final name = _newExamNameCtrl.text.trim();
     if (name.isEmpty) return;
     final exam = Exam(
-      id: 'exam-${DateTime.now().millisecondsSinceEpoch}',
+      // SR-P2-28：id 用 newEntityId（毫秒 + 随机后缀），防同毫秒连点撞主键。
+      id: newEntityId('exam'),
       name: name,
       date: _newExamDate,
     );
@@ -467,15 +564,23 @@ class _OrganizePageState extends State<OrganizePage> {
       _snack('不能含逗号或竖线');
       return;
     }
+    // SR-P2-27：与固定枚举同名时不进自定义集合，直接选中对应固定项
+    //（否则 allCauses 里出现两次“其他”，详情页副标题与复习记录的
+    // 错因行都会重复；详情页保存还会把它静默滤掉、错因直接消失）。
+    if (ErrorTypes.fixed.contains(name)) {
+      setState(() {
+        if (!_errorTypes.contains(name)) _errorTypes.add(name);
+        _customTypeCtrl.clear();
+      });
+      _snack('“$name”是固定错误类型，已帮你选中');
+      return;
+    }
     setState(() {
       if (!_customTypes.contains(name)) _customTypes.add(name);
       if (!_customTypesAll.contains(name)) _customTypesAll.add(name);
       _customTypeCtrl.clear();
     });
   }
-
-  String _dateText(DateTime d) =>
-      '${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
 
   // ---------------------------------------------------------- 页面结构 --
 
@@ -488,48 +593,47 @@ class _OrganizePageState extends State<OrganizePage> {
       body: _loading
           ? const Center(child: CircularProgressIndicator())
           : q == null
-              ? _emptyPage()
-              : SingleChildScrollView(
-                  padding: EdgeInsets.zero,
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      _pageHeader(),
-                      SizedBox(height: 20 * scale),
-                      _topbar(q),
-                      SizedBox(
-                          height:
-                              DesignTokens.organizeTopbarMarginBottom * scale),
-                      _wideLayout(context)
-                          ? Row(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Expanded(child: _leftPane(q)),
-                                SizedBox(
-                                    width:
-                                        DesignTokens.organizeGridGap * scale),
-                                Expanded(child: _rightPane(q)),
-                              ],
-                            )
-                          : Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                _leftPane(q),
-                                SizedBox(height: 24 * scale),
-                                _rightPane(q),
-                              ],
-                            ),
-                    ],
+          ? _emptyPage()
+          : SingleChildScrollView(
+              padding: EdgeInsets.zero,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  _pageHeader(),
+                  SizedBox(height: 20 * scale),
+                  _topbar(q),
+                  SizedBox(
+                    height: DesignTokens.organizeTopbarMarginBottom * scale,
                   ),
-                ),
+                  _wideLayout(context)
+                      ? Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Expanded(child: _leftPane(q)),
+                            SizedBox(
+                              width: DesignTokens.organizeGridGap * scale,
+                            ),
+                            Expanded(child: _rightPane(q)),
+                          ],
+                        )
+                      : Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            _leftPane(q),
+                            SizedBox(height: 24 * scale),
+                            _rightPane(q),
+                          ],
+                        ),
+                ],
+              ),
+            ),
     );
   }
 
   /// H 布局断点：HTML `@media (max-width:1102px)` 按窗口宽判断，
   /// 窗口 ≥1102px 时左右两列，以下时上下堆叠。
   bool _wideLayout(BuildContext context) =>
-      MediaQuery.sizeOf(context).width >=
-      DesignTokens.organizeGridBreakpoint;
+      MediaQuery.sizeOf(context).width >= DesignTokens.organizeGridBreakpoint;
 
   Widget _pageHeader() {
     final palette = DesignTokens.of(Theme.of(context).brightness);
@@ -612,8 +716,9 @@ class _OrganizePageState extends State<OrganizePage> {
         InkWell(
           key: _queueButtonKey,
           onTap: _openQueue,
-          borderRadius:
-              BorderRadius.circular(DesignTokens.buttonRadius * scale),
+          borderRadius: BorderRadius.circular(
+            DesignTokens.buttonRadius * scale,
+          ),
           child: Container(
             padding: EdgeInsets.symmetric(
               horizontal: 18 * scale,
@@ -622,8 +727,9 @@ class _OrganizePageState extends State<OrganizePage> {
             decoration: BoxDecoration(
               color: palette.surface,
               border: Border.all(color: palette.lineStrong),
-              borderRadius:
-                  BorderRadius.circular(DesignTokens.buttonRadius * scale),
+              borderRadius: BorderRadius.circular(
+                DesignTokens.buttonRadius * scale,
+              ),
             ),
             child: Row(
               mainAxisSize: MainAxisSize.min,
@@ -702,13 +808,19 @@ class _OrganizePageState extends State<OrganizePage> {
 
   Widget _leftPane(Question q) {
     final scale = qmScaleOf(context);
+    // P1-1 降级：真实题没有可推导的区域，region 开关整行隐藏（连同
+    // 它前面的 10px 间距），只留整题切片 + 修框切片；演示题 / 老题
+    // 才显示开关。
+    final hasRegions = regionsOfQuestion(q).isNotEmpty;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         _paperImage(q),
         if (!widget.imageFailed) ...[
-          SizedBox(height: 10 * scale),
-          _regionToggles(q),
+          if (hasRegions) ...[
+            SizedBox(height: 10 * scale),
+            _regionToggles(q),
+          ],
           SizedBox(height: DesignTokens.organizeSectionGap * scale),
           QmFoldSection(
             title: '修框切片',
@@ -733,28 +845,47 @@ class _OrganizePageState extends State<OrganizePage> {
       onTap: widget.imageFailed
           ? null
           : () => showQuestionZoomDialog(
-                context,
-                q,
-                visibleRegions: _visibleRegions,
-              ),
+              context,
+              q,
+              visibleRegions: _visibleRegions,
+              realRegionRects: _realRegionRects,
+            ),
     );
     if (widget.imageFailed) return slice;
-    return Stack(
-      children: [
-        slice,
-        Positioned.fill(
-          child: IgnorePointer(
-            child: QuestionRegionOverlays(
-              question: q,
-              visible: _visibleRegions,
+    // P1-1 降级：真实题的 _visibleRegions 为空，叠加层挂在树里但不画
+    // 任何框（B2 Bug 2 回归测试仍按 widget 类型找叠加层，故保留挂载，
+    // 只靠空 visible 让它不画框；不要在这里按题型拆掉 Stack）。
+    // B3 追加项 1：有真实框的演示题 / 老题按 _realRegionRects 画真实
+    // 框（页图坐标经 layer-1 框换算到切片坐标，见 widgets.dart 的
+    // [realRegionRects]），无框的区域回退示意框。
+    // B2 Bug 2 根因：Stack 在 Column(stretch) 里被拉到左栏整宽，而
+    // QuestionSlice 的真图按固有尺寸渲染（cacheWidth 只降采样不放大，
+    // 宽条切片固有宽小于容器宽），叠加层按 Stack 宽画框就会伸到图外面。
+    // Align 让 Stack 收成切片实际尺寸，stem / option / figure 三区
+    // 同用这一个叠加层尺寸，一并收进图内；演示题 / 失败占位是 Center
+    // 撑满容器，Stack 仍是容器宽，不受影响。
+    return Align(
+      alignment: Alignment.topLeft,
+      child: Stack(
+        children: [
+          slice,
+          Positioned.fill(
+            child: IgnorePointer(
+              child: QuestionRegionOverlays(
+                question: q,
+                visible: _visibleRegions,
+                realRects: _realRegionRects,
+              ),
             ),
           ),
-        ),
-      ],
+        ],
+      ),
     );
   }
 
   /// stem / option / figure 三色高亮开关（默认全开；只显示本题有的区）。
+  /// P1-1 降级：真实题（空 sliceText）`regionsOfQuestion` 返回空，
+  /// 开关整行不渲染（调用方 [_leftPane] 也已整行隐藏，这里是兜底）。
   Widget _regionToggles(Question q) {
     final palette = DesignTokens.of(Theme.of(context).brightness);
     const labels = {
@@ -763,6 +894,7 @@ class _OrganizePageState extends State<OrganizePage> {
       'figure': 'figure 插图',
     };
     final regions = regionsOfQuestion(q);
+    if (regions.isEmpty) return const SizedBox.shrink();
     return Wrap(
       spacing: 16,
       runSpacing: 4,
@@ -813,19 +945,40 @@ class _OrganizePageState extends State<OrganizePage> {
   /// 修框切片：每框一张切片卡（整题框 + 各二层框），只存图不做 OCR。
   /// 整题框有真实切片时显示真图（QuestionSlice 已接 slice_path）；
   /// 题干/选项/配图卡只在 sliceText 非空时显示——真实题没有
-  /// sliceText，不显示空白卡。
+  /// sliceText，不显示空白卡。P1-1 降级后真实题的 `regionsOfQuestion`
+  /// 为空，修框切片只剩「整题框切片」一张卡。
   Widget _slicesSection(Question q) {
     final regions = regionsOfQuestion(q);
     final hasText = q.sliceText.trim().isNotEmpty;
+    // B2 Bug 3：整题框有真实切片时，图按固有尺寸窄于卡宽，卡框伸到
+    // 图外面（与 Bug 2 同因）。卡贴图收窄：Align 让卡收成图宽，
+    // 卡头 Row 也随之收窄（hugContent，见 _sliceCard）；文字卡
+    // （无真图）保持整宽不变。文件缺失时 QuestionSlice 显示缺图
+    // 占位（撑满容器），不贴图收窄。
+    final sliceAbs = q.slicePath == null
+        ? null
+        : AppDatabase.resolveDataPath(q.slicePath!);
+    final hasRealSlice = sliceAbs != null && File(sliceAbs).existsSync();
+    final wholeCard = _sliceCard(
+      '整题框切片',
+      q.slicePath != null
+          ? QuestionSlice(
+              question: q,
+              maxHeight: 220,
+              // SR-P2-29：补传学科对象；不传时缺图占位回退 Subject.byId，
+              // 新学科会显示成数学。
+              subject: _subjectOf(q.subjectId),
+            )
+          : _sliceTextBody(q, withFigureNote: true),
+      hugContent: hasRealSlice,
+    );
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        _sliceCard(
-          '整题框切片',
-          q.slicePath != null
-              ? QuestionSlice(question: q, maxHeight: 220)
-              : _sliceTextBody(q, withFigureNote: true),
-        ),
+        if (hasRealSlice)
+          Align(alignment: Alignment.centerLeft, child: wholeCard)
+        else
+          wholeCard,
         if (hasText) ...[
           const SizedBox(height: 10),
           _sliceCard('题干框切片', _sliceTextBody(q)),
@@ -844,8 +997,7 @@ class _OrganizePageState extends State<OrganizePage> {
 
   Widget _sliceTextBody(Question q, {bool withFigureNote = false}) {
     final palette = DesignTokens.of(Theme.of(context).brightness);
-    final text = withFigureNote &&
-            regionsOfQuestion(q).contains('figure')
+    final text = withFigureNote && regionsOfQuestion(q).contains('figure')
         ? '${q.sliceText}\n（含配图）'
         : q.sliceText;
     return Text(
@@ -912,7 +1064,9 @@ class _OrganizePageState extends State<OrganizePage> {
 
   /// 切片卡：纸面底 + 纸线边 + 卡头（标签 + 「切片图」）+ 卡体
   /// （衬线 12.5px，上限 66px，见 `.slice-card`）。
-  Widget _sliceCard(String label, Widget body) {
+  /// [hugContent] 为 true 时卡头 Row 收成内容宽（不用 Spacer 撑满），
+  /// 供外层 Align 把卡收成图宽用（B2 Bug 3）；默认 false，卡整宽。
+  Widget _sliceCard(String label, Widget body, {bool hugContent = false}) {
     final scale = qmScaleOf(context);
     final palette = DesignTokens.of(Theme.of(context).brightness);
     return Container(
@@ -929,6 +1083,7 @@ class _OrganizePageState extends State<OrganizePage> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
+            mainAxisSize: hugContent ? MainAxisSize.min : MainAxisSize.max,
             children: [
               Text(
                 label,
@@ -939,7 +1094,7 @@ class _OrganizePageState extends State<OrganizePage> {
                   height: 1.2,
                 ),
               ),
-              const Spacer(),
+              if (hugContent) SizedBox(width: 12 * scale) else const Spacer(),
               Text(
                 '切片图',
                 style: TextStyle(
@@ -1059,8 +1214,7 @@ class _OrganizePageState extends State<OrganizePage> {
                       },
                   ),
                   const TextSpan(
-                    text:
-                        '（点一下跳到那一栏）——只有必填没齐才提示；答案、解析、知识点、错误类型、试卷、标签、笔记都是可选，填不填都不算、不提示',
+                    text: '（点一下跳到那一栏）——只有必填没齐才提示；答案、解析、知识点、错误类型、试卷、标签、笔记都是可选，填不填都不算、不提示',
                   ),
                 ],
               ),
@@ -1153,8 +1307,7 @@ class _OrganizePageState extends State<OrganizePage> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        _fieldLabel('文件夹（归类）',
-            required: true, hint: '可多选 · 一道题可进多个文件夹，题只存一份'),
+        _fieldLabel('文件夹（归类）', required: true, hint: '可多选 · 一道题可进多个文件夹，题只存一份'),
         Wrap(
           spacing: 6,
           runSpacing: 6,
@@ -1240,20 +1393,16 @@ class _OrganizePageState extends State<OrganizePage> {
           hint: const Text('选择试卷（可选）'),
           isExpanded: true,
           items: [
-            const DropdownMenuItem(
-              value: '__add__',
-              child: Text('＋ 添加新试卷…'),
+            const DropdownMenuItem(value: '__add__', child: Text('＋ 添加新试卷…')),
+            const DropdownMenuItem(value: '__none__', child: Text('未归属试卷')),
+            ..._exams.map(
+              (e) => DropdownMenuItem(
+                value: e.id,
+                child: Text(
+                  e.date == null ? e.name : '${e.name}（${_dateText(e.date!)}）',
+                ),
+              ),
             ),
-            const DropdownMenuItem(
-              value: '__none__',
-              child: Text('未归属试卷'),
-            ),
-            ..._exams.map((e) => DropdownMenuItem(
-                  value: e.id,
-                  child: Text(
-                    e.date == null ? e.name : '${e.name}（${_dateText(e.date!)}）',
-                  ),
-                )),
           ],
           onChanged: (v) {
             if (v == null) return;
@@ -1286,9 +1435,7 @@ class _OrganizePageState extends State<OrganizePage> {
                     ),
                     const SizedBox(width: 8),
                     Text(
-                      _newExamDate == null
-                          ? '未选日期'
-                          : _dateText(_newExamDate!),
+                      _newExamDate == null ? '未选日期' : _dateText(_newExamDate!),
                       style: const TextStyle(fontSize: 13),
                     ),
                     const SizedBox(width: 8),
@@ -1345,19 +1492,27 @@ class _OrganizePageState extends State<OrganizePage> {
 
   Widget _classifySection(Question q) {
     final palette = DesignTokens.of(Theme.of(context).brightness);
-    final subjectKps =
-        _kps.where((k) => k.subjectId == q.subjectId).toList();
+    final subjectKps = _kps.where((k) => k.subjectId == q.subjectId).toList();
     final chapters = <String>[];
     for (final k in subjectKps) {
       if (!chapters.contains(k.chapter)) chapters.add(k.chapter);
     }
-    final customOptions = {..._customTypesAll, ..._customTypes}.toList();
+    final customOptions = {..._customTypesAll, ..._customTypes}
+        // SR-P2-27：旧数据里与固定枚举同名的自定义项不重复出芯片。
+        .where((t) => !ErrorTypes.fixed.contains(t))
+        .toList();
     final selectedKpNames = _kpIds
-        .map((id) => _kps.firstWhere(
-              (k) => k.id == id,
-              orElse: () => KnowledgePoint(
-                  id: id, subjectId: q.subjectId, chapter: '', name: '已删知识点'),
-            ))
+        .map(
+          (id) => _kps.firstWhere(
+            (k) => k.id == id,
+            orElse: () => KnowledgePoint(
+              id: id,
+              subjectId: q.subjectId,
+              chapter: '',
+              name: '已删知识点',
+            ),
+          ),
+        )
         .map((k) => k.name)
         .toList();
     return Column(
@@ -1373,14 +1528,21 @@ class _OrganizePageState extends State<OrganizePage> {
         Row(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text('已选（点一下取消）：',
-                style: TextStyle(fontSize: 13, height: 1.6)),
+            const Text(
+              '已选（点一下取消）：',
+              style: TextStyle(fontSize: 13, height: 1.6),
+            ),
             const SizedBox(width: 4),
             Expanded(
               child: _errorTypes.isEmpty && _customTypes.isEmpty
-                  ? Text('还没选错误类型',
+                  ? Text(
+                      '还没选错误类型',
                       style: TextStyle(
-                          fontSize: 13, color: palette.muted, height: 1.6))
+                        fontSize: 13,
+                        color: palette.muted,
+                        height: 1.6,
+                      ),
+                    )
                   : Wrap(
                       spacing: 6,
                       runSpacing: 6,
@@ -1407,28 +1569,32 @@ class _OrganizePageState extends State<OrganizePage> {
           spacing: 6,
           runSpacing: 6,
           children: [
-            ...ErrorTypes.fixed.map((t) => QmChip(
-                  label: t,
-                  selected: _errorTypes.contains(t),
-                  onTap: () => setState(() {
-                    if (_errorTypes.contains(t)) {
-                      _errorTypes.remove(t);
-                    } else {
-                      _errorTypes.add(t);
-                    }
-                  }),
-                )),
-            ...customOptions.map((t) => QmChip(
-                  label: '$t（自定义）',
-                  selected: _customTypes.contains(t),
-                  onTap: () => setState(() {
-                    if (_customTypes.contains(t)) {
-                      _customTypes.remove(t);
-                    } else {
-                      _customTypes.add(t);
-                    }
-                  }),
-                )),
+            ...ErrorTypes.fixed.map(
+              (t) => QmChip(
+                label: t,
+                selected: _errorTypes.contains(t),
+                onTap: () => setState(() {
+                  if (_errorTypes.contains(t)) {
+                    _errorTypes.remove(t);
+                  } else {
+                    _errorTypes.add(t);
+                  }
+                }),
+              ),
+            ),
+            ...customOptions.map(
+              (t) => QmChip(
+                label: '$t（自定义）',
+                selected: _customTypes.contains(t),
+                onTap: () => setState(() {
+                  if (_customTypes.contains(t)) {
+                    _customTypes.remove(t);
+                  } else {
+                    _customTypes.add(t);
+                  }
+                }),
+              ),
+            ),
           ],
         ),
         const SizedBox(height: 8),
@@ -1477,7 +1643,8 @@ class _OrganizePageState extends State<OrganizePage> {
                 }),
               ),
             for (final t in _allTags.where(
-                (t) => !QmChip.presetTags.contains(t)))
+              (t) => !QmChip.presetTags.contains(t),
+            ))
               QmChip(
                 label: t,
                 selected: _tags.contains(t),
@@ -1618,10 +1785,8 @@ class _OrganizePageState extends State<OrganizePage> {
   ) {
     final key = '${q.subjectId}|$chapter';
     final open = _kpOpen[key] ?? false;
-    final points =
-        subjectKps.where((k) => k.chapter == chapter).toList();
-    final inChapter =
-        points.where((k) => _kpIds.contains(k.id)).length;
+    final points = subjectKps.where((k) => k.chapter == chapter).toList();
+    final inChapter = points.where((k) => _kpIds.contains(k.id)).length;
     final palette = DesignTokens.of(Theme.of(context).brightness);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -1714,9 +1879,7 @@ class _OrganizePageState extends State<OrganizePage> {
             hintText: '自己的错因、心得、提醒都写这里，写多少都行，不必填',
           ),
         ),
-        _helperText(
-          '笔记只记你自己的话，和上面的答案、解析是三回事：答案是标准答案，解析是解题过程，笔记是你写给自己的',
-        ),
+        _helperText('笔记只记你自己的话，和上面的答案、解析是三回事：答案是标准答案，解析是解题过程，笔记是你写给自己的'),
       ],
     );
   }
@@ -1739,7 +1902,8 @@ class _OrganizePageState extends State<OrganizePage> {
     final palette = DesignTokens.of(Theme.of(context).brightness);
     return Container(
       margin: EdgeInsets.only(
-          top: DesignTokens.organizeWorkActsMarginTop * scale),
+        top: DesignTokens.organizeWorkActsMarginTop * scale,
+      ),
       padding: EdgeInsets.only(top: 18 * scale),
       decoration: BoxDecoration(
         border: Border(top: BorderSide(color: palette.line)),
@@ -1775,8 +1939,7 @@ class _OrganizePageState extends State<OrganizePage> {
               QmButton(
                 label: '上一道',
                 variant: QmButtonVariant.plain,
-                onPressed:
-                    _index > 0 ? () => _goTo(_index - 1) : null,
+                onPressed: _index > 0 ? () => _goTo(_index - 1) : null,
               ),
               SizedBox(width: 8 * scale),
               QmButton(
@@ -1804,12 +1967,11 @@ class _OrganizePageState extends State<OrganizePage> {
     final palette = DesignTokens.of(Theme.of(context).brightness);
     return Container(
       margin: EdgeInsets.only(
-          top: DesignTokens.organizeConfirmBarMarginTop * scale),
+        top: DesignTokens.organizeConfirmBarMarginTop * scale,
+      ),
       padding: EdgeInsets.only(top: 18 * scale),
       decoration: BoxDecoration(
-        border: Border(
-          top: BorderSide(color: palette.line, width: 2),
-        ),
+        border: Border(top: BorderSide(color: palette.line, width: 2)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -1875,7 +2037,6 @@ class _FigureMiniPainter extends CustomPainter {
       oldDelegate.kind != kind || oldDelegate.color != color;
 }
 
-
 /// D 极简式队列弹出层：每题一行（复选框 + 标题 + 删除按钮），详情行只在
 /// 当前题下方展开一行，当前题蓝框（2px accent 边框 + 左侧 4px 蓝条 +
 /// accent-soft 底）；搜索只匹配题名 / 学科 / 试卷，不搜题干；排序默认
@@ -1933,12 +2094,8 @@ class _QueuePopupState extends State<_QueuePopup> {
   List<Subject> _subjects = Subject.all;
   // 库里找学科：新学科用库里的名与色；找不到才回退 Subject.byId
   //（数学兜底，只发生在数据不一致时）。
-  Subject _subjectOf(String id) => _subjects.firstWhere(
-        (s) => s.id == id,
-        orElse: () => Subject.byId(id),
-      );
-  String? _pendingDeleteId;
-  bool _batchDel = false;
+  Subject _subjectOf(String id) =>
+      _subjects.firstWhere((s) => s.id == id, orElse: () => Subject.byId(id));
   bool _addingBatchFolder = false;
   String? _batchFolderId;
   final _currentRowKey = GlobalKey();
@@ -1977,29 +2134,23 @@ class _QueuePopupState extends State<_QueuePopup> {
 
   Future<void> _loadMeta() async {
     final exams = await widget.repo.exams();
-    final folders =
-        await widget.repo.folders(subjectId: _currentSubjectId);
+    final folders = await widget.repo.folders(subjectId: _currentSubjectId);
     final subjects = await widget.repo.subjects();
     if (!mounted) return;
     setState(() {
       _examNames = {for (final e in exams) e.id: e.name};
       _folders = folders;
       _subjects = subjects.isEmpty ? Subject.all : subjects;
-      _batchFolderId ??=
-          folders.isEmpty ? null : folders.first.id;
+      _batchFolderId ??= folders.isEmpty ? null : folders.first.id;
     });
   }
 
   void _scrollToCurrent() {
     final filtered = _filtered;
-    final idx =
-        filtered.indexWhere((q) => q.id == widget.currentId());
+    final idx = filtered.indexWhere((q) => q.id == widget.currentId());
     if (idx < 0 || !_scrollCtrl.hasClients) return;
     _scrollCtrl.jumpTo(
-      (idx * 44).toDouble().clamp(
-            0.0,
-            _scrollCtrl.position.maxScrollExtent,
-          ),
+      (idx * 44).toDouble().clamp(0.0, _scrollCtrl.position.maxScrollExtent),
     );
     WidgetsBinding.instance.addPostFrameCallback((_) {
       final ctx = _currentRowKey.currentContext;
@@ -2023,14 +2174,17 @@ class _QueuePopupState extends State<_QueuePopup> {
         list.sort((a, b) => a.createdAt.compareTo(b.createdAt));
       case 'subjectAsc':
         list.sort((a, b) {
-          final c = _QueuePopupState._subjectInitial(a.subjectId)
-              .compareTo(_QueuePopupState._subjectInitial(b.subjectId));
+          // SR-P2-35：用文件顶部的共用 _subjectInitial，不再各一份。
+          final c = _subjectInitial(
+            a.subjectId,
+          ).compareTo(_subjectInitial(b.subjectId));
           return c != 0 ? c : b.createdAt.compareTo(a.createdAt);
         });
       case 'subjectDesc':
         list.sort((a, b) {
-          final c = _QueuePopupState._subjectInitial(b.subjectId)
-              .compareTo(_QueuePopupState._subjectInitial(a.subjectId));
+          final c = _subjectInitial(
+            b.subjectId,
+          ).compareTo(_subjectInitial(a.subjectId));
           return c != 0 ? c : b.createdAt.compareTo(a.createdAt);
         });
       case 'timeDesc':
@@ -2040,35 +2194,73 @@ class _QueuePopupState extends State<_QueuePopup> {
     return list;
   }
 
-  static String _subjectInitial(String subjectId) => switch (subjectId) {
-        'english' => 'Y',
-        'politics' => 'Z',
-        _ => 'S',
-      };
-
   List<Question> get _selectedQuestions =>
       _questions.where((q) => _selected.contains(q.id)).toList();
 
-  String _dateText(DateTime d) => '${d.year}-${d.month}-${d.day}';
-
   String _detailLine(Question q) {
-    final exam = q.examId == null
-        ? '未归属'
-        : (_examNames[q.examId] ?? '未知试卷');
-    final missing = q.folderIds.isEmpty
-        ? '待补充 1 项：文件夹（归类）'
-        : '必填已齐';
+    final exam = q.examId == null ? '未归属' : (_examNames[q.examId] ?? '未知试卷');
+    final missing = q.folderIds.isEmpty ? '待补充 1 项：文件夹（归类）' : '必填已齐';
     return '${_subjectOf(q.subjectId).name} · ${sliceKindLabel(q.sliceKind)} · ${_dateText(q.createdAt)} · 试卷（来源）：$exam · $missing';
   }
 
-  Future<void> _confirmDeleteOne(Question q) async {
+  // B3：单删 / 批量删除确认都改模态弹窗（见 [_askDeleteOne] /
+  // [_askBatchDelete]），不再用行内确认条。
+  Future<void> _deleteOne(Question q) async {
     await widget.repo.delete(q);
     if (!mounted) return;
     setState(() {
       _questions.removeWhere((x) => x.id == q.id);
       _selected.remove(q.id);
-      _pendingDeleteId = null;
     });
+  }
+
+  /// B3：删除确认的模态弹窗。队列层本身是直接插进 overlay 的
+  /// OverlayEntry，新路由（showDialog）会插到它下面、被队列层盖住
+  /// 点不到，所以确认框不走 showDialog，改在弹窗自己的 Stack 顶层
+  /// 渲染 ModalBarrier + AlertDialog（见 build 末尾）；形式仍是
+  /// 模态弹窗，文案与原来行内条一致。
+  String? _confirmTitle;
+  String? _confirmDetail;
+  Completer<bool>? _confirmCompleter;
+
+  Future<bool> _askConfirm({
+    required String title,
+    required String detail,
+  }) {
+    final completer = Completer<bool>();
+    setState(() {
+      _confirmTitle = title;
+      _confirmDetail = detail;
+      _confirmCompleter = completer;
+    });
+    return completer.future;
+  }
+
+  void _resolveConfirm(bool ok) {
+    final completer = _confirmCompleter;
+    setState(() {
+      _confirmTitle = null;
+      _confirmDetail = null;
+      _confirmCompleter = null;
+    });
+    completer?.complete(ok);
+  }
+
+  Future<void> _askDeleteOne(Question q) async {
+    final ok = await _askConfirm(
+      title: '确认删除这道题？',
+      detail:
+          '「${_subjectOf(q.subjectId).name} · ${sliceKindLabel(q.sliceKind)}｜${q.title}」删了就没了，不可恢复。',
+    );
+    if (ok && mounted) await _deleteOne(q);
+  }
+
+  Future<void> _askBatchDelete() async {
+    final ok = await _askConfirm(
+      title: '删了就没了，确定吗？',
+      detail: '批量删除勾选的 ${_selected.length} 道题，删错了不能恢复。',
+    );
+    if (ok && mounted) await _batchDelete();
   }
 
   Future<void> _batchTagRedo() async {
@@ -2095,8 +2287,9 @@ class _QueuePopupState extends State<_QueuePopup> {
         continue;
       }
       if (!q.folderIds.contains(folderId)) {
-        await widget.repo
-            .save(q.copyWith(folderIds: [...q.folderIds, folderId]));
+        await widget.repo.save(
+          q.copyWith(folderIds: [...q.folderIds, folderId]),
+        );
       }
       applied++;
     }
@@ -2111,25 +2304,35 @@ class _QueuePopupState extends State<_QueuePopup> {
         return q;
       }).toList();
     });
-    widget.onNotify(skipped > 0
-        ? '已加入 $applied 道，$skipped 道不是本科，跳过'
-        : '已加入文件夹');
+    widget.onNotify(
+      skipped > 0 ? '已加入 $applied 道，$skipped 道不是本科，跳过' : '已加入文件夹',
+    );
   }
 
   Future<void> _submitBatchFolder() async {
     final name = _newBatchFolderCtrl.text.trim();
     if (name.isEmpty) return;
-    if (_folders.any((f) => f.name == name && f.parentId == null)) {
+    // SR-P2-36：整科同名预检（新建不传 excludeId；见 _submitNewFolder
+    // 注释——旧代码只查顶层同名，跨层同名靠 upsertFolder 的 StateError
+    // 兜底，这里同样预检 + 捕获）。
+    if (await widget.repo
+        .folderNameExistsInSubject(_currentSubjectId, name)) {
       widget.onNotify('已经有了');
       return;
     }
     final folder = Folder(
-      id: 'folder-${DateTime.now().millisecondsSinceEpoch}',
+      // SR-P2-28：id 用 newEntityId（毫秒 + 随机后缀），防同毫秒连点撞主键。
+      id: newEntityId('folder'),
       name: name,
       subjectId: _currentSubjectId,
       sortOrder: _folders.length,
     );
-    await widget.repo.saveFolder(folder);
+    try {
+      await widget.repo.saveFolder(folder);
+    } on StateError {
+      widget.onNotify('已经有了');
+      return;
+    }
     if (!mounted) return;
     setState(() {
       _folders = [..._folders, folder];
@@ -2142,11 +2345,10 @@ class _QueuePopupState extends State<_QueuePopup> {
   /// 批量确认：只确认已选文件夹的题，缺文件夹的题拦下提示；
   /// 确认后关闭弹出层，父页刷新并按当前排序进下一道。
   Future<void> _batchConfirm() async {
-    final blocked =
-        _selectedQuestions.where((q) => q.folderIds.isEmpty).toList();
-    final ok = _selectedQuestions
-        .where((q) => q.folderIds.isNotEmpty)
+    final blocked = _selectedQuestions
+        .where((q) => q.folderIds.isEmpty)
         .toList();
+    final ok = _selectedQuestions.where((q) => q.folderIds.isNotEmpty).toList();
     for (final q in ok) {
       await widget.repo.save(q.copyWith(isOrganized: true));
     }
@@ -2165,14 +2367,12 @@ class _QueuePopupState extends State<_QueuePopup> {
     setState(() {
       _questions.removeWhere((q) => _selected.contains(q.id));
       _selected.clear();
-      _batchDel = false;
     });
   }
 
   void _clearSelection() {
     setState(() {
       _selected.clear();
-      _batchDel = false;
       _addingBatchFolder = false;
     });
   }
@@ -2189,6 +2389,11 @@ class _QueuePopupState extends State<_QueuePopup> {
       onKeyEvent: (node, event) {
         if (event is KeyDownEvent &&
             event.logicalKey == LogicalKeyboardKey.escape) {
+          // 确认框开着时 Esc 先关确认框（不关队列层）。
+          if (_confirmCompleter != null) {
+            _resolveConfirm(false);
+            return KeyEventResult.handled;
+          }
           widget.onClose();
           return KeyEventResult.handled;
         }
@@ -2206,233 +2411,214 @@ class _QueuePopupState extends State<_QueuePopup> {
                 child: Container(color: const Color(0x470D1118)),
               ),
             ),
-          Positioned(
-            left: widget.left,
-            top: widget.top,
-            width: widget.width,
-            // 定高（Overlay 内容在 Material/Scaffold 之外，Column 用
-            // min 高 + Flexible 时 ListView 会拿到无限高而溢出）。
-            child: SizedBox(
-              height: widget.maxHeight,
-              child: Container(
-                key: const Key('organize-queue-popup'),
-                padding: EdgeInsets.all(14 * scale),
-                decoration: BoxDecoration(
-                  color: palette.surface,
-                  border: Border.all(color: palette.lineStrong),
-                  borderRadius: BorderRadius.circular(16 * scale),
-                  boxShadow: const [
-                    BoxShadow(
-                      color: Color(0x470A0E16),
-                      blurRadius: 50,
-                      offset: Offset(0, 18),
-                    ),
-                  ],
-                ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    Row(
-                      children: [
-                        Expanded(
-                          child: Text(
-                            '待整理队列 · ${_questions.length} 道',
-                            style: const TextStyle(
-                              fontSize: 15.5,
-                              fontWeight: FontWeight.w800,
-                              height: 1.2,
+            Positioned(
+              left: widget.left,
+              top: widget.top,
+              width: widget.width,
+              // 定高（Overlay 内容在 Material/Scaffold 之外，Column 用
+              // min 高 + Flexible 时 ListView 会拿到无限高而溢出）。
+              child: SizedBox(
+                height: widget.maxHeight,
+                child: Container(
+                  key: const Key('organize-queue-popup'),
+                  padding: EdgeInsets.all(14 * scale),
+                  decoration: BoxDecoration(
+                    color: palette.surface,
+                    border: Border.all(color: palette.lineStrong),
+                    borderRadius: BorderRadius.circular(16 * scale),
+                    boxShadow: const [
+                      BoxShadow(
+                        color: Color(0x470A0E16),
+                        blurRadius: 50,
+                        offset: Offset(0, 18),
+                      ),
+                    ],
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Row(
+                        children: [
+                          Expanded(
+                            child: Text(
+                              '待整理队列 · ${_questions.length} 道',
+                              style: const TextStyle(
+                                fontSize: 15.5,
+                                fontWeight: FontWeight.w800,
+                                height: 1.2,
+                              ),
+                              overflow: TextOverflow.ellipsis,
                             ),
-                            overflow: TextOverflow.ellipsis,
                           ),
-                        ),
-                        QmButton(
-                          label: '关闭 ×',
-                          variant: QmButtonVariant.plain,
-                          size: QmButtonSize.small,
-                          onPressed: widget.onClose,
-                        ),
-                      ],
-                    ),
-                    Padding(
-                      padding: EdgeInsets.only(top: 2 * scale, bottom: 10 * scale),
-                      child: Text(
-                        '点中一道题，下面展开它的一行详情 · 勾了题底部才出现批量条',
-                        style: TextStyle(
-                          fontSize: 12,
-                          color: palette.muted,
-                          height: 1.5,
-                        ),
-                        overflow: TextOverflow.ellipsis,
+                          QmButton(
+                            label: '关闭 ×',
+                            variant: QmButtonVariant.plain,
+                            size: QmButtonSize.small,
+                            onPressed: widget.onClose,
+                          ),
+                        ],
                       ),
-                    ),
-                    Row(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              TextField(
-                                controller: _searchCtrl,
-                                decoration: const InputDecoration(
-                                  hintText: '搜题名、学科、试卷',
+                      Padding(
+                        padding: EdgeInsets.only(
+                          top: 2 * scale,
+                          bottom: 10 * scale,
+                        ),
+                        child: Text(
+                          '点中一道题，下面展开它的一行详情 · 勾了题底部才出现批量条',
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: palette.muted,
+                            height: 1.5,
+                          ),
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                      Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                TextField(
+                                  controller: _searchCtrl,
+                                  decoration: const InputDecoration(
+                                    hintText: '搜题名、学科、试卷',
+                                  ),
+                                  onChanged: (v) => setState(() => _search = v),
                                 ),
-                                onChanged: (v) =>
-                                    setState(() => _search = v),
-                              ),
-                              Padding(
-                                padding: EdgeInsets.only(top: 3 * scale),
-                                child: Text(
-                                  _search.isEmpty
-                                      ? '搜题名、学科、试卷（来源），不搜题干'
-                                      : '搜题名、学科、试卷（来源），不搜题干 · 搜到 ${filtered.length} 道',
+                                Padding(
+                                  padding: EdgeInsets.only(top: 3 * scale),
+                                  child: Text(
+                                    _search.isEmpty
+                                        ? '搜题名、学科、试卷（来源），不搜题干'
+                                        : '搜题名、学科、试卷（来源），不搜题干 · 搜到 ${filtered.length} 道',
+                                    style: TextStyle(
+                                      fontSize: 11.5,
+                                      color: palette.muted,
+                                      height: 1.4,
+                                    ),
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                          SizedBox(width: 10 * scale),
+                          SizedBox(
+                            width: 168 * scale,
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  '排序',
                                   style: TextStyle(
-                                    fontSize: 11.5,
+                                    fontSize: 12.5,
+                                    fontWeight: FontWeight.w700,
                                     color: palette.muted,
-                                    height: 1.4,
+                                    height: 1.2,
                                   ),
-                                  overflow: TextOverflow.ellipsis,
                                 ),
-                              ),
-                            ],
+                                const SizedBox(height: 4),
+                                DropdownButton<String>(
+                                  value: _sort,
+                                  isExpanded: true,
+                                  items: const [
+                                    DropdownMenuItem(
+                                      value: 'timeDesc',
+                                      child: Text('时间降序'),
+                                    ),
+                                    DropdownMenuItem(
+                                      value: 'timeAsc',
+                                      child: Text('时间升序'),
+                                    ),
+                                    DropdownMenuItem(
+                                      value: 'subjectAsc',
+                                      child: Text('学科首字母升序'),
+                                    ),
+                                    DropdownMenuItem(
+                                      value: 'subjectDesc',
+                                      child: Text('学科首字母降序'),
+                                    ),
+                                  ],
+                                  onChanged: (v) async {
+                                    if (v == null) return;
+                                    setState(() => _sort = v);
+                                    await widget.onSortChanged(v);
+                                  },
+                                ),
+                              ],
+                            ),
                           ),
-                        ),
-                        SizedBox(width: 10 * scale),
-                        SizedBox(
-                          width: 168 * scale,
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(
-                                '排序',
-                                style: TextStyle(
-                                  fontSize: 12.5,
-                                  fontWeight: FontWeight.w700,
-                                  color: palette.muted,
-                                  height: 1.2,
-                                ),
-                              ),
-                              const SizedBox(height: 4),
-                              DropdownButton<String>(
-                                value: _sort,
-                                isExpanded: true,
-                                items: const [
-                                  DropdownMenuItem(
-                                    value: 'timeDesc',
-                                    child: Text('时间降序'),
-                                  ),
-                                  DropdownMenuItem(
-                                    value: 'timeAsc',
-                                    child: Text('时间升序'),
-                                  ),
-                                  DropdownMenuItem(
-                                    value: 'subjectAsc',
-                                    child: Text('学科首字母升序'),
-                                  ),
-                                  DropdownMenuItem(
-                                    value: 'subjectDesc',
-                                    child: Text('学科首字母降序'),
-                                  ),
-                                ],
-                                onChanged: (v) async {
-                                  if (v == null) return;
-                                  setState(() => _sort = v);
-                                  await widget.onSortChanged(v);
-                                },
-                              ),
-                            ],
-                          ),
-                        ),
-                      ],
-                    ),
-                    SizedBox(height: 10 * scale),
-                    if (_pendingDeleteId != null)
-                      _singleDeleteConfirm(),
-                    Expanded(
-                      child: Container(
-                        decoration: BoxDecoration(
-                          color: palette.surface,
-                          border: Border.all(color: palette.line),
-                          borderRadius: BorderRadius.circular(12 * scale),
-                        ),
-                        padding: EdgeInsets.all(6 * scale),
-                        child: filtered.isEmpty
-                            ? const Padding(
-                                padding: EdgeInsets.symmetric(
-                                  horizontal: 8,
-                                  vertical: 12,
-                                ),
-                                child: Text(
-                                  '没找到这道题，换个词试试',
-                                  style: TextStyle(fontSize: 13.5),
-                                ),
-                              )
-                            : ListView.builder(
-                                controller: _scrollCtrl,
-                                itemCount: filtered.length,
-                                itemBuilder: (ctx, i) =>
-                                    _queueRow(filtered[i], currentId),
-                              ),
+                        ],
                       ),
-                    ),
-                    if (_selected.isNotEmpty) _batchBar(),
-                  ],
+                      SizedBox(height: 10 * scale),
+                      Expanded(
+                        child: Container(
+                          decoration: BoxDecoration(
+                            color: palette.surface,
+                            border: Border.all(color: palette.line),
+                            borderRadius: BorderRadius.circular(12 * scale),
+                          ),
+                          padding: EdgeInsets.all(6 * scale),
+                          child: filtered.isEmpty
+                              ? const Padding(
+                                  padding: EdgeInsets.symmetric(
+                                    horizontal: 8,
+                                    vertical: 12,
+                                  ),
+                                  child: Text(
+                                    '没找到这道题，换个词试试',
+                                    style: TextStyle(fontSize: 13.5),
+                                  ),
+                                )
+                              : ListView.builder(
+                                  controller: _scrollCtrl,
+                                  itemCount: filtered.length,
+                                  itemBuilder: (ctx, i) =>
+                                      _queueRow(filtered[i], currentId),
+                                ),
+                        ),
+                      ),
+                      if (_selected.isNotEmpty) _batchBar(),
+                    ],
+                  ),
                 ),
               ),
             ),
-          ),
+            // B3：删除确认的模态弹窗（见 [_askConfirm]）：直接画在队列层
+            // 自己的 Stack 顶层，盖在队列层之上；ModalBarrier 挡住底下
+            // 的点按，Esc 先关确认框（见上面 onKeyEvent）。
+            if (_confirmCompleter != null) ...[
+              const Positioned.fill(
+                child: ModalBarrier(
+                  dismissible: false,
+                  color: Color(0x88000000),
+                ),
+              ),
+              Center(
+                child: AlertDialog(
+                  title: Text(_confirmTitle ?? ''),
+                  content: Text(_confirmDetail ?? ''),
+                  actions: [
+                    TextButton(
+                      onPressed: () => _resolveConfirm(false),
+                      child: const Text('取消'),
+                    ),
+                    TextButton(
+                      onPressed: () => _resolveConfirm(true),
+                      child: const Text('确认删除'),
+                    ),
+                  ],
+                ),
+              ),
+            ],
           ],
         ),
       ),
     );
   }
 
-  Widget _singleDeleteConfirm() {
-    final scale = qmScaleOf(context);
-    final palette = DesignTokens.of(Theme.of(context).brightness);
-    final matches =
-        _questions.where((q) => q.id == _pendingDeleteId).toList();
-    if (matches.isEmpty) return const SizedBox.shrink();
-    final target = matches.first;
-    return Container(
-      margin: EdgeInsets.only(left: 8 * scale, right: 8 * scale, bottom: 10 * scale),
-      padding: EdgeInsets.all(12 * scale),
-      decoration: BoxDecoration(
-        color: palette.errBg,
-        border: Border.all(color: palette.errLine),
-        borderRadius: BorderRadius.circular(12 * scale),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Text('确认删除这道题？',
-              style: TextStyle(fontWeight: FontWeight.w700)),
-          SizedBox(height: 4 * scale),
-          Text(
-            '「${_subjectOf(target.subjectId).name} · ${sliceKindLabel(target.sliceKind)}｜${target.title}」删了就没了，不可恢复。',
-            style: const TextStyle(fontSize: 13, height: 1.55),
-          ),
-          SizedBox(height: 8 * scale),
-          Row(
-            children: [
-              QmButton(
-                label: '确认删除',
-                size: QmButtonSize.small,
-                onPressed: () => _confirmDeleteOne(target),
-              ),
-              SizedBox(width: 8 * scale),
-              QmButton(
-                label: '取消',
-                variant: QmButtonVariant.plain,
-                size: QmButtonSize.small,
-                onPressed: () => setState(() => _pendingDeleteId = null),
-              ),
-            ],
-          ),
-        ],
-      ),
-    );
-  }
 
   Widget _queueRow(Question q, String? currentId) {
     final scale = qmScaleOf(context);
@@ -2465,8 +2651,7 @@ class _QueuePopupState extends State<_QueuePopup> {
                   overflow: TextOverflow.ellipsis,
                   style: TextStyle(
                     fontSize: 14,
-                    fontWeight:
-                        isCurrent ? FontWeight.w800 : FontWeight.normal,
+                    fontWeight: isCurrent ? FontWeight.w800 : FontWeight.normal,
                     color: isCurrent ? palette.accent : null,
                     height: 1.2,
                   ),
@@ -2477,7 +2662,7 @@ class _QueuePopupState extends State<_QueuePopup> {
               label: '删除',
               variant: QmButtonVariant.danger,
               size: QmButtonSize.small,
-              onPressed: () => setState(() => _pendingDeleteId = q.id),
+              onPressed: () => _askDeleteOne(q),
             ),
           ],
         ),
@@ -2492,11 +2677,7 @@ class _QueuePopupState extends State<_QueuePopup> {
               _detailLine(q),
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
-              style: TextStyle(
-                fontSize: 12,
-                color: palette.muted,
-                height: 1.5,
-              ),
+              style: TextStyle(fontSize: 12, color: palette.muted, height: 1.5),
             ),
           ),
       ],
@@ -2527,10 +2708,7 @@ class _QueuePopupState extends State<_QueuePopup> {
             )
           : content,
     );
-    return InkWell(
-      onTap: () => widget.onJump(q.id),
-      child: row,
-    );
+    return InkWell(onTap: () => widget.onJump(q.id), child: row);
   }
 
   /// 底部浮动批量条：只在有勾选时出现。
@@ -2586,10 +2764,9 @@ class _QueuePopupState extends State<_QueuePopup> {
                       value: '__add__',
                       child: Text('＋ 添加新文件夹…'),
                     ),
-                    ..._folders.map((f) => DropdownMenuItem(
-                          value: f.id,
-                          child: Text(f.name),
-                        )),
+                    ..._folders.map(
+                      (f) => DropdownMenuItem(value: f.id, child: Text(f.name)),
+                    ),
                   ],
                   onChanged: (v) {
                     if (v == null) return;
@@ -2622,7 +2799,7 @@ class _QueuePopupState extends State<_QueuePopup> {
                 label: '批量删除',
                 variant: QmButtonVariant.danger,
                 size: QmButtonSize.small,
-                onPressed: () => setState(() => _batchDel = true),
+                onPressed: _askBatchDelete,
               ),
               SizedBox(width: 8 * scale),
               QmButton(
@@ -2633,55 +2810,12 @@ class _QueuePopupState extends State<_QueuePopup> {
               ),
             ],
           ),
-          if (_batchDel) _batchDeleteConfirm(),
           if (_addingBatchFolder) _batchAddFolderForm(),
         ],
       ),
     );
   }
 
-  Widget _batchDeleteConfirm() {
-    final scale = qmScaleOf(context);
-    final palette = DesignTokens.of(Theme.of(context).brightness);
-    return Container(
-      margin: EdgeInsets.only(top: 10 * scale),
-      padding: EdgeInsets.all(12 * scale),
-      decoration: BoxDecoration(
-        color: palette.errBg,
-        border: Border.all(color: palette.errLine),
-        borderRadius: BorderRadius.circular(12 * scale),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Text('删了就没了，确定吗？',
-              style: TextStyle(fontWeight: FontWeight.w700)),
-          SizedBox(height: 4 * scale),
-          Text(
-            '批量删除勾选的 ${_selected.length} 道题，删错了不能恢复。',
-            style: const TextStyle(fontSize: 13, height: 1.55),
-          ),
-          SizedBox(height: 8 * scale),
-          Row(
-            children: [
-              QmButton(
-                label: '确认删除',
-                size: QmButtonSize.small,
-                onPressed: _batchDelete,
-              ),
-              SizedBox(width: 8 * scale),
-              QmButton(
-                label: '取消',
-                variant: QmButtonVariant.plain,
-                size: QmButtonSize.small,
-                onPressed: () => setState(() => _batchDel = false),
-              ),
-            ],
-          ),
-        ],
-      ),
-    );
-  }
 
   Widget _batchAddFolderForm() {
     final scale = qmScaleOf(context);
@@ -2708,9 +2842,7 @@ class _QueuePopupState extends State<_QueuePopup> {
               Expanded(
                 child: TextField(
                   controller: _newBatchFolderCtrl,
-                  decoration: const InputDecoration(
-                    hintText: '文件夹名，如：错题精选',
-                  ),
+                  decoration: const InputDecoration(hintText: '文件夹名，如：错题精选'),
                   onSubmitted: (_) => _submitBatchFolder(),
                 ),
               ),

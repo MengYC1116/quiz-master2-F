@@ -13,9 +13,14 @@ Windows 个人智能错题本（大学个人用），1:1 复刻主预览
 
 - Flutter 3.47.9 / Dart 3.13.7（锁定）
 - 依赖：`sqflite_common_ffi ^2.3.6`、`path ^1.9.1`、
-  `file_picker ^8.0.0`、`flutter_lints ^5.0.0`
-- onnxruntime 的 Dart 包版本故意不 pin：须在 Win11 上验证后再定
-  （decision-log D-07）；在此之前 YOLO 以占位模式运行。
+  `file_picker ^8.0.0`、`flutter_lints ^5.0.0`、
+  `onnxruntime ^1.4.1`（D-23，2026-11-13 已 pin）、
+  `pdfrx_engine ^0.9.2`（PDF 渲染，PDFium 引擎的纯 Dart 封装）
+- YOLO 第 1 层已接真模型：`lib/services/yolo_onnx_service.dart`
+  加载 `assets/models/question/yolo11s-question-v1.onnx`，
+  letterbox 预处理 → CHW float32 输入 → OrtSession 推理 →
+  解码 + NMS；第 2 层暂缓（`intraEnabled=false`，模型需重训；
+  检测逻辑与数据模型保留，见 D-23，再接入点见该文件注释）。
 
 ## 运行（Linux 验证）
 
@@ -46,17 +51,35 @@ lib/
   theme/app_theme.dart 年轻学习伙伴感（亮色 / 深色冷灰）
   models/models.dart   学科/错因/题目/文件夹/设置等模型
   data/
-    database.dart      SQLite（v2 全新 schema，version 1）
+    database.dart      SQLite（v2 全新 schema，schemaVersion 2，13 张表）
+                       Batch 4 拆分后只剩入口 + 10 个 part 文件
+                       db_backup / db_catalog / db_codec / db_collect /
+                       db_orphans / db_paths / db_questions / db_schema /
+                       db_settings / db_storage（实现见代码地图 §2）
     repository.dart    各页共用查询口径
-    demo_data.dart     演示数据：数学/英语/政治各 3 道大学题
+    demo_data.dart     演示数据定义：数学/英语/政治各 3 道大学题
+                       （`demoQuestions()`，共 9 道）+ 演示试卷/知识点树；
+                       新库建库时不预置演示题（§6 第 1 条），种子只写
+                       学科/文件夹/标签/试卷/知识点树
     badge_notifier.dart 角标刷新通知
   services/
-    yolo_onnx_service.dart  两层 YOLO（占位：一页一个整题框）
-    import_service.dart     PDF/JPG/PNG 导入（50MB/20MB）
-  widgets/widgets.dart      整题切片 / 小伙伴形象 / 纸纹微点
+    yolo_onnx_service.dart  YOLO 第 1 层（真模型，见上；第 2 层暂缓）
+    import_service.dart     PDF/JPG/PNG 导入（PDF 50MB/20 页、图片 20MB）
+    pdf_render_service.dart PDF 按页渲染（pdfrx_engine / PDFium）
+    page_image_pipeline.dart 框坐标变换、按框裁剪、EXIF 归一化
+    recheck_reminder.dart   复查提醒（应用内、进入应用时一次）
+    zip_archive.dart        备份/恢复用最小 ZIP 读写（纯 Dart）
+  widgets/
+    widgets.dart            整题切片 / 小伙伴形象 / 纸纹微点
+    uikit.dart              公共组件库（R1，取自视觉基准 HTML）
+    app_shell.dart          应用外壳 · 左导航（R2，纯展示组件）
   modules/
     home/ collect/ organize/ wrongbook/ detail/
     review/ report/ subjects/ settings/
+    （Batch 4 拆分：collect/ 下入口 collect_page.dart + box_editor.dart
+    修框编辑器 + collect_widgets.dart；wrongbook/ 下入口
+    wrongbook_page.dart + wrongbook_shelf / wrongbook_directory /
+    wrongbook_list / wrongbook_cover / wrongbook_widgets；详见代码地图 §2）
 ```
 
 ## 决策日志

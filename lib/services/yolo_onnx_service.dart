@@ -53,11 +53,6 @@ class YoloOnnxService {
   /// 第 1 层模型（整题检测）。
   final String questionModelAsset;
 
-  /// 兼容旧构造：占位时代的单模型路径参数已无用，保留仅为不破坏
-  /// 旧调用；真实接入以 [questionModelAsset] 为准。
-  @Deprecated('改用 questionModelAsset')
-  String get modelAsset => questionModelAsset;
-
   /// 第 1 层输入边长（模型定死 1280，见模型元数据 imgsz）。
   static const int questionInputSize = 1280;
 
@@ -66,6 +61,11 @@ class YoloOnnxService {
   /// 并恢复 [_detectIntra] 里的实现（见该方法的注释）。
   static const bool intraEnabled = false;
 
+  // —— 第 2 层常量（SR-P2-72）：以下 5 个常量都是“暂缓、再接入时启用”
+  // 的记录，当前第 1 层检测不用它们（`intraEnabled` 关着，模型文件
+  // 也不在仓库里）。不要删：再接入时按 [_detectIntra] 的注释恢复；
+  // 也不要误读为生效参数——尤其 [crossClassIouThreshold] 在第 1 层
+  // 调用里只是传参，单类时跨类去重是空操作（见 _detect 的传参注释）。
   /// 第 2 层模型路径（开关关着时不加载，仅作再接入记录）。
   static const String intraModelAsset =
       'assets/models/intra/yolo11s-intra-v1.onnx';
@@ -85,7 +85,8 @@ class YoloOnnxService {
 
   /// 跨类去重 IoU 阈值：第 2 层里 stem 与 figure 偶有同框重复
   /// （同一区域两个标签），IoU > 0.8 时只留置信度高的一个。
-  /// 第 1 层只有 1 类，此值不生效，留给第 2 层再接入时用。
+  /// 第 1 层只有 1 类，此值不生效（单类时 [_crossClassNms] 是空操作，
+  /// 只是把值原样传给第 2 层再接入时用），留给第 2 层再接入时用。
   static const double crossClassIouThreshold = 0.8;
 
   /// 第 2 层类别下标 → [QuestionBox.type]（模型元数据 names：
@@ -103,8 +104,8 @@ class YoloOnnxService {
   /// 不重置就测不到“模型缺失”的分支。仅测试调用。
   @visibleForTesting
   static void resetLoadStateForTest() {
-    _loadAttempted = false;
     _loadOk = false;
+    _loadFuture = null;
     try {
       _questionSession?.release();
     } catch (_) {}
@@ -116,8 +117,15 @@ class YoloOnnxService {
 
   static OrtSession? _questionSession;
   static bool _envInitialized = false;
-  static bool _loadAttempted = false;
+  // SR-P1-16：加载失败不锁死。旧实现用 `_loadAttempted` 在尝试前先置真，
+  // 失败一次后 `_ensureLoaded` 永远直接返回 false，运行中补放模型也须
+  // 重启才生效；现在失败不留任何“已尝试”标记，下次检测重新尝试加载，
+  // 成功后由 `_loadOk` 缓存复用（该字段已删除，不再保留）。
   static bool _loadOk = false;
+
+  /// 正在进行的加载（SR-P1-16）：并发检测共用一次加载，避免 38MB
+  /// 模型被重复加载；加载失败后清空，下次检测重新尝试。
+  static Future<bool>? _loadFuture;
 
   /// 对一页做检测，只返回第 1 层整题框。图片文件不存在、模型缺失
   /// 或推理中途出错时返回 `usedFallback: true` 的空结果（不回占位框，
@@ -142,9 +150,15 @@ class YoloOnnxService {
     }
     try {
       final bytes = file.readAsBytesSync();
+      // SR-P2-69：Codec 用完即 dispose（与 page_image_pipeline._decode
+      // 同款），否则每次检测漏一份 native 资源。
       final codec = await ui.instantiateImageCodec(bytes);
-      final frame = await codec.getNextFrame();
-      final pageImage = frame.image;
+      final ui.Image pageImage;
+      try {
+        pageImage = (await codec.getNextFrame()).image;
+      } finally {
+        codec.dispose();
+      }
       try {
         if (!await _ensureLoaded()) {
           return const DetectionResult(
@@ -169,9 +183,23 @@ class YoloOnnxService {
     }
   }
 
+  /// 加载失败不锁死（SR-P1-16）：成功后缓存复用，不再重复加载模型；
+  /// 失败时下次检测重新尝试加载（例如运行中补放模型文件后无需重启
+  /// 即可恢复）。模型确实缺失时每次检测只走一次廉价的 asset 加载
+  /// 失败并返回同一个 fallback 结果——自动检测路径失败时静默，
+  /// 仅用户主动点“恢复自动框”时才弹一次提示，不反复打扰用户。
   Future<bool> _ensureLoaded() async {
-    if (_loadAttempted) return _loadOk;
-    _loadAttempted = true;
+    if (_loadOk) return true;
+    final inFlight = _loadFuture;
+    if (inFlight != null) return inFlight;
+    final future = _loadOnce();
+    _loadFuture = future;
+    final ok = await future;
+    if (!ok) _loadFuture = null;
+    return ok;
+  }
+
+  Future<bool> _loadOnce() async {
     try {
       if (!_envInitialized) {
         OrtEnv.instance.init();
@@ -184,6 +212,7 @@ class YoloOnnxService {
       _loadOk = true;
     } catch (_) {
       _loadOk = false;
+      _questionSession = null;
     }
     return _loadOk;
   }
@@ -202,6 +231,7 @@ class YoloOnnxService {
       numClasses: 1,
       confThreshold: questionConfThreshold,
       nmsIou: nmsIouThreshold,
+      // SR-P2-72：单类时跨类去重是空操作，此值只是传给第 2 层再接入时用。
       crossClassIou: crossClassIouThreshold,
     );
     final fit1 = letterboxFit(pageW, pageH, questionInputSize);
@@ -468,24 +498,14 @@ class YoloOnnxService {
 
   /// 跨类去重：不同类别框几乎重合时（IoU 超阈值）只留置信度高的。
   /// 典型是第 2 层把同一段文字同时标成 stem 和 figure。
+  /// SR-P2-72：与 [_nms] 同一段实现（按置信度排序后 IoU 压制），
+  /// 直接复用，不再各写一份；第 2 层再接入时若需“只压不同类”
+  /// 的语义，再在这里加类别判断（当前行为与旧实现逐字一致）。
   static List<YoloRawDet> _crossClassNms(
     List<YoloRawDet> dets,
     double iouThreshold,
-  ) {
-    final sorted = [...dets]..sort((a, b) => b.score.compareTo(a.score));
-    final kept = <YoloRawDet>[];
-    for (final d in sorted) {
-      var suppressed = false;
-      for (final k in kept) {
-        if (_iou(d, k) > iouThreshold) {
-          suppressed = true;
-          break;
-        }
-      }
-      if (!suppressed) kept.add(d);
-    }
-    return kept;
-  }
+  ) =>
+      _nms(dets, iouThreshold);
 
   static double _iou(YoloRawDet a, YoloRawDet b) {
     final interX1 = math.max(a.x1, b.x1);

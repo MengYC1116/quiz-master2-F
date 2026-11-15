@@ -13,19 +13,28 @@ import 'uikit.dart';
 /// 独立的题型字段，按 `sliceKind` 推导；错题本 / 整理台的失败占位与
 /// 队列详情行共用）。
 String sliceKindLabel(String kind) => switch (kind) {
-      'chart' => '图表题',
-      'function' => '函数题',
-      'timeline' => '时间轴',
-      'limit' => '极限题',
-      _ => '材料题',
-    };
+  'chart' => '图表题',
+  'function' => '函数题',
+  'timeline' => '时间轴',
+  'limit' => '极限题',
+  _ => '材料题',
+};
 
-/// 二层区域（stem / option / figure）：演示数据没有真实框坐标，按题型
+/// 二层区域（stem / option / figure）：只对演示题 / 老题按题型
 /// 与题干文字推导——选择题（题干含填空 `（　）` / `______`）有选项区，
 /// 图表 / 时间轴题有配图区，题干区恒有。HTML 演示 9 题中 8 题与此规则
 /// 一致（政治 p1 在 HTML 里是选择题，但 Flutter 演示题干无填空标记，
 /// 无法推导，记为已知近似，见 R5 报告）。
+///
+/// P1-1 降级（2026-11-14，Meng 已定：二层暂缓，不接线）：真实题的
+/// `sliceText` 为空，不再从空文字推导假区域——`sliceText` 为空返回
+/// 空列表，整理页随之隐藏 region 开关、只留整题切片展示。库里已存的
+/// 手动二层框（`QuestionBox` layer=2）保留不动，不删数据、不改
+/// schema；叠加层渲染见 [realRegionRects] / [QuestionRegionOverlays]
+///（B3 追加项 1：有真实框时用真实框坐标，无框时回退示意框；是否显示
+/// 仍由本函数的返回值决定，真实题仍不显示区域）。
 List<String> regionsOfQuestion(Question q) {
+  if (q.sliceText.trim().isEmpty) return const [];
   final regions = <String>['stem'];
   if (q.sliceText.contains('（　）') || q.sliceText.contains('______')) {
     regions.add('option');
@@ -36,19 +45,96 @@ List<String> regionsOfQuestion(Question q) {
   return regions;
 }
 
+/// 把页图坐标的 layer-2 框换算到整题切片坐标（0..1）。
+///
+/// 坐标系依据（与已有实现一致，不是新定的）：切片就是页图按 [layer1]
+///（layer=1 整题框，页图 0..1 坐标）裁出的图（见
+/// `page_image_pipeline.cropBoxPng`）；确认时框已随页图旋转烘焙到
+/// 同一坐标系（见 collect_page 的 `rotateBoxToRotatedPage` 调用），
+/// 所以换算就是 layer-2 框在 layer-1 框内的相对位置：
+/// `x' = (x − lx) / lw`，`y' = (y − ly) / lh`，`w' = w / lw`，
+/// `h' = h / lh`；结果钳制进 0..1。
+/// layer-1 框无面积、或换算后无面积（框完全落在整题框外）时返回
+/// null——调用方回退示意框。
+Rect? layer2BoxToSliceRect(QuestionBox layer1, QuestionBox layer2) {
+  if (layer1.w <= 0 || layer1.h <= 0) return null;
+  final rect = Rect.fromLTRB(
+    ((layer2.x - layer1.x) / layer1.w).clamp(0.0, 1.0),
+    ((layer2.y - layer1.y) / layer1.h).clamp(0.0, 1.0),
+    ((layer2.x + layer2.w - layer1.x) / layer1.w).clamp(0.0, 1.0),
+    ((layer2.y + layer2.h - layer1.y) / layer1.h).clamp(0.0, 1.0),
+  );
+  if (rect.width <= 0 || rect.height <= 0) return null;
+  return rect;
+}
+
+/// 从某题的全部框（layer 1 + layer 2，均为页图 0..1 坐标）算出各
+/// 二层区域在整题切片内的 0..1 矩形，键为 region 名（stem / option /
+/// figure），供 [QuestionRegionOverlays] 的 `realRects` 用。
+/// 无 layer-1 框、或某区域无 layer-2 框、或换算后无面积时，该区域
+/// 不出现在结果里（调用方回退示意框）。
+/// SR-P2-23：旧实现取第一个 1 层框就 break，其后所有 2 层框都按它
+/// 换算——同一题有多个 1 层框时（详情页重框允许），挂在第 2 个框下
+/// 的 2 层框会错位。现在按 parentBoxId 把 2 层框归属到各自的 1 层
+/// 框再换算；parentBoxId 为空（老数据行）时回退到第一个 1 层框。
+/// SR-P2-24：同区域多个框的优先级是确定的——取换算后面积最大者，
+/// 面积相等取列表第一个（不依赖库返回的行序；行序本身见
+/// boxesForPageImageFromImpl 的 ORDER BY，见 B5-P2-COLLECT 报告
+/// 转交项）。layer-2 之外（type 为 question 的）行忽略。
+Map<String, Rect> realRegionRects(List<QuestionBox> boxes) {
+  QuestionBox? firstLayer1;
+  final layer1ById = <String, QuestionBox>{};
+  for (final b in boxes) {
+    if (b.layer == 1) {
+      firstLayer1 ??= b;
+      layer1ById[b.id] = b;
+    }
+  }
+  if (firstLayer1 == null) return const {};
+  final out = <String, Rect>{};
+  for (final b in boxes) {
+    if (b.layer != 2) continue;
+    if (b.type != 'stem' && b.type != 'option' && b.type != 'figure') {
+      continue;
+    }
+    final parent = b.parentBoxId == null
+        ? null
+        : layer1ById[b.parentBoxId];
+    final rect = layer2BoxToSliceRect(parent ?? firstLayer1, b);
+    if (rect == null) continue;
+    final prev = out[b.type];
+    // 同区域多框：面积大者胜，同面积保留先到的（确定性优先级）。
+    if (prev == null ||
+        rect.width * rect.height > prev.width * prev.height) {
+      out[b.type] = rect;
+    }
+  }
+  return out;
+}
+
 /// 二层区域高亮叠加层：按 HTML `paperHTML` 的区域几何（stem 上 34%、
 /// option 下 36%、figure 下 42% 居中 48% 宽）画 2px 虚线框 + 区域名。
 /// 只画 [visible] 里的区域；本身不吃手势（包一层 IgnorePointer 后
 /// 底下的 QuestionSlice 点按仍可达）。
+/// B3 追加项 1：[realRects] 有某区域的切片坐标（0..1，见
+/// [realRegionRects]）时画真实框，没有该区域时回退上述示意比例。
+/// P1-1 降级后只对演示题 / 老题画框：真实题的 `visible` 为空，不画
+/// 任何框——是否显示仍由调用方按 [regionsOfQuestion] 决定，真实框
+/// 只改变“画在哪”，不改变“画不画”。
 class QuestionRegionOverlays extends StatelessWidget {
   const QuestionRegionOverlays({
     super.key,
     required this.question,
     required this.visible,
+    this.realRects = const {},
   });
 
   final Question question;
   final Set<String> visible;
+
+  /// 各二层区域在整题切片内的 0..1 矩形（键 stem / option / figure）。
+  /// 只含库里真实有的框；缺失的区域回退示意框。
+  final Map<String, Rect> realRects;
 
   @override
   Widget build(BuildContext context) {
@@ -60,21 +146,24 @@ class QuestionRegionOverlays extends StatelessWidget {
         if (w.isInfinite || h.isInfinite || w <= 0 || h <= 0) {
           return const SizedBox.shrink();
         }
-        Widget region(
-          String key,
-          Color color,
-          String label,
-          double left,
-          double top,
-          double width,
-          double height,
-        ) {
+        /// [fallback] 是示意框（像素）；[realRects] 里有该区域的真实
+        /// 切片坐标（0..1）时按真实框画，否则用示意框。
+        Widget region(String key, Color color, String label, Rect fallback) {
           if (!visible.contains(key)) return const SizedBox.shrink();
+          final real = realRects[key];
+          final r = real == null
+              ? fallback
+              : Rect.fromLTWH(
+                  real.left * w,
+                  real.top * h,
+                  real.width * w,
+                  real.height * h,
+                );
           return Positioned(
-            left: left,
-            top: top,
-            width: width,
-            height: height,
+            left: r.left,
+            top: r.top,
+            width: r.width,
+            height: r.height,
             child: CustomPaint(
               painter: _DashedRegionPainter(color),
               child: Align(
@@ -99,14 +188,36 @@ class QuestionRegionOverlays extends StatelessWidget {
           );
         }
 
-        return Stack(
-          children: [
-            region('stem', palette.stem, 'stem 题干', 10, 10, w - 20, h * 0.34),
-            region('option', palette.option, 'option 选项', 10,
-                h - 12 - h * 0.36, w - 20, h * 0.36),
-            region('figure', palette.figure, 'figure 插图', w * 0.26,
-                h - 14 - h * 0.42, w * 0.48, h * 0.42),
-          ],
+        return ClipRect(
+          // B2 Bug 2：框一律按图片边界裁剪——叠加层尺寸与图同宽时框本就
+          // 在图内；ClipRect 是兜底，后续区域几何再改也不会画到图外。
+          child: Stack(
+            children: [
+              region(
+                'stem',
+                palette.stem,
+                'stem 题干',
+                Rect.fromLTWH(10, 10, w - 20, h * 0.34),
+              ),
+              region(
+                'option',
+                palette.option,
+                'option 选项',
+                Rect.fromLTWH(10, h - 12 - h * 0.36, w - 20, h * 0.36),
+              ),
+              region(
+                'figure',
+                palette.figure,
+                'figure 插图',
+                Rect.fromLTWH(
+                  w * 0.26,
+                  h - 14 - h * 0.42,
+                  w * 0.48,
+                  h * 0.42,
+                ),
+              ),
+            ],
+          ),
         );
       },
     );
@@ -198,7 +309,10 @@ class QuestionSlice extends StatelessWidget {
                     fontSize: 34,
                     fontWeight: FontWeight.w800,
                     color: subjectLabelColor(
-                        context, question.subjectId, subject.color),
+                      context,
+                      question.subjectId,
+                      subject.color,
+                    ),
                     height: 1.2,
                   ),
                 ),
@@ -206,7 +320,9 @@ class QuestionSlice extends StatelessWidget {
                 Text(
                   '${subject.name} · ${sliceKindLabel(question.sliceKind)}',
                   style: const TextStyle(
-                      fontSize: 15, fontWeight: FontWeight.w700),
+                    fontSize: 15,
+                    fontWeight: FontWeight.w700,
+                  ),
                 ),
                 const SizedBox(height: 4),
                 Text(
@@ -236,32 +352,17 @@ class QuestionSlice extends StatelessWidget {
     );
   }
 
-  /// §1.2(a)/§1.4：真实切片优先——`slice_path` 指向的 PNG 存在就
-  /// 显示真图（按显示尺寸解码，`cacheWidth` 不解全分辨率大图）；
-  /// `slice_path` 有值但文件缺失、或真实题有来源却无切片时显示
-  /// “图片缺失，可重新导入/重新框选”，不回退空白纸面；
-  /// `sliceText` 回退只适用于演示题与老题
-  /// （老题判定：`sourcePath == null && slicePath == null`）。
-  Widget _realSliceBody(
-      BuildContext context, Subject subject, AppPalette palette) {
-    final sliceAbs = question.slicePath == null
-        ? null
-        : AppDatabase.resolveDataPath(question.slicePath!);
-    if (sliceAbs != null && File(sliceAbs).existsSync()) {
-      return ClipRRect(
-        borderRadius: BorderRadius.circular(10),
-        child: Image.file(
-          File(sliceAbs),
-          fit: BoxFit.contain,
-          cacheWidth: (maxHeight * 2).ceil(),
-        ),
-      );
-    }
-    final isLegacy =
-        question.sourcePath == null && question.slicePath == null;
-    if (question.slicePath != null || !question.isDemo && !isLegacy) {
-      // 真实题缺图：明确提示，不画空白纸面。
-      return Center(
+  /// 真实题缺图占位（学科图标 + 学科 · 题型 + 「图片缺失，可重新导入/
+  /// 重新框选」）：文件缺失与图片解码失败共用（后者走 [Image.errorBuilder]），
+  /// 与详情页图片加载失败「学科图标 + 题型文字」的处理同口径。
+  /// SR-P2-29 附带：占位 Column（图标 34 + 两行文字）自然高约 100px，
+  /// 整理页修框切片卡只给 66px（`organizeSliceBodyMaxHeight`），旧写法
+  /// 直接溢出 35px；包一层 scaleDown 的 FittedBox，空间够时原样显示、
+  /// 空间紧时等比缩小，不再溢出（大图处 480px 不受影响）。
+  Widget _missingImagePlaceholder(BuildContext context, Subject subject) {
+    return Center(
+      child: FittedBox(
+        fit: BoxFit.scaleDown,
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
@@ -271,15 +372,17 @@ class QuestionSlice extends StatelessWidget {
                 fontSize: 34,
                 fontWeight: FontWeight.w800,
                 color: subjectLabelColor(
-                    context, question.subjectId, subject.color),
+                  context,
+                  question.subjectId,
+                  subject.color,
+                ),
                 height: 1.2,
               ),
             ),
             const SizedBox(height: 8),
             Text(
               '${subject.name} · ${sliceKindLabel(question.sliceKind)}',
-              style: const TextStyle(
-                  fontSize: 15, fontWeight: FontWeight.w700),
+              style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w700),
             ),
             const SizedBox(height: 4),
             const Text(
@@ -289,7 +392,47 @@ class QuestionSlice extends StatelessWidget {
             ),
           ],
         ),
+      ),
+    );
+  }
+
+  /// §1.2(a)/§1.4：真实切片优先——`slice_path` 指向的 PNG 存在就
+  /// 显示真图（按显示尺寸解码，`cacheWidth` 不解全分辨率大图）；
+  /// `slice_path` 有值但文件缺失、或真实题有来源却无切片时显示
+  /// “图片缺失，可重新导入/重新框选”，不回退空白纸面；
+  /// `sliceText` 回退只适用于演示题与老题
+  /// （老题判定：`sourcePath == null && slicePath == null`）。
+  Widget _realSliceBody(
+    BuildContext context,
+    Subject subject,
+    AppPalette palette,
+  ) {
+    final sliceAbs = question.slicePath == null
+        ? null
+        : AppDatabase.resolveDataPath(question.slicePath!);
+    if (sliceAbs != null && File(sliceAbs).existsSync()) {
+      return ClipRRect(
+        borderRadius: BorderRadius.circular(10),
+        child: Image.file(
+          File(sliceAbs),
+          fit: BoxFit.contain,
+          // SR-P2-74：cacheWidth 按显示尺寸 × devicePixelRatio 解码——
+          // 旧值只有逻辑尺寸的 2 倍，高分屏上文字偏糊；封顶 2048 防爆内存。
+          cacheWidth: math.min(
+            ((maxHeight * 2) * MediaQuery.devicePixelRatioOf(context)).ceil(),
+            2048,
+          ),
+          // 文件存在但解码失败（如损坏 / 非图片内容）：不显示 Flutter
+          // 的报错占位，走与文件缺失同一口径的缺图占位。
+          errorBuilder: (context, error, stackTrace) =>
+              _missingImagePlaceholder(context, subject),
+        ),
       );
+    }
+    final isLegacy = question.sourcePath == null && question.slicePath == null;
+    if (question.slicePath != null || !question.isDemo && !isLegacy) {
+      // 真实题缺图：明确提示，不画空白纸面。
+      return _missingImagePlaceholder(context, subject);
     }
     // 演示题 / 老题：沿用 sliceText 占位绘制。
     return Center(
@@ -304,7 +447,10 @@ class QuestionSlice extends StatelessWidget {
               maxLines: 3,
               overflow: TextOverflow.ellipsis,
               style: const TextStyle(
-                  fontSize: 14, color: Colors.black87, height: 1.6),
+                fontSize: 14,
+                color: Colors.black87,
+                height: 1.6,
+              ),
             ),
             const SizedBox(height: 6),
             SizedBox(
@@ -358,9 +504,15 @@ class _SliceFigurePainter extends CustomPainter {
           ..close();
         canvas.drawPath(shade, fillPaint);
         canvas.drawLine(
-            Offset(w * 0.35, h - 8), Offset(w * 0.35, h * 0.1), axisPaint);
+          Offset(w * 0.35, h - 8),
+          Offset(w * 0.35, h * 0.1),
+          axisPaint,
+        );
         canvas.drawLine(
-            Offset(w * 0.8, h - 8), Offset(w * 0.8, h * 0.1), axisPaint);
+          Offset(w * 0.8, h - 8),
+          Offset(w * 0.8, h * 0.1),
+          axisPaint,
+        );
       case 'function': // 导数综合：坐标轴 + 三次曲线
         canvas.drawLine(Offset(8, h * 0.6), Offset(w - 8, h * 0.6), axisPaint);
         canvas.drawLine(Offset(w * 0.4, 4), Offset(w * 0.4, h - 4), axisPaint);
@@ -370,8 +522,7 @@ class _SliceFigurePainter extends CustomPainter {
           ..lineTo(w - 12, h * 0.15);
         canvas.drawPath(f, linePaint);
       case 'timeline': // 史纲时间轴：横线 + 4 个年份点
-        canvas.drawLine(
-            Offset(8, h / 2), Offset(w - 8, h / 2), axisPaint);
+        canvas.drawLine(Offset(8, h / 2), Offset(w - 8, h / 2), axisPaint);
         for (var i = 0; i < 4; i++) {
           final x = 24 + i * (w - 48) / 3;
           canvas.drawCircle(Offset(x, h / 2), 4, linePaint);
@@ -386,7 +537,10 @@ class _SliceFigurePainter extends CustomPainter {
           ..quadraticBezierTo(w * 0.5, h * 0.75, w - 16, h * 0.55);
         canvas.drawPath(l, linePaint);
         canvas.drawLine(
-            Offset(20, h * 0.55), Offset(w - 8, h * 0.55), redPaint);
+          Offset(20, h * 0.55),
+          Offset(w - 8, h * 0.55),
+          redPaint,
+        );
       default: // 材料 / 阅读：三行横线（文字行）
         final textPaint = Paint()
           ..color = const Color(0xFFB9C4D6)
@@ -394,8 +548,11 @@ class _SliceFigurePainter extends CustomPainter {
           ..strokeCap = StrokeCap.round;
         for (var i = 0; i < 3; i++) {
           final y = 10 + i * 14;
-          canvas.drawLine(Offset(20, y.toDouble()),
-              Offset(w - 20 - (i == 2 ? 60 : 0), y.toDouble()), textPaint);
+          canvas.drawLine(
+            Offset(20, y.toDouble()),
+            Offset(w - 20 - (i == 2 ? 60 : 0), y.toDouble()),
+            textPaint,
+          );
         }
     }
   }
@@ -422,8 +579,7 @@ class CompactSliceThumb extends StatelessWidget {
   final Subject? subject;
 
   bool get _hasOptionRows =>
-      question.sliceText.contains('（') ||
-      question.sliceText.contains('______');
+      question.sliceText.contains('（') || question.sliceText.contains('______');
 
   @override
   Widget build(BuildContext context) {
@@ -436,78 +592,100 @@ class CompactSliceThumb extends StatelessWidget {
         ? null
         : AppDatabase.resolveDataPath(question.slicePath!);
     final sliceFile = sliceAbs == null ? null : File(sliceAbs);
-    final sliceExists =
-        sliceFile != null && sliceFile.existsSync();
-    final missingRealImage = (question.slicePath != null && !sliceExists) ||
+    final sliceExists = sliceFile != null && sliceFile.existsSync();
+    final missingRealImage =
+        (question.slicePath != null && !sliceExists) ||
         (question.slicePath == null &&
             question.sourcePath != null &&
             !question.isDemo);
+    // 失败占位（学科图标 + “加载失败”/“图片缺失”，与 QuestionSlice 的
+    // _missingImagePlaceholder 同款口径、紧凑尺寸）：failed / 缺图分支
+    // 与 Image.file 解码失败（errorBuilder，SR-P1-15）共用，不另造样式。
+    // 图标 14px（P0B1 顺带修：以前 17px 时图标 +“加载失败”
+    // 两行共 44px，超出 64×48 容器内高 38px、底部溢出 6px；
+    // 数学题同样溢出，与学科无关，新回归测试发现）。
+    final failedPlaceholder = Column(
+      mainAxisSize: MainAxisSize.min,
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: [
+        Text(
+          subject.icon,
+          style: TextStyle(
+            fontSize: 14,
+            fontWeight: FontWeight.w800,
+            height: 1.0,
+            color: subjectLabelColor(
+              context,
+              question.subjectId,
+              subject.color,
+            ),
+          ),
+        ),
+        const SizedBox(height: 1),
+        Text(
+          missingRealImage && !failed ? '图片缺失' : '加载失败',
+          style: TextStyle(
+            fontSize: 9,
+            fontWeight: FontWeight.w700,
+            height: 1.2,
+            color: Theme.of(context).textTheme.bodySmall?.color,
+          ),
+        ),
+      ],
+    );
     final body = failed || missingRealImage
-        ? Column(
-            mainAxisSize: MainAxisSize.min,
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              // 图标 14px（P0B1 顺带修：以前 17px 时图标 +“加载失败”
-              // 两行共 44px，超出 64×48 容器内高 38px、底部溢出 6px；
-              // 数学题同样溢出，与学科无关，新回归测试发现）。
-              Text(subject.icon,
-                  style: TextStyle(
-                      fontSize: 14,
-                      fontWeight: FontWeight.w800,
-                      height: 1.0,
-                      color: subjectLabelColor(
-                          context, question.subjectId, subject.color))),
-              const SizedBox(height: 1),
-              Text(missingRealImage && !failed ? '图片缺失' : '加载失败',
-                  style: TextStyle(
-                      fontSize: 9,
-                      fontWeight: FontWeight.w700,
-                      height: 1.2,
-                      color: Theme.of(context).textTheme.bodySmall?.color)),
-            ],
-          )
+        ? failedPlaceholder
         : sliceFile != null && sliceFile.existsSync()
-            ? ClipRRect(
-                borderRadius: BorderRadius.circular(8),
-                child: Image.file(
-                  sliceFile,
-                  fit: BoxFit.cover,
-                  cacheWidth: 128,
+        ? ClipRRect(
+            borderRadius: BorderRadius.circular(8),
+            child: Image.file(
+              sliceFile,
+              fit: BoxFit.cover,
+              // SR-P2-74：同 QuestionSlice，cacheWidth 乘 devicePixelRatio
+              //（64px 逻辑宽 × 2 倍基数 × dpr），封顶 384 防爆内存。
+              cacheWidth: math.min(
+                (128 * MediaQuery.devicePixelRatioOf(context)).ceil(),
+                384,
+              ),
+              // SR-P1-15：文件存在但解码失败（如损坏 / 非图片内容）
+              // 时走与 failed 分支同一口径的失败占位，不留空白框。
+              errorBuilder: (context, error, stackTrace) =>
+                  failedPlaceholder,
+            ),
+          )
+        : Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              _miniBar(49, barColor),
+              const SizedBox(height: 2),
+              _miniBar(38, barColor),
+              if (question.sliceKind != 'material') ...[
+                const SizedBox(height: 2),
+                SizedBox(
+                  width: 52,
+                  height: 14,
+                  child: CustomPaint(
+                    painter: _SliceFigurePainter(question.sliceKind),
+                  ),
                 ),
-              )
-            : Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  _miniBar(49, barColor),
-                  const SizedBox(height: 2),
-                  _miniBar(38, barColor),
-                  if (question.sliceKind != 'material') ...[
-                    const SizedBox(height: 2),
-                    SizedBox(
-                      width: 52,
-                      height: 14,
-                      child: CustomPaint(
-                        painter: _SliceFigurePainter(question.sliceKind),
-                      ),
-                    ),
+              ],
+              if (_hasOptionRows) ...[
+                const SizedBox(height: 2),
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    for (var i = 0; i < 4; i++) ...[
+                      if (i > 0) const SizedBox(width: 3),
+                      _miniBar(10, barColor),
+                    ],
                   ],
-                  if (_hasOptionRows) ...[
-                    const SizedBox(height: 2),
-                    Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        for (var i = 0; i < 4; i++) ...[
-                          if (i > 0) const SizedBox(width: 3),
-                          _miniBar(10, barColor),
-                        ],
-                      ],
-                    ),
-                  ],
-                  const SizedBox(height: 2),
-                  _miniBar(43, barColor),
-                ],
-              );
+                ),
+              ],
+              const SizedBox(height: 2),
+              _miniBar(43, barColor),
+            ],
+          );
     return Container(
       width: 64,
       height: 48,
@@ -518,7 +696,8 @@ class CompactSliceThumb extends StatelessWidget {
         // 深色下仍是纯白（R11 §8.3），2026-11-13 修。
         color: DesignTokens.of(Theme.of(context).brightness).paper,
         border: Border.all(
-            color: dark ? AppTheme.darkPaperLine : AppTheme.lightPaperLine),
+          color: dark ? AppTheme.darkPaperLine : AppTheme.lightPaperLine,
+        ),
         borderRadius: BorderRadius.circular(8),
       ),
       alignment: Alignment.center,
@@ -530,28 +709,10 @@ class CompactSliceThumb extends StatelessWidget {
     return Container(
       width: width,
       height: 3,
-      decoration:
-          BoxDecoration(color: color, borderRadius: BorderRadius.circular(2)),
-    );
-  }
-}
-
-/// 虚线分隔线（R2 收口为 UI Kit 的 [QmRowLine]；签名不变，九页调用处不动）。
-///
-/// 颜色到形态的映射：纸线色（`paperLine`）→ [QmRowLineKind.paper]，
-/// 其余 → [QmRowLineKind.line]。注意 `QmRowLine` 按当前主题取 token 色，
-/// 旧调用处写死的浅色纸线值在深色下会按 `line` 档取深色线色（见 R2 报告）。
-class DashedDivider extends StatelessWidget {
-  const DashedDivider({super.key, required this.color});
-  final Color color;
-
-  @override
-  Widget build(BuildContext context) {
-    final palette = DesignTokens.of(Theme.of(context).brightness);
-    return QmRowLine(
-      kind: color == palette.paperLine
-          ? QmRowLineKind.paper
-          : QmRowLineKind.line,
+      decoration: BoxDecoration(
+        color: color,
+        borderRadius: BorderRadius.circular(2),
+      ),
     );
   }
 }
@@ -563,8 +724,11 @@ class DashedDivider extends StatelessWidget {
 /// [stored] 是库里存的学科色（`Subject.color`，S8A2 的 stored 思路）：
 /// 预设三科忽略它，仍走主题感知的固定色；新学科没有预设项，直接用
 /// 库里存的轮换色。不传则按 id 查表（旧行为）。
-Color subjectLabelColor(BuildContext context, String subjectId,
-    [Color? stored]) {
+Color subjectLabelColor(
+  BuildContext context,
+  String subjectId, [
+  Color? stored,
+]) {
   final dark = Theme.of(context).brightness == Brightness.dark;
   if (stored != null &&
       subjectId != 'math' &&
@@ -612,45 +776,6 @@ class SubjectLabel extends StatelessWidget {
   }
 }
 
-/// 错误类型 / 标签小芯片（R2 收口为 UI Kit 的 [QmChip] 展示态；
-/// 签名不变，九页调用处不动）。
-///
-/// `color == null` 时直接转发为 `QmChip(displayOnly: true)`（未选中态：
-/// surface 底 / line-strong 边 / ink-2 字，13px）；`color` 非空时只有
-/// 一处调用（复习页已解决错因的绿 `0xFF1F9D66`），用同一几何尺寸、
-/// 该色 10% 透明底渲染，保留“已解决为绿”的含义（QmChip 没有 color 参数）。
-class InfoChip extends StatelessWidget {
-  const InfoChip({super.key, required this.label, this.color});
-  final String label;
-  final Color? color;
-
-  @override
-  Widget build(BuildContext context) {
-    final c = color;
-    if (c == null) return QmChip(label: label, displayOnly: true);
-    final scale = qmScaleOf(context);
-    final palette = DesignTokens.of(Theme.of(context).brightness);
-    return Container(
-      padding: EdgeInsets.symmetric(
-        horizontal: DesignTokens.chipPaddingH * scale,
-        vertical: DesignTokens.chipPaddingV * scale,
-      ),
-      decoration: BoxDecoration(
-        color: c.withValues(alpha: 0.1),
-        borderRadius: BorderRadius.circular(999 * scale),
-      ),
-      child: Text(
-        label,
-        style: TextStyle(
-          fontSize: DesignTokens.chipFontSize,
-          color: palette.ink2,
-          height: DesignTokens.controlLineHeight,
-        ),
-      ),
-    );
-  }
-}
-
 /// 题目图放大浮层（共享；整理工作台、题目详情、复习都用它）：
 /// 点图弹出大居中浮层，滚轮缩放，＋/－按钮，点图/点背景/
 /// Esc/✕ 关闭。高亮区（若传 [visibleRegions]）跟着图一起缩放。
@@ -671,6 +796,7 @@ Future<void> showQuestionZoomDialog(
   BuildContext context,
   Question question, {
   Set<String> visibleRegions = const {},
+  Map<String, Rect> realRegionRects = const {},
   String returnLabel = '整理台',
 }) {
   return showDialog<void>(
@@ -678,6 +804,7 @@ Future<void> showQuestionZoomDialog(
     builder: (ctx) => _ZoomDialog(
       question: question,
       visibleRegions: visibleRegions,
+      realRegionRects: realRegionRects,
       returnLabel: returnLabel,
     ),
   );
@@ -687,11 +814,16 @@ class _ZoomDialog extends StatefulWidget {
   const _ZoomDialog({
     required this.question,
     required this.visibleRegions,
+    required this.realRegionRects,
     required this.returnLabel,
   });
 
   final Question question;
   final Set<String> visibleRegions;
+
+  /// 各二层区域在整题切片内的 0..1 真实框矩形（见 [realRegionRects]；
+  /// 缺失的区域回退示意框）。
+  final Map<String, Rect> realRegionRects;
   final String returnLabel;
 
   @override
@@ -704,12 +836,11 @@ class _ZoomDialogState extends State<_ZoomDialog> {
   final _viewportKey = GlobalKey();
   bool _centered = false;
   double _scale = 1.0;
-  double _dialogScale = 1.0;
   Size? _viewportSize;
 
   /// 纸面封顶宽：HTML 规则 min(680px, 86%)，86% 取视口宽。
-  static double _paperWidth(double dialogScale) => math.min(
-      680.0, DesignTokens.organizeZoomWidth * dialogScale * 0.86);
+  static double _paperWidth(double dialogScale) =>
+      math.min(680.0, DesignTokens.organizeZoomWidth * dialogScale * 0.86);
 
   /// fit：纸面刚好完整装进视口的缩放。
   static double _fitFor(Size viewport, Size paper) =>
@@ -750,7 +881,11 @@ class _ZoomDialogState extends State<_ZoomDialog> {
     // 监听到矩阵变化后 setState 更新徽标。
     _controller.value = Matrix4.identity()
       ..translateByDouble(
-          (1 - s0) * viewport.width / 2, (1 - s0) * viewport.height / 2, 0, 1)
+        (1 - s0) * viewport.width / 2,
+        (1 - s0) * viewport.height / 2,
+        0,
+        1,
+      )
       ..scaleByDouble(s0, s0, 1, 1);
   }
 
@@ -769,10 +904,16 @@ class _ZoomDialogState extends State<_ZoomDialog> {
   void _multiply(double factor) {
     // 绕视口中心缩放：M' = T(C)·S(f)·T(−C)·M。
     // 旧代码右乘缩放矩阵，绕视口左上原点缩放，纸面往右下漂移。
-    final viewport = _viewportSize ??
+    // SR-P2-75：回退视口尺寸用的缩放因子在这里局部取，不要在 build
+    // 里给字段赋值（build 内改状态，后续若有人在 build 流程里读它
+    // 会拿到上一帧的值）；_multiply 只在按钮/滚轮回调里触发，
+    // build 之后，读当前 context 的缩放因子是安全的。
+    final dialogScale = qmScaleOf(context);
+    final viewport =
+        _viewportSize ??
         Size(
-          DesignTokens.organizeZoomWidth * _dialogScale,
-          DesignTokens.organizeZoomHeight * _dialogScale - 50 * _dialogScale,
+          DesignTokens.organizeZoomWidth * dialogScale,
+          DesignTokens.organizeZoomHeight * dialogScale - 50 * dialogScale,
         );
     final c = Offset(viewport.width / 2, viewport.height / 2);
     final m = Matrix4.identity()
@@ -786,7 +927,6 @@ class _ZoomDialogState extends State<_ZoomDialog> {
   Widget build(BuildContext context) {
     final palette = DesignTokens.of(Theme.of(context).brightness);
     final scale = qmScaleOf(context);
-    _dialogScale = scale;
     return Dialog(
       insetPadding: EdgeInsets.all(22 * scale),
       child: SizedBox(
@@ -880,22 +1020,30 @@ class _ZoomDialogState extends State<_ZoomDialog> {
                         child: SizedBox(
                           width: _paperWidth(scale),
                           child: IntrinsicHeight(
-                            child: Stack(
-                              key: _paperKey,
-                              children: [
-                                QuestionSlice(
-                                  question: widget.question,
-                                  maxHeight: 480,
-                                ),
-                                Positioned.fill(
-                                  child: IgnorePointer(
-                                    child: QuestionRegionOverlays(
-                                      question: widget.question,
-                                      visible: widget.visibleRegions,
+                            // B2 Bug 2：与整理页 _paperImage 同因——SizedBox
+                            // 680 宽、真图按固有尺寸窄于它，叠加层按 Stack
+                            // 宽画框会伸到图外。Align 让 Stack 收成切片
+                            // 实际尺寸；纸面本身已是左对齐，外观不变。
+                            child: Align(
+                              alignment: Alignment.topLeft,
+                              child: Stack(
+                                key: _paperKey,
+                                children: [
+                                  QuestionSlice(
+                                    question: widget.question,
+                                    maxHeight: 480,
+                                  ),
+                                  Positioned.fill(
+                                    child: IgnorePointer(
+                                      child: QuestionRegionOverlays(
+                                        question: widget.question,
+                                        visible: widget.visibleRegions,
+                                        realRects: widget.realRegionRects,
+                                      ),
                                     ),
                                   ),
-                                ),
-                              ],
+                                ],
+                              ),
                             ),
                           ),
                         ),

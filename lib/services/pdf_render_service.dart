@@ -20,9 +20,9 @@ library;
 
 import 'dart:async';
 import 'dart:io';
-import 'dart:typed_data';
 import 'dart:ui' as ui;
 
+import 'package:flutter/foundation.dart';
 import 'package:pdfrx_engine/pdfrx_engine.dart' as pdfrx;
 
 /// 加密 PDF：带密码，打不开（调用方提示“这个 PDF 带密码，解开密码再导”）。
@@ -186,6 +186,9 @@ class PdfRenderService {
   }
 
   /// 渲染单页为 PNG（打开 → 渲染 → 关闭；调用方自己写盘）。
+  /// SR-P2-72：仅测试用（`test/pdf_render_service_test.dart` 的单页
+  /// 渲染断言）；生产代码走 [renderAllPagesToDir]，不要在生产里调它。
+  @visibleForTesting
   Future<PdfPageRender> renderPagePng(
     String pdfPath,
     int page, {

@@ -25,8 +25,11 @@ import '../../widgets/uikit.dart';
 ///   `lastCheck` 是最近一次自查时间；从未自查的错因 `lastCheck` 为
 ///   空，与已解决数同一分支，视为在范围内、计入所有范围。
 /// - 弱点与学科分布按所选范围内收集的题目算（HTML `qsIn` / QDATE 口径，
-///   以题目 `createdAt` 为收集日期）：错因行只含未解决的错因，无记录
-///   的错因默认待解决；知识点行排除全部错因已解决的题。
+///   以题目 `createdAt` 为收集日期），只收已整理未归档的题，与错题本
+///   列表默认收录口径一致（SR-P1-11：未整理题、已归档题不算进来）：
+///   错因行只含未解决的错因，无记录的错因默认待解决；知识点行排除
+///   全部错因已解决的题。弱点计数按题 id，不按题名去重（SR-P1-10：
+///   题名不唯一，同名不同题各算 1 道）。
 /// - 本周 = 本周一到今天（基线口径；HTML 是今天往前 7 天，见报告）。
 class ReportPage extends StatefulWidget {
   const ReportPage({
@@ -64,7 +67,11 @@ class _WeakGroup {
   final String key;
   final List<String> titles;
 
-  int get count => titles.length;
+  /// 计数的题 id 集合：题名不唯一，同名不同题各算 1 道（SR-P1-10）；
+  /// `titles` 只作展示行拼接。
+  final Set<String> questionIds = {};
+
+  int get count => questionIds.length;
 }
 
 class _ReportPageState extends State<ReportPage> {
@@ -166,9 +173,13 @@ class _ReportPageState extends State<ReportPage> {
   };
 
   /// 所选范围内收集的题目（HTML `qsIn`，以 `createdAt` 为收集日期）。
+  /// 只收已整理未归档的题，与错题本列表默认收录口径一致（SR-P1-11）：
+  /// 未整理题（还在整理工作台排队）与已归档题不进弱点 Top5 与学科分布。
   List<Question> get _questionsInRange {
-    if (_range == 'all') return _questions;
-    return _questions.where((q) => _inRange(q.createdAt)).toList();
+    final inScope =
+        _questions.where((q) => q.isOrganized && !q.isArchived);
+    if (_range == 'all') return inScope.toList();
+    return inScope.where((q) => _inRange(q.createdAt)).toList();
   }
 
   int _subjectOrder(String subjectId) {
@@ -191,7 +202,7 @@ class _ReportPageState extends State<ReportPage> {
           groups[key] = g;
           order.add(key);
         }
-        if (!g.titles.contains(q.title)) g.titles.add(q.title);
+        if (g.questionIds.add(q.id)) g.titles.add(q.title);
       }
     }
     final list = order.map((k) => groups[k]!).toList();
@@ -223,7 +234,7 @@ class _ReportPageState extends State<ReportPage> {
           groups[key] = g;
           order.add(key);
         }
-        if (!g.titles.contains(q.title)) g.titles.add(q.title);
+        if (g.questionIds.add(q.id)) g.titles.add(q.title);
       }
     }
     final list = order.map((k) => groups[k]!).toList();

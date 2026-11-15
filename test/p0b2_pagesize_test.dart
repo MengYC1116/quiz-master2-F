@@ -1,9 +1,8 @@
 // P0B2 “每页”下拉本地化回归测试：复习页与错题本一致，只改本页显示。
 //
 // 口径（Meng 定）：两页的“每页”下拉都是本地 setState，初值仍从设置
-// 默认值（设置页 #17“每页显示数量”）读；下拉改动不写库、不调
-// onSettingsChanged、不改设置默认值。设置页 #17 仍是改默认值的
-// 唯一入口，两页首次打开跟新默认值。
+// 默认值（设置页 #17“每页显示数量”）读；下拉改动不写库、不改设置
+// 默认值。设置页 #17 仍是改默认值的唯一入口，两页首次打开跟新默认值。
 // 用 FakeRepo 覆盖三页的 repository 调用，不碰真实数据库。
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -115,7 +114,6 @@ Future<void> _pump(
 Future<void> pumpReviewP0B2(
   WidgetTester tester, {
   required FakeP0B2Repo repo,
-  List<AppSettings>? notified,
 }) async {
   await _pump(
     tester,
@@ -124,7 +122,6 @@ Future<void> pumpReviewP0B2(
       repo: repo,
       onOpenDetail: (q, ids) async {},
       onGoWrongbook: () {},
-      onSettingsChanged: (s) async => notified?.add(s),
     ),
   );
 }
@@ -167,16 +164,14 @@ void main() {
     testWidgets('复习页改 10→20：设置默认值不变，错题本首次打开仍是 10 条/页',
         (tester) async {
       final repo = FakeP0B2Repo();
-      final notified = <AppSettings>[];
-      await pumpReviewP0B2(tester, repo: repo, notified: notified);
+      await pumpReviewP0B2(tester, repo: repo);
       expect(find.text('共 15 条 · 第 1 / 2 页'), findsOneWidget);
 
       await pickPageSize(tester, 20);
       expect(find.text('共 15 条 · 第 1 / 1 页'), findsOneWidget);
-      // 本地行为：不写库、不调回调、设置默认值仍是 10。
+      // 本地行为：不写库、设置默认值仍是 10。
       expect(repo.settingsValue.pageSize, 10);
       expect(repo.saveSettingsCalls, 0);
-      expect(notified, isEmpty);
 
       // 同一库新开错题本：仍跟默认值 10（不是复习页改出的 20）。
       await pumpWrongbookP0B2(tester, repo: repo);

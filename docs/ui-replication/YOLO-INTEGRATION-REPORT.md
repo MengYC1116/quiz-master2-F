@@ -3,7 +3,8 @@
 - 日期：2026-11-13
 - 分支：`ui-replication`（未提交、未推送，按任务要求）
 - 结论：**第 1 层真实推理已接入并通过验证**。`flutter analyze` 0 问题；
-  `flutter test` 全量 **388/388 通过**；3 张真实试卷页端到端通过
+  `flutter test` 全量 **674/674 通过**（Batch 5 第四阶段结束时，
+  2026-11-15；本报告初版时为 388/388，随全量测试扩充而变）；3 张真实试卷页端到端通过
   （导入 → 检测 → 修框 → 内框模式 → 取消留修框中）。
 - 范围变更（Meng 2026-11-13 定）：**第 2 层暂缓，只接第 1 层**。
   第 2 层模型还需再训练，见 §7 再训练反馈与 D-23。
@@ -54,8 +55,11 @@
   低分假框；3 张实测页上真题最低 0.50（见 §3）。
 - 编号：按阅读顺序（先上后下、同行先左后右）排好再编 `box-q1…`。
 - 推理在 worker isolate 跑（`runAsync`），不卡 UI 线程。
-- 模型缺失、加载失败或图片文件不存在时回退占位（一页一个整题框），
-  不抛错；`hasRealModel` 只反映第 1 层模型。
+- 模型缺失、加载失败或图片文件不存在时返回空框 + `usedFallback: true`，
+  不回占位框、不抛错；`hasRealModel` 只反映第 1 层模型。（D-23：只接
+  第 1 层、失败不回占位；见 `yolo_onnx_service.dart` 的 `DetectionResult`
+  注释——成功时 `boxes` 是检出的框、`usedFallback` 为 false，失败时
+  `boxes` 为空、`usedFallback` 为 true、`error` 是给用户看的原因。）
 - `QuestionBox` 接口不变；`clampToPage` 只加了一个默认 true 的
   `minSize` 可选参数（默认行为与 A3 回归测试完全一致，见 §5）。
 
@@ -103,12 +107,16 @@
   手画、手改，与以前一致（端到端已验证，见 §6）。
 - `QuestionBox.layer`、内框模式、三色高亮、切片区都没动。
 - 两个前置限制（不在本次范围，见 §8）：
-  1. 导入流程仍只存文件名（`CollectTask.fileName` 为显示名，未改
-     Schema）：`detectPage` 按传入路径找文件，找得到跑真实推理，
-     找不到回占位。真实文件落盘 / PDF 渲染仍是待办。
-  2. 修框画布仍是占位色块（已知待办）：编辑器里的框是真实框，
-     但底图不是真实试卷页，框与内容的贴合程度用 §3 的标注图核对，
-     不用编辑器截图核对。
+  1. 导入流程已真实落盘（P0–P3 已接）：文件复制进数据目录
+     `imports/<task-id>/`，PDF 由 `pdf_render_service.dart`
+     （pdfrx_engine / PDFium）按页渲成
+     `imports/<task-id>/pages/`；`detectPage` 按传入路径找文件，
+     找得到跑真实推理，找不到返回空框 + `usedFallback: true`
+     （不回占位框，见 §2）。
+  2. 修框画布已是真实页图（P0.5 后）：底图是真实页图
+     （`pageImagePath`），不再是占位纸面；框与内容的贴合程度直接在
+     编辑器里核对。页图缺失时明确报错、不开编辑器
+     （`collect_page.dart` 的页图缺失守卫）。
 
 ## 5. 实施中发现的两个问题（已修）
 
@@ -128,7 +136,8 @@
 ## 6. 验证
 
 - `flutter analyze`：**0 问题**。
-- `flutter test`：**全量 388/388 通过**（含新增的后处理单测：
+- `flutter test`：**全量 674/674 通过**（Batch 5 第四阶段结束时，
+  2026-11-15；本报告初版时为 388/388，随全量测试扩充而变；含新增的后处理单测：
   解码 + NMS + 跨类去重 + letterbox + `groupInners` +
   `minSize: false` + 真实模型冒烟；冒烟测试用 assets 里的真实
   模型文件，没有把 38MB 模型塞进测试固件；原生库缺失时自动跳过）。
@@ -181,18 +190,19 @@
 1. onnxruntime 1.4.1：`onnxruntime.dll` 是否随应用打包、会话能否
    创建、CPU 推理速度（Linux 上 3.5–4.7 秒/页，Win11 实测为准）。
 2. 模型文件放到 Win11 的 `assets/models/` 路径：仓库里只有
-   第 1 层模型（38MB）；**两个模型文件是二进制，连接器推不上去，
-   Meng 需自己推这两个文件或在他本地放到同样的 `assets/models/`
-   路径下**——当前只需要推第 1 层 `question/yolo11s-question-v1.onnx`
-   （约 38MB）；第 2 层等训好后再说。
-3. 真实文件落盘 / PDF 渲染（见 §4）：导入后文件要能按路径找到，
-   否则检测回占位。
-4. 修框画布换真实页图（已知待办）：现在还是占位色块。
+   第 1 层模型（38MB）；**模型文件是二进制，连接器推不上去，
+   Meng 需自己推这一个文件或在他本地放到同样的 `assets/models/`
+   路径下**——只需要推第 1 层 `question/yolo11s-question-v1.onnx`
+   （约 38MB）；第 2 层模型已移出仓库，等训好后再说。
+3. 文件路径可达性（见 §4）：导入后文件要能按路径找到，否则检测
+   返回空框（`usedFallback: true`），不回占位框。
+4. ~~修框画布换真实页图~~（已做，见 §4）：画布已是真实页图，
+   页图缺失时明确报错、不开编辑器。
 
 ## 附：本次改动的文件
 
 - `lib/services/yolo_onnx_service.dart`：重写为真实推理（只第 1 层），
-  占位回退保留；`_detectIntra` 为第 2 层再接入点。
+  失败不回占位框（空框 + `usedFallback: true`）；`_detectIntra` 为第 2 层再接入点。
 - `lib/modules/collect/collect_page.dart`：编辑器按层拆分检测结果
   （`_ingestDetected`）；其余为工作区里其他工人的改动（B2 等），
   不属于本次。

@@ -177,13 +177,18 @@ void main() {
       }
     });
 
-    testWidgets('新学科格标题色 / 底色走存色，不等于数学色', (tester) async {
+    testWidgets('新学科格标题色亮色走存色、深色走雾化存色（SR-P2-66），底色走存色 tint，都不等于数学色',
+        (tester) async {
       final repo = B2FakeRepo()..subjectsList = subjects4();
       for (final brightness in [Brightness.light, Brightness.dark]) {
         await pumpB2Home(tester, repo: repo, brightness: brightness);
-        // 化学格：标题 Text 用存色紫，底色 Container 用存色 tint。
+        // 化学格：标题 Text 亮色用存色紫，深色用雾化存色；底色 Container 用存色 tint。
         final title = tester.widget<Text>(find.text('化学'));
-        expect(title.style!.color, const Color(0xFF7C5CFC));
+        final expectedTitle = brightness == Brightness.dark
+            ? DesignTokens.subjectInk(
+                'subject-chem', brightness, const Color(0xFF7C5CFC))
+            : const Color(0xFF7C5CFC);
+        expect(title.style!.color, expectedTitle);
         final cell = tester.widget<Container>(
           find.ancestor(
               of: find.text('化学'), matching: find.byType(Container)).first,
@@ -238,13 +243,21 @@ void main() {
   });
 
   group('B2 颜色回退：subjectInk / subjectSoft', () {
-    test('非预设学科 ink 直接用存色，亮/深都不等于数学 ink', () {
+    test('非预设学科 ink 亮色直接用存色、深色用雾化存色（SR-P2-66），都不等于数学 ink',
+        () {
       const stored = Color(0xFF7C5CFC);
+      expect(
+        DesignTokens.subjectInk('subject-chem', Brightness.light, stored),
+        stored,
+      );
+      final darkInk =
+          DesignTokens.subjectInk('subject-chem', Brightness.dark, stored);
+      expect(darkInk, isNot(stored));
+      expect(
+        darkInk,
+        isNot(DesignTokens.subjectInk('math', Brightness.dark)),
+      );
       for (final brightness in [Brightness.light, Brightness.dark]) {
-        expect(
-          DesignTokens.subjectInk('subject-chem', brightness, stored),
-          stored,
-        );
         expect(
           DesignTokens.subjectInk('subject-chem', brightness, stored),
           isNot(DesignTokens.subjectInk('math', brightness)),

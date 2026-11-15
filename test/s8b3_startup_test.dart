@@ -9,6 +9,8 @@
 // （应用内有持续 Timer），按仓库惯例不直接测整应用；启动恢复
 // 的端到端行为以 Linux 真机截图为直接证据
 // （见 docs/ui-replication/S8B3-STARTUP-REPORT.md §5）。
+import 'dart:io';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:quiz_master2/app.dart';
 import 'package:quiz_master2/data/database.dart';
@@ -16,6 +18,22 @@ import 'package:quiz_master2/data/repository.dart';
 import 'package:quiz_master2/models/models.dart';
 
 void main() {
+  // 全文件：每个测试前把 testDataDirectory 指到 fresh 临时目录，
+  // 任何落盘路径都不碰真实数据目录；测后 resetForTest() 复位单例
+  // 与重定向并删临时目录。
+  late Directory tmp;
+
+  setUp(() async {
+    tmp = await Directory.systemTemp.createTemp('s8b3-startup-');
+    AppDatabase.testDataDirectory = tmp.path;
+    addTearDown(() async {
+      await AppDatabase.resetForTest();
+      try {
+        await tmp.delete(recursive: true);
+      } catch (_) {}
+    });
+  });
+
   group('resolveStartupRoute', () {
     test("'last' + 存过某顶级路由 → 恢复该路由", () {
       expect(resolveStartupRoute('last', '/organize'), '/organize');
@@ -58,8 +76,14 @@ void main() {
   });
 
   group('lastRoute 持久化（settings 表 key）', () {
-    // 直接读写真实演示库的 settings 表（只碰 `lastRoute` 一个 key），
-    // 先读原值、finally 原样恢复，不污染演示数据。
+    // 内存库：openForTest() 只建表不播种，useDatabaseForTest() 把它
+    // 设为单例，QuestionRepository 走单例读写 settings 表，全程不碰
+    // 真实库与真实 settings；复位与临时目录清理见文件级 setUp。
+    setUp(() async {
+      final db = await AppDatabase.openForTest();
+      AppDatabase.useDatabaseForTest(db);
+    });
+
     final repo = QuestionRepository(AppDatabase.instance);
 
     test('存取往返 + saveSettings 不误删', () async {

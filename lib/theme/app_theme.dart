@@ -116,9 +116,12 @@ class AppTheme {
 
   static ThemeData _build(AppPalette p, bool dark, double scale) {
     final scaled = DesignTokens.scaled(scale);
+    // SR-P2-65：按钮内边距与 QmButton 同源（token 的 .btn 9px 20px），
+    // 不要在这里另写 12——旧值 12 让走 ThemeData 的对话框按钮比
+    // QmButton 高约 6px。
     final buttonPadding = EdgeInsets.symmetric(
-      horizontal: 20 * scale,
-      vertical: 12 * scale,
+      horizontal: DesignTokens.buttonPaddingH * scale,
+      vertical: DesignTokens.buttonPaddingV * scale,
     );
     return ThemeData(
       useMaterial3: true,

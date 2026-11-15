@@ -13,7 +13,7 @@
 ## 先读这三份文档（按顺序）
 
 1. **`docs/代码地图.md`**——代码地图：目录、数据流、九页地图、Dart 速成、常见任务手册。看不懂代码时先翻它。
-2. **`docs/decision-log.md`**——决策记录 D-00～D-22：所有已定事项（技术选型、数据库位置、演示数据等）。有疑问先查这里，不要凭感觉改。
+2. **`docs/decision-log.md`**——决策记录 D-00～D-23：所有已定事项（技术选型、数据库位置、演示数据等）。有疑问先查这里，不要凭感觉改。
 3. **`docs/ui-replication/R11-REPORT.md`**——R11 最终验收报告（有条件通过）：九页完成情况、视觉对照结果、未解决问题清单（§8）、Win11 待验证事项（§9）。
 
 ## 硬边界（绝不能碰，除非 Meng 明确说可以）
@@ -36,12 +36,57 @@ flutter build windows --release   # Win11 上必须构建成功
 
 界面改动还要在真机窗口里跑一遍、截图，和 HTML 原型对照；Linux 构建成功不替代 Win11 真机验收（字体、DPI、尺寸要在 Win11 上复核）。
 
-## 当前状态（2026-11-13）
+## 当前状态（2026-11-14）
 
-- R0–R11 UI 重构已完成并推送，分支 head 为 `0d9d15d`（含 Win11 实机验收的两个 bug 修复）。
-- R11 §8 的 A/B 组修复正在进行：放大浮层 1.5× 初始偏移、报告口径、启动页、备份、通知等，逐项验收，不是一次性全改。
-- YOLO 还是占位实现（`lib/services/yolo_onnx_service.dart`，`hasRealModel` 为 false）；两个真实 `.onnx` 模型文件名相同，必须分文件夹放，真实文件在 Meng 的 Google Drive 里，还没接入。
-- 演示数据库在 `%LOCALAPPDATA%\quiz-master2\quiz-master2.db`，改代码前先备份，验证完恢复原状。
+- R0–R11 UI 重构、§8 与 P0–P3 实施已完成并推送；分支 **`ui-replication`**，
+  本地 head 为 `bca8586`（以 `git log` 为准）。
+- **Batch 1/2/3/4 的改动在工作树里，未提交、未推送**：最终自审已做完
+  （见 `docs/ui-replication/SELF-REVIEW-SUMMARY.md`，第五批修复进行中），
+  在 Meng 看过自审汇总并明确批准之前，**不要 push**。
+  也不要 commit、reset、checkout——只改文件，不动 git 历史。
+- **Batch 4 God 类拆分已完成，同样未提交、未推送**（Meng 2026-11-14
+  批准“马上拆就行”，后追加 `wrongbook_page.dart`；纯重构，不改行为、
+  不修 bug、不加功能；细节见 `docs/ui-replication/B4-SUMMARY.md`）：
+  - `lib/data/database.dart` 3191 行 → 541 行入口 + 10 个 `db_*.dart`
+    part 文件（`db_paths` / `db_schema` / `db_storage` / `db_codec` /
+    `db_questions` / `db_catalog` / `db_collect` / `db_orphans` /
+    `db_settings` / `db_backup`；同一库 `part` / `part of`，对外接口
+    零调整，找实现先看入口文件的 `part` 声明与转发行）；
+  - `lib/modules/collect/collect_page.dart` 3349 行 → 1316 行入口 +
+    `box_editor.dart`（修框编辑器）+ `collect_widgets.dart`；
+  - `lib/modules/wrongbook/wrongbook_page.dart` 3718 行 → 1141 行入口 +
+    5 个 `wrongbook_*.dart` part 文件（`wrongbook_shelf` /
+    `wrongbook_directory` / `wrongbook_list` / `wrongbook_cover` /
+    `wrongbook_widgets`）。
+  - 拆分后协调员最终统一验证：`flutter analyze` 0 问题、全量测试
+    **628/628 通过**（以上行数与测试数均为 Batch 4 结束时，2026-11-14）。
+- YOLO 第 1 层已接真模型（`lib/services/yolo_onnx_service.dart`，
+  加载 `assets/models/question/yolo11s-question-v1.onnx`，
+  `hasRealModel` 为真当且仅当模型成功加载；依赖 `onnxruntime ^1.4.1`，
+  D-23 已 pin）。模型文件约 38MB，由 Meng 自己放进工作树，
+  **不进仓库**（`git ls-files assets/models/` 里只有 README）。
+  第 2 层暂缓：`intraEnabled = false`，再接入点见该文件注释
+  （模型放回 `assets/models/intra/`、开关改 true、实现 `_detectIntra`）。
+- Schema 是 **v2**：`AppDatabase.schemaVersion = 2`，`createTables` 建
+  **13 张表**（原 12 张 + `question_boxes`），无迁移、无 `onUpgrade`——
+  老库首次打开会被删掉重建（见 `openAt` /
+  `deleteLegacyDatabaseIfPresent`）。备份/恢复共用 `backupTables`
+  清单（13 张表全在里面），备份是含文件的 zip。
+- 演示库仍是 **v1**（`user_version = 1`，无 `question_boxes` 表，
+  9 道题全是演示题；Linux 验证机 `~/.local/share/quiz-master2/`，
+  Win11 在 `%LOCALAPPDATA%\quiz-master2\quiz-master2.db`）。
+  应用第一次打开它会删库重建为 v2 空库——**跑测试、跑应用前先备份演示库，
+  完事恢复原状并核对无变化**。测试本身已隔离，不碰真实库：
+  `AppDatabase.openForTest()` 开测试库（只建表不播种）、
+  `resetForTest()` 复位单例与测试目录重定向、
+  `testDataDirectory` 重定向数据目录与导入复制目标；
+  新测试按这个模式写（临时目录 + 测后 `resetForTest()`）。
+- 第三批后的关键行为（2026-11-14，细节见 `docs/代码地图.md` 第 3–4 节
+  与 `docs/ui-replication/B3-*.md`）：路径删除安全（`resolveDataPath`
+  默认拒绝对路径）、删除确认全项目统一模态 `AlertDialog`、
+  P1-1 二层切片暂缓（真实题隐藏 region 开关、只留整题切片）、
+  P1-2 多页 PDF 未框页保留在任务里（确认前弹框提示页数）、
+  整理页叠加层有真实 Layer-2 框用真实框坐标、无框回退示意框。
 
 ## 工作方式
 

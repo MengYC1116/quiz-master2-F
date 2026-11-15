@@ -1,6 +1,6 @@
 // R7 题目详情 widget 测试：方案 2 分段折叠式（默认全折叠）、
 // 看答案、待补充进编辑、编辑保存/取消内联确认、收藏/归档/删除
-//（内联确认，删后进下一题）、上一题/下一题顺序、加入/取消加入复习、
+//（模态弹窗确认，删后进下一题）、上一题/下一题顺序、加入/取消加入复习、
 // 未整理题无加入按钮、无「开始复习」、图加载失败占位、亮/深 × 三档无溢出、
 // 不用图标字体。用 FakeRepo 覆盖 repository 调用（不碰真实数据库）。
 // P2 §1.5.1：重新框选入口（同页他题只读、确认重裁切片）——页图是
@@ -17,7 +17,9 @@ import 'package:quiz_master2/modules/detail/question_detail_page.dart';
 import 'package:quiz_master2/theme/app_theme.dart';
 
 late final Directory _testTmp;
-late final String _pagePngPath;
+/// B3-P01：页图放进 testDataDirectory，pageImagePath 用相对路径
+///（resolveDataPath 已拒绝绝对路径）。
+late final String _pagePngRel;
 
 Question dtq(
   String id,
@@ -43,6 +45,7 @@ Question dtq(
   String? slicePath,
   int? sliceWidth,
   int? sliceHeight,
+  int? sourcePage,
 }) =>
     Question(
       id: id,
@@ -69,6 +72,7 @@ Question dtq(
       slicePath: slicePath,
       sliceWidth: sliceWidth,
       sliceHeight: sliceHeight,
+      sourcePage: sourcePage,
     );
 
 class FakeDetailRepo extends QuestionRepository {
@@ -186,6 +190,21 @@ class FakeDetailRepo extends QuestionRepository {
     }
   }
 
+  /// SR-P2-36：整科同名预检的内存版（与 upsertFolder 的把关同语义：
+  /// 同一学科、同名、id 不是 excludeId 即命中）。
+  @override
+  Future<bool> folderNameExistsInSubject(
+    String subjectId,
+    String name, {
+    String? excludeId,
+  }) async =>
+      folderList.any(
+        (f) =>
+            f.subjectId == subjectId &&
+            f.name == name &&
+            f.id != excludeId,
+      );
+
   @override
   Future<void> addKnowledgePoint(KnowledgePoint kp) async {
     kpList.add(kp);
@@ -210,6 +229,28 @@ class FakeDetailRepo extends QuestionRepository {
   Future<void> replaceQuestionBoxes(
       String questionId, List<QuestionBox> boxes) async {
     replacedBoxes[questionId] = List.of(boxes);
+  }
+
+  /// B3-P01：详情页重框走单事务入口——Fake 里同样一次记下框与
+  /// 切片字段（与真实实现一次事务的语义对齐：框与切片要么一起
+  /// 记下，要么都不记）。
+  @override
+  Future<void> replaceQuestionBoxesAndSlice(
+    String questionId,
+    List<QuestionBox> boxes, {
+    required String slicePath,
+    required int sliceWidth,
+    required int sliceHeight,
+  }) async {
+    replacedBoxes[questionId] = List.of(boxes);
+    final q = questions.where((x) => x.id == questionId).firstOrNull;
+    if (q != null) {
+      await save(q.copyWith(
+        slicePath: slicePath,
+        sliceWidth: sliceWidth,
+        sliceHeight: sliceHeight,
+      ));
+    }
   }
 }
 
@@ -361,9 +402,11 @@ void main() {
     final img = await recorder.endRecording().toImage(560, 700);
     final png = await img.toByteData(format: ui.ImageByteFormat.png);
     img.dispose();
-    final file = File('${_testTmp.path}/page.png');
+    final pageDir = Directory('${_testTmp.path}/imports/rework-task');
+    await pageDir.create(recursive: true);
+    final file = File('${pageDir.path}/page.png');
     await file.writeAsBytes(png!.buffer.asUint8List());
-    _pagePngPath = file.path;
+    _pagePngRel = 'imports/rework-task/page.png';
     // 重框确认时重裁的切片写盘走临时数据目录。
     AppDatabase.testDataDirectory = _testTmp.path;
   });
@@ -600,7 +643,7 @@ void main() {
       expect(repo.saved.last.isArchived, isTrue);
     });
 
-    testWidgets('删除内联确认：取消留题，确认删除后进下一题', (tester) async {
+    testWidgets('删除模态弹窗确认：取消留题，确认删除后进下一题', (tester) async {
       final repo = detailRepo();
       await pumpDetail(tester, repo: repo);
       await tapText(tester, '删除');
@@ -659,8 +702,8 @@ void main() {
         (tester) async {
       final repo = detailRepo();
       repo.questions[0] = repo.questions[0].copyWith(
-        pageImagePath: _pagePngPath,
-        sourcePath: _pagePngPath,
+        pageImagePath: _pagePngRel,
+        sourcePath: _pagePngRel,
         slicePath: 'slices/q1.png',
         sliceWidth: 200,
         sliceHeight: 100,
@@ -732,6 +775,60 @@ void main() {
       expect(savedQ.sliceHeight, greaterThan(0));
       final sliceAbs = AppDatabase.resolveDataPath(savedQ.slicePath!);
       expect(sliceAbs != null && File(sliceAbs).existsSync(), isTrue);
+    });
+
+    testWidgets('SR-P1-8：源页 ≥2 的题重框无缩略图条，确认后框不丢失',
+        (tester) async {
+      final repo = detailRepo();
+      repo.questions[0] = repo.questions[0].copyWith(
+        pageImagePath: _pagePngRel,
+        sourcePath: _pagePngRel,
+        slicePath: 'slices/q1.png',
+        sliceWidth: 200,
+        sliceHeight: 100,
+        sourcePage: 2,
+      );
+      repo.pageBoxes = [
+        QuestionBox(
+          id: 'q1-box',
+          layer: 1,
+          type: 'question',
+          x: 0.06,
+          y: 0.05,
+          w: 0.88,
+          h: 0.4,
+          page: 2,
+          questionId: 'q1',
+        ),
+      ];
+      await pumpDetail(tester, repo: repo);
+      await openSection(tester, '题目信息');
+      await tapText(tester, '重新框选这道题');
+      expect(find.textContaining('修框 ·'), findsOneWidget);
+      // 标题仍显示真实源页码（第 2 页）。
+      expect(find.textContaining('第2页'), findsOneWidget);
+      // 重框模式隐藏整条缩略图条：没有“第 1 页”缩略图可点，
+      // 也就没有切到不存在的空页、框消失的路径。
+      expect(find.byKey(const Key('editor-thumb-1')), findsNothing);
+      expect(find.text('第 1 页'), findsNothing);
+      expect(find.textContaining('本页修完'), findsNothing);
+      // 原页的框仍在画布上。
+      expect(find.textContaining('题级框 1'), findsWidgets);
+      // 直接确认：框不丢失（仍是源页的 1 个题级框）。
+      await tester.runAsync(() async {
+        await tester.tap(find.text('确认修框，去整理'));
+        for (var i = 0; i < 20; i++) {
+          await tester.pump();
+          await Future<void>.delayed(const Duration(milliseconds: 200));
+        }
+        await tester.pumpAndSettle();
+      });
+      await tester.pumpAndSettle();
+      expect(find.text('已重新框选，切片已更新'), findsOneWidget);
+      final replaced = repo.replacedBoxes['q1'];
+      expect(replaced, isNotNull);
+      expect(replaced!.where((b) => b.layer == 1).length, 1);
+      expect(replaced.where((b) => b.layer == 1).first.page, 2);
     });
 
     testWidgets('无页图的题：不显示重新框选入口', (tester) async {

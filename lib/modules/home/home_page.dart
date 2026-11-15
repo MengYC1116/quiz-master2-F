@@ -19,8 +19,9 @@
 // - 要复习数与导航速览同一口径（`homeRevCounts` / `dueToday`：手动加入
 //   复习且已整理且至少一个错因未解决或已到复查时间，数题不数错因）；
 //   待解决 / 复查拆分按 HTML `homeRevCounts`：有未解决错因的题计
-//   待解决，只有复查到期的题计复查（本页用 `dueToday` + `causeRecords`
-//   现算，不改 repository）。
+//   待解决，只有复查到期的题计复查；拆分走仓库共享分类
+//   `QuestionRepository.reviewBucketOf`，与错题本封面三数同一口径
+//   （SR-P1-1），本页不再各自定义。
 // - 继续上次 = `recentTask()` 的最近任务（复习 > 整理 > 收集优先级
 //   沿用现有逻辑：无记录时默认去复习）；快速收集只做文件导入入口，
 //   不加手动录入。
@@ -102,6 +103,11 @@ class _HomePageState extends State<HomePage> {
   ({String kind, String subjectId, String title})? _recent;
   bool _loading = true;
   bool _errorDismissed = false;
+  // _load() 读库失败态（SR-P2-48）：报告 / 学科页同款——失败不一直
+  // 转圈，出错误横幅 + 重试；已加载过内容时留住旧内容。
+  bool _loadError = false;
+  bool _loadErrorDismissed = false;
+  bool _hasLoaded = false;
 
   @override
   void initState() {
@@ -110,45 +116,73 @@ class _HomePageState extends State<HomePage> {
   }
 
   Future<void> _load() async {
-    final results = await Future.wait([
-      widget.repo.homeRevCounts(),
-      widget.repo.pendingOrganizeBySubject(),
-      widget.repo.recentTask(),
-      widget.repo.dueToday(),
-      widget.repo.causeRecords(),
-      // B2：学科格按库里的 subjects 表显示全部学科（入库顺序），
-      // 不再写死 Subject.all 三科。
-      widget.repo.subjects(),
-    ]);
-    if (!mounted) return;
-    final due = results[3] as List<Question>;
-    final records = results[4] as List<CauseRecord>;
-    final byQ = <String, List<CauseRecord>>{};
-    for (final r in records) {
-      (byQ[r.questionId] ??= []).add(r);
-    }
-    // 待解决 / 复查拆分（HTML homeRevCounts）：有未解决错因的题计
-    // 待解决；只有复查到期的题计复查；两者之和 = 要复习总数。
-    var pending = 0;
-    var recheck = 0;
-    for (final q in due) {
-      final rs = byQ[q.id] ?? const <CauseRecord>[];
-      if (rs.any((r) => r.status != CauseStatus.solved)) {
-        pending++;
-      } else {
-        recheck++;
+    try {
+      final results = await Future.wait([
+        widget.repo.homeRevCounts(),
+        widget.repo.pendingOrganizeBySubject(),
+        widget.repo.recentTask(),
+        widget.repo.dueToday(),
+        widget.repo.causeRecords(),
+        // B2：学科格按库里的 subjects 表显示全部学科（入库顺序），
+        // 不再写死 Subject.all 三科。
+        widget.repo.subjects(),
+      ]);
+      if (!mounted) return;
+      final due = results[3] as List<Question>;
+      final records = results[4] as List<CauseRecord>;
+      final byQ = <String, List<CauseRecord>>{};
+      for (final r in records) {
+        (byQ[r.questionId] ??= []).add(r);
       }
+      // 待解决 / 复查拆分（HTML homeRevCounts）：有未解决错因的题计
+      // 待解决；只有复查到期的题计复查；两者之和 = 要复习总数。
+      // 与错题本封面三数同一共享分类（SR-P1-1）：
+      // QuestionRepository.reviewBucketOf，不再本页各自定义。
+      var pending = 0;
+      var recheck = 0;
+      for (final q in due) {
+        final rs = byQ[q.id] ?? const <CauseRecord>[];
+        switch (QuestionRepository.reviewBucketOf(rs)) {
+          case ReviewBucket.pending:
+            pending++;
+          case ReviewBucket.recheck:
+            recheck++;
+          case ReviewBucket.solved:
+          case ReviewBucket.none:
+            // dueToday 只返回 pending / recheck 两类；防御性分支，
+            // 万一混入也不计入总数。
+            break;
+        }
+      }
+      setState(() {
+        _revCounts = results[0] as Map<String, int>;
+        _pendingCounts = results[1] as Map<String, int>;
+        _recent = results[2] as ({String kind, String subjectId, String title})?;
+        final subjects = results[5] as List<Subject>;
+        _subjects = subjects.isEmpty ? Subject.all : subjects;
+        _duePending = pending;
+        _dueRecheck = recheck;
+        _loading = false;
+        _loadError = false;
+        _hasLoaded = true;
+      });
+    } catch (_) {
+      // 读库失败：不一直转圈（SR-P2-48），出错误横幅 + 重试入口。
+      if (!mounted) return;
+      setState(() {
+        _loading = false;
+        _loadError = true;
+        _loadErrorDismissed = false;
+      });
     }
+  }
+
+  Future<void> _retryLoad() async {
     setState(() {
-      _revCounts = results[0] as Map<String, int>;
-      _pendingCounts = results[1] as Map<String, int>;
-      _recent = results[2] as ({String kind, String subjectId, String title})?;
-      final subjects = results[5] as List<Subject>;
-      _subjects = subjects.isEmpty ? Subject.all : subjects;
-      _duePending = pending;
-      _dueRecheck = recheck;
-      _loading = false;
+      _loading = true;
+      _loadError = false;
     });
+    await _load();
   }
 
   int get _totalDue => _duePending + _dueRecheck;
@@ -216,6 +250,16 @@ class _HomePageState extends State<HomePage> {
                 widget.onBackupErrorDismissed?.call();
               },
             ),
+          // 读库失败（SR-P2-48）：不一直转圈，出错误横幅 + 重试。
+          if (_loadError && !_loadErrorDismissed)
+            QmBanner(
+              tone: QmBannerTone.error,
+              message: '首页数据读取失败，已显示上次成功加载的内容。',
+              actions: [
+                QmBannerAction(label: '重试', onPressed: _retryLoad),
+              ],
+              onDismiss: () => setState(() => _loadErrorDismissed = true),
+            ),
           // 焦点大卡片 layout C。
           if (_loading)
             _FocusCardLoading(scale: scale)
@@ -246,7 +290,9 @@ class _HomePageState extends State<HomePage> {
             ),
           ),
           SizedBox(height: 4 * scale),
-          if (!_loading)
+          // 首次加载即失败时不显示全 0 的学科格（_hasLoaded 守门），
+          // 只留问候 + 错误横幅 + 重试。
+          if (!_loading && _hasLoaded)
             _BottomGrid(
               scale: scale,
               palette: palette,

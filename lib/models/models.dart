@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 
 import '../theme/design_tokens.dart';
@@ -213,6 +215,20 @@ class ErrorTypes {
 /// 三处调用点（学科管理标签、整理/详情的自定义错因与新建标签）共用。
 bool hasBannedNameSeparator(String name) =>
     name.contains(',') || name.contains('，') || name.contains('|');
+
+/// 新建类实体的 id（SR-P2-28）：毫秒时间戳 + 8 位随机十六进制后缀。
+/// 纯毫秒时间戳在同一毫秒内两次创建会撞主键、后一次覆盖前一次
+///（文件夹 / 试卷 / 知识点 / 失败任务都曾是这个写法）；后缀与
+/// AppDatabase.newBoxId 同款 Random.secure() 8 位十六进制，
+/// 不引入 uuid 包。时间戳在前，id 仍大致按创建顺序排。
+String newEntityId(String prefix) {
+  final r = math.Random.secure();
+  final rand8 = List.generate(
+    8,
+    (_) => '0123456789abcdef'[r.nextInt(16)],
+  ).join();
+  return '$prefix-${DateTime.now().millisecondsSinceEpoch}-$rand8';
+}
 
 /// 知识点：预置树 学科 → 章节 → 知识点（大学层级），多选不限量。
 class KnowledgePoint {
@@ -549,7 +565,9 @@ class AppSettings {
     this.reviewSort = 'joinTime', // joinTime / subject
     this.wrongbookView = 'large', // large / compact
     this.pageSize = 10, // 10 / 20 / 30 / 40 / 50
-    this.wrongbookSort = 'new', // new / old / subject
+    this.wrongbookSort = 'new', // new / old / subj-asc / subj-desc /
+    // status-asc / status-desc（与错题本列表下拉六项一致；旧值 'subject'
+    // 读库 / 写入时由 normalizeWrongbookSort 归一为 subj-asc）
     this.startupPage = 'home', // home / last
   });
 
@@ -570,6 +588,25 @@ class AppSettings {
   final String startupPage;
 
   static const defaults = AppSettings();
+
+  /// 错题本列表下拉的合法排序值（wrongbook_list.dart 六项）。
+  static const wrongbookSortValues = {
+    'new',
+    'old',
+    'subj-asc',
+    'subj-desc',
+    'status-asc',
+    'status-desc',
+  };
+
+  /// 归一错题本默认排序：旧值 'subject'（SR-P0-2 之前设置页的选项，
+  /// 列表下拉从无此项）按原意归为 'subj-asc'；其它未知值回落到 'new'，
+  /// 绝不把非法值喂给 DropdownButton / QmSegmented。
+  static String normalizeWrongbookSort(String value) => switch (value) {
+        'subject' => 'subj-asc',
+        _ when wrongbookSortValues.contains(value) => value,
+        _ => 'new',
+      };
 
   Map<String, String> toMap() => {
         'themeMode': themeMode,
@@ -607,7 +644,7 @@ class AppSettings {
       reviewSort: m['reviewSort'] ?? 'joinTime',
       wrongbookView: m['wrongbookView'] ?? 'large',
       pageSize: parseInt('pageSize', 10),
-      wrongbookSort: m['wrongbookSort'] ?? 'new',
+      wrongbookSort: normalizeWrongbookSort(m['wrongbookSort'] ?? 'new'),
       startupPage: m['startupPage'] ?? 'home',
     );
   }
@@ -643,7 +680,9 @@ class AppSettings {
         reviewSort: reviewSort ?? this.reviewSort,
         wrongbookView: wrongbookView ?? this.wrongbookView,
         pageSize: pageSize ?? this.pageSize,
-        wrongbookSort: wrongbookSort ?? this.wrongbookSort,
+        wrongbookSort: wrongbookSort == null
+            ? this.wrongbookSort
+            : normalizeWrongbookSort(wrongbookSort),
         startupPage: startupPage ?? this.startupPage,
       );
 

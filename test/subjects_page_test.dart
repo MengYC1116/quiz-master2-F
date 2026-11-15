@@ -10,6 +10,7 @@ import 'package:quiz_master2/data/repository.dart';
 import 'package:quiz_master2/models/models.dart';
 import 'package:quiz_master2/modules/subjects/subjects_page.dart';
 import 'package:quiz_master2/theme/app_theme.dart';
+import 'package:quiz_master2/widgets/uikit.dart';
 
 Question _tq(String id, String title,
         {String subjectId = 'math',
@@ -33,6 +34,9 @@ class FakeSubjectsRepo extends QuestionRepository {
 
   bool throwOnLoad;
   List<Subject> subjectsList = List.of(Subject.all);
+
+  /// SR-P2-55：统计 saveSubject 调用次数，点按一次只能保存一次。
+  int saveSubjectCalls = 0;
   List<Question> questions = [
     _tq('q1', '函数极限'),
     _tq('q2', '导数应用'),
@@ -90,6 +94,7 @@ class FakeSubjectsRepo extends QuestionRepository {
 
   @override
   Future<void> saveSubject(Subject s) async {
+    saveSubjectCalls++;
     final i = subjectsList.indexWhere((e) => e.id == s.id);
     if (i >= 0) {
       subjectsList[i] = s;
@@ -642,6 +647,56 @@ void main() {
       await pumpSubjects(tester);
       await openSection(tester, '学科');
       expect(find.byType(Icon), findsNothing);
+    });
+  });
+
+  group('B5-P2 学科管理', () {
+    testWidgets('SR-P2-51 第 8 科起仍有新色：12 色轮完按金角生成，不回落第一色',
+        (tester) async {
+      final repo = FakeSubjectsRepo();
+      await pumpSubjects(tester, repo: repo);
+      await openSection(tester, '学科');
+      const names = [
+        '物理',
+        '化学',
+        '生物',
+        '地理',
+        '历史',
+        '计算机',
+        '音乐',
+        '美术',
+        '体育',
+        '外语',
+      ];
+      for (final name in names) {
+        await tester.enterText(find.byType(TextField).first, name);
+        await tester.tap(find.text('＋ 添加学科'));
+        await tester.pumpAndSettle();
+      }
+      expect(repo.subjectsList.length, 13);
+      // 第 8 科（历史）青绿、第 9 科（计算机）草绿。
+      expect(repo.subjectsList[7].name, '历史');
+      expect(repo.subjectsList[7].color, const Color(0xFF14B8A6));
+      expect(repo.subjectsList[8].name, '计算机');
+      expect(repo.subjectsList[8].color, const Color(0xFF84CC16));
+      // 13 科颜色全不相同；第 13 科是金角生成色，不是数学蓝。
+      final colors = repo.subjectsList.map((s) => s.color).toSet();
+      expect(colors.length, 13);
+      expect(repo.subjectsList[12].color, isNot(const Color(0xFF2E7CF6)));
+    });
+
+    testWidgets('SR-P2-55 点封面小图一次只保存一次：单套点按处理',
+        (tester) async {
+      final repo = FakeSubjectsRepo();
+      await pumpSubjects(tester, repo: repo);
+      await openSection(tester, '学科');
+      await tester.tap(find.text('错题本封面样式'));
+      await tester.pumpAndSettle();
+      // 第 3 个小图 = 数学的“圆点”样式（plain/lines/dots 顺序）。
+      await tester.tap(find.byType(QmCoverMini).at(2));
+      await tester.pumpAndSettle();
+      expect(repo.subjectsList.first.coverStyle, 'dots');
+      expect(repo.saveSubjectCalls, 1);
     });
   });
 }

@@ -2,6 +2,8 @@
 // 在 `1.0 - x < 0.08` 时下限大于上限，Dart 抛 ArgumentError。
 // 新实现对任何输入都不抛错：贴边允许宽/高小于 0.08（不收左上角），
 // 空间足够时仍把过小的宽/高补回 0.08。
+// SR-P2-77：真实模型冒烟 group 带 5 分钟超时余量（与 PDF 组并行跑时
+// 的 CPU 争用超时抖动同源，见 test/pdf_render_service_test.dart 头注）。
 import 'dart:io';
 import 'dart:ui' as ui;
 
@@ -329,7 +331,7 @@ void main() {
       } finally {
         await dir.delete(recursive: true);
       }
-    });
+    }, timeout: const Timeout(Duration(minutes: 5)));
 
     test('图片文件不存在：不回占位框，usedFallback 为真、显式提示手动框选', () async {
       final service = YoloOnnxService();
@@ -340,7 +342,7 @@ void main() {
       expect(result.usedFallback, isTrue);
       expect(result.boxes, isEmpty);
       expect(result.error, contains('页图缺失'));
-    });
+    }, timeout: const Timeout(Duration(minutes: 5)));
 
     test('模型缺失时：不回占位框，usedFallback 为真、提示手动框选', () async {
       // 先重置加载缓存：真实推理测试跑过后 _loadOk 已缓存为真。
@@ -369,6 +371,59 @@ void main() {
       } finally {
         await dir.delete(recursive: true);
       }
-    });
+    }, timeout: const Timeout(Duration(minutes: 5)));
+
+    test('SR-P1-16：首次加载失败后补放模型（换回真实模型路径），下次检测可恢复，无需重启', () async {
+      TestWidgetsFlutterBinding.ensureInitialized();
+      YoloOnnxService.resetLoadStateForTest();
+      final dir = await Directory.systemTemp.createTemp('yolo-retry-load');
+      try {
+        final recorder = ui.PictureRecorder();
+        final canvas = ui.Canvas(recorder);
+        canvas.drawRect(
+          const ui.Rect.fromLTWH(0, 0, 100, 100),
+          ui.Paint()..color = const ui.Color(0xFFFFFFFF),
+        );
+        final img = await recorder.endRecording().toImage(100, 100);
+        final png = await img.toByteData(format: ui.ImageByteFormat.png);
+        img.dispose();
+        final file = File('${dir.path}/page.png');
+        await file.writeAsBytes(png!.buffer.asUint8List());
+
+        // 第一次：模型路径不存在，加载失败 → fallback，不锁死。
+        final missing = YoloOnnxService(
+          questionModelAsset: 'assets/models/question/does-not-exist.onnx',
+        );
+        final first =
+            await missing.detectPage(imagePath: file.path, page: 1);
+        expect(first.usedFallback, isTrue);
+        expect(first.boxes, isEmpty);
+        expect(first.error, contains('手动框选'));
+        expect(missing.hasRealModel, isFalse);
+
+        // 运行中“补放模型”：同一进程内换回真实模型路径再次检测。
+        // 旧实现 `_loadAttempted` 锁死，这里会一直返回 fallback。
+        final real = YoloOnnxService();
+        final second = await real.detectPage(imagePath: file.path, page: 1);
+        if (!real.hasRealModel) {
+          markTestSkipped('本机无 onnxruntime 原生库，跳过真实推理恢复验证');
+          return;
+        }
+        expect(second.usedFallback, isFalse);
+        expect(real.lastDetectStats, isNotNull);
+
+        // 成功后缓存复用：换成缺失模型路径的实例再次检测，
+        // 仍走已加载的会话，不重新加载模型。
+        final stale = YoloOnnxService(
+          questionModelAsset: 'assets/models/question/does-not-exist.onnx',
+        );
+        final third = await stale.detectPage(imagePath: file.path, page: 1);
+        expect(third.usedFallback, isFalse);
+        expect(stale.hasRealModel, isTrue);
+      } finally {
+        await dir.delete(recursive: true);
+        YoloOnnxService.resetLoadStateForTest();
+      }
+    }, timeout: const Timeout(Duration(minutes: 5)));
   });
 }

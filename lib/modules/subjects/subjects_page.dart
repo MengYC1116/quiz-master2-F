@@ -10,7 +10,7 @@ import '../../widgets/uikit.dart';
 ///
 /// 结构与文案以 HTML 原型 `viewSubjects()` 为准（R0 附录 A）：
 /// 学科段顶部是「新学科名输入 + ＋ 添加学科」，每行色点 + 学科名 +
-/// 「N 道题」+ 改名/删除；删学科是内联确认框（长文案，含题数与文件夹
+/// 「N 道题」+ 改名/删除；删学科是模态弹窗确认（B3；长文案，含题数与文件夹
 /// 后果）；组内可折叠的「错题本封面样式」块每科 6 样式 × 7 色，点即生效。
 /// 知识点树按学科页签一次只看一科（默认数学），章节默认折起，章节行与
 /// 知识点行都有改名/删除；「＋ 添加章节」在顶部（章节只随知识点存在，
@@ -40,6 +40,8 @@ const _newSubjectColors = [
   // 青 0xFF06B6D4（cyan-500，色相约 192°，在蓝与绿之间）、
   // 粉 0xFFEC4899（pink-500，色相约 336°，在红与紫之间），
   // 与现有 5 色同为 500 级明艳色，亮/深两主题都直接用存色画圆点。
+  // SR-P2-51：再加 5 色到 12 色（青绿/草绿/琥珀/靛蓝/玫红），
+  // 第 8–12 科各有新色；12 色用完后按金角轮转生成，不再回落第一色。
   Color(0xFF2E7CF6),
   Color(0xFF00A884),
   Color(0xFFEF4444),
@@ -47,6 +49,11 @@ const _newSubjectColors = [
   Color(0xFFF08A1D),
   Color(0xFF06B6D4),
   Color(0xFFEC4899),
+  Color(0xFF14B8A6),
+  Color(0xFF84CC16),
+  Color(0xFFF59E0B),
+  Color(0xFF6366F1),
+  Color(0xFFF43F5E),
 ];
 
 class _SubjectsPageState extends State<SubjectsPage> {
@@ -84,9 +91,6 @@ class _SubjectsPageState extends State<SubjectsPage> {
   // chapter:<subjectId>|<章节> / kp:<id> / tag:<名> / exam:<id>。
   final _editController = TextEditingController();
   String? _editTarget;
-
-  // 内联删除确认：与改名同一套 target 写法。
-  String? _confirmTarget;
 
   @override
   void initState() {
@@ -170,7 +174,6 @@ class _SubjectsPageState extends State<SubjectsPage> {
   void _startEdit(String target, String initial) {
     setState(() {
       _editTarget = target;
-      _confirmTarget = null;
       _editController.text = initial;
     });
   }
@@ -237,15 +240,40 @@ class _SubjectsPageState extends State<SubjectsPage> {
     await _load();
   }
 
-  // ---------- 内联删除确认 ----------
+  // ---------- 删除确认（B3：模态 AlertDialog 弹窗） ----------
 
-  Future<void> _confirmDelete() async {
-    final target = _confirmTarget;
-    if (target == null) return;
+  /// 删除确认弹窗：只统一形式，标题/后果文案/确认按钮文案沿用原来
+  /// 行内确认条的字句；确认后走 [_deleteConfirmed] 按 target 执行删除。
+  Future<void> _askDelete({
+    required String target,
+    required String title,
+    required String detail,
+    required String confirmLabel,
+  }) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(title),
+        content: Text(detail),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('取消'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: Text(confirmLabel),
+          ),
+        ],
+      ),
+    );
+    if (ok == true && mounted) await _deleteConfirmed(target);
+  }
+
+  Future<void> _deleteConfirmed(String target) async {
     final parts = target.split(':');
     final kind = parts[0];
     final key = parts.sublist(1).join(':');
-    setState(() => _confirmTarget = null);
     switch (kind) {
       case 'subject':
         final s = _subjects.where((e) => e.id == key).firstOrNull;
@@ -278,7 +306,21 @@ class _SubjectsPageState extends State<SubjectsPage> {
     final usedColors = _subjects.map((s) => s.color).toSet();
     final color = _newSubjectColors.firstWhere(
       (c) => !usedColors.contains(c),
-      orElse: () => _newSubjectColors.first,
+      // 12 色用完后按金角（137.5°）轮转生成新色（SR-P2-51），
+      // 不再回落到第一色（数学蓝）；撞色时再步进 37° 避开。
+      orElse: () {
+        var hue = (usedColors.length * 137.5) % 360;
+        var candidate =
+            HSVColor.fromAHSV(1, hue, 0.65, 0.85).toColor();
+        var guard = 0;
+        while (usedColors.contains(candidate) && guard < 12) {
+          hue = (hue + 37) % 360;
+          candidate =
+              HSVColor.fromAHSV(1, hue, 0.65, 0.85).toColor();
+          guard++;
+        }
+        return candidate;
+      },
     );
     final id = 'subject-${DateTime.now().millisecondsSinceEpoch}';
     final subject = Subject(
@@ -469,71 +511,6 @@ class _SubjectsPageState extends State<SubjectsPage> {
     );
   }
 
-  /// 内联确认框（HTML `.confirmbox`：err-line 边 / err-bg 底 /
-  /// err-ink 字，radius 12，padding 12×14，14px 字；与详情页同款）。
-  Widget _confirmBox({
-    required String title,
-    required String detail,
-    required String confirmLabel,
-    required VoidCallback onConfirm,
-  }) {
-    final palette = DesignTokens.of(Theme.of(context).brightness);
-    final scale = qmScaleOf(context);
-    return Container(
-      margin: EdgeInsets.only(top: 10 * scale),
-      padding: EdgeInsets.symmetric(
-        horizontal: DesignTokens.detailConfirmPaddingH * scale,
-        vertical: DesignTokens.detailConfirmPaddingV * scale,
-      ),
-      decoration: BoxDecoration(
-        color: palette.errBg,
-        border: Border.all(color: palette.errLine),
-        borderRadius: BorderRadius.circular(
-          DesignTokens.scaled(scale).radius,
-        ),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text.rich(
-            TextSpan(
-              style: TextStyle(
-                fontSize: DesignTokens.bannerFontSize,
-                color: palette.errInk,
-                height: DesignTokens.bodyLineHeight,
-              ),
-              children: [
-                TextSpan(
-                  text: title,
-                  style: const TextStyle(fontWeight: FontWeight.w700),
-                ),
-                if (detail.isNotEmpty) TextSpan(text: detail),
-              ],
-            ),
-          ),
-          SizedBox(height: 8 * scale),
-          Wrap(
-            spacing: 8 * scale,
-            runSpacing: 8 * scale,
-            children: [
-              QmButton(
-                label: confirmLabel,
-                size: QmButtonSize.small,
-                onPressed: onConfirm,
-              ),
-              QmButton(
-                label: '取消',
-                variant: QmButtonVariant.plain,
-                size: QmButtonSize.small,
-                onPressed: () => setState(() => _confirmTarget = null),
-              ),
-            ],
-          ),
-        ],
-      ),
-    );
-  }
-
   /// 内联改名行：输入框 + 保存改名 + 取消（HTML 行内改名形态）。
   Widget _editRow({required String confirmLabel}) {
     final scale = qmScaleOf(context);
@@ -566,7 +543,7 @@ class _SubjectsPageState extends State<SubjectsPage> {
   Widget _rowActions({
     required String editTarget,
     required String editInitial,
-    required String confirmTarget,
+    required VoidCallback onDelete,
   }) {
     return Row(
       mainAxisSize: MainAxisSize.min,
@@ -582,10 +559,7 @@ class _SubjectsPageState extends State<SubjectsPage> {
           label: '删除',
           variant: QmButtonVariant.danger,
           size: QmButtonSize.small,
-          onPressed: () => setState(() {
-            _confirmTarget = confirmTarget;
-            _editTarget = null;
-          }),
+          onPressed: onDelete,
         ),
       ],
     );
@@ -684,19 +658,17 @@ class _SubjectsPageState extends State<SubjectsPage> {
                   _rowActions(
                     editTarget: 'subject:${s.id}',
                     editInitial: s.name,
-                    confirmTarget: 'subject:${s.id}',
+                    onDelete: () => _askDelete(
+                      target: 'subject:${s.id}',
+                      title: '删除学科「${s.name}」，确定吗？',
+                      detail:
+                          '删除这个学科会删掉其中全部的题——这一科现在有 ${_questionCounts[s.id] ?? 0} 道题，会全部一起删掉；这一科自己的文件夹也跟着一起删掉（其他科目的文件夹不受影响），删了就没了，确定吗？',
+                      confirmLabel:
+                          '确认删除这一科和全部 ${_questionCounts[s.id] ?? 0} 道题',
+                    ),
                   ),
                 ],
               ),
-            ),
-          if (_confirmTarget == 'subject:${s.id}')
-            _confirmBox(
-              title: '删除学科「${s.name}」，确定吗？',
-              detail:
-                  '删除这个学科会删掉其中全部的题——这一科现在有 ${_questionCounts[s.id] ?? 0} 道题，会全部一起删掉；这一科自己的文件夹也跟着一起删掉（其他科目的文件夹不受影响），删了就没了，确定吗？',
-              confirmLabel:
-                  '确认删除这一科和全部 ${_questionCounts[s.id] ?? 0} 道题',
-              onConfirm: _confirmDelete,
             ),
         ],
         SizedBox(height: 12 * scale),
@@ -758,6 +730,11 @@ class _SubjectsPageState extends State<SubjectsPage> {
             runSpacing: 8 * scale,
             children: [
               for (final style in CoverStyles.all)
+                // 封面样式只接一处点按（SR-P2-55）：留外层 GestureDetector
+                //（小图 + 下方样式名签整个格子都可点，名签点按是既有
+                // 交互，见封面样式测试），QmCoverMini 不再另传 onTap——
+                // onTap 为 null 时它只返回装饰容器，不装点按识别器，
+                // 不与外层竞争。
                 GestureDetector(
                   onTap: () => _setCover(s, style: style),
                   child: Column(
@@ -768,7 +745,6 @@ class _SubjectsPageState extends State<SubjectsPage> {
                         color: CoverTokens.of(s.coverColor),
                         character: firstChar,
                         selected: s.coverStyle == style,
-                        onTap: () => _setCover(s, style: style),
                       ),
                       SizedBox(height: 4 * scale),
                       Text(
@@ -993,18 +969,16 @@ class _SubjectsPageState extends State<SubjectsPage> {
                 _rowActions(
                   editTarget: 'chapter:$key',
                   editInitial: chapter,
-                  confirmTarget: 'chapter:$key',
+                  onDelete: () => _askDelete(
+                    target: 'chapter:$key',
+                    title: '删除章节「$chapter」，确定吗？',
+                    detail:
+                        '会删掉这个章节下的 ${kps.length} 个知识点；题还在，只是这些知识点变空、成为待补充，删了就没了，确定吗？',
+                    confirmLabel: '确认删除',
+                  ),
                 ),
               ],
             ),
-          ),
-        if (_confirmTarget == 'chapter:$key')
-          _confirmBox(
-            title: '删除章节「$chapter」，确定吗？',
-            detail:
-                '会删掉这个章节下的 ${kps.length} 个知识点；题还在，只是这些知识点变空、成为待补充，删了就没了，确定吗？',
-            confirmLabel: '确认删除',
-            onConfirm: _confirmDelete,
           ),
         if (open) ...[
           if (kps.isEmpty)
@@ -1038,19 +1012,14 @@ class _SubjectsPageState extends State<SubjectsPage> {
                     _rowActions(
                       editTarget: 'kp:${kp.id}',
                       editInitial: kp.name,
-                      confirmTarget: 'kp:${kp.id}',
+                      onDelete: () => _askDelete(
+                        target: 'kp:${kp.id}',
+                        title: '删除知识点「${kp.name}」，确定吗？',
+                        detail: '题还在，只是这个知识点变空、成为待补充，删了就没了，确定吗？',
+                        confirmLabel: '确认删除',
+                      ),
                     ),
                   ],
-                ),
-              ),
-            if (_confirmTarget == 'kp:${kp.id}')
-              Padding(
-                padding: EdgeInsets.only(left: R10Tokens.kpIndent * scale),
-                child: _confirmBox(
-                  title: '删除知识点「${kp.name}」，确定吗？',
-                  detail: '题还在，只是这个知识点变空、成为待补充，删了就没了，确定吗？',
-                  confirmLabel: '确认删除',
-                  onConfirm: _confirmDelete,
                 ),
               ),
           ],
@@ -1152,17 +1121,15 @@ class _SubjectsPageState extends State<SubjectsPage> {
                   _rowActions(
                     editTarget: 'tag:$t',
                     editInitial: t,
-                    confirmTarget: 'tag:$t',
+                    onDelete: () => _askDelete(
+                      target: 'tag:$t',
+                      title: '删除标签「$t」，确定吗？',
+                      detail: '题还在，这个标签变空、成为待补充，删了就没了，确定吗？',
+                      confirmLabel: '确认删除',
+                    ),
                   ),
                 ],
               ),
-            ),
-          if (_confirmTarget == 'tag:$t')
-            _confirmBox(
-              title: '删除标签「$t」，确定吗？',
-              detail: '题还在，这个标签变空、成为待补充，删了就没了，确定吗？',
-              confirmLabel: '确认删除',
-              onConfirm: _confirmDelete,
             ),
         ],
       ],
@@ -1242,17 +1209,15 @@ class _SubjectsPageState extends State<SubjectsPage> {
                     _rowActions(
                       editTarget: 'exam:${e.id}',
                       editInitial: e.name,
-                      confirmTarget: 'exam:${e.id}',
+                      onDelete: () => _askDelete(
+                        target: 'exam:${e.id}',
+                        title: '删除试卷「${e.name}」，确定吗？',
+                        detail: '题还在，来源变空、成为待补充，删了就没了，确定吗？',
+                        confirmLabel: '确认删除',
+                      ),
                     ),
                   ],
                 ),
-              ),
-            if (_confirmTarget == 'exam:${e.id}')
-              _confirmBox(
-                title: '删除试卷「${e.name}」，确定吗？',
-                detail: '题还在，来源变空、成为待补充，删了就没了，确定吗？',
-                confirmLabel: '确认删除',
-                onConfirm: _confirmDelete,
               ),
           ],
       ],

@@ -1,9 +1,11 @@
-// S8 B4.2 / B4.3：备份补 4 张表（导出 + 恢复往返）、库文件迁移复制。
+// S8 B4.2 / B4.3：备份补 4 张表（导出 + 恢复往返）、databaseExistsAt。
 // 备份往返用 createTables 建的合成库（P1：不再读真实用户库——
 // §8.1 禁止新测试依赖真实库，且 P1 删老库后真实库从空开始，
-// 旧写法“断言演示库 9 道题”在新库上必挂）；迁移复制只用临时目录
-// 里的文件。B4.3 的整机迁移（关库 + 写标记）不进单测，
-// 见 S8B4-REPORT.md 的真机验证——单测里写标记会改掉真实应用的库位置。
+// 旧写法“断言演示库 9 道题”在新库上必挂）；B4.3 的整机迁移
+// （关库 + 写标记）不进单测，见 S8B4-REPORT.md 的真机验证——
+// 单测里写标记会改掉真实应用的库位置。copyDatabaseFileTo 已在
+// B3-P01 删除（生产无调用，迁移走 staging 的 migrateDataFiles），
+// 其复制语义由 p3_backup_migration_test §4.6 组覆盖。
 import 'dart:convert';
 import 'dart:io';
 
@@ -144,7 +146,7 @@ void main() {
       expect(await db.query('questions'), hasLength(2));
     });
 
-    test('旧备份（没有 4 张表键）恢复不崩，4 张表被清空', () async {
+    test('SR-P2-4：旧备份（没有 4 张表键）拒绝恢复，原库不动', () async {
       final legacy = jsonDecode(await AppDatabase.exportBackupJsonFrom(db))
           as Map<String, dynamic>;
       for (final t in [
@@ -155,11 +157,18 @@ void main() {
       ]) {
         legacy.remove(t);
       }
-      await AppDatabase.importBackupJsonInto(db, legacy);
-      expect(await db.query('collect_tasks'), isEmpty);
-      expect(await db.query('review_state'), isEmpty);
-      expect(await db.query('review_history'), isEmpty);
-      expect(await db.query('recent_tasks'), isEmpty);
+      await expectLater(
+        () => AppDatabase.importBackupJsonInto(db, legacy),
+        throwsA(isA<BackupRestoreException>()),
+      );
+      expect(
+        (await db.query('collect_tasks'))
+            .any((r) => r['id'] == 'ct-marker'),
+        isTrue,
+      );
+      expect(await db.query('review_state'), hasLength(1));
+      expect(await db.query('review_history'), hasLength(1));
+      expect(await db.query('recent_tasks'), hasLength(1));
       expect(await db.query('questions'), hasLength(2));
     });
 
@@ -178,7 +187,12 @@ void main() {
     });
   });
 
-  group('B4.3 copyDatabaseFileTo', () {
+  group('B4.3 databaseExistsAt', () {
+    // B3-P01：copyDatabaseFileTo 已删除（生产无调用；整机迁移走
+    // staging 方式的 migrateDataFiles，见 p3_backup_migration_test
+    // §4.6 组）。旧的直接覆盖复制在覆盖失败时会留截断的库文件，
+    // 不再保留该方法及其测试；这里只留 databaseExistsAt（设置页
+    // 覆盖对话框的判断依据）。
     late Directory tmp;
 
     setUp(() async {
@@ -188,57 +202,6 @@ void main() {
           await tmp.delete(recursive: true);
         } catch (_) {}
       });
-    });
-
-    Future<File> sourceWith(String content) async {
-      final f = File(p.join(tmp.path, 'src', 'quiz-master2.db'));
-      await f.parent.create(recursive: true);
-      return f.writeAsString(content);
-    }
-
-    test('复制到新位置：文件在、内容一致', () async {
-      final src = await sourceWith('old-db-bytes');
-      final targetDir = p.join(tmp.path, 'dst');
-      expect(await AppDatabase.copyDatabaseFileTo(src.path, targetDir),
-          isTrue);
-      expect(File(p.join(targetDir, 'quiz-master2.db')).readAsStringSync(),
-          'old-db-bytes');
-    });
-
-    test('目标已有库且不覆盖：返回 false，目标原文件不动', () async {
-      final src = await sourceWith('new-bytes');
-      final targetDir = p.join(tmp.path, 'dst');
-      await Directory(targetDir).create(recursive: true);
-      final target = File(p.join(targetDir, 'quiz-master2.db'));
-      await target.writeAsString('existing-bytes');
-      expect(await AppDatabase.copyDatabaseFileTo(src.path, targetDir),
-          isFalse);
-      expect(target.readAsStringSync(), 'existing-bytes');
-    });
-
-    test('目标已有库且指定覆盖：返回 true，内容被替换', () async {
-      final src = await sourceWith('new-bytes');
-      final targetDir = p.join(tmp.path, 'dst');
-      await Directory(targetDir).create(recursive: true);
-      await File(p.join(targetDir, 'quiz-master2.db'))
-          .writeAsString('existing-bytes');
-      expect(
-          await AppDatabase.copyDatabaseFileTo(src.path, targetDir,
-              overwrite: true),
-          isTrue);
-      expect(
-          File(p.join(targetDir, 'quiz-master2.db')).readAsStringSync(),
-          'new-bytes');
-    });
-
-    test('旧库不存在：无可迁移，返回 true，只由调用方写标记', () async {
-      final targetDir = p.join(tmp.path, 'dst');
-      expect(
-          await AppDatabase.copyDatabaseFileTo(
-              p.join(tmp.path, 'no-such.db'), targetDir),
-          isTrue);
-      expect(File(p.join(targetDir, 'quiz-master2.db')).existsSync(),
-          isFalse);
     });
 
     test('databaseExistsAt 按文件在不在返回', () async {

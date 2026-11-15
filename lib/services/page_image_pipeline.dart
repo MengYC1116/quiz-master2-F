@@ -57,14 +57,24 @@ QuestionBox rotateBoxToRotatedPage(
     default:
       throw ArgumentError('只支持 0/90/180/270，得到 $degreesClockwise');
   }
+  // SR-P2-70：钳制要按“区间与 [0,1] 求交”算——先钳左上角，再把宽高
+  // 收到剩余空间。旧写法只钳左上角、不缩宽高：x=-0.1、w=0.5 的框会
+  // 变成 x=0、w=0.5（应为 0.4），框整体右移且变宽；右端越界同理。
+  // 与 YoloOnnxService.clampToPage（minSize: false）同一语义，
+  // 这里不补最小尺寸，旋转变换不改变框的原始大小意图。
+  final cx = nx.clamp(0.0, 1.0);
+  final cy = ny.clamp(0.0, 1.0);
+  // 宽/高为负的脏输入也收到 0，不把负尺寸漏出去。
+  final cw = ((nx + nw).clamp(0.0, 1.0) - cx).clamp(0.0, 1.0);
+  final ch = ((ny + nh).clamp(0.0, 1.0) - cy).clamp(0.0, 1.0);
   return QuestionBox(
     id: box.id,
     layer: box.layer,
     type: box.type,
-    x: nx.clamp(0.0, 1.0),
-    y: ny.clamp(0.0, 1.0),
-    w: nw.clamp(0.0, 1.0 - nx.clamp(0.0, 1.0)),
-    h: nh.clamp(0.0, 1.0 - ny.clamp(0.0, 1.0)),
+    x: cx,
+    y: cy,
+    w: cw,
+    h: ch,
     // 变换只改坐标，其余字段（置信度 / 来源 / 归属 / 页码）原样保留。
     confidence: box.confidence,
     origin: box.origin,
@@ -200,8 +210,29 @@ Future<({
 
 Future<ui.Image> _decode(Uint8List bytes) async {
   final codec = await ui.instantiateImageCodec(bytes);
-  final frame = await codec.getNextFrame();
-  return frame.image;
+  try {
+    final frame = await codec.getNextFrame();
+    return frame.image;
+  } finally {
+    // SR-P2-69：Codec 用完即 dispose，否则每次解码漏一份 native 资源。
+    codec.dispose();
+  }
+}
+
+/// 图片能否解码（SR-P2-61 导入校验用）：能解出首帧即 true，解码失败
+/// 返回 false，不抛错。只校验、不保留像素；图片与 Codec 用完即释放。
+Future<bool> canDecodeImageBytes(Uint8List bytes) async {
+  ui.Codec? codec;
+  try {
+    codec = await ui.instantiateImageCodec(bytes);
+    final frame = await codec.getNextFrame();
+    frame.image.dispose();
+    return true;
+  } catch (_) {
+    return false;
+  } finally {
+    codec?.dispose();
+  }
 }
 
 /// 手写轻量 JPEG EXIF Orientation 解析（不引入 image 包）。

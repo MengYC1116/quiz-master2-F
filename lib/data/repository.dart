@@ -2,12 +2,46 @@ import '../data/database.dart';
 import '../models/models.dart';
 import '../services/import_service.dart';
 
+/// 一道题的复习归属（互斥拆分）：首页焦点卡“待解决 / 复查”与错题本
+/// 封面三数共用此口径，同一道题只落一个桶。
+///
+/// - [ReviewBucket.pending]：至少一个错因未解决（待解决 / 解决中）
+///   → 计入“要复习”。
+/// - [ReviewBucket.recheck]：全部错因已解决、且至少一条到了复查时间
+///   → 只计入“待复查”，不计入“要复习”。
+/// - [ReviewBucket.solved]：全部错因已解决、且无一条到复查时间
+///   → 计入三元组第三项“已解决”（已掌握且不在复查期，不在要复习总数内）。
+/// - [ReviewBucket.none]：无错因记录 → 三处都不计。
+///
+/// 互斥保证：`pending` 题数 + `recheck` 题数 = 要复习总数
+/// （[QuestionRepository.dueToday] 的题数、首页焦点卡总数）。
+enum ReviewBucket { pending, recheck, solved, none }
+
 /// 仓库：各页面模块共用的查询口径（首页计数、错题本筛选、整理队列、复习）。
 /// 不直接读其他模块的状态，只读数据层。
 /// v2：旧翻卡 + 1/3/7/14 天间隔已废弃；复习是治错因模型。
 class QuestionRepository {
   QuestionRepository(this._db);
   final AppDatabase _db;
+
+  /// 一道题的复习归属：按它的全部错因记录互斥分类（见 [ReviewBucket]）。
+  /// 首页焦点卡的待解决 / 复查拆分与错题本封面三数都走这里，
+  /// 不再各自定义（SR-P1-1）。
+  static ReviewBucket reviewBucketOf(List<CauseRecord> records) {
+    if (records.isEmpty) return ReviewBucket.none;
+    if (records.any((r) => r.status != CauseStatus.solved)) {
+      return ReviewBucket.pending;
+    }
+    if (records.any((r) => r.isRecheckDue)) return ReviewBucket.recheck;
+    return ReviewBucket.solved;
+  }
+
+  /// 这道题要不要复习：有未解决错因，或全部已解决但到了复查时间。
+  /// 等价于 `reviewBucketOf` 落在 `pending` 或 `recheck`。
+  static bool isReviewDue(List<CauseRecord> records) {
+    final bucket = reviewBucketOf(records);
+    return bucket == ReviewBucket.pending || bucket == ReviewBucket.recheck;
+  }
 
   AppDatabase get db => _db;
 
@@ -33,30 +67,20 @@ class QuestionRepository {
 
   /// 手动加入 / 取消加入复习：加入时给这道题建解决记录（每个错因一条）；
   /// 取消后记录保留，再加入时接着治。错因是空的题加不进复习，返回 false。
-  Future<bool> setReviewJoined(Question q, bool joined) async {
-    final causes = q.allCauses;
-    if (joined && causes.isEmpty) return false;
-    await _db.upsertQuestion(q.copyWith(reviewJoined: joined));
-    if (joined) await _db.ensureCauseRecords(q);
-    return true;
-  }
+  /// SR-P2-8：题行 + 错因记录同事务（见 [AppDatabase.setReviewJoined]），
+  /// 不再两步写——中间失败不留“已标加入、却无记录”的题。
+  Future<bool> setReviewJoined(Question q, bool joined) =>
+      _db.setReviewJoined(q, joined);
 
   /// 同步某题的解决记录与它当前的错因：删掉已不在错因里的记录，
   /// 给新加的错因补一条待解决记录（仅已加入复习的题）。
-  Future<void> syncCauseRecords(Question q) async {
-    if (!q.reviewJoined) return;
-    final causes = q.allCauses.toSet();
-    final records = await _db.allCauseRecords();
-    for (final r in records) {
-      if (r.questionId == q.id && !causes.contains(r.cause)) {
-        await _db.deleteCauseRecord(r.questionId, r.cause);
-      }
-    }
-    await _db.ensureCauseRecords(q);
-  }
+  /// SR-P2-8：删旧 + 补新同事务（见 [AppDatabase.syncCauseRecords]）。
+  Future<void> syncCauseRecords(Question q) => _db.syncCauseRecords(q);
 
   /// 要复习的题：手动加入复习、已整理、至少一个错因还没解决
   /// （待解决 / 解决中）或到了复查时间。数题不数错因。
+  /// 口径即 [reviewBucketOf] 落在 `pending` 或 `recheck`，
+  /// 与首页焦点卡、错题本封面三数互斥拆分同源（SR-P1-1）。
   /// 已归档的题不算（与复习页 B6 主列表同口径；记录保留在库里，
   /// 取消归档后重新计入）。`includeArchived: true` 仅供显式
   /// 需要时用，默认排除。
@@ -72,8 +96,7 @@ class QuestionRepository {
     return questions.where((q) {
       if (!q.reviewJoined || !q.isOrganized) return false;
       final rs = byQ[q.id] ?? const <CauseRecord>[];
-      return rs.any(
-          (r) => r.status != CauseStatus.solved || r.isRecheckDue);
+      return isReviewDue(rs);
     }).toList();
   }
 
@@ -94,7 +117,14 @@ class QuestionRepository {
   }
 
   /// 各科三数：要复习 / 待复查 / 已解决（不显示总题数）。
-  /// 一道题可同时计入要复习与待复查（不同错因状态不同）。
+  /// 与首页焦点卡同一互斥拆分（见 [ReviewBucket]、[reviewBucketOf]）：
+  /// 有未解决错因的题只计“要复习”；全部已解决且到了复查时间的题
+  /// 只计“待复查”；全部已解决且未到复查时间的题只计第三项“已解决”。
+  /// 同一道题只落一个桶，不双计；要复习 + 待复查 = 该科要复习总数
+  /// （[homeRevCounts] 该科数、[dueToday] 该科题数）。
+  /// 第三项 `solved` 的语义：已加入复习、已整理、全部错因已解决
+  /// 且无一条到复查时间的题数——即已掌握且不在复查期的题；已掌握
+  /// 但到了复查时间的题计入“待复查”而不计入这一项。
   /// 已归档的题不算（与 dueToday / 复习页同口径；取消归档后
   /// 重新计入）。
   ///
@@ -121,12 +151,15 @@ class QuestionRepository {
           continue;
         }
         final rs = byQ[q.id] ?? const <CauseRecord>[];
-        if (rs.isEmpty) continue;
-        if (rs.any((r) => r.status != CauseStatus.solved)) toReview++;
-        if (rs.any((r) => r.isRecheckDue)) toRecheck++;
-        if (rs.every((r) => r.status == CauseStatus.solved) &&
-            !rs.any((r) => r.isRecheckDue)) {
-          solved++;
+        switch (reviewBucketOf(rs)) {
+          case ReviewBucket.pending:
+            toReview++;
+          case ReviewBucket.recheck:
+            toRecheck++;
+          case ReviewBucket.solved:
+            solved++;
+          case ReviewBucket.none:
+            break;
         }
       }
       map[s.id] = (toReview, toRecheck, solved);
@@ -184,9 +217,17 @@ class QuestionRepository {
     }
     // §4.2：三步同事务（改错因记录 → 记自查历史 → 题目自查次数 +1），
     // 中间失败整体回滚，不留半截记录。
-    await _db.recordSelfCheckTxn(
-        updated: updated, questionId: r.questionId, result: result);
-    return updated;
+    // SR-P2-16：`updated` 是按传入快照算的 provisional 值——事务内
+    // 按库内当前行重算后才写库（见 [AppDatabase.recordSelfCheckInto]），
+    // 返回实际写库的记录；两次基于同一旧快照的自查不再互相覆盖计数。
+    return _db.recordSelfCheckTxn(
+      updated: updated,
+      questionId: r.questionId,
+      result: result,
+      cureChecks: cureChecks,
+      recheckIntervalDays: recheckIntervalDays,
+      isRecheck: isRecheck,
+    );
   }
 
   /// 写补救：内容保存进该错因的补救历史（带日期），下次复习可见。
@@ -265,6 +306,18 @@ class QuestionRepository {
       _db.allFolders(subjectId: subjectId);
 
   Future<void> saveFolder(Folder f) => _db.upsertFolder(f);
+
+  /// SR-P2-36：整科同名预检：同一学科下是否存在与 [name] 同名、
+  /// 且 id 不是 [excludeId] 的文件夹（新建/改名/移入前调）。
+  Future<bool> folderNameExistsInSubject(
+    String subjectId,
+    String name, {
+    String? excludeId,
+  }) => _db.folderNameExistsInSubject(
+    subjectId,
+    name,
+    excludeId: excludeId,
+  );
 
   Future<int> deleteFolder(Folder f) => _db.deleteFolder(f);
 
@@ -354,18 +407,45 @@ class QuestionRepository {
           String questionId, List<QuestionBox> boxes) =>
       _db.replaceQuestionBoxes(questionId, boxes);
 
+  /// B3-P01 详情页重框：换框 + 保存切片一个事务（框换了、切片
+  /// 一起换；任一步失败一起回滚）。切片文件由调用方在调用前写盘。
+  Future<void> replaceQuestionBoxesAndSlice(
+    String questionId,
+    List<QuestionBox> boxes, {
+    required String slicePath,
+    required int sliceWidth,
+    required int sliceHeight,
+  }) =>
+      _db.replaceQuestionBoxesAndSlice(
+        questionId,
+        boxes,
+        slicePath: slicePath,
+        sliceWidth: sliceWidth,
+        sliceHeight: sliceHeight,
+      );
+
   /// 确认拆题四步同事务（切片须由调用方先写盘）。
+  /// SR-P1-2：有未框页时把保留任务 + 未框页草稿一起传进去，
+  /// 与拆题同事务提交，不再由调用方在事务外重建。
   Future<void> confirmSplit({
     required CollectTask originalTask,
     required List<Question> questions,
     required List<CollectTask> splitTasks,
     required Map<String, List<QuestionBox>> boxesByQuestionId,
+    CollectTask? retainedTask,
+    Map<int, List<QuestionBox>> retainedBoxesByPage = const {},
+    Map<String, List<QuestionBox>> retainedInners = const {},
+    Map<int, List<QuestionBox>> retainedStandaloneInner = const {},
   }) =>
       _db.confirmSplit(
         originalTask: originalTask,
         questions: questions,
         splitTasks: splitTasks,
         boxesByQuestionId: boxesByQuestionId,
+        retainedTask: retainedTask,
+        retainedBoxesByPage: retainedBoxesByPage,
+        retainedInners: retainedInners,
+        retainedStandaloneInner: retainedStandaloneInner,
       );
 
   Future<String> exportBackupJson() => _db.exportBackupJson();

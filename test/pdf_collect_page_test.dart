@@ -172,12 +172,25 @@ void main() {
       findsOneWidget,
     );
 
-    // 确认：第 1、2 页各 1 道题，共 2 个待整理任务。
+    // 确认：第 1、2 页各 1 道题，共 2 个待整理任务；第 3 页没框，
+    // P1-2 确认前先弹“还有 1 页没有框”，点「确认拆题」才继续拆。
     // 等待拆题完成：_confirmSplit 在 runAsync 的真实 zone 里跑
     // dart:ui 解码 + 写盘；全量并行时 CPU 争用会让固定 4 秒不够，
     // 改为轮询 savedQuestions（上限 ~30 秒），不等死。
+    var sawUnboxedDialog = false;
     await tester.runAsync(() async {
       await tester.tap(find.text('确认修框，拆成 2 个待整理任务'));
+      // 等确认框出现（上限 ~9 秒），记下它、点确认拆题。
+      for (var i = 0; i < 30; i++) {
+        await tester.pump();
+        await Future<void>.delayed(const Duration(milliseconds: 300));
+        if (find.text('确认拆题').evaluate().isNotEmpty) break;
+      }
+      sawUnboxedDialog =
+          find.text('还有 1 页没有框').evaluate().isNotEmpty;
+      if (find.text('确认拆题').evaluate().isNotEmpty) {
+        await tester.tap(find.text('确认拆题'));
+      }
       for (var i = 0;
           i < 100 && repo.savedQuestions.length < 2;
           i++) {
@@ -187,6 +200,7 @@ void main() {
       await tester.pumpAndSettle();
     });
     await tester.pumpAndSettle();
+    expect(sawUnboxedDialog, isTrue);
     expect(find.text('修框 ·'), findsNothing);
     expect(repo.savedQuestions.length, 2);
     expect(

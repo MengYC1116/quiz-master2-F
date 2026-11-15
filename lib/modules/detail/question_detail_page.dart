@@ -11,7 +11,7 @@
 // - 编辑模式保存才生效，取消有改动时内联问是否保存；学科不可改；
 //   答案/解析在「题目信息」的编辑表单里改；
 // - 底部操作：返回 / 收藏 / 归档（已归档时变「恢复」）/ 上一题 / 下一题 /
-//   删除；删除用内联确认框（`删了就没了，确定吗？`），删后自动进下一题；
+//   删除；删除用模态弹窗确认（B3：`删了就没了，确定吗？`），删后自动进下一题；
 // - 本页没有任何「开始复习」按钮；复习记录区只留「加入复习 /
 //   取消加入复习」（未整理题没有）、各错因状态、解决次数与全部解决记录；
 //   旧的复习状态下拉与下次复习日期输入已删，不复活翻卡模型。
@@ -104,8 +104,7 @@ class _QuestionDetailPageState extends State<QuestionDetailPage> {
   bool _cancelAsk = false;
   bool _cancelAskPop = false;
 
-  /// 删除内联确认框（HTML `.confirmbox`）是否显示。
-  bool _confirmDelete = false;
+  // B3：删除确认已改模态弹窗（见 [_askDelete]），不再用内联确认框。
 
   final Set<String> _expanded = {};
 
@@ -194,8 +193,15 @@ class _QuestionDetailPageState extends State<QuestionDetailPage> {
     _answerCtrl.text = q.answer ?? '';
     _explanationCtrl.text = q.explanation ?? '';
     _notesCtrl.text = q.notes ?? '';
-    _editErrorTypes = q.errorTypes.toSet();
-    _editCustomTypes = q.customErrorTypes.toSet();
+    // SR-P2-27：旧数据里与固定枚举同名的自定义错因，读入编辑表单时
+    // 就合并进固定项（不丢错因、不重复显示）；保存时写回即完成迁移。
+    _editErrorTypes = {
+      ...q.errorTypes,
+      ...q.customErrorTypes.where((t) => ErrorTypes.fixed.contains(t)),
+    };
+    _editCustomTypes = q.customErrorTypes
+        .where((t) => !ErrorTypes.fixed.contains(t))
+        .toSet();
     _editFolders = q.folderIds.toSet();
     _editTags = q.tags.toSet();
     _editKps = q.knowledgePointIds.toSet();
@@ -204,7 +210,6 @@ class _QuestionDetailPageState extends State<QuestionDetailPage> {
       _editing = true;
       _dirty = false;
       _cancelAsk = false;
-      _confirmDelete = false;
       _expanded.addAll(['answer', 'info', 'review']);
     });
     if (focusField != null) {
@@ -230,9 +235,16 @@ class _QuestionDetailPageState extends State<QuestionDetailPage> {
   Future<void> _saveEdit() async {
     final base = _editBase;
     if (base == null) return;
+    // SR-P2-27：与固定枚举同名的自定义错因合并进固定项再保存（旧代码
+    // 在这里直接滤掉，错因静默消失；新建入口已拦同名，这里是兜底，
+    // 覆盖旧数据里已有的同名自定义项）。
+    final fixedFromCustom = _editCustomTypes
+        .where((t) => ErrorTypes.fixed.contains(t))
+        .toList();
     final customNew = _editCustomTypes
         .where((t) => !ErrorTypes.fixed.contains(t))
         .toList();
+    final errorTypes = {..._editErrorTypes, ...fixedFromCustom}.toList();
     final updated = Question(
       id: base.id,
       title: _titleCtrl.text.trim().isEmpty
@@ -242,7 +254,7 @@ class _QuestionDetailPageState extends State<QuestionDetailPage> {
       folderIds: _editFolders.toList(),
       examId: _editExamId,
       knowledgePointIds: _editKps.toList(),
-      errorTypes: _editErrorTypes.toList(),
+      errorTypes: errorTypes,
       customErrorTypes: customNew,
       tags: _editTags.toList(),
       answer: _answerCtrl.text.trim().isEmpty
@@ -363,12 +375,27 @@ class _QuestionDetailPageState extends State<QuestionDetailPage> {
       for (final e in result.inners.entries) ...e.value,
       ...result.standaloneInner.values.expand((v) => v),
     ];
-    await widget.repo.replaceQuestionBoxes(q.id, [...newLayer1, ...innersFlat]);
-    await widget.repo.save(q.copyWith(
-      slicePath: sliceRel,
-      sliceWidth: crop.width,
-      sliceHeight: crop.height,
-    ));
+    // B3-P01：换框 + 保存切片一个事务（任一步失败一起回滚，
+    // 不留“框换了、切片还是旧的”的不一致）。
+    // SR-P2-3：切片在事务前写盘——事务失败时刚写的切片成孤儿文件
+    //（旧题 slicePath 为空时库里根本不引用它；有旧路径时也是新图
+    // 配旧框的错配），失败即删掉，再按现有失败路径提示、退出。
+    try {
+      await widget.repo.replaceQuestionBoxesAndSlice(
+        q.id,
+        [...newLayer1, ...innersFlat],
+        slicePath: sliceRel,
+        sliceWidth: crop.width,
+        sliceHeight: crop.height,
+      );
+    } catch (e) {
+      try {
+        final file = File(sliceAbs);
+        if (file.existsSync()) await file.delete();
+      } catch (_) {}
+      if (mounted) _snack('重新框选失败：保存失败，请重试');
+      return;
+    }
     widget.onChanged();
     await _load();
     _snack('已重新框选，切片已更新');
@@ -444,6 +471,34 @@ class _QuestionDetailPageState extends State<QuestionDetailPage> {
     await _load();
   }
 
+  /// B3：删除确认改用模态弹窗（与全项目统一）；取消编辑的确认仍是
+  /// 下面的内联确认框（不是删除确认，不改）。
+  Future<void> _askDelete() async {
+    final q = _q;
+    if (q == null) return;
+    final subject = _subjectOf(q.subjectId);
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('删了就没了，确定吗？'),
+        content: Text(
+          '「${subject.name} · ${sliceKindLabel(q.sliceKind)}｜${q.title}」整题图与全部补充内容一并删除，不可恢复。',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('取消'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('确认删除'),
+          ),
+        ],
+      ),
+    );
+    if (ok == true && mounted) await _doDelete();
+  }
+
   Future<void> _doDelete() async {
     final q = _q;
     if (q == null) return;
@@ -459,7 +514,6 @@ class _QuestionDetailPageState extends State<QuestionDetailPage> {
         _currentId = nextId;
         _answerVisible = false;
         _expanded.clear();
-        _confirmDelete = false;
         _editing = false;
         _dirty = false;
       });
@@ -476,7 +530,6 @@ class _QuestionDetailPageState extends State<QuestionDetailPage> {
       _dirty = false;
       _answerVisible = false;
       _cancelAsk = false;
-      _confirmDelete = false;
       _expanded.clear();
     });
     _load();
@@ -559,13 +612,16 @@ class _QuestionDetailPageState extends State<QuestionDetailPage> {
         .toList();
     String? parentId;
     if (tops.isNotEmpty) {
-      parentId = await showDialog<String?>(
+      // SR-P2-26：旧代码点对话框外关闭返回 null，与选“顶层”同义，
+      // 想取消却建了一个顶层文件夹。现在用可区分的返回值：'top' =
+      // 顶层，'' = 点“取消”，null = 点框外关闭；后两者都是取消，不建。
+      final choice = await showDialog<String>(
         context: context,
         builder: (ctx) => SimpleDialog(
           title: const Text('放在哪里'),
           children: [
             SimpleDialogOption(
-              onPressed: () => Navigator.of(ctx).pop(null),
+              onPressed: () => Navigator.of(ctx).pop('top'),
               child: const Text('顶层'),
             ),
             for (final f in tops)
@@ -573,20 +629,35 @@ class _QuestionDetailPageState extends State<QuestionDetailPage> {
                 onPressed: () => Navigator.of(ctx).pop(f.id),
                 child: Text('作为「${f.name}」的子文件夹'),
               ),
+            SimpleDialogOption(
+              onPressed: () => Navigator.of(ctx).pop(''),
+              child: const Text('取消'),
+            ),
           ],
         ),
       );
-      // 点空白处关闭返回 null 与选“顶层”同义，都当顶层处理。
+      if (choice == null || choice.isEmpty) return;
+      parentId = choice == 'top' ? null : choice;
     }
-    final id =
-        'folder-${q.subjectId}-${DateTime.now().millisecondsSinceEpoch}';
-    await widget.repo.saveFolder(Folder(
-      id: id,
-      name: name,
-      subjectId: q.subjectId,
-      parentId: parentId,
-      sortOrder: 0,
-    ));
+    // SR-P2-36：整科同名预检（新建不传 excludeId），命中提示“已经有了”
+    // 并中止；仍留 StateError 捕获作兜底（预检与写入之间的竞态）。
+    if (await widget.repo.folderNameExistsInSubject(q.subjectId, name)) {
+      _snack('已经有了');
+      return;
+    }
+    final id = newEntityId('folder-${q.subjectId}');
+    try {
+      await widget.repo.saveFolder(Folder(
+        id: id,
+        name: name,
+        subjectId: q.subjectId,
+        parentId: parentId,
+        sortOrder: 0,
+      ));
+    } on StateError {
+      if (mounted) _snack('已经有了');
+      return;
+    }
     await _load();
     setState(() => _editFolders.add(id));
     _markDirty();
@@ -649,7 +720,7 @@ class _QuestionDetailPageState extends State<QuestionDetailPage> {
       ),
     );
     if (name == null || name.isEmpty || chapter.isEmpty) return;
-    final id = 'kp-${q.subjectId}-${DateTime.now().millisecondsSinceEpoch}';
+    final id = newEntityId('kp-${q.subjectId}');
     await widget.repo.addKnowledgePoint(KnowledgePoint(
       id: id,
       subjectId: q.subjectId,
@@ -664,7 +735,7 @@ class _QuestionDetailPageState extends State<QuestionDetailPage> {
   Future<void> _newExam() async {
     final name = await _askText('新建试卷');
     if (name == null) return;
-    final id = 'exam-${DateTime.now().millisecondsSinceEpoch}';
+    final id = newEntityId('exam');
     await widget.repo.addExam(Exam(id: id, name: name));
     await _load();
     setState(() => _editExamId = id);
@@ -677,6 +748,15 @@ class _QuestionDetailPageState extends State<QuestionDetailPage> {
     // §6 第 4 条：自定义错因名禁逗号与竖线。
     if (hasBannedNameSeparator(name)) {
       _snack('不能含逗号或竖线');
+      return;
+    }
+    // SR-P2-27：与固定枚举同名时直接选中对应固定项，不进自定义集合
+    //（否则保存时被 customNew 滤掉、错因静默消失；整理页还会造成
+    // allCauses 重复）。
+    if (ErrorTypes.fixed.contains(name)) {
+      setState(() => _editErrorTypes.add(name));
+      _snack('“$name”是固定错误类型，已帮你选中');
+      _markDirty();
       return;
     }
     setState(() => _editCustomTypes.add(name));
@@ -797,28 +877,6 @@ class _QuestionDetailPageState extends State<QuestionDetailPage> {
                   SizedBox(height: DesignTokens.detailSectionGap * scale),
                   _buildSection('review', '复习记录', _buildReviewSection(q)),
                   _buildWorkActs(q, hasPrev: hasPrev, hasNext: hasNext),
-                  if (_confirmDelete) ...[
-                    SizedBox(height: 10 * scale),
-                    _buildConfirmBox(
-                      q,
-                      '删了就没了，确定吗？',
-                      '「${subject.name} · ${sliceKindLabel(q.sliceKind)}｜${q.title}」整题图与全部补充内容一并删除，不可恢复。',
-                      [
-                        QmButton(
-                          label: '确认删除',
-                          size: QmButtonSize.small,
-                          onPressed: _doDelete,
-                        ),
-                        QmButton(
-                          label: '取消',
-                          variant: QmButtonVariant.plain,
-                          size: QmButtonSize.small,
-                          onPressed: () =>
-                              setState(() => _confirmDelete = false),
-                        ),
-                      ],
-                    ),
-                  ],
                   SizedBox(height: 8 * scale),
                 ],
               ),
@@ -1823,7 +1881,7 @@ class _QuestionDetailPageState extends State<QuestionDetailPage> {
           QmButton(
             label: '删除',
             variant: QmButtonVariant.plain,
-            onPressed: () => setState(() => _confirmDelete = true),
+            onPressed: _askDelete,
           ),
         ],
       ),
@@ -1832,6 +1890,8 @@ class _QuestionDetailPageState extends State<QuestionDetailPage> {
 
   /// 内联确认框（HTML `.confirmbox`：err-line 边 / err-bg 底 /
   /// err-ink 字，radius 12，padding 12×14，14px 字）。
+  /// B3：删除确认已改模态弹窗，此框只剩取消编辑（“有还没保存的改动，
+  /// 要保存吗？”三选一）一个用途，不是删除确认，不改。
   Widget _buildConfirmBox(
       Question q, String title, String detail, List<Widget> actions) {
     final palette = DesignTokens.of(Theme.of(context).brightness);

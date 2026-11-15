@@ -46,3 +46,7 @@ app.*.map.json
 
 # Widget Preview related
 .widget_preview/
+
+# YOLO 模型文件（约 38MB）不进仓库，由 Meng 自己放到 assets/models/ 下
+# （SR-P0-3：一次 git add . 就会把模型写进历史）
+assets/models/**/*.onnx

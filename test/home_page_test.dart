@@ -76,11 +76,17 @@ class FakeRepo extends QuestionRepository {
   /// 不碰真实数据库。
   List<Subject> subjectsList = Subject.all;
 
+  /// SR-P2-48：错误态测试用——设置后 homeRevCounts() 抛错，模拟读库失败。
+  bool throwOnLoad = false;
+
   @override
   Future<List<Subject>> subjects() async => subjectsList;
 
   @override
-  Future<Map<String, int>> homeRevCounts() async => rev;
+  Future<Map<String, int>> homeRevCounts() async {
+    if (throwOnLoad) throw StateError('boom');
+    return rev;
+  }
 
   @override
   Future<Map<String, int>> pendingOrganizeBySubject() async => pending;
@@ -358,6 +364,23 @@ void main() {
     testWidgets('首页不用图标字体', (tester) async {
       await pumpHome(tester);
       expect(find.byType(Icon), findsNothing);
+    });
+
+    testWidgets('SR-P2-48 读库失败出错误横幅；重试失败仍在，成功后恢复',
+        (tester) async {
+      final repo = FakeRepo();
+      repo.throwOnLoad = true;
+      await pumpHome(tester, repo: repo);
+      expect(find.textContaining('首页数据读取失败'), findsOneWidget);
+      expect(find.text('重试'), findsOneWidget);
+      expect(find.text('3 道要复习'), findsNothing);
+      await tester.tap(find.text('重试'));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('首页数据读取失败'), findsOneWidget);
+      repo.throwOnLoad = false;
+      await tester.tap(find.text('重试'));
+      await tester.pumpAndSettle();
+      expect(find.text('3 道要复习'), findsOneWidget);
     });
   });
 }

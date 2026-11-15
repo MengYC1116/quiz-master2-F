@@ -3,9 +3,17 @@
 // 为什么手写：pubspec 不动依赖（方案 §7 P3 不动依赖），Dart 标准库
 // 没有 ZIP。只实现备份/恢复需要的子集：
 // - 写：deflate（`ZLibCodec(raw: true)`，ZIP 的 method 8）+ CRC32；
-// - 读：method 0（stored）与 8（deflate），按 local header 顺序解析；
+// - 读：method 0（stored）与 8（deflate），按中央目录解析；
 // - 校验：条目名只允许数据目录内的相对路径（见 [validateZipEntryName]）。
 // 不支持：加密、多盘、ZIP64、大于 4GB 的单个条目（备份上限 2GB，不会触及）。
+// SR-P2-68：读改走中央目录（以前按 local header 顺序读）：流式写出
+// 的 zip（local header 里 flag bit 3 置位、尺寸在数据后的描述符里）
+// 以前会被误读（尺寸取 0）；只含目录条目的空 zip 以前静默返回 []；
+// 单条目解压在累计 total 检查之前完成，超大单条目会先占满内存再
+// 触发上限。新读法以中央目录为准：条目数/偏移/尺寸都以中央目录
+// 为准，local header 只用来定位数据起点，bit 3 的描述符直接跳过
+// （按中央目录的 compSize 切数据）；解压前先用中央目录的 rawSize
+// 做上限预判；无文件条目直接抛错。
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
@@ -178,70 +186,203 @@ int _readU16(List<int> b, int off) => b[off] | (b[off + 1] << 8);
 int _readU32(List<int> b, int off) =>
     b[off] | (b[off + 1] << 8) | (b[off + 2] << 16) | (b[off + 3] << 24);
 
-/// 解包：按 local header 顺序读出全部文件条目（目录条目跳过）。
+/// 解包：按中央目录读出全部文件条目（目录条目跳过）。
 /// 任一条目名非法（见 [validateZipEntryName]）或结构损坏 → 抛
 /// [ZipFormatException]，调用方拒绝整个包。另设解压后总大小上限
 /// （默认 4GB，防 zip 炸弹；合法备份上限 2GB，不会触及）。
+/// SR-P2-68：中央目录是唯一可信的条目清单——
+/// - 流式写出的 zip（local header flag bit 3 置位、尺寸为 0、真实
+///   尺寸在数据后的描述符里）按中央目录的尺寸读，不再误读；
+/// - 中央目录的条目数与偏移逐项校验，local header 名与中央目录名
+///   不一致即结构损坏；
+/// - 解压前先用中央目录的 rawSize 做上限预判（超大单条目不再先
+///   占满内存再触发上限）；
+/// - 无文件条目（空 zip / 只含目录条目）直接抛错，不再静默返回 []。
+/// 不支持 ZIP64（尺寸字段为 0xFFFFFFFF 时抛错）与多盘。
 List<ZipEntryData> readZip(List<int> bytes, {int maxTotalBytes = 4 * 1024 * 1024 * 1024}) {
   if (!isZipBytes(bytes)) {
     throw ZipFormatException('不是 ZIP 文件');
   }
+  final central = _parseCentralDirectory(bytes);
   final entries = <ZipEntryData>[];
-  var off = 0;
   var total = 0;
   final inflate = ZLibCodec(raw: true);
-  while (off + 4 <= bytes.length) {
-    final sig = _readU32(bytes, off);
-    if (sig == 0x02014B50 || sig == 0x06054B50) break; // 中央目录 / 结束
-    if (sig != 0x04034B50) {
-      throw ZipFormatException('ZIP 结构损坏：偏移 $off 处不是文件头');
-    }
-    if (off + 30 > bytes.length) {
-      throw ZipFormatException('ZIP 结构损坏：文件头不完整');
-    }
-    final flags = _readU16(bytes, off + 6);
-    final method = _readU16(bytes, off + 8);
-    final crc = _readU32(bytes, off + 14);
-    final compSize = _readU32(bytes, off + 18);
-    final rawSize = _readU32(bytes, off + 22);
-    final nameLen = _readU16(bytes, off + 26);
-    final extraLen = _readU16(bytes, off + 28);
-    final nameStart = off + 30;
-    final dataStart = nameStart + nameLen + extraLen;
-    if (dataStart + compSize > bytes.length) {
-      throw ZipFormatException('ZIP 结构损坏：文件数据超出文件末尾');
-    }
-    if ((flags & 0x01) != 0) {
+  for (final entry in central) {
+    if (entry.name.endsWith('/')) continue; // 目录条目跳过
+    final bad = validateZipEntryName(entry.name);
+    if (bad != null) throw ZipFormatException('备份里有非法路径：$bad');
+    if ((entry.flags & 0x01) != 0) {
       throw ZipFormatException('不支持加密的 ZIP 备份');
     }
-    final name = utf8.decode(bytes.sublist(nameStart, nameStart + nameLen));
-    final bad = validateZipEntryName(name);
-    if (bad != null) throw ZipFormatException('备份里有非法路径：$bad');
-    final compressed = bytes.sublist(dataStart, dataStart + compSize);
+    // 解压前预判：累计 rawSize 超上限即拒绝，不先解压占内存。
+    if (total + entry.rawSize > maxTotalBytes) {
+      throw ZipFormatException(
+        '备份解压后超过 ${_formatLimit(maxTotalBytes)}，拒绝恢复',
+      );
+    }
+    final dataStart = _localDataStart(bytes, entry);
+    if (dataStart + entry.compSize > bytes.length) {
+      throw ZipFormatException('ZIP 结构损坏：文件数据超出文件末尾');
+    }
+    final compressed = bytes.sublist(dataStart, dataStart + entry.compSize);
     List<int> data;
-    if (method == 0) {
+    if (entry.method == 0) {
       data = compressed;
-    } else if (method == 8) {
+    } else if (entry.method == 8) {
       try {
         data = inflate.decode(compressed);
       } catch (_) {
-        throw ZipFormatException('ZIP 解压失败：$name');
+        throw ZipFormatException('ZIP 解压失败：${entry.name}');
       }
     } else {
-      throw ZipFormatException('不支持的压缩方式（$method）：$name');
+      throw ZipFormatException('不支持的压缩方式（${entry.method}）：${entry.name}');
     }
-    if (data.length != rawSize || crc32(data) != crc) {
-      throw ZipFormatException('ZIP 校验失败：$name 已损坏');
+    if (data.length != entry.rawSize || crc32(data) != entry.crc) {
+      throw ZipFormatException('ZIP 校验失败：${entry.name} 已损坏');
     }
     total += data.length;
-    if (total > maxTotalBytes) {
-      throw ZipFormatException('备份解压后超过 4GB，拒绝恢复');
-    }
-    if (!name.endsWith('/')) entries.add(ZipEntryData(name, data));
-    off = dataStart + compSize;
+    entries.add(ZipEntryData(entry.name, data));
   }
-  if (entries.isEmpty && off == 0) {
+  if (entries.isEmpty) {
     throw ZipFormatException('ZIP 里没有文件');
   }
   return entries;
+}
+
+String _formatLimit(int bytes) {
+  if (bytes % (1024 * 1024 * 1024) == 0) {
+    return '${bytes ~/ (1024 * 1024 * 1024)}GB';
+  }
+  if (bytes % (1024 * 1024) == 0) return '${bytes ~/ (1024 * 1024)}MB';
+  return '$bytes B';
+}
+
+/// 中央目录里的一条记录（读 zip 时唯一可信的条目清单）。
+class _CentralEntry {
+  const _CentralEntry({
+    required this.name,
+    required this.flags,
+    required this.method,
+    required this.crc,
+    required this.compSize,
+    required this.rawSize,
+    required this.localOffset,
+  });
+  final String name;
+  final int flags;
+  final int method;
+  final int crc;
+  final int compSize;
+  final int rawSize;
+  final int localOffset;
+}
+
+/// 找 End of Central Directory（EOCD，`PK\x05\x06`），解析中央目录。
+/// EOCD 必须在文件末尾（后面只跟注释）；找不到、多盘、偏移越界、
+/// 条目头签名不对、ZIP64 一律抛 [ZipFormatException]。
+List<_CentralEntry> _parseCentralDirectory(List<int> bytes) {
+  // EOCD 记录 22 字节 + 最长 64KB 注释：从末尾往前找，取最后一个
+  // “记录恰好到文件末尾”的位置（注释里可能恰好含 PK\x05\x06）。
+  var eocd = -1;
+  final searchStart = bytes.length - 22;
+  final searchEnd = bytes.length - 22 - 65535 < 0
+      ? 0
+      : bytes.length - 22 - 65535;
+  for (var i = searchStart; i >= searchEnd; i--) {
+    if (_readU32(bytes, i) != 0x06054B50) continue;
+    final commentLen = _readU16(bytes, i + 20);
+    if (i + 22 + commentLen == bytes.length) {
+      eocd = i;
+      break;
+    }
+  }
+  if (eocd < 0) {
+    throw ZipFormatException('ZIP 结构损坏：找不到中央目录');
+  }
+  final disk = _readU16(bytes, eocd + 4);
+  final cdDisk = _readU16(bytes, eocd + 6);
+  final entriesThisDisk = _readU16(bytes, eocd + 8);
+  final totalEntries = _readU16(bytes, eocd + 10);
+  final cdSize = _readU32(bytes, eocd + 12);
+  final cdOffset = _readU32(bytes, eocd + 16);
+  if (disk != 0 || cdDisk != 0 || entriesThisDisk != totalEntries) {
+    throw ZipFormatException('不支持多盘的 ZIP 备份');
+  }
+  if (cdOffset + cdSize > bytes.length) {
+    throw ZipFormatException('ZIP 结构损坏：中央目录超出文件末尾');
+  }
+  final out = <_CentralEntry>[];
+  var off = cdOffset;
+  final cdEnd = cdOffset + cdSize;
+  for (var n = 0; n < totalEntries; n++) {
+    if (off + 46 > cdEnd) {
+      throw ZipFormatException('ZIP 结构损坏：中央目录不完整');
+    }
+    if (_readU32(bytes, off) != 0x02014B50) {
+      throw ZipFormatException('ZIP 结构损坏：偏移 $off 处不是中央目录头');
+    }
+    final diskStart = _readU16(bytes, off + 34);
+    if (diskStart != 0) {
+      throw ZipFormatException('不支持多盘的 ZIP 备份');
+    }
+    final flags = _readU16(bytes, off + 8);
+    final method = _readU16(bytes, off + 10);
+    final crc = _readU32(bytes, off + 16);
+    final compSize = _readU32(bytes, off + 20);
+    final rawSize = _readU32(bytes, off + 24);
+    final localOffset = _readU32(bytes, off + 42);
+    if (compSize == 0xFFFFFFFF ||
+        rawSize == 0xFFFFFFFF ||
+        localOffset == 0xFFFFFFFF) {
+      throw ZipFormatException('不支持 ZIP64 的 ZIP 备份');
+    }
+    final nameLen = _readU16(bytes, off + 28);
+    final extraLen = _readU16(bytes, off + 30);
+    final commentLen = _readU16(bytes, off + 32);
+    final nameStart = off + 46;
+    if (nameStart + nameLen > cdEnd) {
+      throw ZipFormatException('ZIP 结构损坏：中央目录条目名不完整');
+    }
+    final name = utf8.decode(bytes.sublist(nameStart, nameStart + nameLen));
+    out.add(
+      _CentralEntry(
+        name: name,
+        flags: flags,
+        method: method,
+        crc: crc,
+        compSize: compSize,
+        rawSize: rawSize,
+        localOffset: localOffset,
+      ),
+    );
+    off = nameStart + nameLen + extraLen + commentLen;
+  }
+  return out;
+}
+
+/// 给定中央目录条目，解析其 local header，返回文件数据的起点。
+/// local header 的尺寸字段不可信（flag bit 3 置位时为 0，真实尺寸在
+/// 数据后的描述符里），只用它跳过文件名与 extra 段；名/方法与
+/// 中央目录不一致即结构损坏。
+int _localDataStart(List<int> bytes, _CentralEntry entry) {
+  final off = entry.localOffset;
+  if (off + 30 > bytes.length) {
+    throw ZipFormatException('ZIP 结构损坏：文件头不完整');
+  }
+  if (_readU32(bytes, off) != 0x04034B50) {
+    throw ZipFormatException('ZIP 结构损坏：偏移 $off 处不是文件头');
+  }
+  final method = _readU16(bytes, off + 8);
+  final nameLen = _readU16(bytes, off + 26);
+  final extraLen = _readU16(bytes, off + 28);
+  final nameStart = off + 30;
+  final dataStart = nameStart + nameLen + extraLen;
+  if (dataStart > bytes.length) {
+    throw ZipFormatException('ZIP 结构损坏：文件头不完整');
+  }
+  final localName = utf8.decode(bytes.sublist(nameStart, nameStart + nameLen));
+  if (localName != entry.name || method != entry.method) {
+    throw ZipFormatException('ZIP 结构损坏：文件头与中央目录不一致：${entry.name}');
+  }
+  return dataStart;
 }

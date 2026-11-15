@@ -85,6 +85,9 @@ class FakeReviewRepo extends QuestionRepository {
   List<Subject> subjectsValue;
   ReviewSessionState? savedState;
 
+  /// SR-P2-48：错误态测试用——设置后 settings() 抛错，模拟读库失败。
+  bool throwOnLoad = false;
+
   @override
   Future<List<Subject>> subjects() async => List.of(subjectsValue);
 
@@ -92,7 +95,10 @@ class FakeReviewRepo extends QuestionRepository {
       {};
 
   @override
-  Future<AppSettings> settings() async => settingsValue;
+  Future<AppSettings> settings() async {
+    if (throwOnLoad) throw StateError('boom');
+    return settingsValue;
+  }
 
   @override
   Future<void> saveSettings(AppSettings s) async {
@@ -693,13 +699,15 @@ void main() {
       expect(find.text('① 看错因'), findsOneWidget);
     });
 
-    testWidgets('按组开始解决：从含该错因的块开始（块内仍从首个错因治起）',
+    testWidgets('按组开始解决：只治该组的错因（SR-P2-49 决定 (b)）',
         (tester) async {
       await pumpReview(tester);
       // 第 3 个“开始解决”按钮 = 计算错误组（顶栏 1 个 + 三组各 1 个）。
       await tapButton(tester, '开始解决', at: 3);
-      expect(find.textContaining('第 2 / 2 道题'), findsOneWidget);
-      expect(find.text('本题错因 1 / 2'), findsOneWidget);
+      // 该组只含 q2 的“计算错误”一个错因：会话只有 1 块 1 个错因，
+      // 不再把 q2 的另一个待治错因“方法不会”也带进来。
+      expect(find.textContaining('第 1 / 1 道题'), findsOneWidget);
+      expect(find.text('本题错因 1 / 1'), findsOneWidget);
     });
 
     testWidgets('放大浮层：点题图弹出，标题“整题图 · 放大查看”',
@@ -730,6 +738,69 @@ void main() {
     });
   });
 
+  group('B5 SR-P1-9 / SR-P1-12 / SR-P1-13', () {
+    testWidgets('SR-P1-9：上次自查显示最近一次，不是第一次', (tester) async {
+      final repo = singleRepo();
+      // 真实 reviewHistory() 按 reviewed_at DESC 返回：首条即最新。
+      repo.history['q1'] = [
+        (result: 'solved', reviewedAt: DateTime(2026, 11, 9)),
+        (result: 'unsolved', reviewedAt: DateTime(2026, 11, 1)),
+      ];
+      await pumpReview(tester, repo: repo);
+      await tapButton(tester, '开始解决');
+      expect(find.text('上次自查'), findsOneWidget);
+      expect(find.text('2026-11-09 · 「已解决」'), findsOneWidget);
+      expect(find.textContaining('2026-11-01'), findsNothing);
+    });
+
+    testWidgets('SR-P1-13：跳过双错因题的最后一个错因，直接进重做，不重现已写完补救的错因',
+        (tester) async {
+      await pumpReview(tester);
+      await tapButton(tester, '开始解决');
+      // q1 单错因走完，到 q2（双错因）。
+      await tapButton(tester, '下一步：写补救');
+      await tapButton(tester, '下一步：重做');
+      await tapButton(tester, '看答案');
+      await tapButton(tester, '下一步：自查');
+      await tapText(tester, '已解决');
+      await tapButton(tester, '下一题');
+      expect(find.text('本题错因 1 / 2'), findsOneWidget);
+      // 错因 1：看错因 → 写补救 → 下个错因。
+      await tapButton(tester, '下一步：写补救');
+      await tapButton(tester, '下一步：下个错因');
+      expect(find.text('本题错因 2 / 2'), findsOneWidget);
+      // 跳过最后一个错因：应直接进第 ③ 步重做。
+      // 注意步骤指示条四颗 pill 常驻，不能用 '① 看错因' 断言；
+      // 用重做步独有的提示文案 + 错因头（只在 ①② 步出现）断言。
+      await tapButton(tester, '跳过该题');
+      expect(
+          find.text('答案遮着：自己把这道题重做一遍，再点开答案对照'),
+          findsOneWidget);
+      expect(find.text('本题错因 1 / 2'), findsNothing);
+      expect(find.text('下一步：写补救'), findsNothing);
+      // 重做步本身能正常走下去（看答案 → 自查 → 下一题进队尾重排块）。
+      await tapButton(tester, '看答案');
+      await tapButton(tester, '下一步：自查');
+      expect(find.widgetWithText(QmButton, '下一题'), findsOneWidget);
+    });
+
+    testWidgets('SR-P1-12：复习每页条数改后，进会话再暂停回列表，仍保留',
+        (tester) async {
+      final repo = reviewRepo(pageSize: 2);
+      await pumpReview(tester, repo: repo);
+      expect(find.text('共 3 条 · 第 1 / 2 页'), findsOneWidget);
+      await pickMenuItem<int>(
+          tester, find.byType(DropdownButton<int>), 20);
+      expect(find.text('共 3 条 · 第 1 / 1 页'), findsOneWidget);
+      // 进会话再暂停：_pauseSession 末尾调 _load()，旧代码会在此
+      // 把 _pageSize 弹回设置默认值 2。
+      await tapButton(tester, '开始解决');
+      await tapButton(tester, '暂停');
+      expect(find.text('共 3 条 · 第 1 / 1 页'), findsOneWidget);
+      expect(repo.settingsValue.pageSize, 2);
+    });
+  });
+
   group('亮/深 × 三档无溢出', () {
     for (final brightness in [Brightness.light, Brightness.dark]) {
       for (final scale in [1.0, 1.15, 1.3]) {
@@ -748,5 +819,146 @@ void main() {
         });
       }
     }
+  });
+
+  group('B5-P2 复习', () {
+    testWidgets('SR-P2-39 未加入盒只列真能加入的题：未整理、无错因不进',
+        (tester) async {
+      final repo = reviewRepo();
+      repo.questions = [
+        ...repo.questions,
+        rq('q6', '未整理新题',
+            errorTypes: const ['概念不清'], isOrganized: false),
+        rq('q7', '无错因题', errorTypes: const []),
+        rq('q8', '新加入候选题', errorTypes: const ['方法不会']),
+      ];
+      await pumpReview(tester, repo: repo);
+      expect(find.textContaining('数学「新加入候选题」'), findsOneWidget);
+      expect(find.textContaining('政治「马原」'), findsOneWidget);
+      expect(find.textContaining('未整理新题'), findsNothing);
+      expect(find.textContaining('无错因题'), findsNothing);
+    });
+
+    testWidgets('SR-P2-47 已解决区也分页：5 组每页 2 条共 3 页',
+        (tester) async {
+      final repo = FakeReviewRepo(
+        settings: AppSettings.defaults.copyWith(pageSize: 2),
+        questions: [
+          rq('q1', '函数极限',
+              errorTypes: const ['概念不清'], reviewJoined: true),
+          rq('q3', '学术词汇辨析',
+              subjectId: 'english',
+              errorTypes: const ['概念不清'],
+              reviewJoined: true),
+          rq('c1', '治愈题 1',
+              errorTypes: const ['方法不会'], reviewJoined: true),
+          rq('c2', '治愈题 2',
+              errorTypes: const ['计算错误'], reviewJoined: true),
+          rq('c3', '治愈题 3',
+              errorTypes: const ['审题失误'], reviewJoined: true),
+          rq('c4', '治愈题 4',
+              errorTypes: const ['其他'], reviewJoined: true),
+        ],
+        records: [
+          rec('q1', '概念不清', joinedAt: DateTime(2026, 11, 10)),
+          rec('q3', '概念不清',
+              subjectId: 'english',
+              status: CauseStatus.solved,
+              solvedCount: 2,
+              recheckDate: DateTime.now().add(const Duration(days: 7)),
+              joinedAt: DateTime(2026, 11, 10)),
+          rec('c1', '方法不会',
+              status: CauseStatus.solved,
+              solvedCount: 2,
+              recheckDate: DateTime.now().add(const Duration(days: 7)),
+              joinedAt: DateTime(2026, 11, 10)),
+          rec('c2', '计算错误',
+              status: CauseStatus.solved,
+              solvedCount: 2,
+              recheckDate: DateTime.now().add(const Duration(days: 7)),
+              joinedAt: DateTime(2026, 11, 10)),
+          rec('c3', '审题失误',
+              status: CauseStatus.solved,
+              solvedCount: 2,
+              recheckDate: DateTime.now().add(const Duration(days: 7)),
+              joinedAt: DateTime(2026, 11, 10)),
+          rec('c4', '其他',
+              status: CauseStatus.solved,
+              solvedCount: 2,
+              recheckDate: DateTime.now().add(const Duration(days: 7)),
+              joinedAt: DateTime(2026, 11, 10)),
+        ],
+      );
+      await pumpReview(tester, repo: repo);
+      // 待治只有 1 组，待治分页器仍渲染（第 1 / 1 页，按钮禁用）；
+      // 已治愈 5 组每页 2 条共 3 页，翻页要点第 2 个“下一页”。
+      expect(find.text('共 1 条 · 第 1 / 1 页'), findsOneWidget);
+      expect(find.text('共 5 组 · 第 1 / 3 页'), findsOneWidget);
+      final next = find.widgetWithText(QmButton, '下一页').at(1);
+      await tester.ensureVisible(next);
+      await tester.pumpAndSettle();
+      await tester.tap(next);
+      await tester.pumpAndSettle();
+      expect(find.text('共 5 组 · 第 2 / 3 页'), findsOneWidget);
+    });
+
+    testWidgets('SR-P2-47 未加入盒：超 10 道默认只列前 10，可展开看全部',
+        (tester) async {
+      final repo = reviewRepo();
+      repo.questions = [
+        ...repo.questions,
+        for (var i = 0; i < 12; i++)
+          rq('n$i', '待加入题 $i', errorTypes: const ['概念不清']),
+      ];
+      await pumpReview(tester, repo: repo);
+      expect(find.text('展开全部（共 13 道）'), findsOneWidget);
+      expect(find.textContaining('待加入题 9'), findsOneWidget);
+      expect(find.textContaining('待加入题 10'), findsNothing);
+      expect(find.textContaining('政治「马原」'), findsNothing);
+      await tapButton(tester, '展开全部（共 13 道）');
+      expect(find.textContaining('待加入题 10'), findsOneWidget);
+      expect(find.textContaining('待加入题 11'), findsOneWidget);
+      expect(find.textContaining('政治「马原」'), findsOneWidget);
+      expect(find.text('收起'), findsOneWidget);
+    });
+
+    testWidgets('SR-P2-48 读库失败出错误横幅；重试失败仍在，成功后恢复',
+        (tester) async {
+      final repo = reviewRepo();
+      repo.throwOnLoad = true;
+      await pumpReview(tester, repo: repo);
+      expect(find.textContaining('复习数据读取失败'), findsOneWidget);
+      expect(find.text('重新加载'), findsOneWidget);
+      await tapButton(tester, '重新加载');
+      expect(find.textContaining('复习数据读取失败'), findsOneWidget);
+      repo.throwOnLoad = false;
+      await tapButton(tester, '重新加载');
+      expect(find.text('概念不清'), findsOneWidget);
+    });
+
+    testWidgets('SR-P2-49 错因筛选进会话：只治筛选命中的错因',
+        (tester) async {
+      await pumpReview(tester);
+      await pickMenuItem<String>(
+          tester, find.byType(DropdownButton<String>).last, '计算错误');
+      await tapButton(tester, '开始解决');
+      expect(find.textContaining('第 1 / 1 道题 · 错因「计算错误」'),
+          findsOneWidget);
+      expect(find.text('本题错因 1 / 1'), findsOneWidget);
+    });
+
+    testWidgets('SR-P2-57 断点恢复的范围按保存队列写，不写死“全部待解决错因”',
+        (tester) async {
+      await pumpReview(tester);
+      await pickMenuItem<String>(
+          tester, find.byType(DropdownButton<String>).first, 'math');
+      await tapButton(tester, '开始解决');
+      expect(find.textContaining('第 1 / 2 道题 · 数学这一科'), findsOneWidget);
+      await tapButton(tester, '暂停');
+      expect(find.textContaining('上次解决到一半'), findsOneWidget);
+      await tapButton(tester, '继续解决');
+      expect(find.textContaining('第 1 / 2 道题 · 数学这一科'), findsOneWidget);
+      expect(find.textContaining('全部待解决错因'), findsNothing);
+    });
   });
 }
