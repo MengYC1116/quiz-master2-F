@@ -33,14 +33,9 @@ class DetectionResult {
 /// - 第 1 层 `assets/models/question/yolo11s-question-v1.onnx`
 ///   （YOLO11s，输入 1×3×1280×1280，输出 1×5×33600，1 类 question）。
 ///
-/// 第 2 层（题干 / 选项 / 配图）暂缓：模型还需再训练，见 D-23 与
-/// docs/ui-replication/YOLO-INTEGRATION-REPORT.md 的再训练反馈。
-/// 再接入点见 [intraEnabled] 与 [_detectIntra]：训好的模型放回
-/// `assets/models/intra/yolo11s-intra-v1.onnx`、把开关打开即可，
-/// 后处理（[decodeYoloOutput]）与归属（[groupInners]）都已留好。
-/// 第 2 层的数据模型与界面不动：`QuestionBox.layer`、修框内框模式、
-/// 三色高亮、切片区都保留，没有模型时用户仍可手动框 stem / option /
-/// figure（收集页“先画框后选类型”本来就支持手画），只是不再自动检出。
+/// 第 2 层未接入（模型还需再训练，见 D-23 与
+/// docs/ui-replication/YOLO-INTEGRATION-REPORT.md 的再训练反馈）。
+/// 再接入点只有两处：[intraEnabled] 开关与 [_detectIntra] 占位。
 ///
 /// 模型文件缺失、加载失败、或图片文件不存在时返回 [DetectionResult]
 ///（usedFallback 为 true），不抛错、不回占位框、不卡住收集流程。
@@ -61,37 +56,17 @@ class YoloOnnxService {
   /// 并恢复 [_detectIntra] 里的实现（见该方法的注释）。
   static const bool intraEnabled = false;
 
-  // —— 第 2 层常量（SR-P2-72）：以下 5 个常量都是“暂缓、再接入时启用”
-  // 的记录，当前第 1 层检测不用它们（`intraEnabled` 关着，模型文件
-  // 也不在仓库里）。不要删：再接入时按 [_detectIntra] 的注释恢复；
-  // 也不要误读为生效参数——尤其 [crossClassIouThreshold] 在第 1 层
-  // 调用里只是传参，单类时跨类去重是空操作（见 _detect 的传参注释）。
-  /// 第 2 层模型路径（开关关着时不加载，仅作再接入记录）。
-  static const String intraModelAsset =
-      'assets/models/intra/yolo11s-intra-v1.onnx';
-
-  /// 第 2 层输入边长（模型 imgsz 1024；输入动态，推理时统一 1024）。
-  static const int intraInputSize = 1024;
-
   /// 置信度阈值：第 1 层 0.45（0.25 时会多出页眉条带等低分假框；
   /// 3 张实测页上真题最低 0.50）。
   static const double questionConfThreshold = 0.45;
 
-  /// 第 2 层置信度阈值（再接入时用；Ultralytics 默认值 0.25）。
-  static const double intraConfThreshold = 0.25;
-
   /// NMS IoU 阈值（同类去重）：0.5。
   static const double nmsIouThreshold = 0.5;
 
-  /// 跨类去重 IoU 阈值：第 2 层里 stem 与 figure 偶有同框重复
-  /// （同一区域两个标签），IoU > 0.8 时只留置信度高的一个。
-  /// 第 1 层只有 1 类，此值不生效（单类时 [_crossClassNms] 是空操作，
-  /// 只是把值原样传给第 2 层再接入时用），留给第 2 层再接入时用。
+  /// 跨类去重 IoU 阈值：不同类别框几乎重合时（IoU 超阈值）只留
+  /// 置信度高的一个。第 1 层只有 1 类，此值不生效（单类时
+  /// [_crossClassNms] 是空操作）。
   static const double crossClassIouThreshold = 0.8;
-
-  /// 第 2 层类别下标 → [QuestionBox.type]（模型元数据 names：
-  /// {0: stem, 1: option, 2: figure}，再接入时用）。
-  static const List<String> intraClassTypes = ['stem', 'option', 'figure'];
 
   /// letterbox 填充灰（Ultralytics 默认 114）。
   static const int letterboxPad = 114;
@@ -297,7 +272,7 @@ class YoloOnnxService {
       numClasses: 1,
       confThreshold: questionConfThreshold,
       nmsIou: nmsIouThreshold,
-      // SR-P2-72：单类时跨类去重是空操作，此值只是传给第 2 层再接入时用。
+      // SR-P2-72：单类时跨类去重是空操作。
       crossClassIou: crossClassIouThreshold,
     );
     final fit1 = letterboxFit(pageW, pageH, questionInputSize);
@@ -341,31 +316,26 @@ class YoloOnnxService {
       );
     }
 
-    // —— 第 2 层：暂缓（见 intraEnabled）。再接入时在这里调
-    // [_detectIntra]，把返回的题内框拼在整题框后面返回。
+    // 第 2 层未接入：[_detectIntra] 是再接入占位，当前恒返回空。
     final inners = await _detectIntra(pageImage, numbered);
 
     lastDetectStats = YoloDetectStats(
       layer1Ms: sw1.elapsedMilliseconds,
       layer1Count: numbered.length,
-      layer2Count: inners.length,
     );
     return [...numbered, ...inners];
   }
 
-  /// 第 2 层再接入点（当前恒返回空）。
+  /// 第 2 层再接入点（当前恒返回空；开关 [intraEnabled] 关着时
+  /// [_detect] 仍调本方法，恢复时不用改调用处）。
   ///
   /// 恢复步骤：把训好的模型放回 `assets/models/intra/`、
   /// `pubspec.yaml` 里把 `assets/models/intra/` 声明加回来、
   /// `intraEnabled` 改 true、按下面注释实现本方法：
   /// 对每个第 1 层框裁剪后单独跑第 2 层（letterbox 1024，
-  /// 绝不在整页上跑——整页跑时题干框会横跨整页），再把框映射回
-  /// 页面坐标；每个选项 A/B/C/D 各为独立框，不合并；
-  /// 类别下标见 [intraClassTypes]；返回前用 [groupInners]
-  /// 按中心点归属到所属整题框（落不到任何题里的进 orphans，
-  /// 编辑器里作独立题内框展示）。
-  /// 上一版双模型实现曾跑通过程供参考：第 2 层在 3 张实测页上
-  /// 题干/选项基本准，但 figure 误报多（无图的题也被框成图），
+  /// 绝不在整页上跑），再把框映射回页面坐标。
+  /// 上一版双模型实现曾跑通过程供参考：3 张实测页上题干/选项
+  /// 基本准，但配图误报多（无图的题也被框成图），
   /// 详见 YOLO 报告的再训练反馈。
   Future<List<QuestionBox>> _detectIntra(
     ui.Image pageImage,
@@ -576,10 +546,8 @@ class YoloOnnxService {
   }
 
   /// 跨类去重：不同类别框几乎重合时（IoU 超阈值）只留置信度高的。
-  /// 典型是第 2 层把同一段文字同时标成 stem 和 figure。
   /// SR-P2-72：与 [_nms] 同一段实现（按置信度排序后 IoU 压制），
-  /// 直接复用，不再各写一份；第 2 层再接入时若需“只压不同类”
-  /// 的语义，再在这里加类别判断（当前行为与旧实现逐字一致）。
+  /// 直接复用，不再各写一份。
   static List<YoloRawDet> _crossClassNms(
     List<YoloRawDet> dets,
     double iouThreshold,
@@ -598,35 +566,6 @@ class YoloOnnxService {
     return union <= 0 ? 0.0 : inter / union;
   }
 
-  /// 把一页的混合框按中心点归属：第 2 层框分到中心点所在的第 1 层
-  /// 框名下；中心点落不到任何整题框里的，归入 `orphans`（编辑器里
-  /// 作独立题内框展示）。返回 `({inners, orphans})`。
-  /// 当前检测只出第 1 层框，本函数返回空归属，供第 2 层再接入
-  /// 与修框编辑器复用。
-  static ({Map<String, List<QuestionBox>> inners, List<QuestionBox> orphans})
-  groupInners(List<QuestionBox> boxes) {
-    final questions = boxes.where((b) => b.layer == 1).toList();
-    final inners = <String, List<QuestionBox>>{};
-    final orphans = <QuestionBox>[];
-    for (final b in boxes.where((b) => b.layer == 2)) {
-      final cx = b.x + b.w / 2;
-      final cy = b.y + b.h / 2;
-      QuestionBox? owner;
-      for (final q in questions) {
-        if (cx >= q.x && cx <= q.x + q.w && cy >= q.y && cy <= q.y + q.h) {
-          owner = q;
-          break;
-        }
-      }
-      if (owner == null) {
-        orphans.add(b);
-      } else {
-        (inners[owner.id] ??= []).add(b);
-      }
-    }
-    return (inners: inners, orphans: orphans);
-  }
-
   /// 框钳制：框不得超出页面（0..1），新画的框同样钳制；尺寸随图片实际大小走。
   ///
   /// 对任何输入都不抛错。贴边语义：允许宽/高小于 0.08，不把左上角收进来——
@@ -636,18 +575,20 @@ class YoloOnnxService {
   /// 的下限永不大于上限），空间足够时再把过小的宽/高补回 0.08，
   /// 保留原最小尺寸意图。x == 1.0 时剩余空间为 0，宽只能是 0。
   ///
-  /// `minSize`（默认 true）是该“最小尺寸意图”的开关：用户手画 /
-  /// 拖动 / 缩放的框要能被选中操作，沿用 0.08 下限；检测输出的框
+  /// `minSize`（默认 true）是该“最小尺寸意图”的开关：检测输出的框
   /// 是量出来的尺寸，必须原样保留（`minSize: false`），否则题行
   /// （实测高 0.018~0.10，多在 0.08 以下）与选项框（约 0.04×0.03）
   /// 全被撑成 0.08，相邻题行互相重叠、确认被拦，真实推理没法用。
   /// 默认行为与 A3 的回归测试完全一致，只给检测管线多一个选择。
+  /// B8-345：修框编辑器里用户手画 / 拖动 / 缩放的框也不再补 0.08
+  ///（各入口都传 `minSize: false`，框大小不限、只钳制在页内）；
+  /// 默认 true 的分支现无调用方，保留只为 S8A3 回归测试锁定的贴边语义。
   ///
   /// SR2-38：`minSize: false` 的检测路径改成交集语义——框与页面
   /// 求交，左/上溢出扣掉溢出的宽/高（`x=-0.1, w=0.5 → x=0,
   /// w=0.4`），与 `rotateBoxToRotatedPage` 同一语义；编辑器路径
-  /// （默认 `minSize: true`）保持现状：左上角收到 0、尺寸不变，
-  /// 框被拖出页边时不静默缩小、保持可抓取。
+  /// （B8-345 起也走 `minSize: false`）同此语义：框拖出页边时
+  /// 按交集收进页内，不静默移位。
   static QuestionBox clampToPage(QuestionBox box, {bool minSize = true}) {
     if (!minSize) {
       // 交集语义：框与 [0, 1] 页面求交，溢出侧扣宽/高。
@@ -703,17 +644,11 @@ class YoloOnnxService {
 }
 
 /// 一次真实推理的耗时与计数（见 [YoloOnnxService.lastDetectStats]）。
-/// 第 2 层暂缓：`layer2Count` 恒为 0，再接入后恢复统计。
 class YoloDetectStats {
-  const YoloDetectStats({
-    required this.layer1Ms,
-    required this.layer1Count,
-    this.layer2Count = 0,
-  });
+  const YoloDetectStats({required this.layer1Ms, required this.layer1Count});
 
   final int layer1Ms;
   final int layer1Count;
-  final int layer2Count;
 
   int get totalMs => layer1Ms;
 }

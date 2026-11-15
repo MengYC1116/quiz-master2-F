@@ -82,9 +82,11 @@ class AppNavBar extends StatelessWidget {
 
   /// 学科速览的学科来源：库里的 subjects 表（调用方 `app.dart` 从
   /// `repo.subjects()` 读，入库顺序）。B2：速览最多显示前 5 科；
-  /// 传入空列表时不显示任何行；null = 未传，沿用预设三科（兼容旧
-  /// 调用与纯展示测试）。圆点色已在 S8A2 修为存色回退
-  ///（`subjectColor` 的 stored 参数），新学科不落到数学色。
+  /// 传入空列表时不显示任何行；B8-1：null 也不再回退预设三科
+  /// （空表是删光学科后的合法状态，回退就是幽灵行；调用方总传
+  /// 真实列表，null 只出现在旧测试里，同样按空处理）。
+  /// 圆点色已在 S8A2 修为存色回退（`subjectColor` 的 stored 参数），
+  /// 新学科不落到数学色。
   final List<Subject>? subjects;
 
   @override
@@ -107,7 +109,8 @@ class AppNavBar extends StatelessWidget {
         DesignTokens.navPaddingV * scale,
       ),
       // 导航列分两段（P0B2-3）：品牌 + 主列表固定在上；学科速览区
-      // （标题 + 学科行）撑满剩余空间，行多 / 窗口矮时只在区内滚动；
+      // （标题 + 学科行）底部锚定、直接贴在设置按钮上方（B8-1 纠正：
+      // 行贴区顶 + 设置贴底会留大段空），行多 / 窗口矮时只在区内滚动；
       // 设置按钮固定在导航最底部，不随速览滚动。折叠态没有速览区，
       // 仍沿用旧的可滚动整列（小窗口 + 大字号时不溢出）。
       child: LayoutBuilder(
@@ -203,20 +206,30 @@ class AppNavBar extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               ...top,
-              // 学科速览区：上边框 + 标题固定，学科行在区内滚动。
+              // 学科速览区：B8-1 纠正（Meng 2026-11-15 15:45）——速览块
+              // 底部锚定、直接贴在设置按钮上方，中间没有空隙。旧结构是
+              // Expanded 撑满剩余空间，科少时行贴在区顶部、设置固定在
+              // 底部，中间留一大段空。新结构：外层 Expanded 的 Column
+              // 用 mainAxisAlignment.end 把整块推到底；行区
+              // SingleChildScrollView 按子内容定高（松约束下自动
+              // 收缩到内容高度），行多到放不下时在区内滚动；分隔线
+              // + 标题跟着整块走。
+              // 设置仍固定在导航最下方、不随速览滚动，且与最后一行
+              // 之间没有间隙（设置外层 Padding 顶边距为 0）。
               // B2：学科速览按入库顺序最多显示前 5 科（Meng 定）；
               // 不足 5 科全显示；超过 5 科只显示前 5，不加“还有 N 科”
               // 提示（现有设计无此提示）。
               Expanded(
-                child: Container(
-                  decoration: BoxDecoration(
-                    border: Border(top: BorderSide(color: palette.line)),
-                  ),
-                  padding: EdgeInsets.only(top: 10 * scale),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      Padding(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  mainAxisAlignment: MainAxisAlignment.end,
+                  children: [
+                    Container(
+                      decoration: BoxDecoration(
+                        border: Border(top: BorderSide(color: palette.line)),
+                      ),
+                      padding: EdgeInsets.only(top: 10 * scale),
+                      child: Padding(
                         padding: EdgeInsets.fromLTRB(
                           DesignTokens.subjRowPaddingH * scale,
                           4 * scale,
@@ -233,32 +246,37 @@ class AppNavBar extends StatelessWidget {
                           ),
                         ),
                       ),
-                      Expanded(
-                        child: SingleChildScrollView(
-                          key: const ValueKey('qm-nav-subject-scroll'),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.stretch,
-                            children: [
-                              for (final s
-                                  in (subjects ?? Subject.all).take(5))
-                                _SubjectRow(
-                                  subject: s,
-                                  pending: navPending[s.id] ?? 0,
-                                  rev: navRev[s.id] ?? 0,
-                                ),
-                            ],
-                          ),
+                    ),
+                    Flexible(
+                      // SingleChildScrollView 没有 shrinkWrap 参数也不需要：
+                      // 它的 RenderBox 按子内容定高（size = 约束内
+                      // constrain(child.size)），松约束下行少时只占内容高、
+                      // 行多时顶到上限并在区内滚动。
+                      child: SingleChildScrollView(
+                        key: const ValueKey('qm-nav-subject-scroll'),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            for (final s
+                                in (subjects ?? const <Subject>[]).take(5))
+                              _SubjectRow(
+                                subject: s,
+                                pending: navPending[s.id] ?? 0,
+                                rev: navRev[s.id] ?? 0,
+                              ),
+                          ],
                         ),
                       ),
-                    ],
-                  ),
+                    ),
+                  ],
                 ),
               ),
-              // 底部设置：固定在导航最下方，不随速览滚动。
+              // 底部设置：固定在导航最下方，不随速览滚动；
+              // 与速览最后一行紧贴（顶边距 0，见上面注释）。
               Padding(
                 padding: EdgeInsets.fromLTRB(
                   DesignTokens.subjRowPaddingH * scale,
-                  8 * scale,
+                  0,
                   DesignTokens.subjRowPaddingH * scale,
                   2 * scale,
                 ),

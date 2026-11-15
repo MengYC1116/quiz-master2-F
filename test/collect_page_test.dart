@@ -1,6 +1,6 @@
 // R4 收集中心 widget 测试：6 态渲染、只按导入时间排、筛选不重排、
-// 取消导入 / 删除失败任务无二次确认、修框编辑器（双击进内框、
-// 画新框选类型、确认拆分替换原任务、取消留修框中、重叠拦确认、
+// 取消导入 / 删除失败任务无二次确认、修框编辑器（画新框直接成题级框、
+// 确认拆分替换原任务、取消留修框中、重叠拦确认、
 // 无框提示、旋转整页）、亮/深、三档缩放无溢出、不用图标字体。
 // 用 FakeRepo 覆盖 repository 调用（不碰真实数据库，不改口径）。
 // P2：编辑器改走真实页图 + DetectionResult——setUpAll 生成一张
@@ -16,7 +16,6 @@ import 'dart:ui' as ui;
 
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:quiz_master2/data/database.dart';
 import 'package:quiz_master2/data/repository.dart';
@@ -135,7 +134,7 @@ Future<void> tapDialogConfirmAndWait(WidgetTester tester) async {
   await tester.pumpAndSettle();
 }
 
-/// 画布内的框标签（题级框 / 题内框的文字在画布里；底部 hint 也含
+/// 画布内的框标签（题级框的文字在画布里；底部 hint 也含
 /// “题级框 N”字样，必须限定在画布内找，否则会命中 hint）。
 Finder editorBoxLabel(String label) => find.descendant(
   of: find.byKey(const Key('box-editor-canvas')),
@@ -199,14 +198,10 @@ class FakeRepo extends QuestionRepository {
   Future<void> saveDraftBoxes({
     required String taskId,
     required Map<int, List<QuestionBox>> boxesByPage,
-    required Map<String, List<QuestionBox>> inners,
-    required Map<int, List<QuestionBox>> standaloneInner,
     required Map<int, int> rotations,
   }) async {
     draftBoxes[taskId] = [
       for (final e in boxesByPage.entries) ...e.value,
-      for (final v in inners.values) ...v,
-      for (final v in standaloneInner.values) ...v,
     ];
   }
 
@@ -214,11 +209,8 @@ class FakeRepo extends QuestionRepository {
   ///（与拆题同事务提交，见 lib 的 confirmSplitIntoImpl）。
   CollectTask? lastRetainedTask;
   final Map<int, List<QuestionBox>> lastRetainedBoxesByPage = {};
-  final Map<String, List<QuestionBox>> lastRetainedInners = {};
-  final Map<int, List<QuestionBox>> lastRetainedStandalone = {};
 
-  /// SR2-4：最近一次 confirmSplit 收到的每题框（含确认时挂接后的
-  /// 独立题内框，见 collect_page.dart `_confirmSplit`）。
+  /// 最近一次 confirmSplit 收到的每题框。
   final Map<String, List<QuestionBox>> lastBoxesByQuestionId = {};
 
   /// SR2-25：为真时 saveRecentTask 抛错（注入确认尾部写库失败）。
@@ -232,8 +224,6 @@ class FakeRepo extends QuestionRepository {
     required Map<String, List<QuestionBox>> boxesByQuestionId,
     CollectTask? retainedTask,
     Map<int, List<QuestionBox>> retainedBoxesByPage = const {},
-    Map<String, List<QuestionBox>> retainedInners = const {},
-    Map<int, List<QuestionBox>> retainedStandaloneInner = const {},
   }) async {
     lastBoxesByQuestionId
       ..clear()
@@ -246,12 +236,6 @@ class FakeRepo extends QuestionRepository {
     lastRetainedBoxesByPage
       ..clear()
       ..addAll(retainedBoxesByPage);
-    lastRetainedInners
-      ..clear()
-      ..addAll(retainedInners);
-    lastRetainedStandalone
-      ..clear()
-      ..addAll(retainedStandaloneInner);
     if (retainedTask != null) {
       // 保留任务与原任务同 id：事务内先删后插，等价于原地重建。
       final i = tasks.indexWhere((x) => x.id == retainedTask.id);
@@ -262,8 +246,6 @@ class FakeRepo extends QuestionRepository {
       }
       draftBoxes[retainedTask.id] = [
         for (final e in retainedBoxesByPage.entries) ...e.value,
-        for (final v in retainedInners.values) ...v,
-        for (final v in retainedStandaloneInner.values) ...v,
       ];
     }
   }
@@ -721,64 +703,6 @@ void main() {
       expect(find.text('继续修框'), findsOneWidget);
     });
 
-    testWidgets('双击题级框进内框模式，Esc 退出', (tester) async {
-      final repo = FakeRepo([
-        task(
-          't-needbox',
-          '待框选文件.pdf · 第1页 · 第1题',
-          status: CollectStatus.needBox,
-        ),
-      ]);
-      await pumpCollect(tester, repo: repo);
-      await openEditor(tester, '修框');
-      final box = editorBoxHandle('题级框 1');
-      expect(box, findsOneWidget);
-      await tester.ensureVisible(box);
-      await tester.pumpAndSettle();
-      await tester.tap(box);
-      await tester.pump(const Duration(milliseconds: 50));
-      await tester.tap(box);
-      await tester.pumpAndSettle();
-      expect(find.textContaining('已进入题级框'), findsOneWidget);
-      expect(find.text('stem 题干'), findsWidgets);
-      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
-      await tester.pumpAndSettle();
-      expect(find.textContaining('已进入题级框'), findsNothing);
-    });
-
-    testWidgets('内框模式三个默认内框全部落在画布可视区内（画布按页 fit）', (tester) async {
-      final repo = FakeRepo([
-        task(
-          't-needbox',
-          '待框选文件.pdf · 第1页 · 第1题',
-          status: CollectStatus.needBox,
-        ),
-      ]);
-      await pumpCollect(tester, repo: repo);
-      await openEditor(tester, '修框');
-      final box = editorBoxHandle('题级框 1');
-      expect(box, findsOneWidget);
-      await tester.ensureVisible(box);
-      await tester.pumpAndSettle();
-      await tester.tap(box);
-      await tester.pump(const Duration(milliseconds: 50));
-      await tester.tap(box);
-      await tester.pumpAndSettle();
-      expect(find.textContaining('已进入题级框'), findsOneWidget);
-      // 画布可视区 = 外层 Listener 的矩形；三个内框都应完整落在里面，
-      // 不能像固定 560×700 那样把 option / figure 顶到可视区之外。
-      final canvas = tester.getRect(find.byKey(const Key('box-editor-canvas')));
-      for (final label in ['stem 题干', 'option 选项', 'figure 配图']) {
-        final rect = tester.getRect(editorBoxHandle(label));
-        expect(canvas.contains(rect.topLeft), isTrue, reason: '$label topLeft');
-        expect(
-          canvas.contains(rect.bottomRight),
-          isTrue,
-          reason: '$label bottomRight',
-        );
-      }
-    });
-
     testWidgets('有框未选中时底部提示不是“没框到题”，删空后才是', (tester) async {
       final repo = FakeRepo([
         task(
@@ -804,7 +728,7 @@ void main() {
       expect(find.textContaining('本页已框'), findsNothing);
     });
 
-    testWidgets('空白处画新框、选题级框、确认拆成 2 个待整理任务并替换原任务', (tester) async {
+    testWidgets('空白处画新框、直接成题级框、确认拆成 2 个待整理任务并替换原任务', (tester) async {
       final repo = FakeRepo([
         task(
           't-needbox',
@@ -847,26 +771,17 @@ void main() {
         Offset(0.4 * pageW, 0.4 * pageH),
       );
       await tester.pumpAndSettle();
-      expect(find.text('这个框是？'), findsOneWidget);
-      await tester.ensureVisible(
-        find.byKey(const Key('pending-type-question')),
-      );
-      await tester.pumpAndSettle();
-      await tester.tap(find.byKey(const Key('pending-type-question')));
-      await tester.pumpAndSettle();
+      // 画框直接成题级框，不再弹“这个框是？”选类型。
+      expect(find.text('这个框是？'), findsNothing);
+      expect(editorBoxLabel('题级框 1'), findsOneWidget);
       (origin, pageW, pageH) = pageMetrics();
       await tester.dragFrom(
         origin + Offset(0.55 * pageW, 0.55 * pageH),
         Offset(0.35 * pageW, 0.35 * pageH),
       );
       await tester.pumpAndSettle();
-      expect(find.text('这个框是？'), findsOneWidget);
-      await tester.ensureVisible(
-        find.byKey(const Key('pending-type-question')),
-      );
-      await tester.pumpAndSettle();
-      await tester.tap(find.byKey(const Key('pending-type-question')));
-      await tester.pumpAndSettle();
+      expect(find.text('这个框是？'), findsNothing);
+      expect(editorBoxLabel('题级框 2'), findsOneWidget);
       expect(find.text('确认修框，拆成 2 个待整理任务'), findsOneWidget);
       await tapConfirmAndWait(tester, '确认修框，拆成 2 个待整理任务');
       expect(find.textContaining('修框 ·'), findsNothing);
@@ -908,8 +823,7 @@ void main() {
         Offset(0.6 * pageW, 0.6 * pageH),
       );
       await tester.pumpAndSettle();
-      await tester.tap(find.byKey(const Key('pending-type-question')));
-      await tester.pumpAndSettle();
+      // 新框直接落下，与原框重叠出警告。
       expect(find.textContaining('框重叠'), findsOneWidget);
       await tester.tap(find.text('确认修框，拆成 2 个待整理任务'));
       await tester.pumpAndSettle();
@@ -1249,197 +1163,6 @@ void main() {
     });
   });
 
-  group('SR2-4 有框页独立题内框确认不丢', () {
-    testWidgets('独立 stem 按中心点挂到最近的题下，确认后仍在该题的框里',
-        (tester) async {
-      final repo = FakeRepo([
-        task(
-          't-needbox',
-          '待框选文件.pdf · 第1页 · 第1题',
-          status: CollectStatus.needBox,
-        ),
-      ]);
-      // 草稿：第 1 页两道题级框 + 一个无父框的独立 stem。
-      // stem 中心 (0.30, 0.49) 落在两框之间：离上框 b1（下沿 0.45）
-      // 0.04，离下框 b2（上沿 0.55）0.06——命中“最近”而非“命中”，
-      // 钉住最近规则；修前确认后它随原任务删除一起丢。
-      QuestionBox box(
-        String id,
-        int layer,
-        String type,
-        double x,
-        double y,
-        double w,
-        double h,
-      ) => QuestionBox(
-        id: id,
-        layer: layer,
-        type: type,
-        x: x,
-        y: y,
-        w: w,
-        h: h,
-        page: 1,
-      );
-      repo.draftBoxes['t-needbox'] = [
-        box('b1', 1, 'question', 0.06, 0.05, 0.88, 0.40),
-        box('b2', 1, 'question', 0.06, 0.55, 0.88, 0.40),
-        box('orphan-stem', 2, 'stem', 0.10, 0.45, 0.40, 0.08),
-      ];
-      await pumpCollect(tester, repo: repo);
-      await openEditor(tester, '修框');
-      expect(editorBoxLabel('题级框 1'), findsOneWidget);
-      expect(editorBoxLabel('题级框 2'), findsOneWidget);
-      expect(editorBoxLabel('stem 题干'), findsOneWidget);
-      await tapConfirmAndWait(tester, '确认修框，拆成 2 个待整理任务');
-      expect(find.textContaining('修框 ·'), findsNothing);
-      expect(repo.savedQuestions.length, 2);
-      // 独立 stem 仍在：挂到了中心最近的上框 b1 下，parentBoxId 已补。
-      final withOrphan = repo.lastBoxesByQuestionId.entries.singleWhere(
-        (e) => e.value.any((b) => b.id == 'orphan-stem'),
-      );
-      expect(
-        withOrphan.value.firstWhere((b) => b.layer == 1).id,
-        'b1',
-      );
-      final orphan =
-          withOrphan.value.firstWhere((b) => b.id == 'orphan-stem');
-      expect(orphan.layer, 2);
-      expect(orphan.type, 'stem');
-      expect(orphan.parentBoxId, 'b1');
-      // 另一道题的框里没有它，不重复挂。
-      expect(
-        repo.lastBoxesByQuestionId.values
-            .expand((v) => v)
-            .where((b) => b.id == 'orphan-stem'),
-        hasLength(1),
-      );
-    });
-  });
-
-  group('SR3-12 独立题内框挂接：重叠平局与距离上限', () {
-    QuestionBox box(
-      String id,
-      int layer,
-      String type,
-      double x,
-      double y,
-      double w,
-      double h,
-    ) => QuestionBox(
-      id: id,
-      layer: layer,
-      type: type,
-      x: x,
-      y: y,
-      w: w,
-      h: h,
-      page: 1,
-    );
-
-    testWidgets('中心在两道题正中间、距离与相交面积都平局：不挂，提示手动指定归属',
-        (tester) async {
-      final repo = FakeRepo([
-        task(
-          't-needbox',
-          '待框选文件.pdf · 第1页 · 第1题',
-          status: CollectStatus.needBox,
-        ),
-      ]);
-      // 两道题级框上下分开（b1 到 0.25、b2 从 0.75 起）；独立 stem
-      // 中心 (0.30, 0.50) 正好在正中间：离两框都是 0.25，与两框
-      // 的相交面积同为 0——判歧义，不静默取先到者。
-      // 注：坐标全取二进制精确值（0.25/0.5/0.75/0.4375/0.125），
-      // 避免 0.45/0.55 这类十进制小数的浮点差把平局打破。
-      // 另：中心落在框内的内框在打开编辑器时就被 groupInners 按
-      // 中心点收归首道框、到不了 standaloneInner，所以歧义分支
-      // 用“等距间隙”构造——走的是同一条平局判据（距离相等 +
-      // 相交面积相等 → 歧义）。
-      repo.draftBoxes['t-needbox'] = [
-        box('b1', 1, 'question', 0.0, 0.0, 1.0, 0.25),
-        box('b2', 1, 'question', 0.0, 0.75, 1.0, 0.25),
-        box('orphan-stem', 2, 'stem', 0.10, 0.4375, 0.40, 0.125),
-      ];
-      await pumpCollect(tester, repo: repo);
-      await openEditor(tester, '修框');
-      await tapConfirmAndWait(tester, '确认修框，拆成 2 个待整理任务');
-      expect(repo.savedQuestions.length, 2);
-      // 歧义的内框没挂到任何题下（本次确认不入库）。
-      expect(
-        repo.lastBoxesByQuestionId.values
-            .expand((v) => v)
-            .where((b) => b.id == 'orphan-stem'),
-        isEmpty,
-      );
-      expect(find.textContaining('同时落在两道题里'), findsOneWidget);
-      expect(tester.takeException(), isNull);
-    });
-
-    testWidgets('中心离所有题都超过页宽/高的 0.25：不挂，提示手动处理',
-        (tester) async {
-      final repo = FakeRepo([
-        task(
-          't-needbox',
-          '待框选文件.pdf · 第1页 · 第1题',
-          status: CollectStatus.needBox,
-        ),
-      ]);
-      // 两道小题框都在页顶；独立 stem 在页底，中心 (0.50, 0.85)
-      // 离最近的题约 0.6，超过 0.25 上限——以前会被强制挂到最近题下。
-      repo.draftBoxes['t-needbox'] = [
-        box('b1', 1, 'question', 0.10, 0.05, 0.30, 0.20),
-        box('b2', 1, 'question', 0.60, 0.05, 0.30, 0.20),
-        box('orphan-stem', 2, 'stem', 0.40, 0.80, 0.20, 0.10),
-      ];
-      await pumpCollect(tester, repo: repo);
-      await openEditor(tester, '修框');
-      await tapConfirmAndWait(tester, '确认修框，拆成 2 个待整理任务');
-      expect(repo.savedQuestions.length, 2);
-      expect(
-        repo.lastBoxesByQuestionId.values
-            .expand((v) => v)
-            .where((b) => b.id == 'orphan-stem'),
-        isEmpty,
-      );
-      expect(find.textContaining('离所有题太远'), findsOneWidget);
-      expect(tester.takeException(), isNull);
-    });
-
-    testWidgets('中心落在两道题里但相交面积不等：挂到相交面积大的一道',
-        (tester) async {
-      final repo = FakeRepo([
-        task(
-          't-needbox',
-          '待框选文件.pdf · 第1页 · 第1题',
-          status: CollectStatus.needBox,
-        ),
-      ]);
-      // 两道题级框共用 y=0.5 的边（y 不重叠，编辑器放行确认），
-      // x 向右沿不对称：b1 右沿 0.58、b2 左沿 0.46；独立 stem 中心
-      // (0.50, 0.50) 两框距离同为 0，与 b1 相交 0.28×0.1、
-      // 与 b2 相交 0.24×0.1——判给 b1，不取列表先到者当运气。
-      repo.draftBoxes['t-needbox'] = [
-        box('b1', 1, 'question', 0.0, 0.0, 0.58, 0.5),
-        box('b2', 1, 'question', 0.46, 0.5, 0.54, 0.5),
-        box('orphan-stem', 2, 'stem', 0.30, 0.40, 0.40, 0.20),
-      ];
-      await pumpCollect(tester, repo: repo);
-      await openEditor(tester, '修框');
-      await tapConfirmAndWait(tester, '确认修框，拆成 2 个待整理任务');
-      expect(repo.savedQuestions.length, 2);
-      final withOrphan = repo.lastBoxesByQuestionId.entries.singleWhere(
-        (e) => e.value.any((b) => b.id == 'orphan-stem'),
-      );
-      expect(
-        withOrphan.value.firstWhere((b) => b.layer == 1).id,
-        'b1',
-      );
-      expect(find.textContaining('同时落在两道题里'), findsNothing);
-      expect(find.textContaining('离所有题太远'), findsNothing);
-      expect(tester.takeException(), isNull);
-    });
-  });
-
   group('SR2-25 确认拆题后 saveRecentTask 失败不影响成功提示与刷新', () {
     testWidgets('最近任务写库失败：仍拆题成功，列表刷新到待整理', (tester) async {
       final repo = FakeRepo([
@@ -1739,9 +1462,9 @@ void main() {
         origin + Offset(0.05 * pageW, 0.05 * pageH),
         Offset(0.4 * pageW, 0.4 * pageH),
       );
-      expect(find.text('这个框是？'), findsOneWidget);
-      await tester.tap(find.byKey(const Key('pending-type-question')));
-      await tester.pumpAndSettle();
+      // 右键画框直接成题级框，不再弹选类型菜单。
+      expect(find.text('这个框是？'), findsNothing);
+      expect(editorBoxLabel('题级框 1'), findsOneWidget);
       final box = editorBoxHandle('题级框 1');
       await tester.ensureVisible(box);
       await tester.pumpAndSettle();
@@ -1774,33 +1497,17 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(find.text('删除选中框'));
       await tester.pumpAndSettle();
-      // 右键拖动：画出新框，弹出选类型菜单。
+      // 右键拖动：画出新框，直接成题级框，不弹选类型菜单。
       var (origin, pageW, pageH) = editorPageMetrics(tester);
       await dragMouseRight(
         tester,
         origin + Offset(0.05 * pageW, 0.05 * pageH),
         Offset(0.4 * pageW, 0.4 * pageH),
       );
-      expect(find.text('这个框是？'), findsOneWidget);
-      await tester.tap(find.byKey(const Key('pending-type-question')));
-      await tester.pumpAndSettle();
-      // 进内框模式，再右键单击空白处：退出内框模式，不画框。
-      (origin, pageW, pageH) = editorPageMetrics(tester);
-      final newBox = editorBoxHandle('题级框 1');
-      await tester.ensureVisible(newBox);
-      await tester.pumpAndSettle();
-      await tester.tap(newBox);
-      await tester.pump(const Duration(milliseconds: 50));
-      await tester.tap(newBox);
-      await tester.pumpAndSettle();
-      expect(find.textContaining('已进入题级框'), findsOneWidget);
-      // 注意：进内框模式后多了横幅，画布下移，坐标要重算再点。
-      (origin, pageW, pageH) = editorPageMetrics(tester);
-      // 页左缘空白（题级框外、图内）：右键单击 = 取消。
-      await clickMouseRight(tester, origin + Offset(0.02 * pageW, 0.5 * pageH));
-      expect(find.textContaining('已进入题级框'), findsNothing);
       expect(find.text('这个框是？'), findsNothing);
-      // 非内框模式下右键单击空白：什么都不发生（原来也没有动作）。
+      expect(editorBoxLabel('题级框 1'), findsOneWidget);
+      // 页左缘空白（题级框外、图内）：右键单击 = 取消，什么都不发生。
+      (origin, pageW, pageH) = editorPageMetrics(tester);
       await clickMouseRight(tester, origin + Offset(0.02 * pageW, 0.5 * pageH));
       expect(find.text('这个框是？'), findsNothing);
       expect(editorBoxLabel('题级框 1'), findsOneWidget);
@@ -1817,19 +1524,41 @@ void main() {
       await openEditor(tester, '修框');
       var (origin, pageW, pageH) = editorPageMetrics(tester);
       final before = tester.getRect(editorBoxHandle('题级框 1'));
-      // 右键从占位框中心起拖：画出新框，原框不动（不被拖走）。
+      // 原框页内归一化坐标（左/上/宽/高）：重叠警告横幅出现后画布会重排，
+      // 像素坐标会变，用归一化坐标比才稳。
+      (double, double, double, double) norm(
+        Rect r,
+        Offset o,
+        double pw,
+        double ph,
+      ) => (
+        (r.left - o.dx) / pw,
+        (r.top - o.dy) / ph,
+        r.width / pw,
+        r.height / ph,
+      );
+      final beforeNorm = norm(before, origin, pageW, pageH);
+      // 右键从占位框中心起拖：画出新框，直接成题级框 2，原框不动
+      //（不被拖走）。
       await dragMouseRight(
         tester,
         before.center,
         Offset(0.3 * pageW, 0.25 * pageH),
       );
-      expect(find.text('这个框是？'), findsOneWidget);
-      expect(tester.getRect(editorBoxHandle('题级框 1')), before);
-      // 选成题级框：新框落下（两框重叠会出警告横幅、画布随之下移，
-      // 这里不断言原框像素坐标，只断言新框已落下）。
-      await tester.tap(find.byKey(const Key('pending-type-question')));
-      await tester.pumpAndSettle();
+      expect(find.text('这个框是？'), findsNothing);
       expect(editorBoxLabel('题级框 2'), findsOneWidget);
+      // 两框重叠会出警告横幅：按页内归一化坐标比，原框位置不变。
+      (origin, pageW, pageH) = editorPageMetrics(tester);
+      final afterNorm = norm(
+        tester.getRect(editorBoxHandle('题级框 1')),
+        origin,
+        pageW,
+        pageH,
+      );
+      expect(afterNorm.$1, closeTo(beforeNorm.$1, 0.005));
+      expect(afterNorm.$2, closeTo(beforeNorm.$2, 0.005));
+      expect(afterNorm.$3, closeTo(beforeNorm.$3, 0.005));
+      expect(afterNorm.$4, closeTo(beforeNorm.$4, 0.005));
       // 左键在原框上（新框盖不到的左上角）拖动：原框仍移动。
       (origin, pageW, pageH) = editorPageMetrics(tester);
       final boxBefore = tester.getRect(editorBoxHandle('题级框 1'));

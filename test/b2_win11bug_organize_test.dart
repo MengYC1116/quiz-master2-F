@@ -1,10 +1,12 @@
-// B2 Win11 bug 批（工人 B）：整理工作台 Bug 2 / Bug 3 / Bug 4 回归测试。
-//
-// Bug 2：真实切片图是宽条形（固有尺寸窄于布局容器）时，stem / option /
-// figure 虚线框按容器宽度画，右端伸到图片外面；放大查看 overlay 同样。
+// B2 Win11 bug 批（工人 B）：整理工作台 Bug 3 / Bug 4 回归测试。
+// Bug 2（B8-2 已删）：宽条形真实切片图上 stem / option / figure 虚线
+// 叠加层按容器宽度画、右端伸到图片外面——叠加层随二层模型一并移除。
 // Bug 3：修框切片里整题框切片卡的边框比里面的图宽，框伸到图片外面。
-// Bug 4：表单四区（文件夹 / 来源 / 分类补充 / 答案·解析·笔记）须各自
-// 独立折叠，可同时打开多个；默认文件夹展开、其余折叠。
+// Bug 4：表单四区（文件夹 / 来源 / 分类补充 / 答案·解析·笔记）手风琴，
+// 一次只开一个；默认文件夹展开、其余折叠。B8-6 口径翻转：第二批时
+// Meng 要求“能同时打开多个”，本文件当时按多开锁了行为；2026-11-15
+// Win11 验收第 6 项他明确改回手风琴，本组已按新口径重写，详见
+// docs/ui-replication/B8-6-ACCORDION.md。
 //
 // 夹具：test/fixtures/slice-narrow-500x120.png（500×120 白底黑条，
 // 模拟真实题目切片：固有宽度 500，小于 1280 宽窗口下左栏约 628 的
@@ -21,7 +23,6 @@ import 'package:quiz_master2/data/repository.dart';
 import 'package:quiz_master2/models/models.dart';
 import 'package:quiz_master2/modules/organize/organize_page.dart';
 import 'package:quiz_master2/theme/app_theme.dart';
-import 'package:quiz_master2/widgets/widgets.dart';
 
 class _FakeRepo extends QuestionRepository {
   _FakeRepo({required this.questions, required this.folderList})
@@ -82,7 +83,7 @@ class _FakeRepo extends QuestionRepository {
 }
 
 /// 带真实窄切片的题（复现 Win11 上报的那道：英语 gs_p018.png 第 1 页
-/// 第 9 题；sliceText 为空是真实题的形态，区域只剩 stem）。
+/// 第 9 题；sliceText 为空是真实题的形态）。
 Question _realSliceQuestion(String slicePath) => Question(
   id: 'q-real',
   title: 'gs_p018.png · 第1页 · 第9题',
@@ -182,55 +183,6 @@ void main() {
     } catch (_) {}
   });
 
-  group('Bug 2：区域虚线框不超出图片边界', () {
-    testWidgets('整理页：stem 框右端不超过整题图右端', (tester) async {
-      await _pump(
-        tester,
-        _repoWith([_realSliceQuestion(sliceRel)]),
-        sliceAbs: sliceAbs,
-      );
-      // 整理页只画一个 overlay（_paperImage），图是第一张 Image。
-      expect(find.byType(QuestionRegionOverlays), findsOneWidget);
-      expect(find.byType(Image), findsNWidgets(2)); // 纸面图 + 切片卡图
-      final overlayRect = tester.getRect(find.byType(QuestionRegionOverlays));
-      final paperRect = tester.getRect(find.byType(QuestionSlice).first);
-      final imageRect = tester.getRect(find.byType(Image).first);
-      // 图固有宽 500，小于左栏容器宽：修好前 overlay 宽 ≈ 容器宽 629。
-      expect(imageRect.width, closeTo(500, 1));
-      // 叠加层与纸面容器同宽（容器比图宽 2px 是 1px 边框 ×2）。
-      expect(overlayRect.width, closeTo(paperRect.width, 1));
-      expect(overlayRect.left, closeTo(paperRect.left, 1));
-      // stem 框是叠加层左右各 inset 10px：左右都不出图（图 = 纸面去 1px 边框）。
-      expect(overlayRect.left + 10, greaterThanOrEqualTo(imageRect.left - 1));
-      expect(overlayRect.right - 10, lessThanOrEqualTo(imageRect.right + 1));
-    });
-
-    testWidgets('放大查看：stem 框右端不超过整题图右端', (tester) async {
-      await _pump(
-        tester,
-        _repoWith([_realSliceQuestion(sliceRel)]),
-        sliceAbs: sliceAbs,
-      );
-      await tester.tap(find.byType(Image).first);
-      await tester.pumpAndSettle();
-      expect(find.text('整题图 · 放大查看'), findsOneWidget);
-      // 整理页一个 overlay + 对话框里一个；对话框里是最后一个。
-      expect(find.byType(QuestionRegionOverlays), findsNWidgets(2));
-      final overlayRect = tester.getRect(
-        find.byType(QuestionRegionOverlays).last,
-      );
-      final paperRect = tester.getRect(find.byType(QuestionSlice).last);
-      final imageRect = tester.getRect(find.byType(Image).last);
-      // 对话框里 InteractiveViewer 带缩放（修好后纸面 500 宽，fit 到
-      // 150%），图与框同乘一个变换：只断言相对关系。修好前 overlay
-      // 是 680 宽的 Stack，图只有 500 宽。
-      expect(overlayRect.width, closeTo(paperRect.width, 2));
-      expect(overlayRect.left, closeTo(paperRect.left, 2));
-      expect(overlayRect.right, closeTo(paperRect.right, 2));
-      expect(overlayRect.width, lessThanOrEqualTo(imageRect.width + 5));
-    });
-  });
-
   group('Bug 3：修框切片卡不比图宽', () {
     testWidgets('整题框切片卡右端不超过图右端', (tester) async {
       await _pump(
@@ -255,33 +207,46 @@ void main() {
     });
   });
 
-  group('Bug 4：表单各区独立折叠', () {
-    testWidgets('默认文件夹展开、其余折叠；同时打开两区都保持展开', (tester) async {
+  group('Bug 4：表单四区手风琴（B8-6 翻转：一次只开一个）', () {
+    testWidgets('默认只文件夹展开；点开一区、其他区收起；再点已开区收起它',
+        (tester) async {
       await _pump(tester, _repoWith([_demoQuestion()]));
       // 默认态：文件夹体可见，来源 / 分类补充体不可见。
       expect(find.text('平时作业'), findsOneWidget);
       expect(find.text('选择试卷（可选）'), findsNothing);
       expect(find.text('已选 0 个'), findsNothing);
-      // 打开分类补充，再打开来源：两者 + 文件夹三区同时展开。
+      // 打开分类补充：文件夹收起（手风琴，一次只开一个）。
       await tester.tap(find.text('分类补充（可选）'));
       await tester.pumpAndSettle();
       expect(find.text('已选 0 个'), findsOneWidget);
+      expect(find.text('平时作业'), findsNothing);
+      expect(find.text('选择试卷（可选）'), findsNothing);
+      // 再打开来源：分类补充收起，只剩来源开着。
       await tester.tap(find.text('来源（可选）'));
       await tester.pumpAndSettle();
       expect(find.text('选择试卷（可选）'), findsOneWidget);
-      expect(find.text('已选 0 个'), findsOneWidget);
-      expect(find.text('平时作业'), findsOneWidget);
-      // 再打开答案区：之前开着的三区仍保持展开（答案区在页下方，
-      // 先滚到可见再点；收起数从 4 变 5）。
-      expect(find.textContaining('收起'), findsNWidgets(4));
+      expect(find.text('已选 0 个'), findsNothing);
+      expect(find.text('平时作业'), findsNothing);
+      // 再点已展开的来源区：收起它，四区全收（左栏修框切片不受影响，
+      // 仍是独立折叠段，单独展开）。
+      await tester.tap(find.text('来源（可选）'));
+      await tester.pumpAndSettle();
+      expect(find.text('选择试卷（可选）'), findsNothing);
+      expect(find.text('已选 0 个'), findsNothing);
+      expect(find.text('平时作业'), findsNothing);
+      // 右侧四区全收时只剩左栏修框切片一个「收起」。
+      expect(find.textContaining('收起'), findsOneWidget);
+      // 答案区同理：点开只它展开（答案区在页下方，先滚到可见再点）。
+      // 答案体标记用字段 hint「与解析分开」（_fieldLabel 是 Text.rich，
+      // find.text('答案') 匹配不到；该串只在答案体里出现一次）。
       await tester.ensureVisible(find.text('答案 · 解析 · 笔记（可选）'));
       await tester.pumpAndSettle();
       await tester.tap(find.text('答案 · 解析 · 笔记（可选）'));
       await tester.pumpAndSettle();
-      expect(find.textContaining('收起'), findsNWidgets(5));
-      expect(find.text('选择试卷（可选）'), findsOneWidget);
-      expect(find.text('已选 0 个'), findsOneWidget);
-      expect(find.text('平时作业'), findsOneWidget);
+      expect(find.textContaining('与解析分开'), findsOneWidget);
+      expect(find.text('平时作业'), findsNothing);
+      expect(find.text('选择试卷（可选）'), findsNothing);
+      expect(find.text('已选 0 个'), findsNothing);
     });
   });
 }

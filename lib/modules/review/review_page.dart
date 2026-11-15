@@ -126,8 +126,10 @@ const _stepLabels = ['① 看错因', '② 写补救', '③ 重做', '④ 自查
 class _ReviewPageState extends State<ReviewPage> {
   AppSettings _settings = AppSettings.defaults;
   // 学科顺序表：读库 subjects（B2 补充；以前写死 Subject.all，
-  // 新学科在排序里无索引位、筛选下拉里也没有）。空库回退预设三科。
-  List<Subject> _subjects = Subject.all;
+  // 新学科在排序里无索引位、筛选下拉里也没有）。B8-1 扫尾：空表是
+  // 删光学科后的合法状态，不再回退预设三科；首帧与读库后都以真实
+  // 列表为准，空就是空。
+  List<Subject> _subjects = const [];
   // 库里找学科：新学科用库里的名与色；找不到才回退 Subject.byId
   //（数学兜底，只发生在数据不一致时）。
   Subject _subjectOf(String id) => _subjects.firstWhere(
@@ -197,7 +199,7 @@ class _ReviewPageState extends State<ReviewPage> {
     try {
       final settings = await widget.repo.settings();
       final subjects = await widget.repo.subjects();
-      final subjectList = subjects.isEmpty ? Subject.all : subjects;
+      final subjectList = subjects;
       final questions = await widget.repo.all(includeArchived: true);
       final records = await widget.repo.causeRecords();
       final byQ = <String, List<CauseRecord>>{};

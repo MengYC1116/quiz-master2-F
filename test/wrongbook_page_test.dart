@@ -532,6 +532,50 @@ void main() {
       expect(label.style?.color, const Color.fromRGBO(255, 255, 255, 0.92));
     });
 
+    testWidgets('B8-8 封面固定 300×376：窗口变窄只改每行本数，不改封面尺寸',
+        (tester) async {
+      await pumpWrongbook(tester);
+      // 按学科名找各自的封面盒子（_buildBook 的 AnimatedContainer）。
+      Finder bookBox(String name) => find.ancestor(
+            of: find.text(name),
+            matching: find.byType(AnimatedContainer),
+          );
+      // 1280 宽：三本一行，都是 300×376。
+      for (final name in ['数学', '英语', '政治']) {
+        expect(tester.getSize(bookBox(name)), const Size(300, 376));
+      }
+      expect(
+        tester.getTopLeft(bookBox('英语')).dy,
+        tester.getTopLeft(bookBox('数学')).dy,
+      );
+      expect(
+        tester.getTopLeft(bookBox('政治')).dy,
+        tester.getTopLeft(bookBox('数学')).dy,
+      );
+      // 窗口缩到 900：三本放不下一行（3×300 + 2×22 = 944 > 900），
+      // 政治换到第二行；封面尺寸不变。
+      tester.view.physicalSize = const Size(900, 720);
+      await tester.pumpAndSettle();
+      for (final name in ['数学', '英语', '政治']) {
+        expect(tester.getSize(bookBox(name)), const Size(300, 376));
+      }
+      expect(
+        tester.getTopLeft(bookBox('英语')).dy,
+        tester.getTopLeft(bookBox('数学')).dy,
+      );
+      expect(
+        tester.getTopLeft(bookBox('政治')).dy,
+        greaterThan(tester.getTopLeft(bookBox('数学')).dy),
+      );
+      // image-95 回归：只剩一本也不拉满全宽，仍是 300×376。
+      final oneRepo = threeSubjectRepo();
+      oneRepo.subjectsValue = [Subject.math];
+      await pumpWrongbook(tester, repo: oneRepo);
+      expect(find.text('数学'), findsOneWidget);
+      expect(find.text('英语'), findsNothing);
+      expect(tester.getSize(bookBox('数学')), const Size(300, 376));
+    });
+
     testWidgets('书脊贴着封面左边缘、通顶通底（与预览一致）',
         (tester) async {
       await pumpWrongbook(tester);
@@ -963,13 +1007,16 @@ void main() {
       expect(find.text('共 3 道 · 第 1 / 1 页'), findsOneWidget);
     });
 
-    testWidgets('>2 张卡变固定高度内部滚动容器；≤2 张为普通列表',
+    // B8-9：内部滚动容器已删除——>2 张卡也不再套固定高度 ListView，
+    // 整页只有一个 SingleChildScrollView，卡片全部建出来、随页滚动。
+    testWidgets('B8-9：>2 张卡也不用固定高度内部滚动容器；≤2 张同样无 ListView',
         (tester) async {
       await pumpWrongbook(tester);
       await openMathList(tester);
-      // 数学 3 张卡：内部 ListView。
-      expect(find.byType(ListView), findsOneWidget);
-      // 英语 2 张卡：普通列表，无内部 ListView。
+      // 数学 3 张卡：无内部 ListView，3 张卡一次建齐。
+      expect(find.byType(ListView), findsNothing);
+      expect(find.byType(QuestionSlice), findsNWidgets(3));
+      // 英语 2 张卡：同样无内部 ListView。
       await tester.tap(find.text('← 目录'));
       await tester.pumpAndSettle();
       await tester.tap(find.text('返回书架'));
@@ -979,6 +1026,7 @@ void main() {
       await tester.tap(find.text('全部题目'));
       await tester.pumpAndSettle();
       expect(find.byType(ListView), findsNothing);
+      expect(find.byType(QuestionSlice), findsNWidgets(2));
     });
 
     testWidgets('序号随排序重编号：时间新→旧首题 q1，旧→新首题 q2',
@@ -1222,6 +1270,115 @@ void main() {
     });
   });
 
+  group('B8-9 空状态文案', () {
+    testWidgets('文件夹为空：显示“这个文件夹还是空的”+收集/整理引导，不显示搜索无结果文案',
+        (tester) async {
+      final repo = FakeWrongbookRepo(
+        questions: [
+          wbq('q1', '函数极限',
+              folderIds: const ['f1'], errorTypes: const ['概念不清']),
+        ],
+        folderList: const [
+          Folder(id: 'f1', name: '试卷', subjectId: 'math', sortOrder: 0),
+          Folder(id: 'fEmpty', name: '空文件夹', subjectId: 'math', sortOrder: 10),
+        ],
+        counts: const {'math': (0, 0, 0)},
+      );
+      await pumpWrongbook(tester, repo: repo, initialSubjectId: 'math');
+      await tester.tap(find.text('空文件夹'));
+      await tester.pumpAndSettle();
+      expect(find.text('数学 · 空文件夹'), findsOneWidget);
+      expect(find.text('这个文件夹还是空的'), findsOneWidget);
+      expect(find.textContaining('去收集中心拍一道题'), findsOneWidget);
+      expect(find.textContaining('去整理工作台'), findsOneWidget);
+      expect(find.text('没找到这道题，换个词试试'), findsNothing);
+      expect(find.text('返回目录'), findsOneWidget);
+      await tester.tap(find.text('返回目录'));
+      await tester.pumpAndSettle();
+      expect(find.text('数学 · 错题本'), findsOneWidget);
+    });
+
+    testWidgets('搜索确实无结果：仍显示搜索无结果文案，不显示文件夹为空文案',
+        (tester) async {
+      await pumpWrongbook(tester);
+      await openMathList(tester);
+      await tester.enterText(find.byType(TextField).first, '不存在的词');
+      await tester.pumpAndSettle();
+      expect(find.text('没找到这道题，换个词试试'), findsOneWidget);
+      expect(find.text('这个文件夹还是空的'), findsNothing);
+      expect(find.text('清除全部筛选'), findsOneWidget);
+    });
+
+    testWidgets('范围有题但全已解决：显示“这里的题错因都已解决”，点按钮看到已解决的题',
+        (tester) async {
+      final now = DateTime.now();
+      final repo = FakeWrongbookRepo(
+        questions: [
+          wbq('q1', '已掌握的题',
+              folderIds: const ['f1'],
+              errorTypes: const ['概念不清'],
+              createdAt: now.subtract(const Duration(days: 2))),
+          wbq('q2', '另一道题',
+              folderIds: const ['f2'],
+              errorTypes: const ['方法不会'],
+              createdAt: now.subtract(const Duration(days: 3))),
+        ],
+        folderList: const [
+          Folder(id: 'f1', name: '试卷', subjectId: 'math', sortOrder: 0),
+          Folder(id: 'f2', name: '平时作业', subjectId: 'math', sortOrder: 10),
+        ],
+        records: [
+          CauseRecord(
+              questionId: 'q1',
+              cause: '概念不清',
+              subjectId: 'math',
+              status: CauseStatus.solved,
+              solvedCount: 2,
+              joinedAt: now),
+        ],
+        counts: const {'math': (0, 0, 0)},
+      );
+      await pumpWrongbook(tester, repo: repo, initialSubjectId: 'math');
+      await tester.tap(find.text('试卷'));
+      await tester.pumpAndSettle();
+      expect(find.text('这里的题错因都已解决'), findsOneWidget);
+      expect(find.text('没找到这道题，换个词试试'), findsNothing);
+      expect(find.text('看看已解决的题'), findsOneWidget);
+      await tester.tap(find.text('看看已解决的题'));
+      await tester.pumpAndSettle();
+      expect(find.byType(QuestionSlice), findsOneWidget);
+    });
+
+    testWidgets('定稿 A 也含空状态修复：文件夹为空文案一致', (tester) async {
+      final repo = FakeWrongbookRepo(
+        questions: [
+          wbq('q1', '函数极限',
+              folderIds: const ['f1'], errorTypes: const ['概念不清']),
+        ],
+        folderList: const [
+          Folder(id: 'f1', name: '试卷', subjectId: 'math', sortOrder: 0),
+          Folder(id: 'fEmpty', name: '空文件夹', subjectId: 'math', sortOrder: 10),
+        ],
+        counts: const {'math': (0, 0, 0)},
+      );
+      await pumpWrongbook(tester, repo: repo, initialSubjectId: 'math');
+      await tester.tap(find.text('空文件夹'));
+      await tester.pumpAndSettle();
+      expect(find.text('这个文件夹还是空的'), findsOneWidget);
+      expect(find.text('没找到这道题，换个词试试'), findsNothing);
+    });
+
+    testWidgets('定稿 A 列表能渲染：大卡片 3 张、序号圆盘、分页都在',
+        (tester) async {
+      await pumpWrongbook(tester);
+      await openMathList(tester);
+      expect(find.byType(QuestionSlice), findsNWidgets(3));
+      expect(find.text('1'), findsOneWidget);
+      expect(find.text('共 3 道 · 第 1 / 1 页'), findsOneWidget);
+      expect(find.byType(ListView), findsNothing);
+    });
+  });
+
   group('详情返回刷新', () {
     testWidgets('大卡片：详情里删题，返回后卡片消失', (tester) async {
       final repo = threeSubjectRepo();
@@ -1392,10 +1549,9 @@ void main() {
       await tester.tap(find.text('全部题目'));
       await tester.pumpAndSettle();
       expect(find.text('共 12 道 · 第 1 / 2 页'), findsOneWidget);
-      // 内部 ListView 懒加载：滚到底才建出最后一张卡。序号按页重编号，
-      // 第一页是 1–10；用 '9' 校验（'10' 会同时命中每页下拉的显示值）。
-      await tester.drag(find.byType(ListView), const Offset(0, -2000));
-      await tester.pumpAndSettle();
+      // B8-9：卡片不再懒加载（Column 全量建出），'9' 不用滚到底就有；
+      // 序号按页重编号，第一页是 1–10；用 '9' 校验（'10' 会同时命中
+      // 每页下拉的显示值）。
       expect(find.text('9'), findsOneWidget);
       await tester.ensureVisible(find.text('下一页'));
       await tester.pumpAndSettle();
@@ -1414,16 +1570,20 @@ void main() {
       await pumpWrongbook(tester, repo: repo, initialSubjectId: 'math');
       await tester.tap(find.text('全部题目'));
       await tester.pumpAndSettle();
+      // B8-9：12 张大卡片随页排布，分页器在首屏外；先滚出来再点下拉。
+      await tester.ensureVisible(find.byType(DropdownButton<int>));
+      await tester.pumpAndSettle();
       await tester.tap(find.byType(DropdownButton<int>));
       await tester.pumpAndSettle();
       await tester.tap(find.text('20').last);
       await tester.pumpAndSettle();
       expect(find.text('共 12 道 · 第 1 / 1 页'), findsOneWidget);
-      // 12 道同在一页：第 12 张卡在内部滚动容器底部，用 dragUntilVisible
+      // 12 道同在一页：第 12 张卡在页底部，用 dragUntilVisible
       // 逐步滚到底（一次大 drag 在 12 张卡时不一定触底）。
+      // B8-9：内部 ListView 已删，滚页面的 SingleChildScrollView。
       await tester.dragUntilVisible(
         find.text('12'),
-        find.byType(ListView),
+        find.byType(SingleChildScrollView),
         const Offset(0, -300),
       );
       await tester.pumpAndSettle();
@@ -1522,6 +1682,9 @@ void main() {
       await tester.tap(find.text('全部题目'));
       await tester.pumpAndSettle();
       expect(find.text('共 12 道 · 第 1 / 2 页'), findsOneWidget);
+      // B8-9：12 张大卡片随页排布，分页器在首屏外；先滚出来再点下拉。
+      await tester.ensureVisible(find.byType(DropdownButton<int>));
+      await tester.pumpAndSettle();
       await tester.tap(find.byType(DropdownButton<int>));
       await tester.pumpAndSettle();
       await tester.tap(find.text('20').last);
@@ -2173,17 +2336,25 @@ void main() {
       expect(w, greaterThan(185));
     });
 
-    testWidgets('SR-P2-54 跨学科列表用中性灰书框，不回退成数学封面色',
+    // B8-9：蓝色大框已整体去掉——跨学科列表不再有任何学科色外框
+    //（SR-P2-54 原先防的“回退数学蓝”已无从发生）；数学列表同样无框。
+    testWidgets('B8-9：题目列表无任何学科色外框（SR-P2-54 原书框已删）',
         (tester) async {
-      final greyFrame = find.byWidgetPredicate((w) =>
-          w is Container &&
-          w.decoration is BoxDecoration &&
-          (w.decoration as BoxDecoration).color == const Color(0xFF64748F));
+      final coverFrame = find.byWidgetPredicate((w) {
+        if (w is! Container || w.decoration is! BoxDecoration) {
+          return false;
+        }
+        final color = (w.decoration as BoxDecoration).color;
+        // 中性灰 0xFF64748F；数学封面蓝 0xFF2F7CF6（与序号圆盘的
+        // accent 0xFF2E7CF6 不是同一个值，不会误判）。
+        return color == const Color(0xFF64748F) ||
+            color == const Color(0xFF2F7CF6);
+      });
       await pumpWrongbook(tester, filterCause: '概念不清');
-      expect(greyFrame, findsOneWidget);
+      expect(coverFrame, findsNothing);
       await pumpWrongbook(tester);
       await openMathList(tester);
-      expect(greyFrame, findsNothing);
+      expect(coverFrame, findsNothing);
     });
 
     testWidgets('SR-P2-58 “重置”后排序固定回时间新→旧，不回设置默认值',

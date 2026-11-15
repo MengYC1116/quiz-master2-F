@@ -1,11 +1,11 @@
 // 收集中心共用小部件（B4 从 collect_page.dart 纯拆分移出，未改行为）。
 //
-// - [DashedDropPainter]：拖放区虚线框与修框编辑器题内框共用（原 `_DashedDropPainter`，
+// - [DashedDropPainter]：拖放区虚线框（原 `_DashedDropPainter`，
 //   跨文件使用故改为公开；仅改名，画法一字未动）。
 
 import 'package:flutter/material.dart';
 
-/// 拖放区虚线框（HTML `.drop`：2px dashed accent 边；题内框同款画法）。
+/// 拖放区虚线框（HTML `.drop`：2px dashed accent 边）。
 class DashedDropPainter extends CustomPainter {
   DashedDropPainter({
     required this.color,

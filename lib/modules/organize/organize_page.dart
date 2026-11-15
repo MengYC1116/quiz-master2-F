@@ -25,17 +25,15 @@ String _subjectInitial(String subjectId) => switch (subjectId) {
 String _dateText(DateTime d) =>
     '${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
 
+/// 右侧表单四区的标识（B8-6 手风琴用）：文件夹 / 来源 / 分类补充 /
+/// 答案·解析·笔记。左栏「修框切片」不在其中，它是左栏独立折叠段。
+enum _RightSection { folder, source, classify, answer }
+
 /// 整理工作台 H 布局：左图右表，整页滚动，无固定高度容器。
 /// 队列藏在左上角「队列」按钮后，点开弹出 D 极简式队列层（Overlay 定位
 /// 在按钮正下方，见 [_openQueue]）。
 /// 表单里不显示学科（导入时已定，不可改）；只有文件夹是必填。
-/// P1-1 降级（2026-11-14）：区域高亮 / 修框切片的二层区域只对演示题 /
-/// 老题按题干文字推导（见 widgets.dart 的 [regionsOfQuestion]；演示
-/// 数据没有真实框坐标）；真实题（空 `sliceText`）没有 region 开关，
-/// 只留整题切片展示。
-/// B3 追加项 1：叠加层改用库里真实的 layer-2 框坐标——有真实框时按
-/// [realRegionRects] 换算后的切片坐标画框，无框时回退示意框；是否显示
-/// 仍由 [regionsOfQuestion] 决定，真实题仍不显示区域。
+/// 左栏只显示整题图与修框切片（整题框切片），不再有区域高亮与分框切片。
 class OrganizePage extends StatefulWidget {
   const OrganizePage({
     super.key,
@@ -73,8 +71,9 @@ class _OrganizePageState extends State<OrganizePage> {
   List<String> _allTags = [];
   List<String> _customTypesAll = [];
   // 学科表：读库 subjects（P0B1 扫尾；以前直接 Subject.byId，
-  // 新学科显示成“数学”）。空库回退预设三科。
-  List<Subject> _subjects = Subject.all;
+  // 新学科显示成“数学”）。B8-1 扫尾：空表是删光学科后的合法状态，
+  // 不再回退预设三科；首帧与读库后都以真实列表为准，空就是空。
+  List<Subject> _subjects = const [];
   // 库里找学科：新学科用库里的名与色；找不到才回退 Subject.byId
   //（数学兜底，只发生在数据不一致时）。
   Subject _subjectOf(String id) =>
@@ -96,23 +95,38 @@ class _OrganizePageState extends State<OrganizePage> {
   final _newExamNameCtrl = TextEditingController();
   DateTime? _newExamDate;
 
-  // 各段默认开合：文件夹、修框切片展开，其余折起。
+  // 各段默认开合：文件夹展开，其余折起。
+  // B8-6：右侧表单四区是手风琴——一次只展开一个（Meng 2026-11-15
+  // 明确改回；与第二批 Bug 4「能同时打开多个」的决定相反，见
+  // docs/ui-replication/B8-6-ACCORDION.md）。点开一个就收起其他，
+  // 点已展开的区则收起它（允许全收起）；左栏「修框切片」独立，不参与。
   bool _folderOpen = true;
   bool _slicesOpen = true;
   bool _sourceOpen = false;
   bool _classifyOpen = false;
   bool _answerOpen = false;
 
-  // 二层区域高亮开关（默认全开）。
-  bool _showStem = true;
-  bool _showOption = true;
-  bool _showFigure = true;
+  /// B8-6 手风琴开关：点 [section] 对应的区——已展开则收起它，
+  /// 未展开则只开它、其余全收起。
+  void _toggleRightSection(_RightSection section) {
+    setState(() {
+      _folderOpen = section == _RightSection.folder && !_folderOpen;
+      _sourceOpen = section == _RightSection.source && !_sourceOpen;
+      _classifyOpen = section == _RightSection.classify && !_classifyOpen;
+      _answerOpen = section == _RightSection.answer && !_answerOpen;
+    });
+  }
 
-  // 当前题的二层真实框：各区域在整题切片内的 0..1 矩形（键 stem /
-  // option / figure，见 widgets.dart 的 [realRegionRects]）。缺失
-  // 的区域回退示意框；真实题的 _visibleRegions 为空，本值即使非空
-  // 也不画框。
-  Map<String, Rect> _realRegionRects = {};
+  /// B8-6 手风琴：只开 [section] 对应的区、其余全收起。供“待补充”
+  /// 跳转与确认校验（文件夹必填未选）跳转到文件夹区用。
+  void _openRightSectionOnly(_RightSection section) {
+    setState(() {
+      _folderOpen = section == _RightSection.folder;
+      _sourceOpen = section == _RightSection.source;
+      _classifyOpen = section == _RightSection.classify;
+      _answerOpen = section == _RightSection.answer;
+    });
+  }
 
   // 内联新建表单的展开态。
   bool _addingFolder = false;
@@ -130,15 +144,6 @@ class _OrganizePageState extends State<OrganizePage> {
       _queue.isEmpty ? null : _queue[_index.clamp(0, _queue.length - 1)];
 
   List<String> get _orderIds => _queue.map((q) => q.id).toList();
-
-  Set<String> get _visibleRegions {
-    final regions = regionsOfQuestion(_current!);
-    final visible = <String>{};
-    if (_showStem && regions.contains('stem')) visible.add('stem');
-    if (_showOption && regions.contains('option')) visible.add('option');
-    if (_showFigure && regions.contains('figure')) visible.add('figure');
-    return visible;
-  }
 
   @override
   void initState() {
@@ -204,7 +209,7 @@ class _OrganizePageState extends State<OrganizePage> {
       _exams = exams;
       _kps = kps;
       _allTags = tags;
-      _subjects = subjects.isEmpty ? Subject.all : subjects;
+      _subjects = subjects;
       _customTypesAll = customs.toList();
       _loading = false;
     });
@@ -223,7 +228,6 @@ class _OrganizePageState extends State<OrganizePage> {
   void _loadForm() {
     final q = _current;
     if (q == null) {
-      _realRegionRects = {};
       return;
     }
     setState(() {
@@ -250,29 +254,6 @@ class _OrganizePageState extends State<OrganizePage> {
       _newTagCtrl.clear();
       _newExamNameCtrl.clear();
       _newExamDate = null;
-      // 切题先清掉上道题的真实框，避免新题框未到之前闪现旧框。
-      _realRegionRects = {};
-    });
-    _loadRealBoxes();
-  }
-
-  /// 读当前题的真实二层框（B3 追加项 1）：`pageImagePath` 为空
-  /// （演示题 / 老题无页图）时不读库，直接留空回退示意框；有页图
-  /// 时走仓库已有的 [QuestionRepository.boxesForPageImage]（同页
-  /// 各题的 1 层 + 2 层框），只取本题（`questionId` 匹配）的行再
-  /// 换算到切片坐标。是否显示仍由 [_visibleRegions] 决定——真实题
-  /// 即使库里有框也不画框（P1-1 红线）。
-  Future<void> _loadRealBoxes() async {
-    final q = _current;
-    final pageImagePath = q?.pageImagePath;
-    if (q == null || pageImagePath == null) return;
-    final id = q.id;
-    final boxes = await widget.repo.boxesForPageImage(pageImagePath);
-    if (!mounted || _current?.id != id) return;
-    setState(() {
-      _realRegionRects = realRegionRects(
-        boxes.where((b) => b.questionId == id).toList(),
-      );
     });
   }
 
@@ -361,7 +342,8 @@ class _OrganizePageState extends State<OrganizePage> {
     if (q == null) return;
     if (_folderIds.isEmpty) {
       _snack('先选文件夹');
-      setState(() => _folderOpen = true);
+      // B8-6：手风琴下只开文件夹区，其余收起。
+      _openRightSectionOnly(_RightSection.folder);
       return;
     }
     final updated = _formQuestion(q, organized: true);
@@ -828,19 +810,11 @@ class _OrganizePageState extends State<OrganizePage> {
 
   Widget _leftPane(Question q) {
     final scale = qmScaleOf(context);
-    // P1-1 降级：真实题没有可推导的区域，region 开关整行隐藏（连同
-    // 它前面的 10px 间距），只留整题切片 + 修框切片；演示题 / 老题
-    // 才显示开关。
-    final hasRegions = regionsOfQuestion(q).isNotEmpty;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         _paperImage(q),
         if (!widget.imageFailed) ...[
-          if (hasRegions) ...[
-            SizedBox(height: 10 * scale),
-            _regionToggles(q),
-          ],
           SizedBox(height: DesignTokens.organizeSectionGap * scale),
           QmFoldSection(
             title: '修框切片',
@@ -854,7 +828,7 @@ class _OrganizePageState extends State<OrganizePage> {
     );
   }
 
-  /// 整题纸面图（可点放大）+ 三色高亮开关叠加层。
+  /// 整题纸面图（可点放大）。
   Widget _paperImage(Question q) {
     final scale = qmScaleOf(context);
     final slice = QuestionSlice(
@@ -864,112 +838,23 @@ class _OrganizePageState extends State<OrganizePage> {
       failed: widget.imageFailed,
       onTap: widget.imageFailed
           ? null
-          : () => showQuestionZoomDialog(
-              context,
-              q,
-              visibleRegions: _visibleRegions,
-              realRegionRects: _realRegionRects,
-            ),
+          : () => showQuestionZoomDialog(context, q),
     );
     if (widget.imageFailed) return slice;
-    // P1-1 降级：真实题的 _visibleRegions 为空，叠加层挂在树里但不画
-    // 任何框（B2 Bug 2 回归测试仍按 widget 类型找叠加层，故保留挂载，
-    // 只靠空 visible 让它不画框；不要在这里按题型拆掉 Stack）。
-    // B3 追加项 1：有真实框的演示题 / 老题按 _realRegionRects 画真实
-    // 框（页图坐标经 layer-1 框换算到切片坐标，见 widgets.dart 的
-    // [realRegionRects]），无框的区域回退示意框。
-    // B2 Bug 2 根因：Stack 在 Column(stretch) 里被拉到左栏整宽，而
+    // B2 Bug 2 根因：Column(stretch) 里子组件被拉到左栏整宽，而
     // QuestionSlice 的真图按固有尺寸渲染（cacheWidth 只降采样不放大，
-    // 宽条切片固有宽小于容器宽），叠加层按 Stack 宽画框就会伸到图外面。
-    // Align 让 Stack 收成切片实际尺寸，stem / option / figure 三区
-    // 同用这一个叠加层尺寸，一并收进图内；演示题 / 失败占位是 Center
-    // 撑满容器，Stack 仍是容器宽，不受影响。
+    // 宽条切片固有宽小于容器宽）。Align 让它收成切片实际尺寸；
+    // 演示题 / 失败占位是 Center 撑满容器，不受影响。
     return Align(
       alignment: Alignment.topLeft,
-      child: Stack(
-        children: [
-          slice,
-          Positioned.fill(
-            child: IgnorePointer(
-              child: QuestionRegionOverlays(
-                question: q,
-                visible: _visibleRegions,
-                realRects: _realRegionRects,
-              ),
-            ),
-          ),
-        ],
-      ),
+      child: slice,
     );
   }
 
-  /// stem / option / figure 三色高亮开关（默认全开；只显示本题有的区）。
-  /// P1-1 降级：真实题（空 sliceText）`regionsOfQuestion` 返回空，
-  /// 开关整行不渲染（调用方 [_leftPane] 也已整行隐藏，这里是兜底）。
-  Widget _regionToggles(Question q) {
-    final palette = DesignTokens.of(Theme.of(context).brightness);
-    const labels = {
-      'stem': 'stem 题干',
-      'option': 'option 选项',
-      'figure': 'figure 插图',
-    };
-    final regions = regionsOfQuestion(q);
-    if (regions.isEmpty) return const SizedBox.shrink();
-    return Wrap(
-      spacing: 16,
-      runSpacing: 4,
-      crossAxisAlignment: WrapCrossAlignment.center,
-      children: [
-        for (final region in regions)
-          Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Checkbox(
-                value: switch (region) {
-                  'stem' => _showStem,
-                  'option' => _showOption,
-                  _ => _showFigure,
-                },
-                activeColor: switch (region) {
-                  'stem' => palette.stem,
-                  'option' => palette.option,
-                  _ => palette.figure,
-                },
-                materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                visualDensity: VisualDensity.compact,
-                onChanged: (on) => setState(() {
-                  switch (region) {
-                    case 'stem':
-                      _showStem = on ?? true;
-                    case 'option':
-                      _showOption = on ?? true;
-                    default:
-                      _showFigure = on ?? true;
-                  }
-                }),
-              ),
-              Text(
-                labels[region]!,
-                style: const TextStyle(fontSize: 13.5, height: 1.2),
-              ),
-            ],
-          ),
-        Text(
-          '区域仅作辅助定位，整题图始终是主体',
-          style: TextStyle(fontSize: 12.5, color: palette.muted),
-        ),
-      ],
-    );
-  }
-
-  /// 修框切片：每框一张切片卡（整题框 + 各二层框），只存图不做 OCR。
-  /// 整题框有真实切片时显示真图（QuestionSlice 已接 slice_path）；
-  /// 题干/选项/配图卡只在 sliceText 非空时显示——真实题没有
-  /// sliceText，不显示空白卡。P1-1 降级后真实题的 `regionsOfQuestion`
-  /// 为空，修框切片只剩「整题框切片」一张卡。
+  /// 修框切片：只有「整题框切片」一张卡，只存图不做 OCR。
+  /// 整题框有真实切片时显示真图（QuestionSlice 已接 slice_path），
+  /// 否则显示题干文字。
   Widget _slicesSection(Question q) {
-    final regions = regionsOfQuestion(q);
-    final hasText = q.sliceText.trim().isNotEmpty;
     // B2 Bug 3：整题框有真实切片时，图按固有尺寸窄于卡宽，卡框伸到
     // 图外面（与 Bug 2 同因）。卡贴图收窄：Align 让卡收成图宽，
     // 卡头 Row 也随之收窄（hugContent，见 _sliceCard）；文字卡
@@ -989,7 +874,7 @@ class _OrganizePageState extends State<OrganizePage> {
               // 新学科会显示成数学。
               subject: _subjectOf(q.subjectId),
             )
-          : _sliceTextBody(q, withFigureNote: true),
+          : _sliceTextBody(q),
       hugContent: hasRealSlice,
     );
     return Column(
@@ -999,29 +884,14 @@ class _OrganizePageState extends State<OrganizePage> {
           Align(alignment: Alignment.centerLeft, child: wholeCard)
         else
           wholeCard,
-        if (hasText) ...[
-          const SizedBox(height: 10),
-          _sliceCard('题干框切片', _sliceTextBody(q)),
-          if (regions.contains('option')) ...[
-            const SizedBox(height: 10),
-            _sliceCard('选项框切片', _optionBody()),
-          ],
-          if (regions.contains('figure')) ...[
-            const SizedBox(height: 10),
-            _sliceCard('配图框切片', _figureBody(q)),
-          ],
-        ],
       ],
     );
   }
 
-  Widget _sliceTextBody(Question q, {bool withFigureNote = false}) {
+  Widget _sliceTextBody(Question q) {
     final palette = DesignTokens.of(Theme.of(context).brightness);
-    final text = withFigureNote && regionsOfQuestion(q).contains('figure')
-        ? '${q.sliceText}\n（含配图）'
-        : q.sliceText;
     return Text(
-      text,
+      q.sliceText,
       maxLines: 4,
       overflow: TextOverflow.ellipsis,
       style: TextStyle(
@@ -1030,54 +900,6 @@ class _OrganizePageState extends State<OrganizePage> {
         fontSize: 12.5,
         height: 1.55,
         color: palette.paperInk,
-      ),
-    );
-  }
-
-  /// 选项框切片体：A–D 四行迷你选项条（演示数据没有真实选项文本，
-  /// 不编造选项内容）。
-  Widget _optionBody() {
-    final palette = DesignTokens.of(Theme.of(context).brightness);
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        for (final letter in ['A', 'B', 'C', 'D'])
-          Padding(
-            padding: const EdgeInsets.symmetric(vertical: 1),
-            child: Row(
-              children: [
-                Text(
-                  '$letter ',
-                  style: TextStyle(
-                    fontFamily: 'Georgia',
-                    fontSize: 12,
-                    fontWeight: FontWeight.w700,
-                    color: palette.paperInk,
-                    height: 1.0,
-                  ),
-                ),
-                Expanded(
-                  child: Container(
-                    height: 6,
-                    decoration: BoxDecoration(
-                      color: palette.line,
-                      borderRadius: BorderRadius.circular(3),
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
-      ],
-    );
-  }
-
-  Widget _figureBody(Question q) {
-    final palette = DesignTokens.of(Theme.of(context).brightness);
-    return SizedBox(
-      height: 48,
-      child: CustomPaint(
-        painter: _FigureMiniPainter(q.sliceKind, palette.figure),
       ),
     );
   }
@@ -1151,7 +973,7 @@ class _OrganizePageState extends State<OrganizePage> {
           key: _folderSectionKey,
           title: '文件夹（归类）',
           expanded: _folderOpen,
-          onToggle: () => setState(() => _folderOpen = !_folderOpen),
+          onToggle: () => _toggleRightSection(_RightSection.folder),
           variant: QmFoldVariant.form,
           child: _folderSection(q),
         ),
@@ -1160,7 +982,7 @@ class _OrganizePageState extends State<OrganizePage> {
           title: '来源（可选）',
           subtitle: '试卷（来源）',
           expanded: _sourceOpen,
-          onToggle: () => setState(() => _sourceOpen = !_sourceOpen),
+          onToggle: () => _toggleRightSection(_RightSection.source),
           variant: QmFoldVariant.form,
           child: _sourceSection(),
         ),
@@ -1169,7 +991,7 @@ class _OrganizePageState extends State<OrganizePage> {
           title: '分类补充（可选）',
           subtitle: '知识点 · 错误类型 · 标签',
           expanded: _classifyOpen,
-          onToggle: () => setState(() => _classifyOpen = !_classifyOpen),
+          onToggle: () => _toggleRightSection(_RightSection.classify),
           variant: QmFoldVariant.form,
           child: _classifySection(q),
         ),
@@ -1178,7 +1000,7 @@ class _OrganizePageState extends State<OrganizePage> {
           title: '答案 · 解析 · 笔记（可选）',
           subtitle: '答案在上、解析在下，笔记单独一栏',
           expanded: _answerOpen,
-          onToggle: () => setState(() => _answerOpen = !_answerOpen),
+          onToggle: () => _toggleRightSection(_RightSection.answer),
           variant: QmFoldVariant.form,
           child: _answerSection(),
         ),
@@ -1223,7 +1045,8 @@ class _OrganizePageState extends State<OrganizePage> {
                     ),
                     recognizer: TapGestureRecognizer()
                       ..onTap = () {
-                        setState(() => _folderOpen = true);
+                        // B8-6：手风琴下只开文件夹区，其余收起。
+                        _openRightSectionOnly(_RightSection.folder);
                         final ctx = _folderSectionKey.currentContext;
                         if (ctx != null) {
                           Scrollable.ensureVisible(
@@ -2018,45 +1841,6 @@ class _OrganizePageState extends State<OrganizePage> {
   }
 }
 
-/// 配图框切片迷你图（演示用；真实切片是图片）：坐标轴 + 趋近曲线，
-/// 按题型微调（时间轴画横线 + 4 个点）。
-class _FigureMiniPainter extends CustomPainter {
-  _FigureMiniPainter(this.kind, this.color);
-  final String kind;
-  final Color color;
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final w = size.width;
-    final h = size.height;
-    final axis = Paint()
-      ..color = color.withValues(alpha: 0.55)
-      ..strokeWidth = 1.2;
-    final line = Paint()
-      ..color = color
-      ..strokeWidth = 2
-      ..style = PaintingStyle.stroke;
-    if (kind == 'timeline') {
-      canvas.drawLine(Offset(8, h / 2), Offset(w - 8, h / 2), axis);
-      for (var i = 0; i < 4; i++) {
-        final x = 24 + i * (w - 48) / 3;
-        canvas.drawCircle(Offset(x, h / 2), 4, line);
-      }
-      return;
-    }
-    canvas.drawLine(Offset(8, h - 8), Offset(w - 8, h - 8), axis);
-    canvas.drawLine(Offset(16, 4), Offset(16, h - 4), axis);
-    final curve = Path()
-      ..moveTo(16, h - 10)
-      ..quadraticBezierTo(w * 0.5, h * 0.1, w - 16, h - 20);
-    canvas.drawPath(curve, line);
-  }
-
-  @override
-  bool shouldRepaint(covariant _FigureMiniPainter oldDelegate) =>
-      oldDelegate.kind != kind || oldDelegate.color != color;
-}
-
 /// D 极简式队列弹出层：每题一行（复选框 + 标题 + 删除按钮），详情行只在
 /// 当前题下方展开一行，当前题蓝框（2px accent 边框 + 左侧 4px 蓝条 +
 /// accent-soft 底）；搜索只匹配题名 / 学科 / 试卷，不搜题干；排序默认
@@ -2110,8 +1894,10 @@ class _QueuePopupState extends State<_QueuePopup> {
   Map<String, String> _examNames = {};
   List<Folder> _folders = [];
   // 学科表：读库 subjects（P0B1 扫尾；队列搜索 / 详情行 / 删除确认
-  // 以前直接 Subject.byId，新学科显示成“数学”）。空库回退预设三科。
-  List<Subject> _subjects = Subject.all;
+  // 以前直接 Subject.byId，新学科显示成“数学”）。B8-1 扫尾：空表是
+  // 删光学科后的合法状态，不再回退预设三科；首帧与读库后都以真实
+  // 列表为准，空就是空。
+  List<Subject> _subjects = const [];
   // 库里找学科：新学科用库里的名与色；找不到才回退 Subject.byId
   //（数学兜底，只发生在数据不一致时）。
   Subject _subjectOf(String id) =>
@@ -2160,7 +1946,7 @@ class _QueuePopupState extends State<_QueuePopup> {
     setState(() {
       _examNames = {for (final e in exams) e.id: e.name};
       _folders = folders;
-      _subjects = subjects.isEmpty ? Subject.all : subjects;
+      _subjects = subjects;
       _batchFolderId ??= folders.isEmpty ? null : folders.first.id;
     });
   }

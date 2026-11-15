@@ -1764,9 +1764,11 @@ enum QmFoldVariant { group, form, detail }
 ///
 /// 各段独立展开 / 收起：本组件不做互斥，只按传入的 [expanded] 展示，
 /// 点头部时调 [onToggle]，展开态由调用方各自维护。调用方做法不一：
-/// 整理表单 / 详情三段 / 收集说明用每段独立的布尔值，可多段同开；
-/// 设置五组 / 学科管理四组用单个 open key，只开一段——互斥是调用方
-/// 自己的选择，不是本组件的行为。
+/// 详情三段 / 收集说明用每段独立的布尔值，可多段同开；整理表单四区
+/// 自 B8-6 起是手风琴（一次只开一段，见 organize_page.dart 的
+/// _toggleRightSection；第二批 Bug 4 的多开决定已翻转）、设置五组 /
+/// 学科管理四组用单个 open key，只开一段——互斥是调用方自己的选择，
+/// 不是本组件的行为。
 class QmFoldSection extends StatelessWidget {
   const QmFoldSection({
     super.key,

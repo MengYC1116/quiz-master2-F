@@ -1271,8 +1271,6 @@ void main() {
           boxesByPage: {
             1: [box(id: 'b1', collectTaskId: 'no-such-task')],
           },
-          inners: const {},
-          standaloneInner: const {},
           rotations: const {1: 90},
         ),
         throwsA(
@@ -1297,8 +1295,6 @@ void main() {
           1: [box(id: 'b1', collectTaskId: 'task-1')],
           2: [box(id: 'b2', page: 2, collectTaskId: 'task-1')],
         },
-        inners: const {},
-        standaloneInner: const {},
         rotations: const {},
       );
       // 只传第 1 页为空列表：第 1 页清空，第 2 页缺键、保留。
@@ -1308,8 +1304,6 @@ void main() {
         boxesByPage: {
           1: <QuestionBox>[],
         },
-        inners: const {},
-        standaloneInner: const {},
         rotations: const {},
       );
       final left = await AppDatabase.boxesForTaskFrom(db, 'task-1');

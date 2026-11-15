@@ -394,15 +394,11 @@ class QuestionRepository {
   Future<void> saveDraftBoxes({
     required String taskId,
     required Map<int, List<QuestionBox>> boxesByPage,
-    required Map<String, List<QuestionBox>> inners,
-    required Map<int, List<QuestionBox>> standaloneInner,
     required Map<int, int> rotations,
   }) =>
       _db.saveDraftBoxes(
         taskId: taskId,
         boxesByPage: boxesByPage,
-        inners: inners,
-        standaloneInner: standaloneInner,
         rotations: rotations,
       );
 
@@ -438,8 +434,6 @@ class QuestionRepository {
     required Map<String, List<QuestionBox>> boxesByQuestionId,
     CollectTask? retainedTask,
     Map<int, List<QuestionBox>> retainedBoxesByPage = const {},
-    Map<String, List<QuestionBox>> retainedInners = const {},
-    Map<int, List<QuestionBox>> retainedStandaloneInner = const {},
   }) =>
       _db.confirmSplit(
         originalTask: originalTask,
@@ -448,8 +442,6 @@ class QuestionRepository {
         boxesByQuestionId: boxesByQuestionId,
         retainedTask: retainedTask,
         retainedBoxesByPage: retainedBoxesByPage,
-        retainedInners: retainedInners,
-        retainedStandaloneInner: retainedStandaloneInner,
       );
 
   Future<String> exportBackupJson() => _db.exportBackupJson();

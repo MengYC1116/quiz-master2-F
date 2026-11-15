@@ -90,7 +90,9 @@ class HomePage extends StatefulWidget {
 class _HomePageState extends State<HomePage> {
   Map<String, int>? _revCounts;
   Map<String, int>? _pendingCounts;
-  List<Subject> _subjects = Subject.all;
+  // B8-1：空表是删光学科后的合法状态，不再回退预设三科
+  //（回退就是首页学科格仍显示数学/英语/政治的原因）。
+  List<Subject> _subjects = const [];
   // 库里找学科：新学科用库里的名；找不到才回退 Subject.byId
   //（数学兜底，只发生在数据不一致时）。P0B1 扫尾：副标题与焦点卡
   // 以前直接 Subject.byId，新学科显示成“数学”。
@@ -159,7 +161,7 @@ class _HomePageState extends State<HomePage> {
         _pendingCounts = results[1] as Map<String, int>;
         _recent = results[2] as ({String kind, String subjectId, String title})?;
         final subjects = results[5] as List<Subject>;
-        _subjects = subjects.isEmpty ? Subject.all : subjects;
+        _subjects = subjects;
         _duePending = pending;
         _dueRecheck = recheck;
         _loading = false;
@@ -605,7 +607,7 @@ class _BottomGrid extends StatelessWidget {
   final double scale;
   final AppPalette palette;
 
-  /// 库里的全部学科（入库顺序）；为空时调用方已回退到 Subject.all。
+  /// 库里的全部学科（入库顺序）；为空时只显示快速收集格。
   final List<Subject> subjects;
   final Map<String, int> revCounts;
   final Map<String, int> pendingCounts;

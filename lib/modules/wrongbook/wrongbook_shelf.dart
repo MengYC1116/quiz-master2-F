@@ -18,33 +18,42 @@ extension _WrongbookShelfBuild on _WrongbookPageState {
           _pageTitle('错题本'),
           _pageSubtitle('一科一本错题本，点一本打开看这一科的错题。'),
           _buildShelfTop(archivedCount),
-          LayoutBuilder(
-            builder: (context, constraints) {
-              final wide = constraints.maxWidth > 760;
-              final gap = DesignTokens.shelfGridGap * scale;
-              if (!wide) {
-                return Column(
+          // B8-1：学科删空时书架不再摆三本 0 道题的幽灵书，
+          // 给空状态（文案与学科管理页“还没有学科，先添加一个吧。”
+          // 同款）；有去学科管理的回调时才画按钮。
+          if (_subjects.isEmpty)
+            QmEmptyState(
+              title: '还没有学科',
+              description: '先去学科管理添加一个吧。',
+              actionLabel:
+                  widget.onGoSubjects == null ? null : '去学科管理',
+              onAction: widget.onGoSubjects,
+            )
+          else ...[
+            // B8-8：封面固定尺寸（宽 DesignTokens.bookWidth、高
+            // bookMinHeight，均 × 字号缩放因子），不再随窗口缩放；
+            // Wrap 响应式换行：窗口变宽/变窄只改变每行本数。
+            // 窄到放不下一本时才把宽压到可用宽（安全阀，桌面窗口
+            // 正常尺寸下不触发），避免极窄窗口溢出。
+            LayoutBuilder(
+              builder: (context, constraints) {
+                final gap = DesignTokens.shelfGridGap * scale;
+                final fixedW = DesignTokens.bookWidth * scale;
+                final bookW = fixedW < constraints.maxWidth
+                    ? fixedW
+                    : constraints.maxWidth;
+                return Wrap(
+                  spacing: gap,
+                  runSpacing: gap,
                   children: [
-                    for (var i = 0; i < books.length; i++) ...[
-                      if (i > 0) SizedBox(height: gap),
-                      _buildBook(books[i]),
-                    ],
+                    for (final book in books) _buildBook(book, width: bookW),
                   ],
                 );
-              }
-              return Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  for (var i = 0; i < books.length; i++) ...[
-                    if (i > 0) SizedBox(width: gap),
-                    Expanded(child: _buildBook(books[i])),
-                  ],
-                ],
-              );
-            },
-          ),
-          SizedBox(height: DesignTokens.shelfPagerMarginTop * scale),
-          _buildShelfPager(page, pages),
+              },
+            ),
+            SizedBox(height: DesignTokens.shelfPagerMarginTop * scale),
+            _buildShelfPager(page, pages),
+          ],
         ],
       ),
     );
@@ -160,7 +169,10 @@ extension _WrongbookShelfBuild on _WrongbookPageState {
     );
   }
 
-  Widget _buildBook(Subject s) {
+  // B8-8：[width] 由书架按固定尺寸传入（DesignTokens.bookWidth ×
+  // 字号缩放因子），封面不再由 Expanded/Column 撑满可用宽——
+  // 单本也不拉满全宽，窗口变化只改变 Wrap 每行本数。
+  Widget _buildBook(Subject s, {required double width}) {
     final scale = qmScaleOf(context);
     final counts = _counts[s.id] ?? (0, 0, 0);
     // 封面“道题”与列表默认视图同口径（SR-P2-38 决定 (a)）：
@@ -199,7 +211,9 @@ extension _WrongbookShelfBuild on _WrongbookPageState {
               : Matrix4.identity(),
           // 固定高（HTML `.nb-book` min-height 376px；内容按同一因子
           // 缩放后恒小于该高，固定高与最小高视觉等价，且让内层
-          // Column + Spacer 有定界高度）。
+          // Column + Spacer 有定界高度）。宽同为固定值（B8-8），
+          // 由调用方按 DesignTokens.bookWidth 传入。
+          width: width,
           height: DesignTokens.bookMinHeight * scale,
           padding: EdgeInsets.fromLTRB(
             DesignTokens.bookPaddingH * scale,

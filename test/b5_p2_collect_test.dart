@@ -1,18 +1,18 @@
 // Batch 5 第五阶段 P2（收集 / 整理 / 详情）回归测试。
 //
-// 覆盖：SR-P2-18（切页检测门控）、SR-P2-19（恢复自动框的手动判断）、
-// SR-P2-20（重框恢复自动框时内框跟随）、SR-P2-21（鼠标左键点空白退出
-// 内框模式）、SR-P2-23（叠加层按 parentBoxId 换算）、SR-P2-24（同区域
-// 多框确定性优先级）、SR-P2-25（无框警告收窄）、SR-P2-26（详情页新建
+// 覆盖：SR-P2-19（恢复自动框的手动判断）、SR-P2-20（重框恢复自动框
+// 只换 1 层框坐标）、SR-P2-25（无框警告收窄）、SR-P2-26（详情页新建
 // 文件夹取消路径）、SR-P2-27（自定义错因与固定枚举同名）、SR-P2-28
 //（newEntityId 防撞）、SR-P2-29（整理页修框切片传学科）、SR-P2-30
 //（_donePages 文案）、SR-P2-31（切页/取消保存草稿 try）、SR-P2-32
-//（firstWhere 兜底，相邻可达路径）、SR-P2-35（队列弹窗日期补零）。
+//（删框后继续画框不崩）、SR-P2-35（队列弹窗日期补零）。
+// B8-2 已删：SR-P2-18（切页检测门控）、SR-P2-21（鼠标左键点空白退出
+// 内框模式）、SR-P2-23（叠加层按 parentBoxId 换算）、SR-P2-24（同区域
+// 多框确定性优先级）——二层模型已移除。
 // 补充转交：SR-P2-3（详情页重框事务失败删新切片）、SR-P2-22（收集页
 // 确认失败清新切片与烘焙图）、SR-P2-36（组织/详情新建文件夹整科同名预检）。
-// SR-P2-32 本身的硬查路径在 UI 上不可达（删框时会清内框模式），
-// 只测相邻可达路径（内框模式删外框后继续画框不崩）；SR-P2-33（done
-// 死分支）与 SR-P2-34（死代码删除）无行为可测，见 B5-P2-COLLECT 报告。
+// SR-P2-33（done 死分支）与 SR-P2-34（死代码删除）无行为可测，
+// 见 B5-P2-COLLECT 报告。
 //
 // 不碰真实演示库：页图是 setUpAll 生成的临时 PNG；DB 一律不用。
 import 'dart:io';
@@ -29,7 +29,6 @@ import 'package:quiz_master2/modules/detail/question_detail_page.dart';
 import 'package:quiz_master2/modules/organize/organize_page.dart';
 import 'package:quiz_master2/services/yolo_onnx_service.dart';
 import 'package:quiz_master2/theme/app_theme.dart';
-import 'package:quiz_master2/widgets/widgets.dart';
 
 late final Directory _testTmp;
 late final String _pagePngPath;
@@ -114,8 +113,6 @@ Future<void> _openEditorDialog(
   required BoxEditorMode mode,
   Map<int, List<QuestionBox>> initialBoxesByPage = const {},
   List<QuestionBox> initialDetected = const [],
-  Map<String, List<QuestionBox>> initialInners = const {},
-  Map<int, List<QuestionBox>> initialStandalone = const {},
   String taskId = 'task-test',
   String? reworkQuestionId,
   List<QuestionBox> readOnlyBoxes = const [],
@@ -145,8 +142,6 @@ Future<void> _openEditorDialog(
                 mode: mode,
                 initialBoxesByPage: initialBoxesByPage,
                 initialDetected: initialDetected,
-                initialInners: initialInners,
-                initialStandalone: initialStandalone,
                 reworkQuestionId: reworkQuestionId,
                 readOnlyBoxes: readOnlyBoxes,
                 yoloService: yoloService ?? _EmptyYolo(),
@@ -167,33 +162,11 @@ Future<void> _openEditorDialog(
   expect(find.textContaining('确认修框'), findsOneWidget);
 }
 
-/// 双击题级框进内框模式（b5_p1_256 的同款做法）。
-Future<void> _doubleTapBox(WidgetTester tester, Finder box) async {
-  await tester.ensureVisible(box);
-  await tester.pumpAndSettle();
-  await tester.tap(box);
-  await tester.pump(const Duration(milliseconds: 50));
-  await tester.tap(box);
-  await tester.pumpAndSettle();
-}
-
 Future<void> _tapConfirm(WidgetTester tester) async {
   // 文案随 1 层框总数变（1 个“去整理”，多个“拆成 N 个”），只按前缀点。
   await tester.tap(find.textContaining('确认修框'));
   await tester.pumpAndSettle();
   expect(find.textContaining('确认修框'), findsNothing);
-}
-
-/// 鼠标左键单击（按下即抬起，不拖动）。
-Future<void> _clickMouseLeft(WidgetTester tester, Offset at) async {
-  final gesture = await tester.startGesture(
-    at,
-    kind: ui.PointerDeviceKind.mouse,
-    buttons: kPrimaryMouseButton,
-  );
-  await tester.pumpAndSettle();
-  await gesture.up();
-  await tester.pumpAndSettle();
 }
 
 /// 鼠标右键拖动（次要按键）——画框用。
@@ -263,180 +236,7 @@ void main() {
     });
   });
 
-  group('SR-P2-23 / SR-P2-24 realRegionRects：按父框换算 + 确定性优先级', () {
-    // SR-P2-23 的旧用例“挂在第 2 个框下的内框按第 2 个框换算”已被
-    // SR2-24 推翻：切片只按首个 1 层框裁出，非首个父框下的内框不参选
-    // （否则画在首个框的切片上位置是错的）。覆盖在
-    // test/b5_p2_services_test.dart 的 SR2-24 组（胜者为首个父框下
-    // 的内框；只有非首个父框下的内框时区域不出结果）。
-    test('SR-P2-23：parentBoxId 为空的老数据行回退到第一个 1 层框', () {
-      final rects = realRegionRects([
-        _box(id: 'b1', x: 0.1, y: 0.1, w: 0.8, h: 0.8),
-        _box(
-          id: 's1',
-          layer: 2,
-          type: 'stem',
-          x: 0.2,
-          y: 0.2,
-          w: 0.4,
-          h: 0.2,
-        ),
-      ]);
-      expect(rects['stem']!.left, closeTo(0.125, 1e-9));
-      expect(rects['stem']!.top, closeTo(0.125, 1e-9));
-    });
-
-    test('SR-P2-24：同区域多框取面积最大者，与列表顺序无关', () {
-      final small = _box(
-        id: 's-small',
-        layer: 2,
-        type: 'stem',
-        x: 0.1,
-        y: 0.1,
-        w: 0.2,
-        h: 0.2,
-        parentBoxId: 'b1',
-      );
-      final big = _box(
-        id: 's-big',
-        layer: 2,
-        type: 'stem',
-        x: 0.5,
-        y: 0.5,
-        w: 0.4,
-        h: 0.4,
-        parentBoxId: 'b1',
-      );
-      final layer1 = _box(id: 'b1', x: 0.0, y: 0.0, w: 1.0, h: 1.0);
-      // 小框在前、大框在后。
-      final forward = realRegionRects([layer1, small, big]);
-      // 大框在前、小框在后：结果不变。
-      final backward = realRegionRects([layer1, big, small]);
-      expect(forward['stem'], const Rect.fromLTWH(0.5, 0.5, 0.4, 0.4));
-      expect(backward['stem'], const Rect.fromLTWH(0.5, 0.5, 0.4, 0.4));
-    });
-
-    test('SR-P2-24：同区域同面积取第一个（旧测试口径不变）', () {
-      final rects = realRegionRects([
-        _box(id: 'b1', x: 0.0, y: 0.0, w: 1.0, h: 1.0),
-        _box(
-          id: 's1',
-          layer: 2,
-          type: 'stem',
-          x: 0.1,
-          y: 0.1,
-          w: 0.2,
-          h: 0.2,
-          parentBoxId: 'b1',
-        ),
-        _box(
-          id: 's2',
-          layer: 2,
-          type: 'stem',
-          x: 0.5,
-          y: 0.5,
-          w: 0.2,
-          h: 0.2,
-          parentBoxId: 'b1',
-        ),
-      ]);
-      expect(rects['stem'], const Rect.fromLTWH(0.1, 0.1, 0.2, 0.2));
-    });
-  });
-
-  group('SR-P2-18 切页自动检测只认 1 层框：只有独立题内框的页不重检测', () {
-    testWidgets('切走再回来，独立题内框还在，且第 1 页没跑过检测', (tester) async {
-      final yolo = _CountingYolo(
-        boxes: [
-          _box(id: 'yolo-1', x: 0.05, y: 0.05, w: 0.9, h: 0.4, origin: 'yolo'),
-        ],
-      );
-      await _openEditorDialog(
-        tester,
-        page: 1,
-        pageCount: 2,
-        mode: BoxEditorMode.draft,
-        initialStandalone: {
-          1: [
-            _box(
-              id: 'orphan-stem',
-              layer: 2,
-              type: 'stem',
-              x: 0.2,
-              y: 0.2,
-              w: 0.3,
-              h: 0.2,
-            ),
-          ],
-        },
-        yoloService: yolo,
-      );
-      // 第 1 页只有独立题内框：打开时不检测，框还在。
-      expect(_editorBoxLabel('stem 题干'), findsOneWidget);
-      expect(yolo.calls, isEmpty);
-      // 切到第 2 页（空页）：检测跑一次。
-      await tester.tap(find.byKey(const Key('editor-thumb-2')));
-      await tester.pumpAndSettle();
-      expect(yolo.calls, [2]);
-      expect(_editorBoxLabel('题级框 1'), findsOneWidget);
-      // 切回第 1 页：门控认出独立题内框，不重检测、不覆盖。
-      await tester.tap(find.byKey(const Key('editor-thumb-1')));
-      await tester.pumpAndSettle();
-      expect(yolo.calls, [2]);
-      expect(_editorBoxLabel('stem 题干'), findsOneWidget);
-      expect(_editorBoxLabel('题级框 1'), findsNothing);
-    });
-  });
-
-  group('SR-P2-19 “恢复自动框”的手动判断只认 1 层框', () {
-    testWidgets('手画的独立题内框会弹确认；点取消框还在，点替换才覆盖', (tester) async {
-      final yolo = _CountingYolo(
-        boxes: [
-          _box(id: 'yolo-1', x: 0.05, y: 0.05, w: 0.9, h: 0.4, origin: 'yolo'),
-        ],
-      );
-      await _openEditorDialog(
-        tester,
-        page: 1,
-        mode: BoxEditorMode.draft,
-        initialStandalone: {
-          1: [
-            _box(
-              id: 'orphan-stem',
-              layer: 2,
-              type: 'stem',
-              x: 0.2,
-              y: 0.2,
-              w: 0.3,
-              h: 0.2,
-            ),
-          ],
-        },
-        yoloService: yolo,
-      );
-      await tester.tap(find.text('恢复自动框'));
-      await tester.pumpAndSettle();
-      expect(find.text('用自动框替换当前页的手动框？'), findsOneWidget);
-      // 取消：独立题内框还在。
-      await tester.tap(
-        find.descendant(
-          of: find.byType(AlertDialog),
-          matching: find.text('取消'),
-        ),
-      );
-      await tester.pumpAndSettle();
-      expect(_editorBoxLabel('stem 题干'), findsOneWidget);
-      expect(yolo.calls, isEmpty);
-      // 替换：检测跑一次，独立题内框被检测框替换。
-      await tester.tap(find.text('恢复自动框'));
-      await tester.pumpAndSettle();
-      await tester.tap(find.text('替换'));
-      await tester.pumpAndSettle();
-      expect(yolo.calls, [1]);
-      expect(_editorBoxLabel('stem 题干'), findsNothing);
-      expect(_editorBoxLabel('题级框 1'), findsOneWidget);
-    });
-
+  group('SR-P2-19 “恢复自动框”的手动判断', () {
     testWidgets('对照：纯 YOLO 的页不弹确认，直接替换', (tester) async {
       final yolo = _CountingYolo(
         boxes: [
@@ -460,7 +260,7 @@ void main() {
     });
 
     testWidgets('SR2-21：手画框在别页时，当前页纯 YOLO 不弹确认', (tester) async {
-      // 第 2 页的手画题内框在跨页的 _inners 里；旧代码查全部页，
+      // 第 2 页的手画题级框在别页；旧代码查全部页的手画框，
       // 在第 1 页点“恢复自动框”也会误弹确认（确认后却只替换当前页）。
       final yolo = _CountingYolo(
         boxes: [
@@ -485,21 +285,6 @@ void main() {
           ],
           2: [_box(id: 'b2', page: 2, x: 0.1, y: 0.1, w: 0.5, h: 0.3)],
         },
-        initialInners: {
-          'b2': [
-            _box(
-              id: 'b2-stem',
-              layer: 2,
-              type: 'stem',
-              page: 2,
-              x: 0.2,
-              y: 0.2,
-              w: 0.3,
-              h: 0.1,
-              parentBoxId: 'b2',
-            ),
-          ],
-        },
         yoloService: yolo,
       );
       await tester.tap(find.text('恢复自动框'));
@@ -512,7 +297,7 @@ void main() {
   });
 
   group('SR-P2-20 重框模式“恢复自动框”只换 1 层框坐标', () {
-    testWidgets('内框按新旧框相对位置跟随，并钳进新框', (tester) async {
+    testWidgets('恢复自动框只换题级框坐标', (tester) async {
       final yolo = _CountingYolo(
         boxes: [
           _box(id: 'yolo-1', x: 0.2, y: 0.2, w: 0.5, h: 0.4, origin: 'yolo'),
@@ -524,21 +309,6 @@ void main() {
         mode: BoxEditorMode.rework,
         initialBoxesByPage: {
           2: [_box(id: 'q1-box', page: 2, x: 0.1, y: 0.1, w: 0.5, h: 0.4)],
-        },
-        initialInners: {
-          'q1-box': [
-            _box(
-              id: 'q1-stem',
-              layer: 2,
-              type: 'stem',
-              page: 2,
-              x: 0.2,
-              y: 0.2,
-              w: 0.2,
-              h: 0.1,
-              parentBoxId: 'q1-box',
-            ),
-          ],
         },
         taskId: 'rework-q1',
         reworkQuestionId: 'q1',
@@ -554,23 +324,10 @@ void main() {
       expect(layer1.y, closeTo(0.2, 1e-9));
       expect(layer1.w, closeTo(0.5, 1e-9));
       expect(layer1.h, closeTo(0.4, 1e-9));
-      // 内框相对位置不变：旧框内 (0.2, 0.25) → 新框内 (0.3, 0.3)。
-      final stem = result.inners['2:q1-box']!.firstWhere(
-        (b) => b.id == 'q1-stem',
-      );
-      expect(stem.x, closeTo(0.3, 1e-9));
-      expect(stem.y, closeTo(0.3, 1e-9));
-      expect(stem.w, closeTo(0.2, 1e-9));
-      expect(stem.h, closeTo(0.1, 1e-9));
-      // 内框仍在新外框内。
-      expect(stem.x, greaterThanOrEqualTo(layer1.x));
-      expect(stem.y, greaterThanOrEqualTo(layer1.y));
-      expect(stem.x + stem.w, lessThanOrEqualTo(layer1.x + layer1.w));
-      expect(stem.y + stem.h, lessThanOrEqualTo(layer1.y + layer1.h));
     });
-    testWidgets('SR2-20：两道 1 层框各挂内框，恢复后两道框各就其位、内框各自跟随', (tester) async {
+    testWidgets('SR2-20：两道 1 层框恢复后各就其位', (tester) async {
       // reworkQuestionId 是题 id（'q1'），永不等于框 id（'b1'/'b2'）：
-      // 旧代码只认第一道框，第二道框原地不动、内框也不跟随。
+      // 旧代码只认第一道框，第二道框原地不动。
       final yolo = _CountingYolo(
         boxes: [
           _box(id: 'yolo-1', x: 0.1, y: 0.1, w: 0.4, h: 0.3, origin: 'yolo'),
@@ -603,34 +360,6 @@ void main() {
             ),
           ],
         },
-        initialInners: {
-          'b1': [
-            _box(
-              id: 's1',
-              layer: 2,
-              type: 'stem',
-              page: 2,
-              x: 0.1,
-              y: 0.1,
-              w: 0.2,
-              h: 0.1,
-              parentBoxId: 'b1',
-            ),
-          ],
-          'b2': [
-            _box(
-              id: 's2',
-              layer: 2,
-              type: 'stem',
-              page: 2,
-              x: 0.6,
-              y: 0.1,
-              w: 0.2,
-              h: 0.1,
-              parentBoxId: 'b2',
-            ),
-          ],
-        },
         taskId: 'rework-q1',
         reworkQuestionId: 'q1',
         yoloService: yolo,
@@ -650,14 +379,6 @@ void main() {
       final second = layer1.firstWhere((b) => b.id == 'b2');
       expect(second.x, closeTo(0.6, 1e-9));
       expect(second.y, closeTo(0.1, 1e-9));
-      // 内框各自跟随自己的父框（相对位置不变：旧框内 (0.1, 0.1) → 新框内
-      // (0.15, 0.15)；(0.6, 0.1) → (0.65, 0.15)），不串到另一道框下。
-      final stem1 = result.inners['2:b1']!.firstWhere((b) => b.id == 's1');
-      expect(stem1.x, closeTo(0.15, 1e-9));
-      expect(stem1.y, closeTo(0.15, 1e-9));
-      final stem2 = result.inners['2:b2']!.firstWhere((b) => b.id == 's2');
-      expect(stem2.x, closeTo(0.65, 1e-9));
-      expect(stem2.y, closeTo(0.15, 1e-9));
     });
   });
 
@@ -737,101 +458,6 @@ void main() {
     });
   });
 
-  group('SR3-14 重框恢复时独立题内框跟随 1 层框移动', () {
-    testWidgets('中心在旧框内的独立内框同向移动，框外的不动', (tester) async {
-      final yolo = _CountingYolo(
-        boxes: [
-          _box(id: 'yolo-1', x: 0.2, y: 0.2, w: 0.5, h: 0.4, origin: 'yolo'),
-        ],
-      );
-      await _openEditorDialog(
-        tester,
-        page: 2,
-        mode: BoxEditorMode.rework,
-        initialBoxesByPage: {
-          2: [_box(id: 'q1-box', page: 2, x: 0.1, y: 0.1, w: 0.5, h: 0.4)],
-        },
-        initialStandalone: {
-          2: [
-            _box(
-              id: 'q1-stem',
-              layer: 2,
-              type: 'stem',
-              page: 2,
-              x: 0.2,
-              y: 0.2,
-              w: 0.2,
-              h: 0.1,
-            ),
-            _box(
-              id: 'q1-outside',
-              layer: 2,
-              type: 'stem',
-              page: 2,
-              x: 0.7,
-              y: 0.7,
-              w: 0.1,
-              h: 0.1,
-            ),
-          ],
-        },
-        taskId: 'rework-q1',
-        reworkQuestionId: 'q1',
-        yoloService: yolo,
-      );
-      await tester.tap(find.text('恢复自动框'));
-      await tester.pumpAndSettle();
-      await _tapConfirm(tester);
-      final result = _capturedResult!;
-      final standalone = result.standaloneInner[2]!;
-      // 框内独立内框相对位置不变：旧框内 (0.2, 0.2) → 新框内 (0.3, 0.3)。
-      final stem = standalone.firstWhere((b) => b.id == 'q1-stem');
-      expect(stem.x, closeTo(0.3, 1e-9));
-      expect(stem.y, closeTo(0.3, 1e-9));
-      expect(stem.w, closeTo(0.2, 1e-9));
-      expect(stem.h, closeTo(0.1, 1e-9));
-      // 中心在旧框外的独立内框保持不动。
-      final outside = standalone.firstWhere((b) => b.id == 'q1-outside');
-      expect(outside.x, closeTo(0.7, 1e-9));
-      expect(outside.y, closeTo(0.7, 1e-9));
-      expect(tester.takeException(), isNull);
-    });
-  });
-
-  group('SR-P2-21 内框模式下鼠标左键点空白处不退出', () {
-    testWidgets('鼠标左键点画布空白处退出内框模式，点框上不退出', (tester) async {
-      await _openEditorDialog(
-        tester,
-        page: 1,
-        mode: BoxEditorMode.draft,
-        initialBoxesByPage: {
-          1: [_box(id: 'b1', x: 0.1, y: 0.1, w: 0.5, h: 0.3)],
-        },
-      );
-      await _doubleTapBox(tester, _editorBoxHandle('题级框 1'));
-      expect(find.textContaining('已进入题级框'), findsOneWidget);
-      // SR2-51：先点一次框体（框中心落在题干/选项内框上），仍在内框模式；
-      // 再点空白处才退出。只测空白退出会漏掉“点哪都退出”的过度修复。
-      final canvasRect = tester.getRect(
-        find.byKey(const Key('box-editor-canvas')),
-      );
-      final boxCenter = Offset(
-        canvasRect.left + canvasRect.width * 0.35,
-        canvasRect.top + canvasRect.height * 0.25,
-      );
-      await _clickMouseLeft(tester, boxCenter);
-      expect(
-        find.textContaining('已进入题级框'),
-        findsOneWidget,
-        reason: '点框上不应退出内框模式',
-      );
-      // 画布中心落在图内空白处（框 y 0.1–0.4，中心 y 是 0.5）。
-      await _clickMouseLeft(tester, canvasRect.center);
-      expect(find.textContaining('已进入题级框'), findsNothing);
-      expect(find.text('确认修框，去整理'), findsOneWidget);
-    });
-  });
-
   group('SR-P2-30 _donePages 只是本页装饰态：文案说清', () {
     testWidgets('打勾按钮与说明文案讲明只是本次打开的标记', (tester) async {
       await _openEditorDialog(
@@ -888,8 +514,8 @@ void main() {
     });
   });
 
-  group('SR-P2-32 firstWhere 兜底（相邻可达路径）', () {
-    testWidgets('内框模式删外框后继续画框不崩', (tester) async {
+  group('SR-P2-32 删框后继续画框不崩', () {
+    testWidgets('删框后右键拖画新框不崩，新框直接成题级框', (tester) async {
       await _openEditorDialog(
         tester,
         page: 1,
@@ -898,12 +524,15 @@ void main() {
           1: [_box(id: 'b1', x: 0.1, y: 0.1, w: 0.5, h: 0.3)],
         },
       );
-      await _doubleTapBox(tester, _editorBoxHandle('题级框 1'));
-      expect(find.textContaining('已进入题级框'), findsOneWidget);
-      // 删选中的外框（内框模式随之退出），再右键拖画一个新框。
+      // 删选中的框，再右键拖画一个新框。
+      final box = _editorBoxHandle('题级框 1');
+      await tester.ensureVisible(box);
+      await tester.pumpAndSettle();
+      await tester.tap(box);
+      await tester.pump(const Duration(milliseconds: 500));
+      await tester.pumpAndSettle();
       await tester.tap(find.text('删除选中框'));
       await tester.pumpAndSettle();
-      expect(find.textContaining('已进入题级框'), findsNothing);
       final canvasRect = tester.getRect(
         find.byKey(const Key('box-editor-canvas')),
       );
@@ -912,9 +541,9 @@ void main() {
         canvasRect.center,
         const Offset(100, 60),
       );
-      expect(find.byKey(const Key('pending-type-menu')), findsOneWidget);
-      await tester.tap(find.text('题级框 · 默认'));
-      await tester.pumpAndSettle();
+      // 新框直接落下成题级框，不弹选类型菜单。
+      expect(find.text('这个框是？'), findsNothing);
+      expect(_editorBoxLabel('题级框 1'), findsOneWidget);
       await _tapConfirm(tester);
       final result = _capturedResult!;
       expect(result.boxesByPage[1]!.where((b) => b.layer == 1), hasLength(1));
@@ -923,7 +552,7 @@ void main() {
 
   // ---------- 收集页 SR-P2-25 ----------
   group('SR-P2-25 无框警告只对打开过或已有草稿框的任务显示', () {
-    testWidgets('新导入任务不警告；修框中任务警告；只有 2 层草稿的待框选任务也警告',
+    testWidgets('新导入任务不警告；修框中任务警告；只有旧草稿框的待框选任务也警告',
         (tester) async {
       final repo = _CollectFakeRepo([
         CollectTask(
@@ -948,8 +577,8 @@ void main() {
           status: CollectStatus.needBox,
         ),
       ]);
-      // 只有 2 层草稿框：按旧口径（只认 1 层）不算“已有草稿”，
-      // 警告范围会收窄过头——SR-P2-25 要求任意层草稿都算。
+      // 只有旧草稿框（历史层级行）：按“任意已存框都算”口径，
+      // 仍算“已有草稿”，警告范围不收窄。
       repo.draftBoxes['t-draft'] = [
         _box(
           id: 'draft-stem',
@@ -1562,8 +1191,6 @@ class _CollectFakeRepo extends QuestionRepository {
   Future<void> saveDraftBoxes({
     required String taskId,
     required Map<int, List<QuestionBox>> boxesByPage,
-    required Map<String, List<QuestionBox>> inners,
-    required Map<int, List<QuestionBox>> standaloneInner,
     required Map<int, int> rotations,
   }) async {}
 
@@ -1575,8 +1202,6 @@ class _CollectFakeRepo extends QuestionRepository {
     required Map<String, List<QuestionBox>> boxesByQuestionId,
     CollectTask? retainedTask,
     Map<int, List<QuestionBox>> retainedBoxesByPage = const {},
-    Map<String, List<QuestionBox>> retainedInners = const {},
-    Map<int, List<QuestionBox>> retainedStandaloneInner = const {},
   }) async {
     confirmSplitCalled = true;
     confirmedQuestions = List.of(questions);
@@ -1591,8 +1216,6 @@ class _CollectFakeRepo extends QuestionRepository {
     tasks.addAll(splitTasks);
     draftBoxes[originalTask.id] = [
       for (final e in retainedBoxesByPage.entries) ...e.value,
-      for (final e in retainedInners.entries) ...e.value,
-      for (final e in retainedStandaloneInner.entries) ...e.value,
     ];
   }
 

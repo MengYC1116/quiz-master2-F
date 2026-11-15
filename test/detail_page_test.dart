@@ -15,8 +15,10 @@ import 'package:quiz_master2/data/repository.dart';
 import 'package:quiz_master2/models/models.dart';
 import 'package:quiz_master2/modules/detail/question_detail_page.dart';
 import 'package:quiz_master2/theme/app_theme.dart';
+import 'package:quiz_master2/widgets/widgets.dart';
 
 late final Directory _testTmp;
+
 /// B3-P01：页图放进 testDataDirectory，pageImagePath 用相对路径
 ///（resolveDataPath 已拒绝绝对路径）。
 late final String _pagePngRel;
@@ -46,34 +48,33 @@ Question dtq(
   int? sliceWidth,
   int? sliceHeight,
   int? sourcePage,
-}) =>
-    Question(
-      id: id,
-      title: title,
-      subjectId: subjectId,
-      folderIds: folderIds,
-      examId: examId,
-      knowledgePointIds: knowledgePointIds,
-      errorTypes: errorTypes,
-      tags: tags,
-      answer: answer,
-      explanation: explanation,
-      notes: notes,
-      createdAt: createdAt ?? DateTime.now().subtract(const Duration(days: 2)),
-      isOrganized: isOrganized,
-      isArchived: isArchived,
-      isFavorite: isFavorite,
-      reviewJoined: reviewJoined,
-      sliceKind: sliceKind,
-      sliceText: sliceText,
-      sourcePath: sourcePath,
-      sourceKind: sourcePath == null ? null : 'image',
-      pageImagePath: pageImagePath,
-      slicePath: slicePath,
-      sliceWidth: sliceWidth,
-      sliceHeight: sliceHeight,
-      sourcePage: sourcePage,
-    );
+}) => Question(
+  id: id,
+  title: title,
+  subjectId: subjectId,
+  folderIds: folderIds,
+  examId: examId,
+  knowledgePointIds: knowledgePointIds,
+  errorTypes: errorTypes,
+  tags: tags,
+  answer: answer,
+  explanation: explanation,
+  notes: notes,
+  createdAt: createdAt ?? DateTime.now().subtract(const Duration(days: 2)),
+  isOrganized: isOrganized,
+  isArchived: isArchived,
+  isFavorite: isFavorite,
+  reviewJoined: reviewJoined,
+  sliceKind: sliceKind,
+  sliceText: sliceText,
+  sourcePath: sourcePath,
+  sourceKind: sourcePath == null ? null : 'image',
+  pageImagePath: pageImagePath,
+  slicePath: slicePath,
+  sliceWidth: sliceWidth,
+  sliceHeight: sliceHeight,
+  sourcePage: sourcePage,
+);
 
 class FakeDetailRepo extends QuestionRepository {
   FakeDetailRepo({
@@ -85,15 +86,15 @@ class FakeDetailRepo extends QuestionRepository {
     List<CauseRecord> records = const [],
     List<({String result, DateTime reviewedAt})> history = const [],
     List<Subject>? subjectsValue,
-  })  : questions = List.of(questions),
-        folderList = List.of(folderList),
-        examList = List.of(examList),
-        kpList = List.of(kpList),
-        tagList = List.of(tagList),
-        records = List.of(records),
-        history = List.of(history),
-        subjectsValue = subjectsValue ?? Subject.all,
-        super(AppDatabase.instance);
+  }) : questions = List.of(questions),
+       folderList = List.of(folderList),
+       examList = List.of(examList),
+       kpList = List.of(kpList),
+       tagList = List.of(tagList),
+       records = List.of(records),
+       history = List.of(history),
+       subjectsValue = subjectsValue ?? Subject.all,
+       super(AppDatabase.instance);
 
   List<Question> questions;
   List<Folder> folderList;
@@ -120,14 +121,13 @@ class FakeDetailRepo extends QuestionRepository {
 
   @override
   Future<List<({String result, DateTime reviewedAt})>> reviewHistory(
-          String questionId) async =>
-      List.of(history);
+    String questionId,
+  ) async => List.of(history);
 
   @override
-  Future<List<Folder>> folders({String? subjectId}) async =>
-      subjectId == null
-          ? List.of(folderList)
-          : folderList.where((f) => f.subjectId == subjectId).toList();
+  Future<List<Folder>> folders({String? subjectId}) async => subjectId == null
+      ? List.of(folderList)
+      : folderList.where((f) => f.subjectId == subjectId).toList();
 
   @override
   Future<List<Exam>> exams() async => List.of(examList);
@@ -197,13 +197,9 @@ class FakeDetailRepo extends QuestionRepository {
     String subjectId,
     String name, {
     String? excludeId,
-  }) async =>
-      folderList.any(
-        (f) =>
-            f.subjectId == subjectId &&
-            f.name == name &&
-            f.id != excludeId,
-      );
+  }) async => folderList.any(
+    (f) => f.subjectId == subjectId && f.name == name && f.id != excludeId,
+  );
 
   @override
   Future<void> addKnowledgePoint(KnowledgePoint kp) async {
@@ -227,7 +223,9 @@ class FakeDetailRepo extends QuestionRepository {
 
   @override
   Future<void> replaceQuestionBoxes(
-      String questionId, List<QuestionBox> boxes) async {
+    String questionId,
+    List<QuestionBox> boxes,
+  ) async {
     replacedBoxes[questionId] = List.of(boxes);
   }
 
@@ -254,11 +252,13 @@ class FakeDetailRepo extends QuestionRepository {
     replacedBoxes[questionId] = List.of(boxes);
     final q = questions.where((x) => x.id == questionId).firstOrNull;
     if (q != null) {
-      await save(q.copyWith(
-        slicePath: slicePath,
-        sliceWidth: sliceWidth,
-        sliceHeight: sliceHeight,
-      ));
+      await save(
+        q.copyWith(
+          slicePath: slicePath,
+          sliceWidth: sliceWidth,
+          sliceHeight: sliceHeight,
+        ),
+      );
     }
   }
 }
@@ -267,63 +267,82 @@ FakeDetailRepo detailRepo() {
   final now = DateTime.now();
   return FakeDetailRepo(
     questions: [
-      dtq('q1', '函数极限',
-          folderIds: const ['f1'],
-          examId: 'e1',
-          knowledgePointIds: const ['k1'],
-          errorTypes: const ['概念不清'],
-          tags: const ['易错', '常考'],
-          answer: '1',
-          explanation: 'lim(x→0) sin3x/x = 3。',
-          createdAt: now.subtract(const Duration(days: 2)),
-          isFavorite: true,
-          reviewJoined: true),
-      dtq('q2', '导数应用综合',
-          sliceKind: 'function',
-          sliceText: '题：设 f(x) = x³ − 3x² + 2。',
-          folderIds: const ['f2'],
-          examId: 'e1',
-          knowledgePointIds: const ['k2'],
-          errorTypes: const ['方法不会'],
-          tags: const ['易错'],
-          createdAt: now.subtract(const Duration(days: 5))),
-      dtq('q3', '定积分阴影面积',
-          sliceKind: 'chart',
-          sliceText: '题：求阴影面积',
-          folderIds: const ['f1'],
-          errorTypes: const ['计算错误'],
-          tags: const ['需重做'],
-          answer: '见解析',
-          explanation: '阴影面积 = ∫(1 − x²)dx。',
-          createdAt: now.subtract(const Duration(days: 3)),
-          isOrganized: false),
-      dtq('q5', '无错因题',
-          sliceText: '题：还没有填错误类型',
-          folderIds: const ['f1'],
-          createdAt: now.subtract(const Duration(days: 1))),
+      dtq(
+        'q1',
+        '函数极限',
+        folderIds: const ['f1'],
+        examId: 'e1',
+        knowledgePointIds: const ['k1'],
+        errorTypes: const ['概念不清'],
+        tags: const ['易错', '常考'],
+        answer: '1',
+        explanation: 'lim(x→0) sin3x/x = 3。',
+        createdAt: now.subtract(const Duration(days: 2)),
+        isFavorite: true,
+        reviewJoined: true,
+      ),
+      dtq(
+        'q2',
+        '导数应用综合',
+        sliceKind: 'function',
+        sliceText: '题：设 f(x) = x³ − 3x² + 2。',
+        folderIds: const ['f2'],
+        examId: 'e1',
+        knowledgePointIds: const ['k2'],
+        errorTypes: const ['方法不会'],
+        tags: const ['易错'],
+        createdAt: now.subtract(const Duration(days: 5)),
+      ),
+      dtq(
+        'q3',
+        '定积分阴影面积',
+        sliceKind: 'chart',
+        sliceText: '题：求阴影面积',
+        folderIds: const ['f1'],
+        errorTypes: const ['计算错误'],
+        tags: const ['需重做'],
+        answer: '见解析',
+        explanation: '阴影面积 = ∫(1 − x²)dx。',
+        createdAt: now.subtract(const Duration(days: 3)),
+        isOrganized: false,
+      ),
+      dtq(
+        'q5',
+        '无错因题',
+        sliceText: '题：还没有填错误类型',
+        folderIds: const ['f1'],
+        createdAt: now.subtract(const Duration(days: 1)),
+      ),
     ],
     folderList: const [
       Folder(id: 'f1', name: '试卷', subjectId: 'math', sortOrder: 0),
       Folder(id: 'f2', name: '平时作业', subjectId: 'math', sortOrder: 10),
     ],
-    examList: [
-      Exam(id: 'e1', name: '高等数学期末试卷', date: DateTime(2026, 11, 10)),
-    ],
+    examList: [Exam(id: 'e1', name: '高等数学期末试卷', date: DateTime(2026, 11, 10))],
     kpList: const [
       KnowledgePoint(
-          id: 'k1', subjectId: 'math', chapter: '第一章 函数与极限', name: '函数极限'),
+        id: 'k1',
+        subjectId: 'math',
+        chapter: '第一章 函数与极限',
+        name: '函数极限',
+      ),
       KnowledgePoint(
-          id: 'k2', subjectId: 'math', chapter: '第二章 导数', name: '导数概念'),
+        id: 'k2',
+        subjectId: 'math',
+        chapter: '第二章 导数',
+        name: '导数概念',
+      ),
     ],
     tagList: const ['易错', '常考', '需重做'],
     records: [
       CauseRecord(
-          questionId: 'q1',
-          cause: '概念不清',
-          subjectId: 'math',
-          status: CauseStatus.inProgress,
-          solvedCount: 1,
-          joinedAt: now.subtract(const Duration(days: 2))),
+        questionId: 'q1',
+        cause: '概念不清',
+        subjectId: 'math',
+        status: CauseStatus.inProgress,
+        solvedCount: 1,
+        joinedAt: now.subtract(const Duration(days: 2)),
+      ),
     ],
     history: [
       (result: 'solved', reviewedAt: now.subtract(const Duration(days: 1))),
@@ -350,8 +369,9 @@ Future<void> pumpDetail(
     MaterialApp(
       theme: AppTheme.light(scale: scale),
       darkTheme: AppTheme.dark(scale: scale),
-      themeMode:
-          brightness == Brightness.dark ? ThemeMode.dark : ThemeMode.light,
+      themeMode: brightness == Brightness.dark
+          ? ThemeMode.dark
+          : ThemeMode.light,
       home: Builder(
         builder: (context) {
           final data = MediaQuery.of(context);
@@ -382,10 +402,14 @@ Future<void> pumpDetail(
 Future<void> openSection(WidgetTester tester, String title) async {
   await tapText(tester, title);
 }
+
 /// 点按前先滚到可见（详情页整页滚动，折叠头 / 底部操作行常在 720 高视口外，
 /// 直接 tap 会落空——见 R6 截图坐标教训同款问题）。
-Future<void> tapText(WidgetTester tester, String text,
-    {bool first = false}) async {
+Future<void> tapText(
+  WidgetTester tester,
+  String text, {
+  bool first = false,
+}) async {
   final finder = first ? find.text(text).first : find.text(text);
   await tester.ensureVisible(finder);
   await tester.pumpAndSettle();
@@ -397,8 +421,10 @@ Future<void> tapText(WidgetTester tester, String text,
 /// 测试里独立实现，避免用被测函数断言被测函数）。
 ({int width, int height}) pngSize(List<int> bytes) {
   int be32(int at) =>
-      (bytes[at] << 24) | (bytes[at + 1] << 16) |
-      (bytes[at + 2] << 8) | bytes[at + 3];
+      (bytes[at] << 24) |
+      (bytes[at + 1] << 16) |
+      (bytes[at + 2] << 8) |
+      bytes[at + 3];
   return (width: be32(16), height: be32(20));
 }
 
@@ -424,6 +450,20 @@ void main() {
     final file = File('${pageDir.path}/page.png');
     await file.writeAsBytes(png!.buffer.asUint8List());
     _pagePngRel = 'imports/rework-task/page.png';
+    // P1-2：高图（200×800）真实切片，用于验证大图仍限高 460。
+    final tallRecorder = ui.PictureRecorder();
+    final tallCanvas = ui.Canvas(tallRecorder);
+    tallCanvas.drawRect(
+      const ui.Rect.fromLTWH(0, 0, 200, 800),
+      ui.Paint()..color = const ui.Color(0xFFFFFFFF),
+    );
+    final tallImg = await tallRecorder.endRecording().toImage(200, 800);
+    final tallPng = await tallImg.toByteData(format: ui.ImageByteFormat.png);
+    tallImg.dispose();
+    final slicesDir = Directory('${_testTmp.path}/slices');
+    await slicesDir.create(recursive: true);
+    await File('${slicesDir.path}/tall.png')
+        .writeAsBytes(tallPng!.buffer.asUint8List());
     // 重框确认时重裁的切片写盘走临时数据目录。
     AppDatabase.testDataDirectory = _testTmp.path;
   });
@@ -460,9 +500,7 @@ void main() {
       await pumpDetail(tester);
       expect(find.text('概念不清'), findsOneWidget); // 仅副标题可见，复习记录折叠
       expect(find.text('解决中'), findsOneWidget); // 副标题里的错因状态 pill
-      expect(
-          find.text('（只显示，不能改——导入时选定，详情和整理台都不能改）'),
-          findsOneWidget);
+      expect(find.text('（只显示，不能改——导入时选定，详情和整理台都不能改）'), findsOneWidget);
     });
   });
 
@@ -494,8 +532,9 @@ void main() {
       await pumpDetail(tester);
       await tapText(tester, '编辑');
       expect(
-          find.text('正在编辑：答案和解析在下方「题目信息」的编辑表单里改，改完点「保存」才生效。'),
-          findsOneWidget);
+        find.text('正在编辑：答案和解析在下方「题目信息」的编辑表单里改，改完点「保存」才生效。'),
+        findsOneWidget,
+      );
       expect(find.text('看答案'), findsNothing);
     });
   });
@@ -531,15 +570,12 @@ void main() {
       await openSection(tester, '复习记录');
       expect(find.text('取消加入复习'), findsOneWidget);
       expect(find.text('已加入复习 · 还有 1 个错因未解决'), findsOneWidget);
-      expect(find.text('取消加入不会删解决记录，再加入时接着上次解决，不用从头来'),
-          findsOneWidget);
+      expect(find.text('取消加入不会删解决记录，再加入时接着上次解决，不用从头来'), findsOneWidget);
       expect(find.text('错因状态'), findsOneWidget);
       expect(find.text('概念不清'), findsNWidgets(2)); // 副标题 + 复习记录行
       expect(find.text('解决中'), findsNWidgets(2)); // 副标题 pill + 复习记录 pill
       expect(find.text('解决次数 1'), findsOneWidget);
-      expect(
-          find.textContaining('共解决错因 2 次 · 自查「已解决」1 次'),
-          findsOneWidget);
+      expect(find.textContaining('共解决错因 2 次 · 自查「已解决」1 次'), findsOneWidget);
       expect(find.text('解决记录（全部）'), findsOneWidget);
       expect(find.textContaining('已解决'), findsWidgets);
       expect(find.textContaining('未解决'), findsWidgets);
@@ -626,8 +662,7 @@ void main() {
       await tapText(tester, '编辑');
       expect(find.text('学科（不能改）'), findsOneWidget);
       expect(find.text('试卷（来源）'), findsOneWidget);
-      expect(find.text('文件夹（归类 · 可多选，题只存一份 · 只列本题科目自己的文件夹）'),
-          findsOneWidget);
+      expect(find.text('文件夹（归类 · 可多选，题只存一份 · 只列本题科目自己的文件夹）'), findsOneWidget);
       expect(find.text('知识点（可多选、不限个数）'), findsOneWidget);
       expect(find.text('错误类型（固定枚举多选 + 自定义）'), findsOneWidget);
       expect(find.text('标签（不限个数）'), findsOneWidget);
@@ -654,9 +689,7 @@ void main() {
       await pumpDetail(tester, repo: repo);
       await tapText(tester, '归档');
       expect(find.text('恢复（取消归档）'), findsOneWidget);
-      expect(
-          find.textContaining('这道题已归档：不在错题本列表里显示。'),
-          findsOneWidget);
+      expect(find.textContaining('这道题已归档：不在错题本列表里显示。'), findsOneWidget);
       expect(repo.saved.last.isArchived, isTrue);
     });
 
@@ -665,9 +698,7 @@ void main() {
       await pumpDetail(tester, repo: repo);
       await tapText(tester, '删除');
       expect(find.textContaining('删了就没了，确定吗？'), findsOneWidget);
-      expect(
-          find.textContaining('整题图与全部补充内容一并删除，不可恢复。'),
-          findsOneWidget);
+      expect(find.textContaining('整题图与全部补充内容一并删除，不可恢复。'), findsOneWidget);
       await tapText(tester, '取消', first: true);
       expect(find.text('数学 · 极限题｜函数极限'), findsOneWidget);
       expect(repo.deletedIds, isEmpty);
@@ -700,14 +731,13 @@ void main() {
   group('空态与错误态', () {
     testWidgets('无文字内容题显示空内容横幅', (tester) async {
       await pumpDetail(tester, questionId: 'q2');
-      expect(
-          find.textContaining('这道题还没有补充任何文字内容'),
-          findsOneWidget);
+      expect(find.textContaining('这道题还没有补充任何文字内容'), findsOneWidget);
     });
 
     testWidgets('imageFailed 显示学科图标 + 题型占位 + 错误横幅', (tester) async {
       await pumpDetail(tester, imageFailed: true);
-      expect(find.text('数'), findsOneWidget);
+      // B8-7：标题旁的学科图标章也是「数」，与占位里的学科图标共 2 个。
+      expect(find.text('数'), findsNWidgets(2));
       expect(find.text('数学 · 极限题'), findsOneWidget);
       expect(find.textContaining('这道题的图片读取失败'), findsOneWidget);
       expect(find.byType(Icon), findsNothing);
@@ -715,8 +745,7 @@ void main() {
   });
 
   group('重新框选 §1.5.1', () {
-    testWidgets('有页图的题：入口可用，同页他题只读，确认后切片重裁、框替换',
-        (tester) async {
+    testWidgets('有页图的题：入口可用，同页他题只读，确认后切片重裁、框替换', (tester) async {
       final repo = detailRepo();
       repo.questions[0] = repo.questions[0].copyWith(
         pageImagePath: _pagePngRel,
@@ -736,18 +765,6 @@ void main() {
           h: 0.4,
           page: 1,
           questionId: 'q1',
-        ),
-        QuestionBox(
-          id: 'q1-stem',
-          layer: 2,
-          type: 'stem',
-          x: 0.1,
-          y: 0.1,
-          w: 0.4,
-          h: 0.2,
-          page: 1,
-          questionId: 'q1',
-          parentBoxId: 'q1-box',
         ),
         QuestionBox(
           id: 'q2-box',
@@ -782,7 +799,7 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.textContaining('修框 ·'), findsNothing);
       expect(find.text('已重新框选，切片已更新'), findsOneWidget);
-      // 只替换了目标题的框（1 个题级框 + 它的题内框）。
+      // 只替换了目标题的题级框。
       final replaced = repo.replacedBoxes['q1'];
       expect(replaced, isNotNull);
       expect(replaced!.where((b) => b.layer == 1).length, 1);
@@ -794,16 +811,14 @@ void main() {
       expect(sliceAbs != null && File(sliceAbs).existsSync(), isTrue);
     });
 
-    testWidgets('SR2-3：事务失败时旧切片字节完好、框与题不动（有旧切片）',
-        (tester) async {
+    testWidgets('SR2-3：事务失败时旧切片字节完好、框与题不动（有旧切片）', (tester) async {
       // 旧切片事先存在：用真实页图字节当旧切片内容，失败后逐字节比对。
       // B5 的 P2-3 回归测试夹具里 slices/q1.png 事先不存在，没覆盖
       // 此场景——旧写法此时已把旧切片覆盖又删掉。
       final slicesDir = Directory('${_testTmp.path}/slices');
       slicesDir.createSync(recursive: true);
       final oldSliceFile = File('${slicesDir.path}/q1.png');
-      final oldBytes =
-          File('${_testTmp.path}/$_pagePngRel').readAsBytesSync();
+      final oldBytes = File('${_testTmp.path}/$_pagePngRel').readAsBytesSync();
       oldSliceFile.writeAsBytesSync(oldBytes);
       final repo = detailRepo();
       repo.questions[0] = repo.questions[0].copyWith(
@@ -866,10 +881,7 @@ void main() {
       expect(oldSliceFile.readAsBytesSync(), equals(healedBytes));
       // 临时切片已清干净，不留 .tmp-*.png。
       expect(
-        slicesDir
-            .listSync()
-            .where((f) => f.path.contains('.tmp-'))
-            .isEmpty,
+        slicesDir.listSync().where((f) => f.path.contains('.tmp-')).isEmpty,
         isTrue,
       );
       // 框与题都没动：事务桩抛错前不记框、不存题。
@@ -877,8 +889,7 @@ void main() {
       expect(repo.saved.where((q) => q.id == 'q1'), isEmpty);
     });
 
-    testWidgets('SR-P1-8：源页 ≥2 的题重框无缩略图条，确认后框不丢失',
-        (tester) async {
+    testWidgets('SR-P1-8：源页 ≥2 的题重框无缩略图条，确认后框不丢失', (tester) async {
       final repo = detailRepo();
       repo.questions[0] = repo.questions[0].copyWith(
         pageImagePath: _pagePngRel,
@@ -939,15 +950,13 @@ void main() {
   });
 
   group('SR3-10/SR3-11 重框崩溃窗口与读图失败', () {
-    testWidgets('SR3-10：打开详情页时切片实际尺寸与库里不符，按当前框重裁自愈',
-        (tester) async {
+    testWidgets('SR3-10：打开详情页时切片实际尺寸与库里不符，按当前框重裁自愈', (tester) async {
       // 旧切片事先存在：用真实页图字节（560×700）当旧切片内容，
       // 库里记的却是 200×100——模拟事务提交后、rename 前被杀的残留。
       final slicesDir = Directory('${_testTmp.path}/slices');
       slicesDir.createSync(recursive: true);
       final sliceFile = File('${slicesDir.path}/q1.png');
-      final oldBytes =
-          File('${_testTmp.path}/$_pagePngRel').readAsBytesSync();
+      final oldBytes = File('${_testTmp.path}/$_pagePngRel').readAsBytesSync();
       sliceFile.writeAsBytesSync(oldBytes);
       final repo = detailRepo();
       repo.questions[0] = repo.questions[0].copyWith(
@@ -993,8 +1002,7 @@ void main() {
       expect(tester.takeException(), isNull);
     });
 
-    testWidgets('SR3-11：重框确认时页图读不出来/裁不出来，给提示、不抛异常',
-        (tester) async {
+    testWidgets('SR3-11：重框确认时页图读不出来/裁不出来，给提示、不抛异常', (tester) async {
       // 本用例单独的页图文件：先是有效页图（编辑器能打开），
       // 编辑器打开后再写坏——_reworkBoxes 确认时重新读盘即读到坏字节。
       // 切片文件先清掉（同目录的 SR2-3 用例会留下 slices/q1.png），
@@ -1056,10 +1064,7 @@ void main() {
       });
       await tester.pumpAndSettle();
       expect(find.textContaining('修框 ·'), findsNothing);
-      expect(
-        find.text('重新框选失败：页图读不出来/切片裁不出来，请重试'),
-        findsOneWidget,
-      );
+      expect(find.text('重新框选失败：页图读不出来/切片裁不出来，请重试'), findsOneWidget);
       expect(repo.replaceCalled, isFalse);
       expect(tester.takeException(), isNull);
     });
@@ -1088,6 +1093,81 @@ void main() {
           expect(find.textContaining('正在编辑这道题'), findsOneWidget);
           expect(tester.takeException(), isNull);
         }
+      }
+    });
+  });
+
+  group('B8-7 重新设计', () {
+    testWidgets('默认 A：信息条显示文件夹 + 标签 + 已加入复习', (tester) async {
+      await pumpDetail(tester);
+      // 折叠态：信息条是唯一出现这些文本的地方（题目信息段未展开）。
+      expect(find.text('试卷'), findsOneWidget);
+      expect(find.text('#易错'), findsOneWidget);
+      expect(find.text('#常考'), findsOneWidget);
+      expect(find.text('已加入复习'), findsOneWidget);
+    });
+
+    testWidgets('默认 A：三段头带摘要', (tester) async {
+      await pumpDetail(tester);
+      expect(find.text('已填答案与解析'), findsOneWidget);
+      expect(find.text('文件夹 1 · 知识点 1 · 标签 2'), findsOneWidget);
+      expect(find.text('已加入复习 · 待解决 1 个错因'), findsOneWidget);
+    });
+
+    testWidgets('默认 A：整题图限高 460', (tester) async {
+      await pumpDetail(tester);
+      final slice = tester.widget<QuestionSlice>(find.byType(QuestionSlice));
+      expect(slice.maxHeight, 460);
+    });
+
+    testWidgets('P1-2：小图（占位）按内容高度走，不撑满 460', (tester) async {
+      await pumpDetail(tester);
+      // 默认 q1 无真实切片，走 sliceText 占位：文字 1 行 + 48 高简图 +
+      // 上下 padding，内容高约 96。改前 Center 撑满 460 盒子（审计 P1-2）。
+      final size = tester.getSize(find.byType(QuestionSlice));
+      expect(size.height, lessThan(200));
+      expect(size.height, greaterThan(50));
+    });
+
+    testWidgets('P1-2：大图（200×800 真实切片）仍限高 460', (tester) async {
+      final repo = detailRepo();
+      repo.questions[0] = dtq(
+        'q1',
+        '函数极限',
+        folderIds: const ['f1'],
+        slicePath: 'slices/tall.png',
+      );
+      await pumpDetail(tester, repo: repo, orderIds: const ['q1']);
+      // QuestionSlice 用 Image.file + cacheWidth（ResizeImage）：目标尺寸
+      // 解码是原生异步，fake async 下只等真实时间不够，要像 SR2-3 那样
+      // 在 runAsync 里边 pump 边等，图载入后 IntrinsicHeight 才量到固有高。
+      await tester.runAsync(() async {
+        for (var i = 0; i < 20; i++) {
+          await tester.pump();
+          await Future<void>.delayed(const Duration(milliseconds: 200));
+        }
+        await tester.pumpAndSettle();
+      });
+      await tester.pumpAndSettle();
+      // 200×800 按内容宽 1160 等比放大后固有高 4640，盒子应卡在 460。
+      final size = tester.getSize(find.byType(QuestionSlice));
+      expect(size.height, 460);
+    });
+
+    testWidgets('默认 A：编辑态不显示信息条', (tester) async {
+      await pumpDetail(tester);
+      await tapText(tester, '编辑');
+      // 编辑表单里文件夹以芯片出现，但只读信息条的「已加入复习」pill 不应再出现。
+      expect(find.text('已加入复习'), findsNothing);
+    });
+
+    testWidgets('A 紧凑：亮/深 × 1.30 无溢出', (tester) async {
+      for (final brightness in [Brightness.light, Brightness.dark]) {
+        await pumpDetail(tester, brightness: brightness, scale: 1.3);
+        await openSection(tester, '答案解析');
+        await openSection(tester, '题目信息');
+        await openSection(tester, '复习记录');
+        expect(tester.takeException(), isNull);
       }
     });
   });

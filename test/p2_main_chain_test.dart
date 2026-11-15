@@ -204,7 +204,7 @@ void main() {
   });
 
   group('D §1.5 三种作用域', () {
-    test('草稿作用域：按任务+页替换，含 2 层子框与按页旋转往返', () async {
+    test('草稿作用域：按任务+页替换与按页旋转往返', () async {
       final db = await openMemoryDb();
       await AppDatabase.instance.upsertCollectTask(CollectTask(
         id: 'task-1',
@@ -213,31 +213,16 @@ void main() {
         subjectId: 'math',
       ));
       final first = box(id: 'b1', collectTaskId: 'task-1');
-      final inner = box(
-        id: 'b1-stem',
-        layer: 2,
-        type: 'stem',
-        x: 0.12,
-        y: 0.12,
-        w: 0.2,
-        h: 0.1,
-        collectTaskId: 'task-1',
-        parentBoxId: 'b1',
-      );
       await AppDatabase.saveDraftBoxesInto(
         db,
         taskId: 'task-1',
         boxesByPage: {
           1: [first],
         },
-        inners: {
-          '1:b1': [inner],
-        },
-        standaloneInner: const {},
         rotations: const {1: 90},
       );
       var back = await AppDatabase.boxesForTaskPageFrom(db, 'task-1', 1);
-      expect(back.map((b) => b.id), containsAll(['b1', 'b1-stem']));
+      expect(back.map((b) => b.id), ['b1']);
       // 重检测按页替换：再存一次，本页旧框被删干净，不追加。
       final second = box(id: 'b2', x: 0.2, collectTaskId: 'task-1');
       await AppDatabase.saveDraftBoxesInto(
@@ -246,8 +231,6 @@ void main() {
         boxesByPage: {
           1: [second],
         },
-        inners: const {},
-        standaloneInner: const {},
         rotations: const {1: 0},
       );
       back = await AppDatabase.boxesForTaskPageFrom(db, 'task-1', 1);
@@ -308,8 +291,6 @@ void main() {
         boxesByPage: {
           1: [box(id: 'draft-1', collectTaskId: 'task-orig')],
         },
-        inners: const {},
-        standaloneInner: const {},
         rotations: const {},
       );
       final questions = [

@@ -491,15 +491,11 @@ class AppDatabase {
     Database db, {
     required String taskId,
     required Map<int, List<QuestionBox>> boxesByPage,
-    required Map<String, List<QuestionBox>> inners,
-    required Map<int, List<QuestionBox>> standaloneInner,
     required Map<int, int> rotations,
   }) => saveDraftBoxesIntoImpl(
     db,
     taskId: taskId,
     boxesByPage: boxesByPage,
-    inners: inners,
-    standaloneInner: standaloneInner,
     rotations: rotations,
   );
 
@@ -533,8 +529,6 @@ class AppDatabase {
     required Map<String, List<QuestionBox>> boxesByQuestionId,
     CollectTask? retainedTask,
     Map<int, List<QuestionBox>> retainedBoxesByPage = const {},
-    Map<String, List<QuestionBox>> retainedInners = const {},
-    Map<int, List<QuestionBox>> retainedStandaloneInner = const {},
   }) => confirmSplitIntoImpl(
     db,
     originalTask: originalTask,
@@ -543,8 +537,6 @@ class AppDatabase {
     boxesByQuestionId: boxesByQuestionId,
     retainedTask: retainedTask,
     retainedBoxesByPage: retainedBoxesByPage,
-    retainedInners: retainedInners,
-    retainedStandaloneInner: retainedStandaloneInner,
   );
   // -- db_settings.dart --
 

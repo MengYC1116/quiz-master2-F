@@ -15,7 +15,7 @@
 // - SR-P2-74：切片 cacheWidth 乘 devicePixelRatio。
 // - SR-P2-75：放大对话框的缩放因子不再在 build 里赋值（点 ＋/－ 仍可用）。
 // Batch 6（SELF-REVIEW-2）补项：SR2-13（＋/－ 读 % 徽标断言）、
-// SR2-24（realRegionRects 只取切片来源父框下的内框）、SR2-35（QmChip
+// SR2-35（QmChip
 // 双区点内边距与间隙）、SR2-36（subjectLabelColor 深色雾化）、
 // SR2-54（SR-P2-59 拒绝侧）、SR2-55（SR-P2-66 期望写字面色 +
 // 第二输入色）、SR2-63（dpr=1.0 对照与封顶）、SR2-77（SR-P2-62
@@ -738,88 +738,6 @@ void main() {
       final afterMinus = badgePercent();
       expect(afterMinus, lessThan(afterPlus));
       expect(find.text('整题图 · 放大查看'), findsOneWidget);
-    });
-  });
-
-  group('SR2-24 realRegionRects：只取切片来源父框下的内框', () {
-    test('两父框同区域内框，胜者应为切片来源父框下的那一个', () {
-      // 首个 1 层框 b1 (0,0,0.5,0.5) 是切片来源；b2 (0.5,0.5,0.5,0.5)
-      // 是第二个 1 层框。b1 下的 stem 换算后面积 0.04，b2 下的 stem
-      // 换算后面积 0.16——旧实现跨父框比面积会选 b2 下的（画在 b1
-      // 的切片上位置是错的）；修后只取 b1 下的内框参选。
-      final rects = realRegionRects([
-        const QuestionBox(
-            id: 'b1',
-            layer: 1,
-            type: 'question',
-            x: 0.0,
-            y: 0.0,
-            w: 0.5,
-            h: 0.5),
-        const QuestionBox(
-            id: 'b2',
-            layer: 1,
-            type: 'question',
-            x: 0.5,
-            y: 0.5,
-            w: 0.5,
-            h: 0.5),
-        const QuestionBox(
-            id: 's1',
-            layer: 2,
-            type: 'stem',
-            x: 0.1,
-            y: 0.1,
-            w: 0.1,
-            h: 0.1,
-            parentBoxId: 'b1'),
-        const QuestionBox(
-            id: 's2',
-            layer: 2,
-            type: 'stem',
-            x: 0.55,
-            y: 0.55,
-            w: 0.2,
-            h: 0.2,
-            parentBoxId: 'b2'),
-      ]);
-      final stem = rects['stem'];
-      expect(stem, isNotNull);
-      expect(stem!.left, closeTo(0.2, 1e-9));
-      expect(stem.top, closeTo(0.2, 1e-9));
-      expect(stem.width, closeTo(0.2, 1e-9));
-      expect(stem.height, closeTo(0.2, 1e-9));
-    });
-
-    test('只有非首个父框下的内框：该区域不出结果（不回退错位框）', () {
-      final rects = realRegionRects([
-        const QuestionBox(
-            id: 'b1',
-            layer: 1,
-            type: 'question',
-            x: 0.0,
-            y: 0.0,
-            w: 0.5,
-            h: 0.5),
-        const QuestionBox(
-            id: 'b2',
-            layer: 1,
-            type: 'question',
-            x: 0.5,
-            y: 0.5,
-            w: 0.5,
-            h: 0.5),
-        const QuestionBox(
-            id: 's2',
-            layer: 2,
-            type: 'stem',
-            x: 0.55,
-            y: 0.55,
-            w: 0.2,
-            h: 0.2,
-            parentBoxId: 'b2'),
-      ]);
-      expect(rects, isEmpty);
     });
   });
 

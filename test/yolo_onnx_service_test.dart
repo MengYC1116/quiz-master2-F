@@ -322,62 +322,6 @@ void main() {
     });
   });
 
-  group('groupInners（第 2 层框按中心点归属）', () {
-    test('中心点在整题框内：归属该题；落不到任何题里：进 orphans', () {
-      final boxes = [
-        const QuestionBox(
-          id: 'q1',
-          layer: 1,
-          type: 'question',
-          x: 0.1,
-          y: 0.1,
-          w: 0.8,
-          h: 0.3,
-        ),
-        const QuestionBox(
-          id: 'q2',
-          layer: 1,
-          type: 'question',
-          x: 0.1,
-          y: 0.5,
-          w: 0.8,
-          h: 0.3,
-        ),
-        const QuestionBox(
-          id: 'q1-stem-1',
-          layer: 2,
-          type: 'stem',
-          x: 0.2,
-          y: 0.15,
-          w: 0.5,
-          h: 0.1,
-        ),
-        const QuestionBox(
-          id: 'q2-option-1',
-          layer: 2,
-          type: 'option',
-          x: 0.2,
-          y: 0.6,
-          w: 0.2,
-          h: 0.1,
-        ),
-        const QuestionBox(
-          id: 'orphan',
-          layer: 2,
-          type: 'figure',
-          x: 0.2,
-          y: 0.85,
-          w: 0.2,
-          h: 0.1,
-        ),
-      ];
-      final grouped = YoloOnnxService.groupInners(boxes);
-      expect(grouped.inners['q1']!.map((b) => b.id), ['q1-stem-1']);
-      expect(grouped.inners['q2']!.map((b) => b.id), ['q2-option-1']);
-      expect(grouped.orphans.map((b) => b.id), ['orphan']);
-    });
-  });
-
   group('真实模型冒烟（assets 里的真模型 + 临时合成图）', () {
     test('加载成功时 hasRealModel 为真，推理不抛错；原生库缺失时跳过', () async {
       TestWidgetsFlutterBinding.ensureInitialized();

@@ -83,10 +83,12 @@ class _QuizMasterAppState extends State<QuizMasterApp> {
   bool _showBackupError = false;
 
   /// 导航学科速览的学科列表：库里的 subjects 表（入库顺序，B2）。
-  /// 读不到 / 为空时回退预设三科；`_refreshBadges` 由 badgeVersion
-  /// 监听驱动，新增学科会 bump badgeVersion（`upsertSubject`），
-  /// 所以加科后导航自动同步，无需单独刷新通道。
-  List<Subject> _navSubjects = Subject.all;
+  /// B8-1：空表是合法状态（用户删光学科后表就是空的），不再回退
+  /// 预设三科——`_refreshBadges` 直接用库里的结果，空就是空；
+  /// 初始值同样是空（首帧不先摆三科幽灵行，等 `_refreshBadges`
+  /// 读库后填）。`_refreshBadges` 由 badgeVersion 监听驱动，
+  /// 删学科会 bump badgeVersion（`deleteSubject`），导航即时同步。
+  List<Subject> _navSubjects = const [];
 
   @override
   void initState() {
@@ -236,7 +238,10 @@ class _QuizMasterAppState extends State<QuizMasterApp> {
       _organizeBadge = pendingOrganize;
       _navRev = rev;
       _navPending = pending;
-      _navSubjects = subjects.isEmpty ? Subject.all : subjects;
+      // B8-1：空表不回退 Subject.all——新库建表时已预置三科
+      //（db_schema `_seed`），表空只发生在用户删光学科后，
+      // 此时速览必须为空，摆预设三科就是截图里的幽灵行。
+      _navSubjects = subjects;
     });
   }
 
@@ -385,7 +390,11 @@ class _QuizMasterAppState extends State<QuizMasterApp> {
   Widget _buildPage() {
     switch (_route) {
       case '/collect':
-        return CollectPage(repo: repo, onOpenOrganize: () => _go('/organize'));
+        return CollectPage(
+          repo: repo,
+          onOpenOrganize: () => _go('/organize'),
+          onGoSubjects: () => _go('/subjects'),
+        );
       case '/organize':
         return OrganizePage(
           repo: repo,
@@ -401,6 +410,7 @@ class _QuizMasterAppState extends State<QuizMasterApp> {
           filterCause: _reportCauseArg,
           filterKnowledgePointId: _reportKpArg,
           onOpenHome: () => _go('/home'),
+          onGoSubjects: () => _go('/subjects'),
           onOpenDetail: (q, ids) => _openDetail(q, ids, sourceLabel: '错题本'),
           onGoReview: ({String? subjectId}) =>
               _goReview(subjectId: subjectId),

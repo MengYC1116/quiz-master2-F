@@ -85,9 +85,11 @@ flutter build windows --release   # Win11 上必须构建成功
 - 第三批后的关键行为（2026-11-14，细节见 `docs/代码地图.md` 第 3–4 节
   与 `docs/ui-replication/B3-*.md`）：路径删除安全（`resolveDataPath`
   默认拒绝对路径）、删除确认全项目统一模态 `AlertDialog`、
-  P1-1 二层切片暂缓（真实题隐藏 region 开关、只留整题切片）、
-  P1-2 多页 PDF 未框页保留在任务里（确认前弹框提示页数）、
-  整理页叠加层有真实 Layer-2 框用真实框坐标、无框回退示意框。
+  P1-2 多页 PDF 未框页保留在任务里（确认前弹框提示页数）。
+  二层模型已随第八批第 2 项移除（B8-2，2026-11-15，见
+  `docs/ui-replication/B8-2-LAYER2-REMOVAL.md`）：内框模式、题干/选项/
+  配图类型选择、二层切片与叠加层全部删除，只留 `intraEnabled` 开关 +
+  `_detectIntra` 占位与 `question_boxes` 表两处重接入点。
 
 ## 工作方式
 

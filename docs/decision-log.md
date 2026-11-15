@@ -254,3 +254,19 @@ docs/ui-replication/YOLO-INTEGRATION-REPORT.md）。
 `detectPage` 按传入路径找文件，找得到跑真实推理，找不到返回空框
 + `usedFallback: true`。PDF 由 `pdf_render_service.dart` 按页渲染，
 见 YOLO 报告。
+
+## D-24 — 二层模型整个移除（2026-11-15，Meng 定）
+
+没有第二层模型了：修框编辑器里的内框模式横幅、“题级框 4”标签、
+“这个框是？”里的 stem / option / figure 类型选择全部删除；画框直接
+默认题级框，不再选二层模型的框。B3/P1-1 曾特意保留的手动二层框与
+整理页真实二层坐标叠加层一并去掉（推翻 D-23 里“第 2 层的数据模型与
+界面不动”与“没有模型时用户仍可手动框 stem / option / figure”）。
+
+只留未来接入必需的三处接口：① `lib/services/yolo_onnx_service.dart`
+里的 `intraEnabled = false` 开关 + `_detectIntra` 占位；
+② `question_boxes` 表（含 `layer` 列，Schema 一动不动，库里旧的
+layer-2 行保留不动，编辑器读到时直接丢弃）；③ `docs/代码地图.md`
+第 8 节一处重接入点说明。其他所有二层引用（UI 文案、类型选择、
+内框编辑逻辑、叠加层渲染、相关测试、文档段落）全部删掉，详见
+`docs/ui-replication/B8-2-LAYER2-REMOVAL.md`。

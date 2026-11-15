@@ -233,12 +233,15 @@ void main() {
       expect(tester.takeException(), isNull);
     });
 
-    testWidgets('未传 subjects 时沿用预设三科', (tester) async {
+    testWidgets('B8-1：未传 subjects 时不显示任何学科行（不再回退预设三科）',
+        (tester) async {
       await pumpB2Nav(tester);
       for (final name in ['数学', '英语', '政治']) {
-        expect(find.text(name), findsOneWidget);
+        expect(find.text(name), findsNothing);
       }
-      expect(find.text('待整理 0 · 待复习 0'), findsNWidgets(3));
+      expect(find.text('待整理 0 · 待复习 0'), findsNothing);
+      // 标题仍在，只是下面没有行。
+      expect(find.text('学科速览'), findsOneWidget);
     });
   });
 

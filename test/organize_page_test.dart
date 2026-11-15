@@ -377,24 +377,14 @@ void main() {
       expect(find.textContaining('数学 · 导数综合'), findsOneWidget);
     });
 
-    testWidgets('修框切片默认展开：每框一张卡（整题 + 题干 + 选项）',
-        (tester) async {
+    testWidgets('修框切片默认展开：只有整题一张卡', (tester) async {
       await pumpOrganize(tester);
       expect(find.text('修框切片'), findsOneWidget);
       expect(find.text('整题框切片'), findsOneWidget);
-      expect(find.text('题干框切片'), findsOneWidget);
-      expect(find.text('选项框切片'), findsOneWidget);
+      expect(find.text('题干框切片'), findsNothing);
+      expect(find.text('选项框切片'), findsNothing);
       expect(find.text('配图框切片'), findsNothing);
       expect(find.text('切片图'), findsWidgets);
-    });
-
-    testWidgets('高亮开关：关掉 stem，复选框值变 false', (tester) async {
-      await pumpOrganize(tester);
-      final toggles = find.byType(Checkbox);
-      expect(toggles, findsNWidgets(2));
-      await tester.tap(toggles.first);
-      await tester.pumpAndSettle();
-      expect(tester.widget<Checkbox>(toggles.first).value, isFalse);
     });
 
     testWidgets('放大浮层：点图弹出、纸面居中完整可见、带比例 pill，关闭回到整理台',
@@ -817,7 +807,7 @@ void main() {
     });
   });
 
-  group('P1-1 二层切片降级', () {
+  group('P1-1 二层切片已移除（B8-2）', () {
     testWidgets('真实题（空 sliceText）：不显示 region 开关，只留整题切片', (
       tester,
     ) async {
@@ -844,17 +834,6 @@ void main() {
       expect(find.text('选项框切片'), findsNothing);
       expect(find.text('配图框切片'), findsNothing);
       expect(tester.takeException(), isNull);
-    });
-
-    testWidgets('演示题（有 sliceText）：region 开关仍在（对照）', (tester) async {
-      await pumpOrganize(tester);
-      // 开关行在：复选框 2 个（stem + option）+ 说明文字；叠加层也画
-      // 同名区域标签，所以 'stem 题干' / 'option 选项' 各出现 2 次
-      //（开关标签 + 叠加层标签）。
-      expect(find.byType(Checkbox), findsNWidgets(2));
-      expect(find.text('区域仅作辅助定位，整题图始终是主体'), findsOneWidget);
-      expect(find.text('stem 题干'), findsNWidgets(2));
-      expect(find.text('option 选项'), findsNWidgets(2));
     });
   });
 

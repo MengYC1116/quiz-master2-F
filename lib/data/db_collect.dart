@@ -221,7 +221,7 @@ Future<List<QuestionBox>> boxesForTaskPageFromImpl(
 
 /// §1.5.1：读同一页图上全部已确认题的框（重框同页上下文）：
 /// 分组键是 `questions.page_image_path`（确认后 collect_task_id
-/// 已是 NULL，不能靠任务分组）。返回该页各题的全部框（1 层 + 2 层）。
+/// 已是 NULL，不能靠任务分组）。返回该页各题的全部框。
 Future<List<QuestionBox>> boxesForPageImageFromImpl(
   Database db,
   String pageImagePath,
@@ -238,9 +238,8 @@ Future<List<QuestionBox>> boxesForPageImageFromImpl(
   if (qs.isEmpty) return const [];
   final ids = qs.map((r) => r['id'] as String).toList();
   final where = 'question_id IN (${List.filled(ids.length, '?').join(',')})';
-  // SR2-27：与 boxesForTask 对齐，按页、id 排序——realRegionRects
-  // 的“同面积取第一个”依赖输入顺序，无 ORDER BY 时 SQLite 不保证
-  // 行序（通常是 rowid 序，但不保证）。
+  // SR2-27：与 boxesForTask 对齐，按页、id 排序——无 ORDER BY 时
+  // SQLite 不保证行序（通常是 rowid 序，但不保证）。
   final rows = await db.query(
     'question_boxes',
     where: where,
@@ -251,26 +250,23 @@ Future<List<QuestionBox>> boxesForPageImageFromImpl(
 }
 
 /// §1.5：草稿保存（可单测版）：一次事务。
-/// - 按页替换：删该任务该页的草稿框，再插入当前页内存里的框
-///   （1 层 + 2 层，2 层框的 parent_box_id 指向所属 1 层框）；
+/// - 按页替换：删该任务该页的草稿框，再插入当前页内存里的框；
 /// - `rotations` 是草稿的全部按页旋转角度，一起写进
 ///   `collect_tasks.page_rotations`（§1.6.1）。
 /// 只动该任务该页的草稿框，已确认的题框一律不动。
 /// SR-P2-14：两条调用方契约——(a) 旋转角写回时任务行必须存在：
 /// `update` 影响 0 行（任务已被删）时抛错回滚，不再让框照常写进
 /// 去（成孤儿草稿）而旋转角静默丢失；(b) 被清空的页必须以空列表
-/// 键传进来（`boxesByPage: {p: []}`）：只有 `boxesByPage` /
-/// `standaloneInner` 里出现的页才会被删旧框重插，缺页键的旧草稿
-/// 会被原样保留——调用方不要用“缺键”表示“该页已清空”。
+/// 键传进来（`boxesByPage: {p: []}`）：只有 `boxesByPage`
+/// 里出现的页才会被删旧框重插，缺页键的旧草稿会被原样保留——
+/// 调用方不要用“缺键”表示“该页已清空”。
 Future<void> saveDraftBoxesIntoImpl(
   Database db, {
   required String taskId,
   required Map<int, List<QuestionBox>> boxesByPage,
-  required Map<String, List<QuestionBox>> inners,
-  required Map<int, List<QuestionBox>> standaloneInner,
   required Map<int, int> rotations,
 }) async {
-  final pages = <int>{...boxesByPage.keys, ...standaloneInner.keys};
+  final pages = <int>{...boxesByPage.keys};
   await db.transaction((txn) async {
     for (final page in pages) {
       await txn.delete(
@@ -278,12 +274,7 @@ Future<void> saveDraftBoxesIntoImpl(
         where: 'collect_task_id = ? AND page = ? AND question_id IS NULL',
         whereArgs: [taskId, page],
       );
-      final flat = <QuestionBox>[
-        ...?boxesByPage[page],
-        for (final b in (boxesByPage[page] ?? const <QuestionBox>[]))
-          ...?inners['$page:${b.id}'],
-        ...?standaloneInner[page],
-      ];
+      final flat = <QuestionBox>[...?boxesByPage[page]];
       for (final b in flat) {
         final row = _questionBoxToRow(
           b.copyWith(
@@ -389,8 +380,8 @@ Future<void> _replaceBoxesTxn(
   }
 }
 
-/// 删某题的全部框（事务内）：先删子框（parent_box_id 指向该题
-/// 1 层框的行），再删该题的框。
+/// 删某题的全部框（事务内）：先删 parent_box_id 指向该题框的
+/// 旧行，再删该题的框。
 Future<void> _deleteBoxesForQuestionTxn(
   Transaction txn,
   String questionId,
@@ -428,8 +419,7 @@ Future<void> _deleteBoxesForQuestionTxn(
 ///
 /// SR-P1-2：有未框页时，保留任务的重建也在**同一事务**里——
 /// [retainedTask]（与原任务同 id）+ 它的未框页草稿
-/// （[retainedBoxesByPage] / [retainedInners] / [retainedStandaloneInner]，
-/// 与 [BoxEditorResult] 的三处口径一致）随原任务的删除一起提交，
+/// （[retainedBoxesByPage]）随原任务的删除一起提交，
 /// 不再由调用方在事务外两步重建。事务外重建有崩溃窗口：
 /// confirmSplit 提交成功、重建还没发生时进程被杀，原任务行已删、
 /// 草稿框已删，保留任务不存在——未框页连同页图引用一起丢。
@@ -444,8 +434,6 @@ Future<void> confirmSplitIntoImpl(
   required Map<String, List<QuestionBox>> boxesByQuestionId,
   CollectTask? retainedTask,
   Map<int, List<QuestionBox>> retainedBoxesByPage = const {},
-  Map<String, List<QuestionBox>> retainedInners = const {},
-  Map<int, List<QuestionBox>> retainedStandaloneInner = const {},
 }) async {
   await db.transaction((txn) async {
     // SR-P2-10：重复确认防呆——同 id 的题 / 拆分任务已存在时显式
@@ -534,10 +522,7 @@ Future<void> confirmSplitIntoImpl(
       whereArgs: [originalTask.id],
     );
     // SR-P1-2：同一事务内重建保留任务 + 写回未框页草稿。
-    // 保留任务与原任务同 id（先删后插）；草稿按页展平——
-    // 未框页本就没有 1 层框，inners 不能只按 boxesByPage 里的
-    // 1 层父框取（见 saveDraftBoxesIntoImpl 的取法），这里按
-    // inners 键里的页码全量取，未框页的 2 层草稿也不丢。
+    // 保留任务与原任务同 id（先删后插）。
     if (retainedTask != null) {
       final retainedValues = _collectTaskToRow(retainedTask);
       await txn.insert('collect_tasks', {
@@ -546,18 +531,9 @@ Future<void> confirmSplitIntoImpl(
             retainedTask.createdAt?.millisecondsSinceEpoch ??
             DateTime.now().millisecondsSinceEpoch,
       }, conflictAlgorithm: ConflictAlgorithm.replace);
-      final retainedPages = <int>{
-        ...retainedBoxesByPage.keys,
-        ...retainedStandaloneInner.keys,
-        for (final k in retainedInners.keys) _innerKeyPage(k),
-      };
+      final retainedPages = <int>{...retainedBoxesByPage.keys};
       for (final page in retainedPages) {
-        final flat = <QuestionBox>[
-          ...?retainedBoxesByPage[page],
-          for (final e in retainedInners.entries)
-            if (_innerKeyPage(e.key) == page) ...e.value,
-          ...?retainedStandaloneInner[page],
-        ];
+        final flat = <QuestionBox>[...?retainedBoxesByPage[page]];
         // SR3-9：与题回填共用同一个事务级 seenBoxIds（见上）：跨页
         // 重复 id 也跳过（保留第一个），且不与已回填的题框撞 id。
         for (final b in flat) {
@@ -579,10 +555,6 @@ Future<void> confirmSplitIntoImpl(
     }
   });
 }
-
-/// 题内框键 `'<页>:<题级框id>'` 里的页码；解析不出按 -1 算
-/// （不匹配任何页，见 collect_page.dart 的同款 `_innerPage`）。
-int _innerKeyPage(String key) => int.tryParse(key.split(':').first) ?? -1;
 
 extension AppDatabaseCollect on AppDatabase {
   Future<List<CollectTask>> allCollectTasks() async =>
@@ -626,8 +598,6 @@ extension AppDatabaseCollect on AppDatabase {
   Future<void> saveDraftBoxes({
     required String taskId,
     required Map<int, List<QuestionBox>> boxesByPage,
-    required Map<String, List<QuestionBox>> inners,
-    required Map<int, List<QuestionBox>> standaloneInner,
     required Map<int, int> rotations,
   }) async {
     final d = await db;
@@ -635,8 +605,6 @@ extension AppDatabaseCollect on AppDatabase {
       d,
       taskId: taskId,
       boxesByPage: boxesByPage,
-      inners: inners,
-      standaloneInner: standaloneInner,
       rotations: rotations,
     );
   }
@@ -689,8 +657,6 @@ extension AppDatabaseCollect on AppDatabase {
     required Map<String, List<QuestionBox>> boxesByQuestionId,
     CollectTask? retainedTask,
     Map<int, List<QuestionBox>> retainedBoxesByPage = const {},
-    Map<String, List<QuestionBox>> retainedInners = const {},
-    Map<int, List<QuestionBox>> retainedStandaloneInner = const {},
   }) async {
     final d = await db;
     await AppDatabase.confirmSplitInto(
@@ -701,8 +667,6 @@ extension AppDatabaseCollect on AppDatabase {
       boxesByQuestionId: boxesByQuestionId,
       retainedTask: retainedTask,
       retainedBoxesByPage: retainedBoxesByPage,
-      retainedInners: retainedInners,
-      retainedStandaloneInner: retainedStandaloneInner,
     );
     bumpBadgeVersion();
   }

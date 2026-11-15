@@ -38,9 +38,6 @@ void main() {
     expect(p.paper, const Color(0xFFFFFDF4));
     expect(p.paperInk, const Color(0xFF22251F));
     expect(p.paperLine, const Color(0xFFE3D9BE));
-    expect(p.stem, const Color(0xFF2E7CF6));
-    expect(p.option, const Color(0xFF00A884));
-    expect(p.figure, const Color(0xFFF97316));
     expect(p.math, const Color(0xFF2E7CF6));
     expect(p.eng, const Color(0xFF00A884));
     expect(p.pol, const Color(0xFFEF4444));
@@ -72,9 +69,6 @@ void main() {
     expect(p.paper, const Color(0xFFD8DCE2));
     expect(p.paperInk, const Color(0xFF232830));
     expect(p.paperLine, const Color(0xFFAEB6C2));
-    expect(p.stem, const Color(0xFF7FA8D0));
-    expect(p.option, const Color(0xFF8FB8A4));
-    expect(p.figure, const Color(0xFFA79BC0));
     expect(p.math, const Color(0xFF87A9CC));
     expect(p.eng, const Color(0xFF8AB5A3));
     expect(p.pol, const Color(0xFFC295A5));

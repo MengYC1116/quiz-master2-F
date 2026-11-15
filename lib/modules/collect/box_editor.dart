@@ -11,7 +11,6 @@ import 'dart:ui' as ui;
 
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 
 import '../../data/database.dart';
 import '../../models/models.dart';
@@ -19,7 +18,6 @@ import '../../services/page_image_pipeline.dart';
 import '../../services/yolo_onnx_service.dart';
 import '../../theme/design_tokens.dart';
 import '../../widgets/uikit.dart';
-import 'collect_widgets.dart';
 
 /// 修框编辑器模式（§1.5）：
 /// - draft：收集任务的草稿修框（关闭/取消/切页时保存草稿）；
@@ -27,19 +25,15 @@ import 'collect_widgets.dart';
 ///   整页旋转禁用，同页其他题的框只读展示）。
 enum BoxEditorMode { draft, rework }
 
-/// 修框编辑器的确认结果：各页题级框 + 题内框 + 独立题内框 +
-/// 各页旋转角度（确认时按角度烘焙页图，见 §1.6）。
+/// 修框编辑器的确认结果：各页题级框 + 各页旋转角度
+///（确认时按角度烘焙页图，见 §1.6）。画框直接就是题级框。
 class BoxEditorResult {
   const BoxEditorResult({
     required this.boxesByPage,
-    required this.inners,
-    required this.standaloneInner,
     required this.rotationsByPage,
   });
 
   final Map<int, List<QuestionBox>> boxesByPage;
-  final Map<String, List<QuestionBox>> inners;
-  final Map<int, List<QuestionBox>> standaloneInner;
   final Map<int, int> rotationsByPage;
 }
 
@@ -59,8 +53,6 @@ Future<BoxEditorResult?> showBoxEditorDialog({
   required BoxEditorMode mode,
   Map<int, List<QuestionBox>> initialBoxesByPage = const {},
   List<QuestionBox> initialDetected = const [],
-  Map<String, List<QuestionBox>> initialInners = const {},
-  Map<int, List<QuestionBox>> initialStandalone = const {},
   Map<int, int> initialRotations = const {},
   String? reworkQuestionId,
   List<QuestionBox> readOnlyBoxes = const [],
@@ -82,8 +74,6 @@ Future<BoxEditorResult?> showBoxEditorDialog({
       mode: mode,
       initialBoxesByPage: initialBoxesByPage,
       initialDetected: initialDetected,
-      initialInners: initialInners,
-      initialStandalone: initialStandalone,
       initialRotations: initialRotations,
       reworkQuestionId: reworkQuestionId,
       readOnlyBoxes: readOnlyBoxes,
@@ -94,116 +84,11 @@ Future<BoxEditorResult?> showBoxEditorDialog({
   );
 }
 
-/// SR-P1-5 / SR-P1-6：修框编辑器入口归一化——两处调用方传进来的
-/// 2 层框口径不统一，在这里一次收敛成编辑器内部口径，两处调用方
-/// 都不用改：
-///
-/// - 编辑器内部约定：`_inners` 的键一律是 `'<页>:<题级框id>'`
-///   （见 `_innersOf` / `_enterInnerMode` / `_ingestDetected`），
-///   1 层框一律在 `boxesByPage`；
-/// - 详情页重框（SR-P1-5）按裸 `parentBoxId` 分组传 `initialInners`：
-///   裸键按父框所在页补成 `'<页>:<父框id>'`，父框找不到时回退当前页；
-///   已带页前缀的键原样保留；
-/// - 收集页“继续修框”（SR-P1-6）把 1 层 + 2 层草稿扁平混进
-///   `initialBoxesByPage`：2 层框按 `parentBoxId` 拆出——有同页
-///   1 层父框的进 `inners`，无主的进 `standaloneInner`；
-/// - 同一框 id 在两处出现时只留一份（先到为准），不凭空多框；
-/// - 归入 `inners` 的框，其 `parentBoxId` 与键里的父框 id 对齐
-///   （入库后 `parent_box_id` 才与键一致，下次读回不再漂移）。
-///
-/// 返回的三个 map 均为可变副本，调用方传入的 map 不动。
-({
-  Map<int, List<QuestionBox>> boxesByPage,
-  Map<String, List<QuestionBox>> inners,
-  Map<int, List<QuestionBox>> standaloneInner,
-})
-normalizeBoxEditorInputs({
-  required Map<int, List<QuestionBox>> boxesByPage,
-  required Map<String, List<QuestionBox>> inners,
-  required Map<int, List<QuestionBox>> standaloneInner,
-  required int currentPage,
-}) {
-  final normalizedBoxes = <int, List<QuestionBox>>{};
-  final normalizedInners = <String, List<QuestionBox>>{};
-  final normalizedStandalone = <int, List<QuestionBox>>{};
-  // 已收过的 2 层框 id（inners 与 standalone 之间也不重复出现）。
-  final seenInnerIds = <String>{};
-
-  void addInner(String key, QuestionBox box) {
-    if (!seenInnerIds.add(box.id)) return;
-    final parentId = key.split(':').last;
-    final aligned = box.parentBoxId == parentId
-        ? box
-        : box.copyWith(parentBoxId: parentId);
-    (normalizedInners[key] ??= []).add(aligned);
-  }
-
-  void addStandalone(int page, QuestionBox box) {
-    if (!seenInnerIds.add(box.id)) return;
-    (normalizedStandalone[page] ??= []).add(box);
-  }
-
-  // 1. 1 层框原样保留；混进来的 2 层框按 parentBoxId 归属拆出。
-  for (final e in boxesByPage.entries) {
-    final page = e.key;
-    final layer1Ids = e.value
-        .where((b) => b.layer == 1)
-        .map((b) => b.id)
-        .toSet();
-    normalizedBoxes[page] = e.value.where((b) => b.layer == 1).toList();
-    for (final b in e.value.where((b) => b.layer != 1)) {
-      final parent = b.parentBoxId;
-      if (parent != null && layer1Ids.contains(parent)) {
-        addInner('$page:$parent', b);
-      } else {
-        addStandalone(page, b);
-      }
-    }
-  }
-
-  // 2. initialInners 的键归一化：裸键按父框所在页补前缀。
-  for (final e in inners.entries) {
-    final key = e.key;
-    final pagePart = key.split(':').first;
-    String normalizedKey;
-    if (key.contains(':') && int.tryParse(pagePart) != null) {
-      normalizedKey = key;
-    } else {
-      int? ownerPage;
-      for (final pe in normalizedBoxes.entries) {
-        if (pe.value.any((b) => b.id == key)) {
-          ownerPage = pe.key;
-          break;
-        }
-      }
-      normalizedKey = '${ownerPage ?? currentPage}:$key';
-    }
-    for (final b in e.value) {
-      addInner(normalizedKey, b);
-    }
-  }
-
-  // 3. 独立题内框原样保留（与第 1 步拆出的无主框去重合并）。
-  for (final e in standaloneInner.entries) {
-    for (final b in e.value) {
-      addStandalone(e.key, b);
-    }
-  }
-
-  return (
-    boxesByPage: normalizedBoxes,
-    inners: normalizedInners,
-    standaloneInner: normalizedStandalone,
-  );
-}
-
-/// 修框编辑器（覆盖式浮层）：页缩略图条 + 画布；两级框（题级框 +
-/// stem / option / figure 内框）。
+/// 修框编辑器（覆盖式浮层）：页缩略图条 + 画布；只有题级框。
 ///
 /// HTML 来源：`frameEditorHTML` / `frameHandlesHTML`（交互原型实读）。
-/// - 空白处拖动直接画新框，画完在框旁菜单选类型（默认题级框）；
-/// - 双击题级框进内框模式（题级框冻结，只改题内框；点画布空白处或
-///   按 Esc 退出）；框只能拖动/缩放，**不旋转**（单框旋转已禁用，
+/// - 空白处拖动直接画新框，松开即生成题级框；
+/// - 框只能拖动/缩放，**不旋转**（单框旋转已禁用，
 ///   见 §6 第 10 条：圆柄已去掉，`QuestionBox` 无 rotation 字段）；
 /// - 「旋转整页」每次 90°（框的百分比坐标跟着转；旋转按页保存，
 ///   确认时烘焙进页图）；重框模式下禁用整页旋转；
@@ -229,8 +114,6 @@ class _BoxEditorDialog extends StatefulWidget {
     required this.mode,
     this.initialBoxesByPage = const {},
     this.initialDetected = const [],
-    this.initialInners = const {},
-    this.initialStandalone = const {},
     this.initialRotations = const {},
     this.reworkQuestionId,
     this.readOnlyBoxes = const [],
@@ -264,10 +147,6 @@ class _BoxEditorDialog extends StatefulWidget {
   /// 本页刚检测出的框（草稿模式、无草稿时才传）。
   final List<QuestionBox> initialDetected;
 
-  /// 题内框（键 `'<页>:<题级框id>'`）与独立题内框（重框模式传目标题的）。
-  final Map<String, List<QuestionBox>> initialInners;
-  final Map<int, List<QuestionBox>> initialStandalone;
-
   /// 草稿已存的按页旋转角度（页 → 角度，§1.6.1）。
   final Map<int, int> initialRotations;
 
@@ -291,8 +170,6 @@ class _BoxEditorDialog extends StatefulWidget {
 
 class _BoxEditorDialogState extends State<_BoxEditorDialog> {
   late Map<int, List<QuestionBox>> _boxesByPage;
-  late Map<String, List<QuestionBox>> _inners;
-  late Map<int, List<QuestionBox>> _standaloneInner;
 
   /// 按页旋转角度（页 → 角度，§1.6/§1.6.1：不用一个全局值，
   /// 多页/重框不会串页）。
@@ -300,6 +177,10 @@ class _BoxEditorDialogState extends State<_BoxEditorDialog> {
   late int _currentPage;
   final _donePages = <int>{};
   double _scale = 1.0;
+  // B8-345（第 4 项）：滚轮缩放以指针为准，需要在缩放后按新尺寸
+  // 调滚动偏移——画布的两个滚动视图各挂一个 controller 供缩放时读/写偏移。
+  final _hScrollController = ScrollController();
+  final _vScrollController = ScrollController();
   bool _scrollLocked = false;
   bool _suppressDraw = false;
 
@@ -317,34 +198,13 @@ class _BoxEditorDialogState extends State<_BoxEditorDialog> {
   bool _pageImageFailed = false;
 
   String? _selectedId;
-  String? _selectedInnerId;
-  String? _innerModeBoxId;
   QuestionBox? _pendingBox;
   Offset? _pendingStart;
-  bool _pendingInner = false;
   bool _helpOpen = false;
-  final _focusNode = FocusNode();
   final _canvasKey = GlobalKey();
 
   List<QuestionBox> get _boxes =>
       _boxesByPage[_currentPage] ?? const <QuestionBox>[];
-
-  List<QuestionBox> _innersOf(String boxId) =>
-      _inners['$_currentPage:$boxId'] ?? const <QuestionBox>[];
-
-  /// 按 id 找当前页的 1 层框；找不到返回 null（SR-P2-32：旧代码多处
-  /// `firstWhere` 无 `orElse`，外框已被删、内框模式却未退出时抛
-  /// StateError 崩溃；正常路径删框时会清内框模式，到不了这里，
-  /// 兜底只为不崩）。
-  QuestionBox? _layer1ById(String id) {
-    for (final b in _boxes) {
-      if (b.id == id) return b;
-    }
-    return null;
-  }
-
-  List<QuestionBox> get _standalone =>
-      _standaloneInner[_currentPage] ?? const <QuestionBox>[];
 
   int get _pageRotation => _rotationsByPage[_currentPage] ?? 0;
 
@@ -353,22 +213,22 @@ class _BoxEditorDialogState extends State<_BoxEditorDialog> {
   String get _currentPageImagePath =>
       widget.pageImagePaths[_currentPage] ?? widget.pageImagePath;
 
-  int get _totalLayer1 {
+  int get _totalBoxes {
     var n = 0;
     for (final list in _boxesByPage.values) {
-      n += list.where((b) => b.layer == 1).length;
+      n += list.length;
     }
     return n;
   }
 
   bool get _anyOverlap {
     for (final entry in _boxesByPage.entries) {
-      final layer1 = entry.value.where((b) => b.layer == 1).toList();
+      final boxes = List.of(entry.value);
       // §1.5.1：重框模式下重叠校验对同页其他题的框也生效。
       if (entry.key == _currentPage) {
-        layer1.addAll(widget.readOnlyBoxes.where((b) => b.layer == 1));
+        boxes.addAll(widget.readOnlyBoxes);
       }
-      if (_hasOverlap(layer1)) return true;
+      if (_hasOverlap(boxes)) return true;
     }
     return false;
   }
@@ -390,26 +250,16 @@ class _BoxEditorDialogState extends State<_BoxEditorDialog> {
   void initState() {
     super.initState();
     _currentPage = widget.page;
-    // SR-P1-5 / SR-P1-6：入口归一化（见 normalizeBoxEditorInputs）——
-    // 详情页的裸键 inners 与收集页混进 boxesByPage 的 2 层框都在这里
-    // 一次收敛成编辑器内部口径。
-    final normalized = normalizeBoxEditorInputs(
-      boxesByPage: widget.initialBoxesByPage,
-      inners: widget.initialInners,
-      standaloneInner: widget.initialStandalone,
-      currentPage: widget.page,
-    );
-    _boxesByPage = normalized.boxesByPage;
-    _inners = normalized.inners;
-    _standaloneInner = normalized.standaloneInner;
+    // 只有题级框：旧草稿里混进来的非题级框行直接丢弃，
+    // 不进内存态、不随草稿保存写回。
+    _boxesByPage = {
+      for (final e in widget.initialBoxesByPage.entries)
+        e.key: e.value.where((b) => b.layer == 1).toList(),
+    };
     _rotationsByPage = Map.of(widget.initialRotations);
-    // 草稿模式：本页无任何草稿框（1 层、2 层、独立题内框都算）才用
-    // 检测结果；有草稿以草稿为准。只看 1 层框会把“只有 2 层框的页”
-    // 当成空页，检测结果会把独立题内框覆盖掉。
+    // 草稿模式：本页无任何草稿框才用检测结果；有草稿以草稿为准。
     final hasDraftOnPage =
-        (_boxesByPage[widget.page] ?? const <QuestionBox>[]).isNotEmpty ||
-        _inners.keys.any((k) => k.startsWith('${widget.page}:')) ||
-        (_standaloneInner[widget.page] ?? const <QuestionBox>[]).isNotEmpty;
+        (_boxesByPage[widget.page] ?? const <QuestionBox>[]).isNotEmpty;
     if (widget.initialDetected.isNotEmpty && !hasDraftOnPage) {
       _ingestDetected(widget.page, widget.initialDetected);
     }
@@ -464,24 +314,9 @@ class _BoxEditorDialogState extends State<_BoxEditorDialog> {
   }
 
   /// 当前内存态快照（确认 / 草稿保存共用）。
-  /// SR-P1-5 / SR-P1-6：`inners` 的框出编辑器时把 `parentBoxId`
-  /// 与键里的父框 id 对齐（编辑器内新建的默认内框没填该字段），
-  /// 入库后下次读回仍能按父框归属，不漂移成独立题内框。
   BoxEditorResult _currentDraft() => BoxEditorResult(
     boxesByPage: {
       for (final e in _boxesByPage.entries) e.key: List.of(e.value),
-    },
-    inners: {
-      for (final e in _inners.entries)
-        e.key: [
-          for (final b in e.value)
-            b.parentBoxId == e.key.split(':').last
-                ? b
-                : b.copyWith(parentBoxId: e.key.split(':').last),
-        ],
-    },
-    standaloneInner: {
-      for (final e in _standaloneInner.entries) e.key: List.of(e.value),
     },
     rotationsByPage: Map.of(_rotationsByPage),
   );
@@ -492,10 +327,7 @@ class _BoxEditorDialogState extends State<_BoxEditorDialog> {
     await save(_currentDraft());
   }
 
-  /// 把检测返回的混合框按层拆开：第 1 层进本页题级框，第 2 层按中心点
-  /// 归属到所属题级框名下（见 [YoloOnnxService.groupInners]），
-  /// 无主的题内框作独立题内框展示。双击进内框模式时已有的题内框
-  /// 直接沿用，不再按固定比例凭空造三个框。
+  /// 检测结果进本页题级框（只接第 1 层；检测服务不再返回别的层）。
   void _ingestDetected(int page, List<QuestionBox> boxes) {
     // 检测输出是量出来的尺寸，只做越界钳制，不补最小尺寸
     // （见 YoloOnnxService.clampToPage 的 minSize 说明）；
@@ -506,78 +338,14 @@ class _BoxEditorDialogState extends State<_BoxEditorDialog> {
     final clamped = persisted
         .map((b) => YoloOnnxService.clampToPage(b, minSize: false))
         .toList();
-    final grouped = YoloOnnxService.groupInners(clamped);
     _boxesByPage[page] = clamped.where((b) => b.layer == 1).toList();
-    for (final entry in grouped.inners.entries) {
-      _inners['$page:${entry.key}'] = entry.value;
-    }
-    if (grouped.orphans.isNotEmpty) {
-      _standaloneInner[page] = grouped.orphans;
-    } else {
-      _standaloneInner.remove(page);
-    }
   }
 
   @override
   void dispose() {
-    _focusNode.dispose();
+    _hScrollController.dispose();
+    _vScrollController.dispose();
     super.dispose();
-  }
-
-  void _exitInnerMode() {
-    if (_innerModeBoxId != null) {
-      setState(() {
-        _innerModeBoxId = null;
-        _selectedInnerId = null;
-      });
-    }
-  }
-
-  void _enterInnerMode(String boxId) {
-    // SR-P2-32：外框已被删时不进内框模式（旧代码在这里 firstWhere
-    // 无 orElse，命中即 StateError）。
-    final outer = _layer1ById(boxId);
-    if (outer == null) return;
-    _inners.putIfAbsent('$_currentPage:$boxId', () {
-      return [
-        QuestionBox(
-          id: _newBoxId(),
-          layer: 2,
-          type: 'stem',
-          x: outer.x + 0.02,
-          y: outer.y + 0.02,
-          w: outer.w - 0.04,
-          h: (outer.h - 0.06) * 0.5,
-          page: _currentPage,
-        ),
-        QuestionBox(
-          id: _newBoxId(),
-          layer: 2,
-          type: 'option',
-          x: outer.x + 0.02,
-          y: outer.y + 0.02 + (outer.h - 0.06) * 0.52,
-          w: outer.w - 0.04,
-          h: (outer.h - 0.06) * 0.22,
-          page: _currentPage,
-        ),
-        QuestionBox(
-          id: _newBoxId(),
-          layer: 2,
-          type: 'figure',
-          x: outer.x + 0.02,
-          y: outer.y + 0.02 + (outer.h - 0.06) * 0.76,
-          w: outer.w - 0.04,
-          h: (outer.h - 0.06) * 0.22,
-          page: _currentPage,
-        ),
-      ];
-    });
-    setState(() {
-      _innerModeBoxId = boxId;
-      _selectedId = boxId;
-      _selectedInnerId = null;
-      _pendingBox = null;
-    });
   }
 
   Future<void> _switchPage(int page) async {
@@ -597,8 +365,6 @@ class _BoxEditorDialogState extends State<_BoxEditorDialog> {
     setState(() {
       _currentPage = page;
       _selectedId = null;
-      _selectedInnerId = null;
-      _innerModeBoxId = null;
       _pendingBox = null;
       _pendingStart = null;
       _pageImageSize = null;
@@ -613,16 +379,9 @@ class _BoxEditorDialogState extends State<_BoxEditorDialog> {
 
   /// 草稿模式切页时：目标页一个框都没有，就对这页跑一次检测。
   /// 有草稿框 / 已有框 / 重框模式都不跑；检测失败静默（不落占位框）。
-  /// “有框”按归一化后的三处算（1 层、2 层、独立题内框都算），
-  /// 否则只有 2 层框的页会被当成空页，检测结果会把草稿覆盖掉
-  /// （与 initState 的首页面判断同款，见 SR-P1-5 / SR-P1-6）。
   Future<void> _autoDetectIfEmpty(int page) async {
     if (widget.mode != BoxEditorMode.draft) return;
     if ((_boxesByPage[page] ?? const <QuestionBox>[]).isNotEmpty) return;
-    if (_inners.keys.any((k) => k.startsWith('$page:'))) return;
-    if ((_standaloneInner[page] ?? const <QuestionBox>[]).isNotEmpty) {
-      return;
-    }
     final result = await widget.yoloService.detectPage(
       imagePath: _currentPageImagePath,
       page: page,
@@ -650,21 +409,10 @@ class _BoxEditorDialogState extends State<_BoxEditorDialog> {
       return;
     }
     // 只认手画/手改过的框（origin == 'manual'）：YOLO 框不算手动，
-    // 恢复自动框时不弹确认，直接重检替换。
-    // SR-P2-19：只查 1 层框会漏掉手画的题内框——手画的 stem /
-    // option / figure 独立内框（同样 origin == 'manual'）不弹确认
-    // 就被 _ingestDetected 覆盖掉；_inners 与 _standaloneInner 也要查。
-    // SR2-21：但只查当前页——_inners / _standaloneInner 是跨页的 map，
-    // _boxes 只是当前页；别页的手画框不该让当前页弹确认（确认后
+    // 恢复自动框时不弹确认，直接重检替换。只查当前页——_boxes
+    // 只是当前页；别页的手画框不该让当前页弹确认（确认后
     // _ingestDetected 也只替换当前页，文案与行为会对不上）。
-    bool hasManualIn(List<QuestionBox> boxes) =>
-        boxes.any((b) => b.origin == 'manual');
-    final hasManual =
-        hasManualIn(_boxes) ||
-        _inners.entries
-            .where((e) => e.key.startsWith('$_currentPage:'))
-            .any((e) => hasManualIn(e.value)) ||
-        hasManualIn(_standaloneInner[_currentPage] ?? const <QuestionBox>[]);
+    final hasManual = _boxes.any((b) => b.origin == 'manual');
     if (hasManual && mounted) {
       final ok = await showDialog<bool>(
         context: context,
@@ -700,20 +448,14 @@ class _BoxEditorDialogState extends State<_BoxEditorDialog> {
       final rotated = result.boxes
           .map((b) => rotateBoxToRotatedPage(b, _pageRotation))
           .toList();
-      final oldIds = _boxes.map((b) => b.id).toSet();
-      for (final id in oldIds) {
-        _inners.remove('$_currentPage:$id');
-      }
       _ingestDetected(_currentPage, rotated);
       _selectedId = null;
-      _selectedInnerId = null;
-      _innerModeBoxId = null;
       _pendingBox = null;
     });
   }
 
   Future<void> _restoreAutoBoxForRework() async {
-    final layer1 = _boxes.where((b) => b.layer == 1).toList();
+    final layer1 = List.of(_boxes);
     if (layer1.isEmpty) {
       ScaffoldMessenger.of(context)
           .showSnackBar(const SnackBar(content: Text('这道题还没有框，请手动框选')));
@@ -747,23 +489,16 @@ class _BoxEditorDialogState extends State<_BoxEditorDialog> {
     // 框就能把目标框拽到邻题位置上；另把候选池里中心落在同页其他题
     // 只读框内的检测框排除（那是邻题的框，重框模式下邻题不是 target，
     // 不参与认领，池子也不应对它开放）。
-    final readOnlyLayer1 =
-        widget.readOnlyBoxes.where((b) => b.layer == 1).toList();
+    final readOnlyLayer1 = List.of(widget.readOnlyBoxes);
     bool centerInReadOnly(QuestionBox b) {
       final cx = b.x + b.w / 2;
       final cy = b.y + b.h / 2;
       return readOnlyLayer1.any(
-        (r) =>
-            cx >= r.x &&
-            cx <= r.x + r.w &&
-            cy >= r.y &&
-            cy <= r.y + r.h,
+        (r) => cx >= r.x && cx <= r.x + r.w && cy >= r.y && cy <= r.y + r.h,
       );
     }
 
-    final detected = result.boxes
-        .where((b) => b.layer == 1 && !centerInReadOnly(b))
-        .toList();
+    final detected = result.boxes.where((b) => !centerInReadOnly(b)).toList();
     final scored = <({QuestionBox target, QuestionBox picked, double iou})>[];
     for (final target in targets) {
       for (final b in detected) {
@@ -782,9 +517,7 @@ class _BoxEditorDialogState extends State<_BoxEditorDialog> {
     }
     if (matches.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('没找到对应的检测框（重叠度需超过 0.3），请手动框选'),
-        ),
+        const SnackBar(content: Text('没找到对应的检测框（重叠度需超过 0.3），请手动框选')),
       );
       return;
     }
@@ -795,66 +528,14 @@ class _BoxEditorDialogState extends State<_BoxEditorDialog> {
         final picked = m.picked;
         final i = list.indexWhere((b) => b.id == target.id);
         if (i < 0) continue;
-        // SR-P2-20：只换 1 层框坐标，挂在它下面的旧内框原样保留——新框
-        // 移动/缩放后旧内框可能落在新框外，确认后照此入库。按新旧框的
-        // 相对位置换算内框（框内相对坐标不变），再用 _clampInner 钳进
-        // 新框；旧框无面积时无法换算，直接钳进新框。
+        // 只换题级框坐标。
         final newBox = YoloOnnxService.clampToPage(
           picked.copyWith(id: target.id, page: _currentPage),
           minSize: false,
         );
         list[i] = newBox;
-        final key = '$_currentPage:${target.id}';
-        final inners = _inners[key];
-        if (inners != null) {
-          _inners[key] = inners.map((b) {
-            final moved = target.w > 0 && target.h > 0
-                ? b.copyWith(
-                    x:
-                        newBox.x +
-                        ((b.x - target.x) / target.w) * newBox.w,
-                    y:
-                        newBox.y +
-                        ((b.y - target.y) / target.h) * newBox.h,
-                    w: (b.w / target.w) * newBox.w,
-                    h: (b.h / target.h) * newBox.h,
-                  )
-                : b;
-            return _clampInner(moved, newBox);
-          }).toList();
-        }
-        // SR3-14：无父框的独立题内框也要跟随——重框模式下它们本就属于
-        // 当前题。中心落在旧目标框内的，按与有父框内框相同的相对位置
-        // 换算再钳进新框；中心落在旧框外的保持不动（不属于这道框）。
-        final standalone = _standaloneInner[_currentPage];
-        if (standalone != null) {
-          _standaloneInner[_currentPage] = standalone.map((b) {
-            final cx = b.x + b.w / 2;
-            final cy = b.y + b.h / 2;
-            if (cx < target.x ||
-                cx > target.x + target.w ||
-                cy < target.y ||
-                cy > target.y + target.h) {
-              return b;
-            }
-            final moved = target.w > 0 && target.h > 0
-                ? b.copyWith(
-                    x:
-                        newBox.x +
-                        ((b.x - target.x) / target.w) * newBox.w,
-                    y:
-                        newBox.y +
-                        ((b.y - target.y) / target.h) * newBox.h,
-                    w: (b.w / target.w) * newBox.w,
-                    h: (b.h / target.h) * newBox.h,
-                  )
-                : b;
-            return _clampInner(moved, newBox);
-          }).toList();
-        }
       }
       _selectedId = null;
-      _selectedInnerId = null;
       _pendingBox = null;
     });
     // 有的目标框没找到对应的检测框：已恢复的照常生效，没恢复的留在原位，
@@ -863,9 +544,7 @@ class _BoxEditorDialogState extends State<_BoxEditorDialog> {
     if (missed > 0 && mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text(
-            '有 $missed 道框没找到对应的检测框（重叠度需超过 0.3），已恢复其余框，请手动框选',
-          ),
+          content: Text('有 $missed 道框没找到对应的检测框（重叠度需超过 0.3），已恢复其余框，请手动框选'),
         ),
       );
     }
@@ -887,96 +566,63 @@ class _BoxEditorDialogState extends State<_BoxEditorDialog> {
       _rotationsByPage[_currentPage] = (_pageRotation + 90) % 360;
       QuestionBox turn(QuestionBox b) => rotateBoxToRotatedPage(b, 90);
       _boxesByPage[_currentPage] = _boxes.map(turn).toList();
-      for (final key
-          in _inners.keys
-              .where((k) => k.startsWith('$_currentPage:'))
-              .toList()) {
-        _inners[key] = _inners[key]!.map(turn).toList();
-      }
-      if (_standaloneInner.containsKey(_currentPage)) {
-        _standaloneInner[_currentPage] = _standaloneInner[_currentPage]!
-            .map(turn)
-            .toList();
-      }
       if (_pendingBox != null) _pendingBox = turn(_pendingBox!);
     });
   }
 
   void _deleteSelected() {
     setState(() {
-      if (_selectedInnerId != null && _innerModeBoxId != null) {
-        final key = '$_currentPage:$_innerModeBoxId';
-        _inners[key] = (_inners[key] ?? const <QuestionBox>[])
-            .where((b) => b.id != _selectedInnerId)
-            .toList();
-        _selectedInnerId = null;
-      } else if (_selectedInnerId != null) {
-        _standaloneInner[_currentPage] = _standalone
-            .where((b) => b.id != _selectedInnerId)
-            .toList();
-        _selectedInnerId = null;
-      } else if (_selectedId != null) {
+      if (_selectedId != null) {
         final id = _selectedId!;
         _boxesByPage[_currentPage] = _boxes.where((b) => b.id != id).toList();
-        _inners.remove('$_currentPage:$id');
-        if (_innerModeBoxId == id) _innerModeBoxId = null;
         _selectedId = null;
       }
       _pendingBox = null;
     });
   }
 
-  QuestionBox _clampInner(QuestionBox box, QuestionBox outer) {
-    final x = box.x.clamp(outer.x, outer.x + outer.w - 0.02);
-    final y = box.y.clamp(outer.y, outer.y + outer.h - 0.02);
-    final w = box.w.clamp(0.02, outer.x + outer.w - x);
-    final h = box.h.clamp(0.02, outer.y + outer.h - y);
-    // 只改坐标，其余字段（来源 / 页码 / 归属）原样保留。
-    return box.copyWith(x: x, y: y, w: w, h: h);
-  }
-
   void _replaceBox(QuestionBox updated) {
     setState(() {
-      if (updated.layer == 1) {
-        final list = _boxesByPage[_currentPage]!;
-        final i = list.indexWhere((b) => b.id == updated.id);
-        if (i >= 0) list[i] = YoloOnnxService.clampToPage(updated);
-      } else if (_innerModeBoxId != null) {
-        final key = '$_currentPage:$_innerModeBoxId';
-        final list = _inners[key];
-        if (list != null) {
-          final i = list.indexWhere((b) => b.id == updated.id);
-          if (i >= 0) {
-            // SR-P2-32：外框已不在时退回页级钳制，不丢这次拖动/缩放。
-            final outer = _layer1ById(_innerModeBoxId!);
-            list[i] = outer == null
-                ? YoloOnnxService.clampToPage(updated)
-                : _clampInner(updated, outer);
-          }
-        }
-      } else {
-        final list = _standaloneInner[_currentPage] ?? const <QuestionBox>[];
-        final i = list.indexWhere((b) => b.id == updated.id);
-        if (i >= 0) {
-          _standaloneInner[_currentPage] = List.of(list)
-            ..[i] = YoloOnnxService.clampToPage(updated);
-        }
+      final list = _boxesByPage[_currentPage]!;
+      final i = list.indexWhere((b) => b.id == updated.id);
+      // B8-345（第 5 项）：框大小不设限制——只钳制在页内，不补最小尺寸
+      //（clampToPage 默认的 0.08 下限不要了，见 minSize: false）。
+      if (i >= 0) {
+        list[i] = YoloOnnxService.clampToPage(updated, minSize: false);
       }
     });
   }
 
-  void _moveBox(QuestionBox box, double dx, double dy, double pw, double ph) {
+  /// 按 id 取当前内存态里的框（B8-345，第 3 项）：
+  /// 拖动回调闭包里的 box 是上次 build 时的快照——连续两次 move 事件
+  /// 可能在同一帧里共用它，增量会被丢一次，拖动就时灵时不灵；
+  /// 每次按 id 读最新态，增量不丢。
+  QuestionBox? _boxById(String id) {
+    for (final b in _boxes) {
+      if (b.id == id) return b;
+    }
+    return null;
+  }
+
+  QuestionBox? get _selectedBox =>
+      _selectedId == null ? null : _boxById(_selectedId!);
+
+  void _moveBox(String boxId, double dx, double dy, double pw, double ph) {
+    final box = _boxById(boxId);
+    if (box == null) return;
     _replaceBox(box.movedBy(dx / pw, dy / ph));
   }
 
   void _resizeBox(
-    QuestionBox box,
+    String boxId,
     double dx,
     double dy,
     String corner,
     double pw,
     double ph,
   ) {
+    final box = _boxById(boxId);
+    if (box == null) return;
     final fx = dx / pw;
     final fy = dy / ph;
     var x = box.x;
@@ -1001,73 +647,18 @@ class _BoxEditorDialogState extends State<_BoxEditorDialog> {
         w -= fx;
         h -= fy;
     }
-    // 只改坐标，其余字段原样保留（以前重建框会丢 confidence/origin/page）。
+    // B8-345（第 5 项）：拖过对边时翻转归一（w/h 恒 ≥ 0），
+    // 不靠最小尺寸兜底；只改坐标，其余字段原样保留
+    //（以前重建框会丢 confidence/origin/page）。
+    if (w < 0) {
+      x += w;
+      w = -w;
+    }
+    if (h < 0) {
+      y += h;
+      h = -h;
+    }
     _replaceBox(box.copyWith(x: x, y: y, w: w, h: h));
-  }
-
-  void _confirmPendingType(String type) {
-    final pending = _pendingBox;
-    if (pending == null) return;
-    setState(() {
-      if (type == 'question') {
-        final box = pending.copyWith(
-          layer: 1,
-          type: 'question',
-          page: _currentPage,
-        );
-        _boxesByPage[_currentPage] = [
-          ..._boxes,
-          YoloOnnxService.clampToPage(box),
-        ];
-        _selectedId = box.id;
-        _selectedInnerId = null;
-      } else {
-        final box = pending.copyWith(layer: 2, type: type, page: _currentPage);
-        if (_innerModeBoxId != null) {
-          final key = '$_currentPage:$_innerModeBoxId';
-          // SR-P2-32：外框已不在时当独立题内框收下，不丢这次画框。
-          final outer = _layer1ById(_innerModeBoxId!);
-          if (outer == null) {
-            _standaloneInner[_currentPage] = [
-              ..._standalone,
-              YoloOnnxService.clampToPage(box),
-            ];
-          } else {
-            _inners[key] = [
-              ...(_inners[key] ?? const <QuestionBox>[]),
-              _clampInner(box.copyWith(parentBoxId: _innerModeBoxId), outer),
-            ];
-          }
-          _selectedInnerId = box.id;
-        } else {
-          // 落在某个题级框内：挂到该题的题内框；否则先作为独立题内框
-          // 画在页上（确认拆分时只按题级框计数）。
-          QuestionBox? parent;
-          for (final b in _boxes) {
-            final cx = pending.x + pending.w / 2;
-            final cy = pending.y + pending.h / 2;
-            if (cx >= b.x && cx <= b.x + b.w && cy >= b.y && cy <= b.y + b.h) {
-              parent = b;
-            }
-          }
-          if (parent != null) {
-            final key = '$_currentPage:${parent.id}';
-            _inners[key] = [
-              ...(_inners[key] ?? const <QuestionBox>[]),
-              _clampInner(box.copyWith(parentBoxId: parent.id), parent),
-            ];
-          } else {
-            _standaloneInner[_currentPage] = [
-              ..._standalone,
-              YoloOnnxService.clampToPage(box),
-            ];
-          }
-          _selectedInnerId = box.id;
-        }
-      }
-      _pendingBox = null;
-      _pendingStart = null;
-    });
   }
 
   bool _pointInBox(Offset p, QuestionBox b, double pw, double ph) =>
@@ -1078,19 +669,16 @@ class _BoxEditorDialogState extends State<_BoxEditorDialog> {
 
   /// B2-6b(2)：该点是否落在可交互的框上（含缩放柄）——左键按下时落在框上
   /// 要锁住滚动（拖框/缩放优先于平移），落在空白处才放行平移。
-  /// 缩放柄伸出框外约 6.5*scale，留 8*scale 余量，免得点柄时滚动抢走拖动。
+  /// B8-345：余量取柄命中区的一半（24px 命中目标 → 12px 伸出框外），
+  /// 免得点柄时滚动抢走拖动。
   bool _pointHitsInteractive(Offset p, double pw, double ph, double scale) {
-    final m = 8 * scale;
+    final m = math.max(8 * scale, _handleHitSize / 2);
     bool hit(QuestionBox b) =>
         p.dx >= b.x * pw - m &&
         p.dx <= (b.x + b.w) * pw + m &&
         p.dy >= b.y * ph - m &&
         p.dy <= (b.y + b.h) * ph + m;
     if (_boxes.any(hit)) return true;
-    if (_standalone.any(hit)) return true;
-    if (_innerModeBoxId != null && _innersOf(_innerModeBoxId!).any(hit)) {
-      return true;
-    }
     return widget.readOnlyBoxes.any(hit);
   }
 
@@ -1099,6 +687,90 @@ class _BoxEditorDialogState extends State<_BoxEditorDialog> {
         _canvasKey.currentContext?.findRenderObject() as RenderBox?;
     if (renderBox == null) return null;
     return renderBox.globalToLocal(global);
+  }
+
+  /// B8-345（第 4 项）：图上滚轮只缩放——把滚轮事件消费掉，
+  /// 不让它继续传给滚动视图；图外滚轮仍滚动页面。
+  ///
+  /// 消费机制：Flutter 的滚轮事件由 PointerSignalResolver 裁决，
+  /// 先注册的处理者独占该事件；命中测试按从深到浅分发，这个
+  /// Listener 在滚动视图内容里（比两个 SingleChildScrollView 的
+  /// Listener 都深），所以先注册、滚动视图收不到该事件。
+  /// 指针在图外、或纯横向滚轮（dy == 0）时不注册，事件照常交给
+  /// 滚动视图滚动页面。
+  void _onWheel(
+    PointerSignalEvent event,
+    double pw,
+    double ph,
+    double viewW,
+    double viewH,
+  ) {
+    if (event is! PointerScrollEvent) return;
+    // 纯横向滚轮不缩放，让它横向滚动页面。
+    if (event.scrollDelta.dy == 0) return;
+    final local = _canvasLocal(event.position);
+    if (local == null ||
+        local.dx < 0 ||
+        local.dx > pw ||
+        local.dy < 0 ||
+        local.dy > ph) {
+      return;
+    }
+    GestureBinding.instance.pointerSignalResolver.register(event, (e) {
+      if (e is PointerScrollEvent) _zoomAtCursor(e, pw, ph, viewW, viewH);
+    });
+  }
+
+  /// 以鼠标指针为准缩放：缩放前后指针下的页面点
+  /// （local/pw 的比例坐标）保持在屏幕同一位置——用滚动偏移补偿
+  /// 缩放带来的位移；内容比视口小、无滚动余量的方向补偿不到
+  /// （画布在内容里居中），该方向只能近似。
+  void _zoomAtCursor(
+    PointerScrollEvent event,
+    double pw,
+    double ph,
+    double viewW,
+    double viewH,
+  ) {
+    final local = _canvasLocal(event.position);
+    if (local == null) return;
+    final fx = (local.dx / pw).clamp(0.0, 1.0);
+    final fy = (local.dy / ph).clamp(0.0, 1.0);
+    final newScale = (_scale - event.scrollDelta.dy / 1200).clamp(0.5, 3.0);
+    if (newScale == _scale) return;
+    // 指针在视口中的位置（缩放前）：画布在内容里居中，ox/oy 是画布
+    // 在内容里的偏移，滚动偏移是内容相对视口的位移。
+    final sx = _hScrollController.hasClients ? _hScrollController.offset : 0.0;
+    final sy = _vScrollController.hasClients ? _vScrollController.offset : 0.0;
+    final ox = (math.max(pw, viewW) - pw) / 2;
+    final oy = (math.max(ph, viewH) - ph) / 2;
+    final cursorViewX = ox - sx + local.dx;
+    final cursorViewY = oy - sy + local.dy;
+    final newPw = pw * newScale / _scale;
+    final newPh = ph * newScale / _scale;
+    final newCw = math.max(newPw, viewW);
+    final newCh = math.max(newPh, viewH);
+    final newOx = (newCw - newPw) / 2;
+    final newOy = (newCh - newPh) / 2;
+    final targetSx = (newOx + fx * newPw - cursorViewX)
+        .clamp(0.0, math.max(0.0, newCw - viewW))
+        .toDouble();
+    final targetSy = (newOy + fy * newPh - cursorViewY)
+        .clamp(0.0, math.max(0.0, newCh - viewH))
+        .toDouble();
+    // 告诉引擎本事件已处理（与 Scrollable 处理滚轮时同款）。
+    event.respond(allowPlatformDefault: false);
+    setState(() => _scale = newScale);
+    // 新尺寸要等下一帧布局完才有，滚动偏移在布局后跳过去。
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      if (_hScrollController.hasClients) {
+        _hScrollController.jumpTo(targetSx);
+      }
+      if (_vScrollController.hasClients) {
+        _vScrollController.jumpTo(targetSy);
+      }
+    });
   }
 
   /// B3：右键拖动画框时起点可以落在已有框上（[fromRightDrag] 为真时
@@ -1112,29 +784,8 @@ class _BoxEditorDialogState extends State<_BoxEditorDialog> {
   }) {
     // 正在拖旋转/缩放柄时不画框（柄在框外，按下会同时命中画布层）。
     if (_suppressDraw) return;
-    if (_innerModeBoxId != null) {
-      // SR-P2-32：外框已不在，退出残留的内框模式，不画框。
-      final outer = _layer1ById(_innerModeBoxId!);
-      if (outer == null) {
-        _exitInnerMode();
-        return;
-      }
-      if (!_pointInBox(pos, outer, pw, ph)) {
-        // 内框模式下点题级框外的空白：退出内框模式，不画框。
-        _exitInnerMode();
-        return;
-      }
-      if (!fromRightDrag &&
-          _innersOf(_innerModeBoxId!).any((b) => _pointInBox(pos, b, pw, ph))) {
-        return;
-      }
-      _pendingInner = true;
-    } else {
-      if (!fromRightDrag) {
-        if (_boxes.any((b) => _pointInBox(pos, b, pw, ph))) return;
-        if (_standalone.any((b) => _pointInBox(pos, b, pw, ph))) return;
-      }
-      _pendingInner = false;
+    if (!fromRightDrag) {
+      if (_boxes.any((b) => _pointInBox(pos, b, pw, ph))) return;
     }
     setState(() {
       _pendingStart = Offset(
@@ -1143,7 +794,7 @@ class _BoxEditorDialogState extends State<_BoxEditorDialog> {
       );
       _pendingBox = QuestionBox(
         id: _newBoxId(),
-        layer: _pendingInner ? 2 : 1,
+        layer: 1,
         type: 'question',
         x: _pendingStart!.dx,
         y: _pendingStart!.dy,
@@ -1152,7 +803,6 @@ class _BoxEditorDialogState extends State<_BoxEditorDialog> {
         page: _currentPage,
       );
       _selectedId = null;
-      _selectedInnerId = null;
     });
   }
 
@@ -1164,24 +814,14 @@ class _BoxEditorDialogState extends State<_BoxEditorDialog> {
       (local.dx / pw).clamp(0.0, 1.0),
       (local.dy / ph).clamp(0.0, 1.0),
     );
-    if (_innerModeBoxId != null) {
-      // SR-P2-32：外框已不在，退出残留的内框模式，不钳制。
-      final outer = _layer1ById(_innerModeBoxId!);
-      if (outer == null) {
-        _exitInnerMode();
-        return;
-      }
-      end = Offset(
-        end.dx.clamp(outer.x, outer.x + outer.w),
-        end.dy.clamp(outer.y, outer.y + outer.h),
-      );
-    }
     setState(() {
       _pendingBox = pending.copyWith(
         x: math.min(start.dx, end.dx),
         y: math.min(start.dy, end.dy),
-        w: (start.dx - end.dx).abs().clamp(0.01, 1.0),
-        h: (start.dy - end.dy).abs().clamp(0.01, 1.0),
+        // B8-345（第 5 项）：画框不设最小尺寸，下限 0（<0.02 的丢弃
+        // 在 _onDrawEnd，那是“点一下 vs 拖出框”的手势区分，不是尺寸限制）。
+        w: (start.dx - end.dx).abs().clamp(0.0, 1.0),
+        h: (start.dy - end.dy).abs().clamp(0.0, 1.0),
       );
     });
   }
@@ -1189,26 +829,23 @@ class _BoxEditorDialogState extends State<_BoxEditorDialog> {
   void _onDrawEnd(double pw, double ph) {
     final pending = _pendingBox;
     if (pending == null) return;
-    // 只点了 一下、没拖出框：当作空白点击（内框模式下退出内框模式）。
+    // 只点了一下、没拖出框：当作空白点击，丢弃这次画框。
     if (pending.w < 0.02 || pending.h < 0.02) {
       setState(() {
         _pendingBox = null;
         _pendingStart = null;
       });
-      if (_innerModeBoxId != null) _exitInnerMode();
       return;
     }
-    if (_innerModeBoxId != null) {
-      // SR-P2-32：外框已不在，退出残留的内框模式，不钳制。
-      final outer = _layer1ById(_innerModeBoxId!);
-      if (outer == null) {
-        _exitInnerMode();
-      } else {
-        setState(() => _pendingBox = _clampInner(pending, outer));
-      }
-    } else {
-      setState(() => _pendingBox = YoloOnnxService.clampToPage(pending));
-    }
+    // 画框直接生成题级框，不再选类型。
+    // B8-345（第 5 项）：新画的框也不补最小尺寸，只钳制在页内。
+    setState(() {
+      final box = YoloOnnxService.clampToPage(pending, minSize: false);
+      _boxesByPage[_currentPage] = [..._boxes, box];
+      _selectedId = box.id;
+      _pendingBox = null;
+      _pendingStart = null;
+    });
   }
 
   @override
@@ -1224,172 +861,146 @@ class _BoxEditorDialogState extends State<_BoxEditorDialog> {
     // 上下边距）；画布是 Expanded，随对话框一起变大，不再留大片灰色空位。
     // 以前是 648*scale 封顶，在 1080p 上画布只剩约 480px 高。
     final dialogHeight = size.height - 48;
-    final total = _totalLayer1;
+    final total = _totalBoxes;
     final overlap = _anyOverlap;
     final confirmEnabled = total > 0 && !overlap && _pendingBox == null;
     final confirmLabel = total > 1 ? '确认修框，拆成 $total 个待整理任务' : '确认修框，去整理';
-    return KeyboardListener(
-      focusNode: _focusNode,
-      autofocus: true,
-      onKeyEvent: (event) {
-        if (event is KeyDownEvent &&
-            event.logicalKey == LogicalKeyboardKey.escape) {
-          _exitInnerMode();
-        }
-      },
-      child: Dialog(
-        insetPadding: const EdgeInsets.all(24),
-        backgroundColor: palette.surface,
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(
-            DesignTokens.scaled(scale).radiusLg,
-          ),
+    return Dialog(
+      insetPadding: const EdgeInsets.all(24),
+      backgroundColor: palette.surface,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(
+          DesignTokens.scaled(scale).radiusLg,
         ),
-        child: SizedBox(
-          width: dialogWidth,
-          height: dialogHeight,
-          child: Padding(
-            padding: EdgeInsets.all(16 * scale),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    Expanded(
-                      child: Text(
-                        '修框 · ${widget.fileName} 第$_currentPage页 · 本页 ${_boxes.length} 道题',
-                        style: TextStyle(
-                          fontSize: 16,
-                          fontWeight: FontWeight.w700,
-                          color: palette.ink,
-                          height: 1.2,
-                        ),
+      ),
+      child: SizedBox(
+        width: dialogWidth,
+        height: dialogHeight,
+        child: Padding(
+          padding: EdgeInsets.all(16 * scale),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      '修框 · ${widget.fileName} 第$_currentPage页 · 本页 ${_boxes.length} 道题',
+                      style: TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w700,
+                        color: palette.ink,
+                        height: 1.2,
                       ),
                     ),
-                    Flexible(
-                      child: Text(
-                        '学科：${widget.subjectName}（导入时已选定，这里不能改）',
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          fontSize: DesignTokens.captionFontSize,
-                          color: palette.muted,
-                        ),
+                  ),
+                  Flexible(
+                    child: Text(
+                      '学科：${widget.subjectName}（导入时已选定，这里不能改）',
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontSize: DesignTokens.captionFontSize,
+                        color: palette.muted,
                       ),
                     ),
-                  ],
-                ),
-                SizedBox(height: 6 * scale),
-                QmFoldSection(
-                  title: '操作说明',
-                  variant: QmFoldVariant.detail,
-                  expanded: _helpOpen,
-                  onToggle: () => setState(() => _helpOpen = !_helpOpen),
-                  child: Text(
-                    '点一下选题级框 · 双击题级框进入内框模式改题内框 · 拖框移动 · 拖边/角缩放 · 框只能拖动/缩放，不旋转 · 改乱了点「恢复自动框」回到 YOLO 原框 · 「旋转整页」把整页图片转 90°（框跟着转） · 框的边界按本页图片的实际大小算：图片有多大，画框就多大，拖动 / 缩放 / 新画框都不能超出这张图；题内框只在它所属的题级框内部 · 切页不丢框：每页的框都留着，切回来还在，点「确认修框」才一起提交 · 两道题的框重叠时确认会被拦下，先调开再确认 · 滚轮在图上缩放、在图外滚动 · 左键拖动平移图片 · 右键拖出新框（起点落在框上也能画，不拖框）、右键单击取消 · 确认只点下方「确认修框」按钮',
-                    style: TextStyle(
-                      fontSize: DesignTokens.bodySmallFontSize,
-                      color: palette.ink2,
-                      height: DesignTokens.bodyLineHeight,
-                    ),
+                  ),
+                ],
+              ),
+              SizedBox(height: 6 * scale),
+              QmFoldSection(
+                title: '操作说明',
+                variant: QmFoldVariant.detail,
+                expanded: _helpOpen,
+                onToggle: () => setState(() => _helpOpen = !_helpOpen),
+                child: Text(
+                  '点一下选题级框 · 拖框移动 · 拖边/角缩放 · 框只能拖动/缩放，不旋转 · 改乱了点「恢复自动框」回到 YOLO 原框 · 「旋转整页」把整页图片转 90°（框跟着转） · 框的边界按本页图片的实际大小算：图片有多大，画框就多大，拖动 / 缩放 / 新画框都不能超出这张图，框大小不限 · 切页不丢框：每页的框都留着，切回来还在，点「确认修框」才一起提交 · 两道题的框重叠时确认会被拦下，先调开再确认 · 滚轮在图上以指针为中心缩放（不滚动）、在图外滚动 · 左键拖动平移图片 · 右键拖出新框（起点落在框上也能画，不拖框），松开即生成题级框、右键单击取消 · 确认只点下方「确认修框」按钮',
+                  style: TextStyle(
+                    fontSize: DesignTokens.bodySmallFontSize,
+                    color: palette.ink2,
+                    height: DesignTokens.bodyLineHeight,
                   ),
                 ),
-                if (widget.mode == BoxEditorMode.rework)
-                  const QmBanner(
-                    tone: QmBannerTone.info,
-                    title: '重新框选',
-                    message:
-                        '只改这道题的框：同页其他题的框是只读的，不会动；整页旋转已禁用；取消会丢弃本次修改，不会覆盖原来的框。',
-                  ),
-                if (widget.detectError != null)
-                  QmBanner(
-                    tone: QmBannerTone.warning,
-                    title: '自动检测不可用',
-                    message:
-                        '${widget.detectError}，请手动框选：在画布空白处按住拖出一个框，画完选「题级框」就能继续。',
-                  ),
-                if (_pageImageFailed)
-                  const QmBanner(
-                    tone: QmBannerTone.error,
-                    title: '页图损坏',
-                    message: '这页的图片解不出来，只能看框的位置对不对；请重新导入这份文件。',
-                  ),
-                if (_innerModeBoxId != null)
-                  QmBanner(
-                    tone: QmBannerTone.info,
-                    title: '内框模式',
-                    message:
-                        '已进入题级框 ${_boxes.indexWhere((b) => b.id == _innerModeBoxId) + 1}：鼠标只选它里面的题干 / 选项 / 配图框，拖动、缩放都只改题内框，题级框已冻结不动 · 点画布空白处、右键单击或按 Esc 退出内框模式',
-                    actions: [
-                      QmBannerAction(
-                        label: '退出内框模式',
-                        onPressed: _exitInnerMode,
-                      ),
-                    ],
-                  ),
-                if (_boxes.isEmpty)
-                  const QmBanner(
-                    tone: QmBannerTone.warning,
-                    title: '没框到题',
-                    message:
-                        '没框到题，请用鼠标右键拖一个框：在画布空白处按住拖出一个框，画完在框旁选「题级框」就能继续，不用重新导入',
-                  ),
-                if (overlap)
-                  const QmBanner(
-                    tone: QmBannerTone.error,
-                    title: '框重叠',
-                    message: '有框重叠了，请调开再确认：本页有两道题的框叠在一起，把它们拖开（或缩放错开）后才能确认修框。',
-                  ),
-                SizedBox(height: 8 * scale),
-                _toolbar(scale, palette),
-                SizedBox(height: 8 * scale),
-                // 画布按页完整显示（HTML 原型：画布完整显示一页题）：
-                // 页按 560×700 的比例 fit 进可用区，滚轮在图上缩放再乘 _scale；
-                // 框按页面百分比存，fit 不改任何框坐标。
-                Expanded(
-                  child: LayoutBuilder(
-                    builder: (context, constraints) {
-                      // 画布按页图真实比例 fit 进可用区（未知尺寸时按
-                      // 560×700 默认比例）；本页已旋转 90°/270° 时
-                      // 显示宽高互换，框坐标已是旋转后的坐标系。
-                      final baseSize =
-                          _pageImageSize ??
-                          const ui.Size(
-                            DesignTokens.collectEditorCanvasWidth,
-                            DesignTokens.collectEditorCanvasHeight,
-                          );
-                      final swapped =
-                          _pageRotation == 90 || _pageRotation == 270;
-                      final effW = swapped ? baseSize.height : baseSize.width;
-                      final effH = swapped ? baseSize.width : baseSize.height;
-                      final fit = math.min(
-                        constraints.maxWidth / effW,
-                        constraints.maxHeight / effH,
-                      );
-                      final fpw = effW * fit * _scale;
-                      final fph = effH * fit * _scale;
-                      return _canvas(
-                        fpw,
-                        fph,
-                        scale,
-                        palette,
-                        constraints.maxWidth,
-                        constraints.maxHeight,
-                      );
-                    },
-                  ),
+              ),
+              if (widget.mode == BoxEditorMode.rework)
+                const QmBanner(
+                  tone: QmBannerTone.info,
+                  title: '重新框选',
+                  message:
+                      '只改这道题的框：同页其他题的框是只读的，不会动；整页旋转已禁用；取消会丢弃本次修改，不会覆盖原来的框。',
                 ),
-                SizedBox(height: 8 * scale),
-                _foot(scale, palette, confirmEnabled, confirmLabel),
-                SizedBox(height: 8 * scale),
-                // SR-P1-8：重框模式只有一页底图（pageCount 恒为 1），
-                // 缩略图条按 1..pageCount 只画出“第 1 页”；源页 ≥2 的题
-                // 点它会 _switchPage(1)，切到不存在的空页，框消失、
-                // 新画的框进 boxesByPage[1]、确认时被详情页丢弃。
-                // 重框没有切页意义，直接隐藏整条缩略图条。
-                if (widget.mode != BoxEditorMode.rework)
-                  _thumbStrip(scale, palette),
-              ],
-            ),
+              if (widget.detectError != null)
+                QmBanner(
+                  tone: QmBannerTone.warning,
+                  title: '自动检测不可用',
+                  message: '${widget.detectError}，请手动框选：在画布空白处按住拖出一个框，松开就能继续。',
+                ),
+              if (_pageImageFailed)
+                const QmBanner(
+                  tone: QmBannerTone.error,
+                  title: '页图损坏',
+                  message: '这页的图片解不出来，只能看框的位置对不对；请重新导入这份文件。',
+                ),
+              if (_boxes.isEmpty)
+                const QmBanner(
+                  tone: QmBannerTone.warning,
+                  title: '没框到题',
+                  message: '没框到题，请用鼠标右键拖一个框：在画布空白处按住拖出一个框，松开就能继续，不用重新导入',
+                ),
+              if (overlap)
+                const QmBanner(
+                  tone: QmBannerTone.error,
+                  title: '框重叠',
+                  message: '有框重叠了，请调开再确认：本页有两道题的框叠在一起，把它们拖开（或缩放错开）后才能确认修框。',
+                ),
+              SizedBox(height: 8 * scale),
+              _toolbar(scale, palette),
+              SizedBox(height: 8 * scale),
+              // 画布按页完整显示（HTML 原型：画布完整显示一页题）：
+              // 页按 560×700 的比例 fit 进可用区，滚轮在图上缩放再乘 _scale；
+              // 框按页面百分比存，fit 不改任何框坐标。
+              Expanded(
+                child: LayoutBuilder(
+                  builder: (context, constraints) {
+                    // 画布按页图真实比例 fit 进可用区（未知尺寸时按
+                    // 560×700 默认比例）；本页已旋转 90°/270° 时
+                    // 显示宽高互换，框坐标已是旋转后的坐标系。
+                    final baseSize =
+                        _pageImageSize ??
+                        const ui.Size(
+                          DesignTokens.collectEditorCanvasWidth,
+                          DesignTokens.collectEditorCanvasHeight,
+                        );
+                    final swapped = _pageRotation == 90 || _pageRotation == 270;
+                    final effW = swapped ? baseSize.height : baseSize.width;
+                    final effH = swapped ? baseSize.width : baseSize.height;
+                    final fit = math.min(
+                      constraints.maxWidth / effW,
+                      constraints.maxHeight / effH,
+                    );
+                    final fpw = effW * fit * _scale;
+                    final fph = effH * fit * _scale;
+                    return _canvas(
+                      fpw,
+                      fph,
+                      scale,
+                      palette,
+                      constraints.maxWidth,
+                      constraints.maxHeight,
+                    );
+                  },
+                ),
+              ),
+              SizedBox(height: 8 * scale),
+              _foot(scale, palette, confirmEnabled, confirmLabel),
+              SizedBox(height: 8 * scale),
+              // SR-P1-8：重框模式只有一页底图（pageCount 恒为 1），
+              // 缩略图条按 1..pageCount 只画出“第 1 页”；源页 ≥2 的题
+              // 点它会 _switchPage(1)，切到不存在的空页，框消失、
+              // 新画的框进 boxesByPage[1]、确认时被详情页丢弃。
+              // 重框没有切页意义，直接隐藏整条缩略图条。
+              if (widget.mode != BoxEditorMode.rework)
+                _thumbStrip(scale, palette),
+            ],
           ),
         ),
       ),
@@ -1397,14 +1008,12 @@ class _BoxEditorDialogState extends State<_BoxEditorDialog> {
   }
 
   Widget _toolbar(double scale, AppPalette palette) {
-    final hasSelection = _selectedId != null || _selectedInnerId != null;
+    final hasSelection = _selectedId != null;
     return Row(
       children: [
         Expanded(
           child: Text(
-            _innerModeBoxId != null
-                ? '内框模式：点题内框拖动 / 缩放；题内右键拖动可画新框（只在这道题的框内），画完选类型；右键单击退出内框模式'
-                : '新增框（先画后选）：右键在图片内空白处拖出框，拖出图片也会夹回图内，画完选类型，默认题级框；左键拖动平移图片',
+            '新增框：右键在图片内空白处拖出框，拖出图片也会夹回图内，松开即生成题级框；左键拖动平移图片',
             style: TextStyle(
               fontSize: DesignTokens.bodySmallFontSize,
               color: palette.ink2,
@@ -1493,16 +1102,6 @@ class _BoxEditorDialogState extends State<_BoxEditorDialog> {
             _pointHitsInteractive(local, pw, ph, scale)) {
           setState(() => _scrollLocked = true);
         }
-        // SR-P2-21：内框模式下鼠标左键点画布空白处退出内框模式（帮助与
-        // 底部提示一直这么承诺，但祖先 Listener 只接右键、画框层又
-        // 忽略鼠标，左键点空白没有任何处理）。只在未命中任何可交互
-        // 框时退出（复用 _pointHitsInteractive），点框/缩放柄仍是拖动。
-        if (isMouse &&
-            event.buttons == kPrimaryMouseButton &&
-            _innerModeBoxId != null &&
-            !_pointHitsInteractive(local, pw, ph, scale)) {
-          _exitInnerMode();
-        }
         if (isMouse && event.buttons == kSecondaryMouseButton) {
           // 右键：先只记按下坐标，拖出距离才算画框，
           // 抬起时没拖过就是单击（取消），见 onPointerUp。
@@ -1528,12 +1127,8 @@ class _BoxEditorDialogState extends State<_BoxEditorDialog> {
         if (down != null) {
           _rightDownLocal = null;
           if (!_rightDragging) {
-            // 右键单击 = 取消：内框模式退出内框模式；
-            // 非内框模式下右键单击原来就没有动作，保持不动。
+            // 右键单击 = 取消：原来就没有动作，保持不动。
             _rightDragging = false;
-            if (_innerModeBoxId != null) {
-              _exitInnerMode();
-            }
             return;
           }
           _rightDragging = false;
@@ -1546,233 +1141,241 @@ class _BoxEditorDialogState extends State<_BoxEditorDialog> {
         _rightDragging = false;
         _onDrawEnd(pw, ph);
       },
-      child: Listener(
-        onPointerSignal: (event) {
-          // B2-6b(2)：滚轮只在指针落在图片上时缩放；落在图外灰色边距时
-          // 不处理，事件交给滚动视图，页面上下滚动。
-          if (event is PointerScrollEvent) {
-            final local = _canvasLocal(event.position);
-            if (local == null ||
-                local.dx < 0 ||
-                local.dx > pw ||
-                local.dy < 0 ||
-                local.dy > ph) {
-              return;
-            }
-            setState(() {
-              _scale = (_scale - event.scrollDelta.dy / 1200).clamp(0.5, 3.0);
-            });
-          }
-        },
-        // B2-6b(2)：左键拖动要能平移图片——Flutter 默认的拖动滚动只认
-        // 触摸类设备，鼠标拖动默认不滚动；这里给画布滚动视图显式加上
-        // 鼠标（只改修框画布，不动全应用的滚动行为）。
-        child: ScrollConfiguration(
-          behavior: ScrollConfiguration.of(context).copyWith(
-            dragDevices: {
-              PointerDeviceKind.touch,
-              PointerDeviceKind.mouse,
-              PointerDeviceKind.stylus,
-              PointerDeviceKind.invertedStylus,
-              PointerDeviceKind.trackpad,
-              PointerDeviceKind.unknown,
-            },
-          ),
+      // B2-6b(2)：左键拖动要能平移图片——Flutter 默认的拖动滚动只认
+      // 触摸类设备，鼠标拖动默认不滚动；这里给画布滚动视图显式加上
+      // 鼠标（只改修框画布，不动全应用的滚动行为）。
+      // B8-345（第 4 项）：滚轮处理从这里搬到滚动视图内容里的
+      // Listener（见 _onWheel），外层 Listener 收到时滚动视图已经
+      // 先注册了，拦不住滚动。
+      child: ScrollConfiguration(
+        behavior: ScrollConfiguration.of(context).copyWith(
+          dragDevices: {
+            PointerDeviceKind.touch,
+            PointerDeviceKind.mouse,
+            PointerDeviceKind.stylus,
+            PointerDeviceKind.invertedStylus,
+            PointerDeviceKind.trackpad,
+            PointerDeviceKind.unknown,
+          },
+        ),
+        child: SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
+          controller: _hScrollController,
+          physics: _scrollLocked ? const NeverScrollableScrollPhysics() : null,
           child: SingleChildScrollView(
-            scrollDirection: Axis.horizontal,
+            controller: _vScrollController,
             physics: _scrollLocked
                 ? const NeverScrollableScrollPhysics()
                 : null,
-            child: SingleChildScrollView(
-              physics: _scrollLocked
-                  ? const NeverScrollableScrollPhysics()
-                  : null,
+            // B8-345（第 4 项）：滚轮 Listener 放在滚动视图内容里
+            // （比两个 SingleChildScrollView 的 Listener 都深），
+            // 见 _onWheel；图外不注册，滚轮照常滚动页面。
+            child: Listener(
+              onPointerSignal: (event) => _onWheel(event, pw, ph, viewW, viewH),
               // 页比视口小时居中显示（HTML 原型：画布居中放整页）；
-              // 放大超过视口时按页尺寸滚动。
+              // 放大超过视口时按页尺寸滚动。角柄浮层与画布平级盖在
+              // 最上（Positioned.fill 盖满整个滚动内容，见下）。
               child: SizedBox(
                 width: math.max(pw, viewW),
                 height: math.max(ph, viewH),
-                child: Align(
-                  alignment: Alignment.center,
-                  child: SizedBox(
-                    width: pw,
-                    height: ph,
-                    child: Stack(
-                      key: _canvasKey,
-                      children: [
-                        // 真实页图（§1.4/§1.5）：底图是库内页图，不再是占位纸面。
-                        // 本页已旋转时图片跟着转（框坐标已是旋转后的坐标系，
-                        // 两者对齐）；图片按未旋转的宽高放，旋转后正好占满画布。
-                        Container(
-                          width: pw,
-                          height: ph,
-                          decoration: BoxDecoration(
-                            color: palette.paper,
-                            border: Border.all(color: palette.paperLine),
-                            borderRadius: BorderRadius.circular(
-                              DesignTokens.scaled(scale).radius,
-                            ),
-                          ),
-                          child: _pageImageFailed
-                              ? Align(
-                                  alignment: Alignment.bottomCenter,
-                                  child: Padding(
-                                    padding: const EdgeInsets.only(bottom: 6),
-                                    child: Column(
-                                      mainAxisSize: MainAxisSize.min,
+                child: Stack(
+                  children: [
+                    Align(
+                      alignment: Alignment.center,
+                      child: SizedBox(
+                        width: pw,
+                        height: ph,
+                        child: Stack(
+                          key: _canvasKey,
+                          children: [
+                            // 真实页图（§1.4/§1.5）：底图是库内页图，不再是占位纸面。
+                            // 本页已旋转时图片跟着转（框坐标已是旋转后的坐标系，
+                            // 两者对齐）；图片按未旋转的宽高放，旋转后正好占满画布。
+                            Container(
+                              width: pw,
+                              height: ph,
+                              decoration: BoxDecoration(
+                                color: palette.paper,
+                                border: Border.all(color: palette.paperLine),
+                                borderRadius: BorderRadius.circular(
+                                  DesignTokens.scaled(scale).radius,
+                                ),
+                              ),
+                              child: _pageImageFailed
+                                  ? Align(
+                                      alignment: Alignment.bottomCenter,
+                                      child: Padding(
+                                        padding: const EdgeInsets.only(
+                                          bottom: 6,
+                                        ),
+                                        child: Column(
+                                          mainAxisSize: MainAxisSize.min,
+                                          children: [
+                                            Text(
+                                              '页面预览（页图损坏，只看框）',
+                                              style: TextStyle(
+                                                fontFamily: DesignTokens
+                                                    .serifFontFamily,
+                                                fontFamilyFallback: DesignTokens
+                                                    .serifFontFamilyFallback,
+                                                fontSize: DesignTokens
+                                                    .bodySmallFontSize,
+                                                color: palette.paperInk,
+                                              ),
+                                            ),
+                                            if (_pageRotation != 0)
+                                              Text(
+                                                '整页已旋转 $_pageRotation°（图片和框一起转的）',
+                                                style: TextStyle(
+                                                  fontSize: 11,
+                                                  fontWeight: FontWeight.w700,
+                                                  color: palette.paperInk,
+                                                ),
+                                              ),
+                                            Text(
+                                              '框按页面百分比存，框只能在这张图里面',
+                                              style: TextStyle(
+                                                fontSize: 11,
+                                                fontWeight: FontWeight.w700,
+                                                color: palette.paperInk,
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                    )
+                                  : Stack(
                                       children: [
-                                        if (_innerModeBoxId == null)
-                                          Text(
-                                            '页面预览（页图损坏，只看框）',
-                                            style: TextStyle(
-                                              fontFamily:
-                                                  DesignTokens.serifFontFamily,
-                                              fontFamilyFallback: DesignTokens
-                                                  .serifFontFamilyFallback,
-                                              fontSize: DesignTokens
-                                                  .bodySmallFontSize,
-                                              color: palette.paperInk,
+                                        Align(
+                                          alignment: Alignment.center,
+                                          child: SizedBox(
+                                            width:
+                                                _pageRotation == 90 ||
+                                                    _pageRotation == 270
+                                                ? ph
+                                                : pw,
+                                            height:
+                                                _pageRotation == 90 ||
+                                                    _pageRotation == 270
+                                                ? pw
+                                                : ph,
+                                            child: Transform.rotate(
+                                              angle:
+                                                  _pageRotation * math.pi / 180,
+                                              child: Image.file(
+                                                File(_currentPageImagePath),
+                                                fit: BoxFit.fill,
+                                              ),
                                             ),
                                           ),
+                                        ),
                                         if (_pageRotation != 0)
-                                          Text(
-                                            '整页已旋转 $_pageRotation°（图片和框一起转的）',
-                                            style: TextStyle(
-                                              fontSize: 11,
-                                              fontWeight: FontWeight.w700,
-                                              color: palette.paperInk,
-                                            ),
-                                          ),
-                                        if (_innerModeBoxId == null)
-                                          Text(
-                                            '框按页面百分比存，框只能在这张图里面',
-                                            style: TextStyle(
-                                              fontSize: 11,
-                                              fontWeight: FontWeight.w700,
-                                              color: palette.paperInk,
+                                          Align(
+                                            alignment: Alignment.bottomCenter,
+                                            child: Padding(
+                                              padding: const EdgeInsets.only(
+                                                bottom: 6,
+                                              ),
+                                              child: Text(
+                                                '整页已旋转 $_pageRotation°（图片和框一起转的）',
+                                                style: TextStyle(
+                                                  fontSize: 11,
+                                                  fontWeight: FontWeight.w700,
+                                                  color: palette.paperInk,
+                                                  backgroundColor:
+                                                      palette.paper,
+                                                ),
+                                              ),
                                             ),
                                           ),
                                       ],
                                     ),
-                                  ),
-                                )
-                              : Stack(
-                                  children: [
-                                    Align(
-                                      alignment: Alignment.center,
-                                      child: SizedBox(
-                                        width:
-                                            _pageRotation == 90 ||
-                                                _pageRotation == 270
-                                            ? ph
-                                            : pw,
-                                        height:
-                                            _pageRotation == 90 ||
-                                                _pageRotation == 270
-                                            ? pw
-                                            : ph,
-                                        child: Transform.rotate(
-                                          angle: _pageRotation * math.pi / 180,
-                                          child: Image.file(
-                                            File(_currentPageImagePath),
-                                            fit: BoxFit.fill,
-                                          ),
-                                        ),
-                                      ),
-                                    ),
-                                    if (_pageRotation != 0)
-                                      Align(
-                                        alignment: Alignment.bottomCenter,
-                                        child: Padding(
-                                          padding: const EdgeInsets.only(
-                                            bottom: 6,
-                                          ),
-                                          child: Text(
-                                            '整页已旋转 $_pageRotation°（图片和框一起转的）',
-                                            style: TextStyle(
-                                              fontSize: 11,
-                                              fontWeight: FontWeight.w700,
-                                              color: palette.paperInk,
-                                              backgroundColor: palette.paper,
-                                            ),
-                                          ),
-                                        ),
-                                      ),
-                                  ],
-                                ),
-                        ),
-                        // 画框层在最下：原始指针事件画框（不走手势竞技场，
-                        // 不会被滚动视图抢走）。它只管触摸/手写笔的主按
-                        // 键画框——鼠标画框走祖先级画布 Listener（B3：
-                        // 落在框上的右键到不了这一层，见 _canvas 开头）。
-                        // B2-6b(2)：鼠标左键只拖动（平移图片 / 拖框），
-                        // 不画框；画框改右键拖动，右键单击是取消。
-                        // 触摸/手写笔没有左右键区分，仍用主按键画框（保持原有行为）。
-                        Positioned.fill(
-                          child: Listener(
-                            behavior: HitTestBehavior.opaque,
-                            // B3：右键画框/取消已移到祖先级画布 Listener，
-                            // 这里只留触摸/手写笔的主按键画框（落在框上的
-                            // 触摸仍到不了这一层，框的点按/拖动不受影响）。
-                            onPointerDown: (event) {
-                              if (event.kind == PointerDeviceKind.mouse) {
-                                return;
-                              }
-                              if (event.buttons != kPrimaryMouseButton) return;
-                              final local = _canvasLocal(event.position);
-                              if (local != null) _onDrawStart(local, pw, ph);
-                            },
-                            onPointerMove: (event) {
-                              final local = _canvasLocal(event.position);
-                              if (local == null) return;
-                              _onDrawUpdate(local, pw, ph);
-                            },
-                            onPointerUp: (_) {
-                              _onDrawEnd(pw, ph);
-                            },
-                            onPointerCancel: (_) {
-                              _onDrawEnd(pw, ph);
-                            },
-                            child: const SizedBox.expand(),
-                          ),
-                        ),
-                        if (_innerModeBoxId == null) ...[
-                          for (final box in _boxes)
-                            _boxView(box, pw, ph, scale, palette),
-                          for (final box in _standalone)
-                            _boxView(box, pw, ph, scale, palette),
-                          // §1.5.1：同页其他题的框只读展示（重框模式）。
-                          for (final box in widget.readOnlyBoxes)
-                            _frozenBoxView(
-                              box,
-                              pw,
-                              ph,
-                              scale,
-                              palette,
-                              label: '其他题 · 只读',
                             ),
-                        ] else ...[
-                          for (final box in _boxes)
-                            _frozenBoxView(box, pw, ph, scale, palette),
-                          for (final box in _innersOf(_innerModeBoxId!))
-                            _boxView(box, pw, ph, scale, palette),
-                          for (final box in widget.readOnlyBoxes)
-                            _frozenBoxView(
-                              box,
-                              pw,
-                              ph,
-                              scale,
-                              palette,
-                              label: '其他题 · 只读',
+                            // 画框层在最下：原始指针事件画框（不走手势竞技场，
+                            // 不会被滚动视图抢走）。它只管触摸/手写笔的主按
+                            // 键画框——鼠标画框走祖先级画布 Listener（B3：
+                            // 落在框上的右键到不了这一层，见 _canvas 开头）。
+                            // B2-6b(2)：鼠标左键只拖动（平移图片 / 拖框），
+                            // 不画框；画框改右键拖动，右键单击是取消。
+                            // 触摸/手写笔没有左右键区分，仍用主按键画框（保持原有行为）。
+                            Positioned.fill(
+                              child: Listener(
+                                behavior: HitTestBehavior.opaque,
+                                // B3：右键画框/取消已移到祖先级画布 Listener，
+                                // 这里只留触摸/手写笔的主按键画框（落在框上的
+                                // 触摸仍到不了这一层，框的点按/拖动不受影响）。
+                                onPointerDown: (event) {
+                                  if (event.kind == PointerDeviceKind.mouse) {
+                                    return;
+                                  }
+                                  if (event.buttons != kPrimaryMouseButton) {
+                                    return;
+                                  }
+                                  final local = _canvasLocal(event.position);
+                                  if (local != null) {
+                                    _onDrawStart(local, pw, ph);
+                                  }
+                                },
+                                onPointerMove: (event) {
+                                  final local = _canvasLocal(event.position);
+                                  if (local == null) return;
+                                  _onDrawUpdate(local, pw, ph);
+                                },
+                                onPointerUp: (_) {
+                                  _onDrawEnd(pw, ph);
+                                },
+                                onPointerCancel: (_) {
+                                  _onDrawEnd(pw, ph);
+                                },
+                                child: const SizedBox.expand(),
+                              ),
                             ),
-                        ],
-                        if (_pendingBox != null)
-                          _pendingBoxView(_pendingBox!, pw, ph, scale, palette),
-                        if (_pendingBox != null)
-                          _typeMenu(_pendingBox!, pw, ph, scale, palette),
-                      ],
+                            for (final box in _boxes)
+                              _boxView(box, pw, ph, scale, palette),
+                            // §1.5.1：同页其他题的框只读展示（重框模式）。
+                            for (final box in widget.readOnlyBoxes)
+                              _frozenBoxView(
+                                box,
+                                pw,
+                                ph,
+                                scale,
+                                palette,
+                                label: '其他题 · 只读',
+                              ),
+                            if (_pendingBox != null)
+                              _pendingBoxView(
+                                _pendingBox!,
+                                pw,
+                                ph,
+                                scale,
+                                palette,
+                              ),
+                          ],
+                        ),
+                      ),
                     ),
-                  ),
+                    // B8-345（第 3 项）：选中框的四角缩放柄浮层（画布级，
+                    // 与框体平级、画在最上），见 _resizeHandleOverlay。
+                    if (_selectedBox != null)
+                      Positioned.fill(
+                        child: Stack(
+                          clipBehavior: Clip.none,
+                          children: [
+                            for (final corner in ['nw', 'ne', 'sw', 'se'])
+                              _resizeHandleOverlay(
+                                _selectedBox!,
+                                corner,
+                                pw,
+                                ph,
+                                (math.max(pw, viewW) - pw) / 2,
+                                (math.max(ph, viewH) - ph) / 2,
+                                scale,
+                                palette,
+                              ),
+                          ],
+                        ),
+                      ),
+                  ],
                 ),
               ),
             ),
@@ -1789,14 +1392,12 @@ class _BoxEditorDialogState extends State<_BoxEditorDialog> {
     String confirmLabel,
   ) {
     final hint = _pendingBox != null
-        ? '已画好一个新框：在框旁菜单点一下选类型（默认题级框），点中即生成；点 × 放弃这个框'
-        : _innerModeBoxId != null
-        ? '内框模式：正在改题级框 ${_boxes.indexWhere((b) => b.id == _innerModeBoxId) + 1} 内的题内框 · 题级框不动 · 点画布空白处、右键单击或按 Esc 退出内框模式'
+        ? '正在画框：松开鼠标生成题级框'
         : _selectedId != null
-        ? '当前选中：题级框 ${_boxes.indexWhere((b) => b.id == _selectedId) + 1} · 双击它进入内框模式改题内框 · 右键拖动可直接再画一个新框，画完再选类型'
+        ? '当前选中：题级框 ${_boxes.indexWhere((b) => b.id == _selectedId) + 1} · 右键拖动可直接再画一个新框'
         : _boxes.isEmpty
-        ? '没框到题，请用鼠标右键拖一个框：在图上拖出框，画完在框旁选「题级框」就能继续'
-        : '本页已框 ${_boxes.length} 道题 · 点框可选中拖动 / 缩放 · 双击题级框进内框模式改题内框 · 右键拖动可再画新框';
+        ? '没框到题，请用鼠标右键拖一个框：在图上拖出框，松开鼠标就能继续'
+        : '本页已框 ${_boxes.length} 道题 · 点框可选中拖动 / 缩放 · 右键拖动可再画新框';
     return Row(
       children: [
         Expanded(
@@ -1964,20 +1565,6 @@ class _BoxEditorDialogState extends State<_BoxEditorDialog> {
     );
   }
 
-  Color _regionColor(String type, AppPalette palette) => switch (type) {
-    'stem' => palette.stem,
-    'option' => palette.option,
-    'figure' => palette.figure,
-    _ => palette.accent,
-  };
-
-  String _regionLabel(String type) => switch (type) {
-    'stem' => 'stem 题干',
-    'option' => 'option 选项',
-    'figure' => 'figure 配图',
-    _ => type,
-  };
-
   Widget _boxView(
     QuestionBox box,
     double pw,
@@ -1985,19 +1572,11 @@ class _BoxEditorDialogState extends State<_BoxEditorDialog> {
     double scale,
     AppPalette palette,
   ) {
-    final isInner = box.layer == 2;
-    final selected = isInner
-        ? _selectedInnerId == box.id
-        : _selectedId == box.id;
-    final borderColor = selected
-        ? palette.accent
-        : isInner
-        ? _regionColor(box.type, palette)
-        : palette.lineStrong;
-    final label = isInner
-        ? _regionLabel(box.type)
-        : '题级框 ${_boxes.indexWhere((b) => b.id == box.id) + 1}'
-              '${selected && _innerModeBoxId == null ? ' · 已选中' : ''}';
+    final selected = _selectedId == box.id;
+    final borderColor = selected ? palette.accent : palette.lineStrong;
+    final label =
+        '题级框 ${_boxes.indexWhere((b) => b.id == box.id) + 1}'
+        '${selected ? ' · 已选中' : ''}';
     return Positioned(
       left: box.x * pw,
       top: box.y * ph,
@@ -2005,57 +1584,35 @@ class _BoxEditorDialogState extends State<_BoxEditorDialog> {
       height: box.h * ph,
       // §6 第 10 条：单框旋转已禁用——框上不再有旋转变换与旋转圆柄，
       // 框只能拖动/缩放；整页旋转走「旋转整页」。
+      // B8-345（第 3 项）：四角缩放柄不在这里了，移到画布级浮层
+      //（_resizeHandleOverlay），不再嵌在框的 GestureDetector 里。
       child: GestureDetector(
         key: Key('editor-box-${box.id}'),
         onTap: () => setState(() {
-          if (isInner) {
-            _selectedInnerId = box.id;
-          } else {
-            _selectedId = box.id;
-            _selectedInnerId = null;
-          }
+          _selectedId = box.id;
         }),
-        onDoubleTap: !isInner && _innerModeBoxId == null
-            ? () => _enterInnerMode(box.id)
-            : null,
         onPanUpdate: (details) =>
-            _moveBox(box, details.delta.dx, details.delta.dy, pw, ph),
-        child: _boxBody(
-          box,
-          pw,
-          ph,
-          scale,
-          palette,
-          selected,
-          borderColor,
-          label,
-        ),
+            _moveBox(box.id, details.delta.dx, details.delta.dy, pw, ph),
+        child: _boxBody(box, palette, selected, borderColor, label),
       ),
     );
   }
 
-  /// 框体：题级框实线边；题内框虚线边（HTML `.inner-region`：
-  /// `1.5px dashed` 区域色），用虚线画笔实现。
+  /// 框体：题级框实线边。
   Widget _boxBody(
     QuestionBox box,
-    double pw,
-    double ph,
-    double scale,
     AppPalette palette,
     bool selected,
     Color borderColor,
     String label,
   ) {
-    final isInner = box.layer == 2;
-    final body = Container(
+    return Container(
       decoration: BoxDecoration(
         color: selected
             ? palette.accent.withValues(alpha: 0.07)
             : palette.accent.withValues(alpha: 0.02),
-        border: isInner
-            ? null
-            : Border.all(color: borderColor, width: selected ? 2.5 : 2.5),
-        borderRadius: BorderRadius.circular(isInner ? 4 : 8),
+        border: Border.all(color: borderColor, width: 2.5),
+        borderRadius: BorderRadius.circular(8),
       ),
       child: Stack(
         clipBehavior: Clip.none,
@@ -2072,108 +1629,74 @@ class _BoxEditorDialogState extends State<_BoxEditorDialog> {
               child: Text(
                 label,
                 style: TextStyle(
-                  fontSize: isInner ? 9.5 : 10.5,
+                  fontSize: 10.5,
                   fontWeight: FontWeight.w700,
                   color: selected ? palette.accentText : palette.muted,
                 ),
               ),
             ),
           ),
-          // 题级框内的题内框（非内框模式下只作展示，不可单独拖动）。
-          if (!isInner && _innerModeBoxId == null)
-            for (final region in _innersOf(box.id))
-              Positioned(
-                left: (region.x - box.x) * pw,
-                top: (region.y - box.y) * ph,
-                width: region.w * pw,
-                height: region.h * ph,
-                child: Container(
-                  decoration: BoxDecoration(
-                    border: Border.all(
-                      color: _regionColor(region.type, palette),
-                      width: 1.5,
-                      style: BorderStyle.solid,
-                    ),
-                    borderRadius: BorderRadius.circular(4),
-                  ),
-                  child: Align(
-                    alignment: Alignment.topLeft,
-                    child: Padding(
-                      padding: const EdgeInsets.only(left: 4, top: 1),
-                      child: Text(
-                        _regionLabel(region.type),
-                        style: TextStyle(
-                          fontSize: 9.5,
-                          fontWeight: FontWeight.w700,
-                          color: _regionColor(region.type, palette),
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-          // 选中框的四角缩放柄（单框旋转已禁用，无旋转圆柄，见 §6 第 10 条）。
-          if (selected) ...[
-            for (final corner in ['nw', 'ne', 'sw', 'se'])
-              _resizeHandle(box, corner, pw, ph, scale, palette),
-          ],
         ],
       ),
     );
-    if (isInner) {
-      return CustomPaint(
-        foregroundPainter: DashedDropPainter(
-          color: borderColor,
-          radius: 4,
-          strokeWidth: 1.5,
-        ),
-        child: body,
-      );
-    }
-    return body;
   }
 
-  Widget _resizeHandle(
+  /// B8-345（第 3 项）：角柄命中区边长（视觉仍是 13×scale 居中）。
+  /// 柄只有一半在框内时，框外那半以前在命中测试里到不了柄
+  /// （RenderBox 命中测试先看框体 bounds）；现在柄移到画布级浮层，
+  /// 24px 整个都能点到。
+  static const double _handleHitSize = 24.0;
+
+  /// 选中框的四角缩放柄（画布级浮层，单框旋转已禁用，无旋转圆柄，
+  /// 见 §6 第 10 条）：
+  /// - 与框体平级、画在最上，不嵌在框的 GestureDetector 里——
+  ///   拖柄不再与拖框进同一个手势竞技场，也不再被画框层/滚动抢走；
+  /// - 命中区 24×24（视觉 13×scale 居中），以角点为中心；
+  /// - (ox, oy) 是画布在滚动内容里的偏移（画布居中放，见 _canvas）。
+  Widget _resizeHandleOverlay(
     QuestionBox box,
     String corner,
     double pw,
     double ph,
+    double ox,
+    double oy,
     double scale,
     AppPalette palette,
   ) {
-    final size = 13 * scale;
-    final offset = -6.5 * scale;
-    final (
-      double? left,
-      double? top,
-      double? right,
-      double? bottom,
-    ) = switch (corner) {
-      'nw' => (offset, offset, null, null),
-      'ne' => (null, offset, offset, null),
-      'sw' => (offset, null, null, offset),
-      'se' => (null, null, offset, offset),
-      _ => (null, null, null, null),
-    };
+    final hit = _handleHitSize;
+    final visual = 13 * scale;
+    final cx = ox + (corner.contains('w') ? box.x * pw : (box.x + box.w) * pw);
+    final cy = oy + (corner.contains('n') ? box.y * ph : (box.y + box.h) * ph);
     return Positioned(
-      left: left,
-      top: top,
-      right: right,
-      bottom: bottom,
+      left: cx - hit / 2,
+      top: cy - hit / 2,
       child: GestureDetector(
         key: Key('editor-resize-$corner-${box.id}'),
+        behavior: HitTestBehavior.opaque,
         onPanDown: (_) => _suppressDraw = true,
         onPanEnd: (_) => _suppressDraw = false,
         onPanCancel: () => _suppressDraw = false,
-        onPanUpdate: (details) =>
-            _resizeBox(box, details.delta.dx, details.delta.dy, corner, pw, ph),
-        child: Container(
-          width: size,
-          height: size,
-          decoration: BoxDecoration(
-            color: palette.surface,
-            border: Border.all(color: palette.accent, width: 2),
-            borderRadius: BorderRadius.circular(3 * scale),
+        onPanUpdate: (details) => _resizeBox(
+          box.id,
+          details.delta.dx,
+          details.delta.dy,
+          corner,
+          pw,
+          ph,
+        ),
+        child: SizedBox(
+          width: hit,
+          height: hit,
+          child: Center(
+            child: Container(
+              width: visual,
+              height: visual,
+              decoration: BoxDecoration(
+                color: palette.surface,
+                border: Border.all(color: palette.accent, width: 2),
+                borderRadius: BorderRadius.circular(3 * scale),
+              ),
+            ),
           ),
         ),
       ),
@@ -2215,8 +1738,7 @@ class _BoxEditorDialogState extends State<_BoxEditorDialog> {
                     borderRadius: BorderRadius.circular(3),
                   ),
                   child: Text(
-                    label ??
-                        '题级框 ${_boxes.indexWhere((b) => b.id == box.id) + 1} · 内框模式 · 已冻结',
+                    label ?? '只读框',
                     style: TextStyle(
                       fontSize: 10.5,
                       fontWeight: FontWeight.w700,
@@ -2262,7 +1784,7 @@ class _BoxEditorDialogState extends State<_BoxEditorDialog> {
               borderRadius: BorderRadius.circular(3),
             ),
             child: Text(
-              '新框 · 待选类型',
+              '新框',
               style: TextStyle(
                 fontSize: 10.5,
                 fontWeight: FontWeight.w700,
@@ -2270,85 +1792,6 @@ class _BoxEditorDialogState extends State<_BoxEditorDialog> {
               ),
             ),
           ),
-        ),
-      ),
-    );
-  }
-
-  Widget _typeMenu(
-    QuestionBox box,
-    double pw,
-    double ph,
-    double scale,
-    AppPalette palette,
-  ) {
-    final below = (box.y + box.h) * ph + 52 < ph;
-    final top = below
-        ? (box.y + box.h) * ph + 6
-        : math.min(math.max(box.y * ph - 48, 0.0), math.max(ph - 48, 0.0));
-    final left = math.min(box.x * pw, math.max(0.0, pw - 320));
-    return Positioned(
-      left: left,
-      top: top,
-      child: Container(
-        key: const Key('pending-type-menu'),
-        constraints: const BoxConstraints(maxWidth: 320),
-        padding: EdgeInsets.symmetric(
-          horizontal: 8 * scale,
-          vertical: 6 * scale,
-        ),
-        decoration: BoxDecoration(
-          color: palette.surface,
-          border: Border.all(color: palette.lineStrong),
-          borderRadius: BorderRadius.circular(
-            DesignTokens.scaled(scale).radius,
-          ),
-          boxShadow: palette.shadow,
-        ),
-        child: Wrap(
-          spacing: 5 * scale,
-          runSpacing: 5 * scale,
-          crossAxisAlignment: WrapCrossAlignment.center,
-          children: [
-            Text(
-              '这个框是？',
-              style: TextStyle(
-                fontSize: 11.5,
-                fontWeight: FontWeight.w700,
-                color: palette.muted,
-              ),
-            ),
-            if (!_pendingInner)
-              QmChip(
-                key: const Key('pending-type-question'),
-                label: '题级框 · 默认',
-                selected: true,
-                onTap: () => _confirmPendingType('question'),
-              ),
-            QmChip(
-              key: const Key('pending-type-stem'),
-              label: 'stem 题干',
-              onTap: () => _confirmPendingType('stem'),
-            ),
-            QmChip(
-              key: const Key('pending-type-option'),
-              label: 'option 选项',
-              onTap: () => _confirmPendingType('option'),
-            ),
-            QmChip(
-              key: const Key('pending-type-figure'),
-              label: 'figure 配图',
-              onTap: () => _confirmPendingType('figure'),
-            ),
-            GestureDetector(
-              key: const Key('pending-discard'),
-              onTap: () => setState(() {
-                _pendingBox = null;
-                _pendingStart = null;
-              }),
-              child: QmGlyph(QmGlyphs.close, color: palette.muted),
-            ),
-          ],
         ),
       ),
     );

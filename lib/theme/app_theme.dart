@@ -20,8 +20,7 @@ export 'design_tokens.dart'
 /// - 深色纸面 `darkPaper 0xFF262B33` → `#D8DCE2`（负责人已确认，
 ///   深色下打开的书仍是浅灰纸页），纸面字 `#232830`、纸面线 `#AEB6C2`；
 /// - 新增 `--ink-2` / `--surface-3` / `--warn/--err/--info` /
-///   `--keep/--merge/--cut` / `--stem/--option/--figure` /
-///   `--radius-lg` / `--shadow` 等旧代码缺失的 token；
+///   `--keep/--merge/--cut` / `--radius-lg` / `--shadow` 等旧代码缺失的 token；
 /// - 正文 `bodyMedium 14` → `15px / 行高 1.65`，并指定字体栈（D2）。
 ///
 /// 字号缩放（D4，1.00 / 1.15 / 1.30）：

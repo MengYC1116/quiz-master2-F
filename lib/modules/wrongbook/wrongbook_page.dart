@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../data/repository.dart';
 import '../../models/models.dart';
-import '../../theme/design_tokens.dart';
+import '../../theme/app_theme.dart'; // 转出 design_tokens，本文件不再单引它。
 import '../../widgets/uikit.dart';
 import '../../widgets/widgets.dart';
 
@@ -27,6 +27,7 @@ class WrongbookPage extends StatefulWidget {
     this.filterCause,
     this.filterKnowledgePointId,
     required this.onOpenHome,
+    this.onGoSubjects,
     required this.onOpenDetail,
     required this.onGoReview,
   });
@@ -36,6 +37,10 @@ class WrongbookPage extends StatefulWidget {
   final String? filterCause;
   final String? filterKnowledgePointId;
   final VoidCallback onOpenHome;
+
+  /// B8-1：学科删空时书架空状态给出去学科管理的入口（可空；
+  /// 测试里不传时只显示提示文字，不画按钮）。
+  final VoidCallback? onGoSubjects;
   final Future<void> Function(Question q, List<String> orderIds) onOpenDetail;
   final void Function({String? subjectId}) onGoReview;
 
@@ -199,7 +204,9 @@ class _WrongbookPageState extends State<WrongbookPage> {
     return _subjectOf(a.subjectId).name.compareTo(_subjectOf(b.subjectId).name);
   }
 
-  List<Subject> _subjects = Subject.all;
+  // B8-1：空表是删光学科后的合法状态，不再回退预设三科
+  //（回退就是截图里书架仍有数学/英语/政治三本 0 道题的原因）。
+  List<Subject> _subjects = const [];
   // 库里找学科：新学科用库里的名与色；找不到才回退 Subject.byId
   //（数学兜底，只发生在数据不一致时）。
   Subject _subjectOf(String id) =>
@@ -311,7 +318,7 @@ class _WrongbookPageState extends State<WrongbookPage> {
       }
       if (!mounted) return;
       setState(() {
-        _subjects = subjects.isEmpty ? Subject.all : subjects;
+        _subjects = subjects;
         _questions = questions;
         _folders = folders;
         _exams = exams;

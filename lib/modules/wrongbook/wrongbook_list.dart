@@ -1,5 +1,10 @@
 part of 'wrongbook_page.dart';
 
+// B8-9：题目列表样式（Meng 2026-11-15 定稿 A 留白卡片）：
+// 大卡片各成一张白卡，紧凑行 / 归档行共用一张白卡；
+// B 纸面通栏、C 极简线条已废弃，截图留档在
+// docs/ui-replication/shots/b8-list/after-B-*.png、after-C-*.png。
+
 // 书内列表视图：列表页、工具条、筛选面板、批量条、大卡片 / 紧凑行 / 归档行、分页与已归档视图。
 
 extension _WrongbookListBuild on _WrongbookPageState {
@@ -28,6 +33,9 @@ extension _WrongbookListBuild on _WrongbookPageState {
         ? '${subject.name} · 错题本'
         : '错题本';
     final scale = qmScaleOf(context);
+    // B8-9：去掉蓝色大框（_openBookFrame）：工具条 / 筛选 / 列表 / 分页
+    // 直接落在页面底色上，列表本体按定稿 A 留白卡片排版。
+    // 目录页的书框不动（那是目录页的样式，不在本次范围）。
     return SingleChildScrollView(
       padding: EdgeInsets.zero,
       child: Column(
@@ -56,38 +64,153 @@ extension _WrongbookListBuild on _WrongbookPageState {
             ],
           ),
           _pageSubtitle('这一科的题目列表，点一道题进题目详情；筛选里没有文件夹，文件夹在目录页选。'),
-          _openBookFrame(
-            subjectId: _subjectId ?? 'math',
-            // 跨学科列表（无学科）时外框用中性灰，不回退数学蓝（SR-P2-54）。
-            neutral: _subjectId == null,
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                _buildListToolbar(),
-                if (_filterOpen) _buildFilterPanel(),
-                if (!_inBookArchived) _buildMasteredNote(),
-                if (_inBookArchived) _buildArchBar(all.length),
-                if (_batchMode && !_inBookArchived) _buildBatchBar(all),
-                _paperBox(
-                  cards:
-                      _viewMode == 'large' &&
-                      !_inBookArchived &&
-                      items.isNotEmpty,
-                  child: _inBookArchived
-                      ? _buildArchivedRows(items, orderIds)
-                      : items.isEmpty
-                      ? _buildPaperEmpty()
-                      : _viewMode == 'large'
-                      ? _buildLargeCards(items, orderIds)
-                      : _buildCompactRows(items, orderIds),
-                ),
-                if (all.isNotEmpty)
-                  _buildPagination(all.length, totalPages, page),
-              ],
-            ),
-          ),
+          _buildListToolbar(),
+          if (_filterOpen) _buildFilterPanel(),
+          if (!_inBookArchived) _buildMasteredNote(),
+          if (_inBookArchived) _buildArchBar(all.length),
+          if (_batchMode && !_inBookArchived) _buildBatchBar(all),
+          _buildListBody(items, orderIds),
+          if (all.isNotEmpty) _buildPagination(all.length, totalPages, page),
+          // B8-9：页尾留白——分页器是页内最后一个元素，滚到底时它贴着
+          // 视口底边；此时点“每页 N 道”下拉，框架按选中项对齐按钮中心
+          // 会把菜单底推出视口（debug 下触发 dropdown.dart 的
+          // menuLimits 断言；release 下菜单底被裁 5px）。留 24px，
+          // 按钮离底边够远、菜单放得下，视觉上页尾也不挤。
+          SizedBox(height: 24 * scale),
         ],
       ),
+    );
+  }
+
+  /// 列表本体（含空状态）：A 留白卡片——大卡片自带单卡容器，
+  /// 紧凑行 / 归档行共用一张白卡。
+  Widget _buildListBody(List<Question> items, List<String> orderIds) {
+    if (items.isEmpty) return _buildListEmpty();
+    if (_inBookArchived) {
+      return _listSurface(child: _buildArchivedRows(items, orderIds));
+    }
+    if (_viewMode == 'large') return _buildLargeCards(items, orderIds);
+    return _listSurface(child: _buildCompactRows(items, orderIds));
+  }
+
+  /// 白卡容器（紧凑行 / 归档行共用一张卡）。
+  Widget _listSurface({required Widget child}) {
+    final scale = qmScaleOf(context);
+    final palette = DesignTokens.of(Theme.of(context).brightness);
+    return Container(
+      padding: EdgeInsets.symmetric(
+        horizontal: 8 * scale,
+        vertical: 4 * scale,
+      ),
+      decoration: BoxDecoration(
+        color: palette.surface,
+        border: Border.all(color: palette.line),
+        borderRadius: BorderRadius.circular(DesignTokens.radius * scale),
+        boxShadow: palette.shadow,
+      ),
+      child: child,
+    );
+  }
+
+  /// 当前范围（学科 / 文件夹子树）里已整理、未归档的题数——不含
+  /// 搜索 / 筛选与“已掌握默认隐藏”的影响：为 0 才说明范围本身是空的。
+  int _scopeQuestionCount() {
+    final folderIds = _folderId == null ? null : _subtreeIds(_folderId!);
+    return _questions
+        .where(
+          (q) =>
+              q.isOrganized &&
+              !q.isArchived &&
+              (_subjectId == null || q.subjectId == _subjectId) &&
+              (folderIds == null ||
+                  q.folderIds.any((id) => folderIds.contains(id))),
+        )
+        .length;
+  }
+
+  bool _hasSearchOrFilter() =>
+      _search.trim().isNotEmpty || _activeFilterCount() > 0;
+
+  /// 空状态文案三分法（B8-9 必修）：
+  /// - 已归档视图空 → 归档文案（旧文案不动）；
+  /// - 范围本身没题（文件夹 / 学科是空的）→ 文件夹为空文案 + 去收集 /
+  ///   去整理的引导，不再冒充搜索无结果；
+  /// - 范围有题、但无搜索无筛选还为空 → 只剩“全部已解决被默认隐藏”这
+  ///   一种可能，给看已解决的入口；
+  /// - 其余（搜不到 / 筛不到）→ 搜索无结果文案（旧文案不动）。
+  ({String title, String desc, String action, VoidCallback onAction})
+  _emptyCopy() {
+    if (_inBookArchived) {
+      return (
+        title: '这一本里还没有归档的题',
+        desc: '归档的题会放在这里，随时能恢复回错题本。',
+        action: '返回题目列表',
+        onAction: () => _update(() => _inBookArchived = false),
+      );
+    }
+    if (_scopeQuestionCount() == 0) {
+      final back = _folderId != null || _subjectId != null
+          ? (
+              label: '返回目录',
+              go: () {
+                if (_subjectId != null) {
+                  _openDirectory(_subjectId!);
+                } else {
+                  _openShelf();
+                }
+              },
+            )
+          : (label: '返回书架', go: _openShelf);
+      if (_folderId != null) {
+        return (
+          title: '这个文件夹还是空的',
+          desc: '这里还没有整理进来的题。去收集中心拍一道题，或去整理工作台把待整理的题归到这个文件夹。',
+          action: back.label,
+          onAction: back.go,
+        );
+      }
+      if (_subjectId != null) {
+        return (
+          title: '这科里还没有错题',
+          desc: '这科里还没有整理进来的题。去收集中心拍一道题，或去整理工作台把待整理的题归进来。',
+          action: back.label,
+          onAction: back.go,
+        );
+      }
+      return (
+        title: '错题本里还没有题',
+        desc: '去收集中心拍第一道题吧。',
+        action: back.label,
+        onAction: back.go,
+      );
+    }
+    if (!_hasSearchOrFilter()) {
+      return (
+        title: '这里的题错因都已解决',
+        desc: '错因全部解决的题默认不显示，在「筛选」里把错因状态选成「已解决」就能看到它们。',
+        action: '看看已解决的题',
+        onAction: () => _update(() {
+          _filterCauseStatus = 'solved';
+          _page = 0;
+        }),
+      );
+    }
+    return (
+      title: '没找到这道题，换个词试试',
+      desc: '这一科里没有符合当前搜索与筛选的题。',
+      action: '清除全部筛选',
+      onAction: _resetFilters,
+    );
+  }
+
+  /// 空状态本体：A 留白卡片——虚线框 + 小伙伴（QmEmptyState）。
+  Widget _buildListEmpty() {
+    final copy = _emptyCopy();
+    return QmEmptyState(
+      title: copy.title,
+      description: copy.desc,
+      actionLabel: copy.action,
+      onAction: copy.onAction,
     );
   }
 
@@ -666,76 +789,38 @@ extension _WrongbookListBuild on _WrongbookPageState {
     );
   }
 
-  Widget _buildPaperEmpty() {
-    final scale = qmScaleOf(context);
-    final palette = DesignTokens.of(Theme.of(context).brightness);
-    return Padding(
-      padding: EdgeInsets.symmetric(
-        horizontal: 12 * scale,
-        vertical: 28 * scale,
-      ),
-      child: Column(
-        children: [
-          Text(
-            _inBookArchived ? '这一本里还没有归档的题' : '没找到这道题，换个词试试',
-            style: TextStyle(
-              fontSize: 16,
-              fontWeight: FontWeight.w800,
-              color: palette.paperInk,
-            ),
-          ),
-          SizedBox(height: 4 * scale),
-          Text(
-            _inBookArchived ? '归档的题会放在这里，随时能恢复回错题本。' : '这一科里没有符合当前搜索与筛选的题。',
-            style: TextStyle(fontSize: 13.5, color: palette.paperMuted),
-          ),
-          SizedBox(height: 12 * scale),
-          QmButton(
-            label: _inBookArchived ? '返回题目列表' : '清除全部筛选',
-            size: QmButtonSize.small,
-            onPressed: () {
-              if (_inBookArchived) {
-                _update(() => _inBookArchived = false);
-              } else {
-                _resetFilters();
-              }
-            },
-          ),
-        ],
-      ),
-    );
-  }
-
+  /// 大卡片一题一行：卡片本身就是整题切片（外层无背景 / 无边框 /
+  /// 无阴影 / 无内边距；切片白底 + 细边框，封顶 160px、按比例缩放
+  /// 绝不裁切）；左上角蓝色序号圆盘；卡片上不显示题名 / 学科 /
+  /// 错误类型 / 标签 / 下次复习时间 / 收藏星。
+  ///
+  /// B8-9：不再用固定高度内部滚动容器（>2 张卡也一样）：整页只有
+  /// 一个 SingleChildScrollView，卡片全部建出来、随页滚动。
+  /// A 留白卡片：每张卡独立一张白卡，14px 间距。
   Widget _buildLargeCards(List<Question> items, List<String> orderIds) {
     final scale = qmScaleOf(context);
-    final gap = DesignTokens.cardsGap * scale;
     final cards = <Widget>[
       for (var i = 0; i < items.length; i++)
         // 序号 = 本页内的位置（1, 2, 3…），随排序 / 筛选 / 分页重编号。
         _buildLargeCard(items[i], i + 1, orderIds),
     ];
-    if (items.length > 2) {
-      // >2 张卡：固定高度内部滚动容器（约 2.5 张卡，第三张露一半）。
-      final palette = DesignTokens.of(Theme.of(context).brightness);
-      return Container(
-        height: DesignTokens.cardsScrollHeight * scale,
-        padding: EdgeInsets.all(DesignTokens.cardsScrollPadding * scale),
-        decoration: BoxDecoration(
-          border: Border.all(color: palette.lineStrong),
-          borderRadius: BorderRadius.circular(DesignTokens.radius * scale),
-        ),
-        child: ListView.separated(
-          itemCount: cards.length,
-          separatorBuilder: (_, __) => SizedBox(height: gap),
-          itemBuilder: (context, i) => cards[i],
-        ),
-      );
-    }
+    final palette = DesignTokens.of(Theme.of(context).brightness);
     return Column(
       children: [
         for (var i = 0; i < cards.length; i++) ...[
-          if (i > 0) SizedBox(height: gap),
-          cards[i],
+          if (i > 0) SizedBox(height: 14 * scale),
+          Container(
+            padding: EdgeInsets.all(12 * scale),
+            decoration: BoxDecoration(
+              color: palette.surface,
+              border: Border.all(color: palette.line),
+              borderRadius: BorderRadius.circular(
+                DesignTokens.radius * scale,
+              ),
+              boxShadow: palette.shadow,
+            ),
+            child: cards[i],
+          ),
         ],
       ],
     );
@@ -822,10 +907,11 @@ extension _WrongbookListBuild on _WrongbookPageState {
 
   Widget _buildCompactRows(List<Question> items, List<String> orderIds) {
     final scale = qmScaleOf(context);
+    const lineKind = QmRowLineKind.line;
     return Column(
       children: [
         for (var i = 0; i < items.length; i++) ...[
-          if (i > 0) QmRowLine(kind: QmRowLineKind.paper),
+          if (i > 0) QmRowLine(kind: lineKind),
           _buildCompactRow(items[i], orderIds),
         ],
         SizedBox(height: 4 * scale),
@@ -986,10 +1072,11 @@ extension _WrongbookListBuild on _WrongbookPageState {
 
   Widget _buildArchivedRows(List<Question> items, List<String> orderIds) {
     final scale = qmScaleOf(context);
+    const lineKind = QmRowLineKind.line;
     return Column(
       children: [
         for (var i = 0; i < items.length; i++) ...[
-          if (i > 0) QmRowLine(kind: QmRowLineKind.paper),
+          if (i > 0) QmRowLine(kind: lineKind),
           _buildArchivedRow(items[i], orderIds),
         ],
         SizedBox(height: 4 * scale),
@@ -1178,6 +1265,9 @@ extension _WrongbookListBuild on _WrongbookPageState {
           else ...[
             _paperBox(child: _buildArchivedRows(items, orderIds)),
             _buildPagination(archived.length, totalPages, page),
+            // B8-9：与列表页同款页尾留白（分页下拉菜单贴底边会触发
+            // 框架 menuLimits 断言，见 _buildList）。
+            SizedBox(height: 24 * scale),
           ],
         ],
       ),

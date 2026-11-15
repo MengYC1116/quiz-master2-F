@@ -42,12 +42,17 @@ class CollectPage extends StatefulWidget {
     super.key,
     required this.repo,
     required this.onOpenOrganize,
+    this.onGoSubjects,
     this.yoloService,
     this.pdfRenderService,
   });
 
   final QuestionRepository repo;
   final VoidCallback onOpenOrganize;
+
+  /// B8-1：学科删空时导入行给出去学科管理的入口（可空；测试里不传
+  /// 时只显示提示文字，不画按钮）。
+  final VoidCallback? onGoSubjects;
 
   /// 检测服务（可注入；测试用桩服务可返回固定检测结果，避免
   /// 真实推理的耗时与不确定性；不传则用真实服务）。
@@ -88,8 +93,10 @@ class _PendingImport {
 class _CollectPageState extends State<CollectPage> {
   List<CollectTask> _tasks = [];
   // 导入学科下拉框：读库 subjects（B2 补充；以前写死 Subject.all，
-  // 新学科选不到、无法导入）。空库回退预设三科。
-  List<Subject> _subjects = Subject.all;
+  // 新学科选不到、无法导入）。B8-1：空表是删光学科后的合法状态，
+  // 不再回退预设三科（回退就是截图里下拉仍有数学/英语/政治的原因）；
+  // 首帧与读库后都以真实列表为准，空就是空。
+  List<Subject> _subjects = const [];
   // 库里找学科：新学科用库里的名与色；找不到才回退 Subject.byId
   //（数学兜底，只发生在数据不一致时）。
   Subject _subjectOf(String id) =>
@@ -156,13 +163,14 @@ class _CollectPageState extends State<CollectPage> {
       }
       try {
         final boxes = await widget.repo.boxesForTask(task.id);
-        // SR-P2-25：任意层、任意页的草稿框都算“已有草稿”（只认 1 层
-        // 会把“只有 2 层框的页”当成没打开过，警告范围又收窄过头）。
+        // SR-P2-25：任意页的草稿框都算“已有草稿”。
         if (boxes.isNotEmpty) hasAnyDraftBox.add(task.id);
         // SR-P2-25 补信号：同源已有拆分任务 = 打开过并确认过（见字段注释）。
         final split = splitPagesBySource[task.sourcePath] ?? const <int>{};
         if (split.isNotEmpty) hasSplitSibling.add(task.id);
         final boxedPages = <int>{
+          // 只认 1 层框：旧的 layer-2 行编辑器读到就丢，不算“已框”
+          //（B8-2；否则只有旧内框的页会被误判为已框，警告出不来）。
           for (final b in boxes)
             if (b.layer == 1) b.page,
         };
@@ -178,7 +186,7 @@ class _CollectPageState extends State<CollectPage> {
     if (!mounted) return;
     setState(() {
       _tasks = tasks;
-      _subjects = subjects.isEmpty ? Subject.all : subjects;
+      _subjects = subjects;
       _unboxedPagesByTask = unboxed;
       _hasAnyDraftBox = hasAnyDraftBox;
       _hasSplitSibling = hasSplitSibling;
@@ -435,8 +443,6 @@ class _CollectPageState extends State<CollectPage> {
         await widget.repo.saveDraftBoxes(
           taskId: task.id,
           boxesByPage: draft.boxesByPage,
-          inners: draft.inners,
-          standaloneInner: draft.standaloneInner,
           rotations: draft.rotationsByPage,
         );
       },
@@ -485,18 +491,18 @@ class _CollectPageState extends State<CollectPage> {
     final boxedPages = <int>{
       for (final p in pages)
         if (!alreadySplit.contains(p) &&
-            result.boxesByPage[p]!.any((b) => b.layer == 1))
+            result.boxesByPage[p]!.isNotEmpty)
           p,
     };
     var total = 0;
     for (final p in boxedPages) {
-      total += result.boxesByPage[p]!.where((b) => b.layer == 1).length;
+      total += result.boxesByPage[p]!.length;
     }
     if (total == 0) {
       final hadSkippedBoxes = pages.any(
         (p) =>
             alreadySplit.contains(p) &&
-            result.boxesByPage[p]!.any((b) => b.layer == 1),
+            result.boxesByPage[p]!.isNotEmpty,
       );
       await _load();
       if (hadSkippedBoxes && mounted) _snack('这些页已经拆成题了，不用再拆');
@@ -551,18 +557,12 @@ class _CollectPageState extends State<CollectPage> {
     // 时 bakedRel 就是原页图，不记）。先记后写：写一半失败的残文件
     // 也一并清掉（delete 时文件不存在也无妨）。
     final writtenRels = <String>[];
-    // SR3-12：确认时未归属的独立题内框计数（跨页累计），成功后随
-    // 成功提示一起报，不静默丢弃。
-    var ambiguousCount = 0;
-    var tooFarCount = 0;
     try {
       for (final p in pages) {
         // 已拆过的页不再切（见方法头的 alreadySplit）。
         if (alreadySplit.contains(p)) continue;
-        final layer1 = result.boxesByPage[p]!
-            .where((b) => b.layer == 1)
-            .toList();
-        if (layer1.isEmpty) continue;
+        final pageBoxes = result.boxesByPage[p]!;
+        if (pageBoxes.isEmpty) continue;
         // 本页页图：PDF 每页一张，图片各页同一张；缺失则整单失败。
         final pageRel = ImportService.pageImageRelativeForTask(task, page: p);
         final pageAbs = pageRel.isEmpty
@@ -586,8 +586,8 @@ class _CollectPageState extends State<CollectPage> {
           bakedBytes = pageBytes;
           bakedRel = pageRel;
         }
-        for (var i = 0; i < layer1.length; i++) {
-          final box = layer1[i];
+        for (var i = 0; i < pageBoxes.length; i++) {
+          final box = pageBoxes[i];
           final qid = 'import-$ts-$rnd-$p-$i';
           // 切片写盘在事务前：失败直接抛，库一律不动。
           final slice = await cropBoxPng(bakedBytes, box);
@@ -613,8 +613,8 @@ class _CollectPageState extends State<CollectPage> {
               sliceHeight: slice.height,
             ),
           );
-          // 该题的框：1 层框 + 它的 2 层子框（parent_box_id 指向 1 层框）。
-          boxesByQuestionId[qid] = [box, ...?result.inners['$p:${box.id}']];
+          // 该题的框：题级框。
+          boxesByQuestionId[qid] = [box];
           splitTasks.add(
             CollectTask(
               id: 'task-$ts-$rnd-$p-$i',
@@ -630,36 +630,6 @@ class _CollectPageState extends State<CollectPage> {
               sourcePath: task.sourcePath,
             ),
           );
-        }
-        // SR2-4：有框页上的独立题内框（standaloneInner，无父框）
-        // 按中心点挂到最近/命中的题下，不再随确认静默丢弃。
-        // 落点规则与 box_editor `_confirmPendingType` 一致：
-        // 中心落在某题级框内即命中该题，否则取最近的题级框。
-        // 坐标原样保留、只补 parentBoxId：_clampInner 会把完全落在
-        // 框外的独立框压成 0.02 的细条（毁掉手画几何），下游
-        // layer2BoxToSliceRect 本就会把超框部分夹到 0..1 内。
-        for (final inner
-            in result.standaloneInner[p] ?? const <QuestionBox>[]) {
-          final match = _nearestLayer1Box(inner, layer1);
-          if (match.ambiguous) {
-            // SR3-12：中心同时落在两道题里且相交面积也平局——不挂，
-            // 留在 standaloneInner（本次确认不入库），成功后提示
-            // 用户手动指定归属。
-            ambiguousCount++;
-            continue;
-          }
-          final target = match.box;
-          if (target == null) {
-            // SR3-12：离所有题都太远（> 页宽/高的 0.25）——不挂，
-            // 成功后提示用户手动处理。
-            tooFarCount++;
-            continue;
-          }
-          final targetQid = 'import-$ts-$rnd-$p-${layer1.indexOf(target)}';
-          boxesByQuestionId[targetQid] = [
-            ...?boxesByQuestionId[targetQid],
-            inner.copyWith(parentBoxId: target.id),
-          ];
         }
       }
     } catch (e) {
@@ -677,12 +647,9 @@ class _CollectPageState extends State<CollectPage> {
     // 连同页图引用一起丢）。无未框页时 retained 为空，行为不变。
     CollectTask? retained;
     Map<int, List<QuestionBox>> retainedBoxesByPage = const {};
-    Map<String, List<QuestionBox>> retainedInners = const {};
-    Map<int, List<QuestionBox>> retainedStandaloneInner = const {};
     if (unboxedPages.isNotEmpty) {
       // 保留任务：按同 id 重建，页图目录 imports/<id>/ 不变，从首个
-      // 未框页继续修；未框页的草稿（本就没有 1 层框，只剩 2 层框）
-      // 与旋转角一并写回。
+      // 未框页继续修；未框页的草稿与旋转角一并写回。
       // SR2-22：状态写 boxing，不重置回 needBox——boxing 就是“已打开过
       // 修框”的持久化标志（_openBoxEditor 打开时置为 boxing 并落盘）；
       // 保留任务只可能由编辑器确认产生，必定打开过，直接写 boxing，
@@ -712,14 +679,6 @@ class _CollectPageState extends State<CollectPage> {
         for (final p in unboxedPages)
           p: List.of(result.boxesByPage[p] ?? const <QuestionBox>[]),
       };
-      retainedInners = {
-        for (final e in result.inners.entries)
-          if (unboxedPages.contains(_innerPage(e.key))) e.key: e.value,
-      };
-      retainedStandaloneInner = {
-        for (final e in result.standaloneInner.entries)
-          if (unboxedPages.contains(e.key)) e.key: e.value,
-      };
     }
     try {
       await widget.repo.confirmSplit(
@@ -729,8 +688,6 @@ class _CollectPageState extends State<CollectPage> {
         boxesByQuestionId: boxesByQuestionId,
         retainedTask: retained,
         retainedBoxesByPage: retainedBoxesByPage,
-        retainedInners: retainedInners,
-        retainedStandaloneInner: retainedStandaloneInner,
       );
     } catch (e) {
       // SR-P2-22：事务失败——库已回滚，本次新写的文件同样按清单删，
@@ -753,17 +710,10 @@ class _CollectPageState extends State<CollectPage> {
     }
     await _load();
     if (mounted) {
-      // SR3-12：未归属的独立题内框随成功提示一起报（不静默丢弃）。
-      final unattached = [
-        if (ambiguousCount > 0)
-          '有 $ambiguousCount 个题内框同时落在两道题里，请手动指定归属',
-        if (tooFarCount > 0)
-          '有 $tooFarCount 个题内框离所有题太远，未归属，请手动处理',
-      ].join('；');
       final base = unboxedPages.isNotEmpty
           ? '已生成 $total 道题去整理，还有 ${unboxedPages.length} 页没框留在任务里'
           : '已生成 $total 道题，去整理吧';
-      _snack(unattached.isEmpty ? base : '$base；$unattached');
+      _snack(base);
     }
   }
 
@@ -780,75 +730,6 @@ class _CollectPageState extends State<CollectPage> {
                 t.status == CollectStatus.done))
           t.page,
     };
-  }
-
-  /// 题内框 key（`页:框 id`）里的页码；解析不出按 -1 算（不匹配任何页）。
-  static int _innerPage(String key) => int.tryParse(key.split(':').first) ?? -1;
-
-  /// SR2-4：独立题内框按中心点找最近/命中的题级框。中心落在框内时
-  /// 距离为 0（命中）；否则取中心到框矩形的最短距离（最近）。
-  /// SR3-12：返回三态——命中/最近（[box]）、歧义（[ambiguous]，
-  /// 中心同时落在两道题里且相交面积也平局）、过远（[box] 为 null
-  /// 且不歧义：中心离所有题都超过页宽/高的 0.25，归一化坐标下
-  /// 页宽/高为 1）。平局不再静默取列表先到者：距离相同时取内框
-  /// 与候选框的相交面积最大者（或面积最小的命中框的等价实现——
-  /// 相交面积越大越贴合）；仍平局时判歧义，由调用方留待手动处理。
-  static ({QuestionBox? box, bool ambiguous}) _nearestLayer1Box(
-    QuestionBox inner,
-    List<QuestionBox> layer1,
-  ) {
-    if (layer1.isEmpty) return (box: null, ambiguous: false);
-    final cx = inner.x + inner.w / 2;
-    final cy = inner.y + inner.h / 2;
-    double dist2(QuestionBox b) {
-      final dx = cx < b.x
-          ? b.x - cx
-          : cx > b.x + b.w
-              ? cx - (b.x + b.w)
-              : 0.0;
-      final dy = cy < b.y
-          ? b.y - cy
-          : cy > b.y + b.h
-              ? cy - (b.y + b.h)
-              : 0.0;
-      return dx * dx + dy * dy;
-    }
-
-    var bestDist2 = double.infinity;
-    for (final b in layer1) {
-      final d = dist2(b);
-      if (d < bestDist2) bestDist2 = d;
-    }
-    // 距离上限：中心离最近的题都超过页宽/高的 0.25 时不挂。
-    const maxDist = 0.25;
-    if (bestDist2 > maxDist * maxDist) {
-      return (box: null, ambiguous: false);
-    }
-    // 平局：距离相同的候选里取相交面积最大者；仍平局则判歧义。
-    QuestionBox? best;
-    var bestInter = -1.0;
-    var tied = false;
-    for (final b in layer1) {
-      if (dist2(b) != bestDist2) continue;
-      final inter = _intersectionArea(inner, b);
-      if (inter > bestInter) {
-        bestInter = inter;
-        best = b;
-        tied = false;
-      } else if (inter == bestInter) {
-        tied = true;
-      }
-    }
-    if (tied) return (box: null, ambiguous: true);
-    return (box: best, ambiguous: false);
-  }
-
-  /// 两框的相交面积（无相交为 0），供 [_nearestLayer1Box] 平局判据用。
-  static double _intersectionArea(QuestionBox a, QuestionBox b) {
-    final w = math.min(a.x + a.w, b.x + b.w) - math.max(a.x, b.x);
-    final h = math.min(a.y + a.h, b.y + b.h) - math.max(a.y, b.y);
-    if (w <= 0 || h <= 0) return 0.0;
-    return w * h;
   }
 
   /// 页码清单：超过 5 页只列前 5 页加“等”，文案不刷屏。
@@ -1143,14 +1024,21 @@ class _CollectPageState extends State<CollectPage> {
                     color: palette.ink,
                   ),
                   icon: QmGlyph(QmGlyphs.chevronDown, color: palette.muted),
-                  hint: Text('请选择学科', style: TextStyle(color: palette.muted)),
+                  hint: Text(
+                    // B8-1：学科删空时下拉无选项——改提示、禁用下拉，
+                    // 不再靠回退的预设三科充数。
+                    _subjects.isEmpty ? '还没有学科' : '请选择学科',
+                    style: TextStyle(color: palette.muted),
+                  ),
                   items: _subjects
                       .map(
                         (s) =>
                             DropdownMenuItem(value: s.id, child: Text(s.name)),
                       )
                       .toList(),
-                  onChanged: (v) => setState(() => _selectedSubjectId = v),
+                  onChanged: _subjects.isEmpty
+                      ? null
+                      : (v) => setState(() => _selectedSubjectId = v),
                 ),
               ),
             ),
@@ -1158,13 +1046,25 @@ class _CollectPageState extends State<CollectPage> {
         ),
         SizedBox(height: 4 * scale),
         Text(
-          '每次导入都自己选：不默认上次选的，也不默认数学，没选学科不能导入',
+          // B8-1：学科删空时说明去处，不留一个打不开的空下拉。
+          _subjects.isEmpty
+              ? '还没有学科：先去「学科管理」添加一个，再回来导入。'
+              : '每次导入都自己选：不默认上次选的，也不默认数学，没选学科不能导入',
           style: TextStyle(
             fontSize: DesignTokens.captionFontSize,
             color: palette.muted,
             height: 1.4,
           ),
         ),
+        if (_subjects.isEmpty && widget.onGoSubjects != null) ...[
+          SizedBox(height: 8 * scale),
+          QmButton(
+            label: '去学科管理',
+            variant: QmButtonVariant.primary,
+            size: QmButtonSize.small,
+            onPressed: widget.onGoSubjects,
+          ),
+        ],
       ],
     );
   }

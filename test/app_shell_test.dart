@@ -3,6 +3,7 @@
 // 角标与速览数字以参数传入，口径本身由 repository 层保证，见 R2 报告）。
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:quiz_master2/models/models.dart';
 import 'package:quiz_master2/theme/app_theme.dart';
 import 'package:quiz_master2/widgets/app_shell.dart';
 
@@ -14,6 +15,9 @@ Future<void> pumpNav(
   int organizeBadge = 0,
   Map<String, int> navRev = const {},
   Map<String, int> navPending = const {},
+  // B8-1：AppNavBar 不传 subjects 时不再回退预设三科（空就是空）；
+  // 需要学科行的测试显式传 Subject.all。
+  List<Subject>? subjects,
   Brightness brightness = Brightness.light,
   double scale = 1.0,
   ValueChanged<String>? onNavigate,
@@ -49,6 +53,7 @@ Future<void> pumpNav(
                   organizeBadge: organizeBadge,
                   navRev: navRev,
                   navPending: navPending,
+                  subjects: subjects,
                 ),
               ),
             ),
@@ -226,12 +231,13 @@ void main() {
   group('学科速览', () {
     testWidgets('每科一行：待整理 · 待复习，缺省为 0', (tester) async {
       await pumpNav(tester,
+          subjects: Subject.all,
           navRev: const {'math': 3, 'english': 2, 'politics': 1},
           navPending: const {'math': 2, 'english': 0, 'politics': 1});
       expect(find.text('待整理 2 · 待复习 3'), findsOneWidget);
       expect(find.text('待整理 0 · 待复习 2'), findsOneWidget);
       expect(find.text('待整理 1 · 待复习 1'), findsOneWidget);
-      await pumpNav(tester);
+      await pumpNav(tester, subjects: Subject.all);
       expect(find.text('待整理 0 · 待复习 0'), findsNWidgets(3));
     });
   });

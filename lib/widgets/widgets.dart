@@ -20,256 +20,6 @@ String sliceKindLabel(String kind) => switch (kind) {
   _ => '材料题',
 };
 
-/// 二层区域（stem / option / figure）：只对演示题 / 老题按题型
-/// 与题干文字推导——选择题（题干含填空 `（　）` / `______`）有选项区，
-/// 图表 / 时间轴题有配图区，题干区恒有。HTML 演示 9 题中 8 题与此规则
-/// 一致（政治 p1 在 HTML 里是选择题，但 Flutter 演示题干无填空标记，
-/// 无法推导，记为已知近似，见 R5 报告）。
-///
-/// P1-1 降级（2026-11-14，Meng 已定：二层暂缓，不接线）：真实题的
-/// `sliceText` 为空，不再从空文字推导假区域——`sliceText` 为空返回
-/// 空列表，整理页随之隐藏 region 开关、只留整题切片展示。库里已存的
-/// 手动二层框（`QuestionBox` layer=2）保留不动，不删数据、不改
-/// schema；叠加层渲染见 [realRegionRects] / [QuestionRegionOverlays]
-///（B3 追加项 1：有真实框时用真实框坐标，无框时回退示意框；是否显示
-/// 仍由本函数的返回值决定，真实题仍不显示区域）。
-List<String> regionsOfQuestion(Question q) {
-  if (q.sliceText.trim().isEmpty) return const [];
-  final regions = <String>['stem'];
-  if (q.sliceText.contains('（　）') || q.sliceText.contains('______')) {
-    regions.add('option');
-  }
-  if (q.sliceKind == 'chart' || q.sliceKind == 'timeline') {
-    regions.add('figure');
-  }
-  return regions;
-}
-
-/// 把页图坐标的 layer-2 框换算到整题切片坐标（0..1）。
-///
-/// 坐标系依据（与已有实现一致，不是新定的）：切片就是页图按 [layer1]
-///（layer=1 整题框，页图 0..1 坐标）裁出的图（见
-/// `page_image_pipeline.cropBoxPng`）；确认时框已随页图旋转烘焙到
-/// 同一坐标系（见 collect_page 的 `rotateBoxToRotatedPage` 调用），
-/// 所以换算就是 layer-2 框在 layer-1 框内的相对位置：
-/// `x' = (x − lx) / lw`，`y' = (y − ly) / lh`，`w' = w / lw`，
-/// `h' = h / lh`；结果钳制进 0..1。
-/// layer-1 框无面积、或换算后无面积（框完全落在整题框外）时返回
-/// null——调用方回退示意框。
-Rect? layer2BoxToSliceRect(QuestionBox layer1, QuestionBox layer2) {
-  if (layer1.w <= 0 || layer1.h <= 0) return null;
-  final rect = Rect.fromLTRB(
-    ((layer2.x - layer1.x) / layer1.w).clamp(0.0, 1.0),
-    ((layer2.y - layer1.y) / layer1.h).clamp(0.0, 1.0),
-    ((layer2.x + layer2.w - layer1.x) / layer1.w).clamp(0.0, 1.0),
-    ((layer2.y + layer2.h - layer1.y) / layer1.h).clamp(0.0, 1.0),
-  );
-  if (rect.width <= 0 || rect.height <= 0) return null;
-  return rect;
-}
-
-/// 从某题的全部框（layer 1 + layer 2，均为页图 0..1 坐标）算出各
-/// 二层区域在整题切片内的 0..1 矩形，键为 region 名（stem / option /
-/// figure），供 [QuestionRegionOverlays] 的 `realRects` 用。
-/// 无 layer-1 框、或某区域无 layer-2 框、或换算后无面积时，该区域
-/// 不出现在结果里（调用方回退示意框）。
-/// SR-P2-23：旧实现取第一个 1 层框就 break，其后所有 2 层框都按它
-/// 换算——同一题有多个 1 层框时（详情页重框允许），挂在第 2 个框下
-/// 的 2 层框会错位。现在按 parentBoxId 把 2 层框归属到各自的 1 层
-/// 框再换算；parentBoxId 为空（老数据行）时回退到第一个 1 层框。
-/// SR-P2-24：同区域多个框的优先级是确定的——取换算后面积最大者，
-/// 面积相等取列表第一个（不依赖库返回的行序；行序本身见
-/// boxesForPageImageFromImpl 的 ORDER BY，见 B5-P2-COLLECT 报告
-/// 转交项）。layer-2 之外（type 为 question 的）行忽略。
-/// SR2-24：只取切片来源父框（首个 1 层框）下的内框参与比较——切片
-/// 只按首个 1 层框裁出，挂在其他父框下的内框换算后的面积与首个框
-/// 下的不可比（小父框下的小内框换算后可能“更大”），跨父框比面积
-/// 会让不属于该切片的内框获胜。parentBoxId 为空的老数据行回退到
-/// 首个 1 层框，仍算它的。
-Map<String, Rect> realRegionRects(List<QuestionBox> boxes) {
-  QuestionBox? firstLayer1;
-  final layer1ById = <String, QuestionBox>{};
-  for (final b in boxes) {
-    if (b.layer == 1) {
-      firstLayer1 ??= b;
-      layer1ById[b.id] = b;
-    }
-  }
-  if (firstLayer1 == null) return const {};
-  final out = <String, Rect>{};
-  for (final b in boxes) {
-    if (b.layer != 2) continue;
-    if (b.type != 'stem' && b.type != 'option' && b.type != 'figure') {
-      continue;
-    }
-    final parent = b.parentBoxId == null
-        ? null
-        : layer1ById[b.parentBoxId];
-    // SR2-24：只取切片来源父框（首个 1 层框）下的内框参与比较；
-    // parentBoxId 为空时回退到首个框（仍算它的），指向其他父框
-    // 的内框跳过——它不属于这张切片，换算面积再大也不参选。
-    final source = parent ?? firstLayer1;
-    if (source.id != firstLayer1.id) continue;
-    final rect = layer2BoxToSliceRect(source, b);
-    if (rect == null) continue;
-    final prev = out[b.type];
-    // 同区域多框：面积大者胜，同面积保留先到的（确定性优先级）。
-    if (prev == null ||
-        rect.width * rect.height > prev.width * prev.height) {
-      out[b.type] = rect;
-    }
-  }
-  return out;
-}
-
-/// 二层区域高亮叠加层：按 HTML `paperHTML` 的区域几何（stem 上 34%、
-/// option 下 36%、figure 下 42% 居中 48% 宽）画 2px 虚线框 + 区域名。
-/// 只画 [visible] 里的区域；本身不吃手势（包一层 IgnorePointer 后
-/// 底下的 QuestionSlice 点按仍可达）。
-/// B3 追加项 1：[realRects] 有某区域的切片坐标（0..1，见
-/// [realRegionRects]）时画真实框，没有该区域时回退上述示意比例。
-/// P1-1 降级后只对演示题 / 老题画框：真实题的 `visible` 为空，不画
-/// 任何框——是否显示仍由调用方按 [regionsOfQuestion] 决定，真实框
-/// 只改变“画在哪”，不改变“画不画”。
-class QuestionRegionOverlays extends StatelessWidget {
-  const QuestionRegionOverlays({
-    super.key,
-    required this.question,
-    required this.visible,
-    this.realRects = const {},
-  });
-
-  final Question question;
-  final Set<String> visible;
-
-  /// 各二层区域在整题切片内的 0..1 矩形（键 stem / option / figure）。
-  /// 只含库里真实有的框；缺失的区域回退示意框。
-  final Map<String, Rect> realRects;
-
-  @override
-  Widget build(BuildContext context) {
-    final palette = DesignTokens.of(Theme.of(context).brightness);
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        final w = constraints.maxWidth;
-        final h = constraints.maxHeight;
-        if (w.isInfinite || h.isInfinite || w <= 0 || h <= 0) {
-          return const SizedBox.shrink();
-        }
-        /// [fallback] 是示意框（像素）；[realRects] 里有该区域的真实
-        /// 切片坐标（0..1）时按真实框画，否则用示意框。
-        Widget region(String key, Color color, String label, Rect fallback) {
-          if (!visible.contains(key)) return const SizedBox.shrink();
-          final real = realRects[key];
-          final r = real == null
-              ? fallback
-              : Rect.fromLTWH(
-                  real.left * w,
-                  real.top * h,
-                  real.width * w,
-                  real.height * h,
-                );
-          return Positioned(
-            left: r.left,
-            top: r.top,
-            width: r.width,
-            height: r.height,
-            child: CustomPaint(
-              painter: _DashedRegionPainter(color),
-              child: Align(
-                alignment: Alignment.topLeft,
-                child: Padding(
-                  padding: const EdgeInsets.all(4),
-                  child: Text(
-                    label,
-                    style: TextStyle(
-                      fontSize: 11,
-                      fontWeight: FontWeight.w700,
-                      color: color,
-                      // 行高 1.5：Linux 回退字体（Noto Serif CJK）的
-                      // 自然行高大于 1.2em，1.2 会在 RenderParagraph
-                      // 默认 clip 下裁掉字形顶部；1.5 留足字形高度。
-                      height: 1.5,
-                    ),
-                  ),
-                ),
-              ),
-            ),
-          );
-        }
-
-        return ClipRect(
-          // B2 Bug 2：框一律按图片边界裁剪——叠加层尺寸与图同宽时框本就
-          // 在图内；ClipRect 是兜底，后续区域几何再改也不会画到图外。
-          child: Stack(
-            children: [
-              region(
-                'stem',
-                palette.stem,
-                'stem 题干',
-                Rect.fromLTWH(10, 10, w - 20, h * 0.34),
-              ),
-              region(
-                'option',
-                palette.option,
-                'option 选项',
-                Rect.fromLTWH(10, h - 12 - h * 0.36, w - 20, h * 0.36),
-              ),
-              region(
-                'figure',
-                palette.figure,
-                'figure 插图',
-                Rect.fromLTWH(
-                  w * 0.26,
-                  h - 14 - h * 0.42,
-                  w * 0.48,
-                  h * 0.42,
-                ),
-              ),
-            ],
-          ),
-        );
-      },
-    );
-  }
-}
-
-/// 虚线圆角框（2px 虚线 + 8% 透明同色填充），供二层区域高亮用。
-class _DashedRegionPainter extends CustomPainter {
-  _DashedRegionPainter(this.color);
-  final Color color;
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final fill = Paint()..color = color.withValues(alpha: 0.08);
-    final rrect = RRect.fromRectAndRadius(
-      Offset.zero & size,
-      const Radius.circular(8),
-    );
-    canvas.drawRRect(rrect, fill);
-    final paint = Paint()
-      ..color = color
-      ..strokeWidth = 2
-      ..style = PaintingStyle.stroke;
-    final path = Path()..addRRect(rrect);
-    const dash = 7.0;
-    const gap = 4.0;
-    for (final metric in path.computeMetrics()) {
-      var drawn = 0.0;
-      final total = metric.length;
-      while (drawn < total) {
-        final segment = metric.extractPath(drawn, drawn + dash);
-        canvas.drawPath(segment, paint);
-        drawn += dash + gap;
-      }
-    }
-  }
-
-  @override
-  bool shouldRepaint(covariant _DashedRegionPainter oldDelegate) =>
-      oldDelegate.color != color;
-}
-
 /// 整题图切片：白色底、1px 细边框、10px 圆角、限高 160px、按比例缩放不裁切、
 /// 左右居中不偏移。图片就是卡片（外层无背景），点切片进题目详情。
 /// 加载失败时显示学科图标 + 题目类型文字兜底。
@@ -792,7 +542,7 @@ class SubjectLabel extends StatelessWidget {
 
 /// 题目图放大浮层（共享；整理工作台、题目详情、复习都用它）：
 /// 点图弹出大居中浮层，滚轮缩放，＋/－按钮，点图/点背景/
-/// Esc/✕ 关闭。高亮区（若传 [visibleRegions]）跟着图一起缩放。
+/// Esc/✕ 关闭。
 /// [returnLabel] 是浮层提示里的返回地（默认“整理台”，详情页传“题目详情”）。
 /// 文字符号（D3），不用图标字体。
 ///
@@ -809,16 +559,12 @@ class SubjectLabel extends StatelessWidget {
 Future<void> showQuestionZoomDialog(
   BuildContext context,
   Question question, {
-  Set<String> visibleRegions = const {},
-  Map<String, Rect> realRegionRects = const {},
   String returnLabel = '整理台',
 }) {
   return showDialog<void>(
     context: context,
     builder: (ctx) => _ZoomDialog(
       question: question,
-      visibleRegions: visibleRegions,
-      realRegionRects: realRegionRects,
       returnLabel: returnLabel,
     ),
   );
@@ -827,17 +573,10 @@ Future<void> showQuestionZoomDialog(
 class _ZoomDialog extends StatefulWidget {
   const _ZoomDialog({
     required this.question,
-    required this.visibleRegions,
-    required this.realRegionRects,
     required this.returnLabel,
   });
 
   final Question question;
-  final Set<String> visibleRegions;
-
-  /// 各二层区域在整题切片内的 0..1 真实框矩形（见 [realRegionRects]；
-  /// 缺失的区域回退示意框）。
-  final Map<String, Rect> realRegionRects;
   final String returnLabel;
 
   @override
@@ -1035,8 +774,7 @@ class _ZoomDialogState extends State<_ZoomDialog> {
                           width: _paperWidth(scale),
                           child: IntrinsicHeight(
                             // B2 Bug 2：与整理页 _paperImage 同因——SizedBox
-                            // 680 宽、真图按固有尺寸窄于它，叠加层按 Stack
-                            // 宽画框会伸到图外。Align 让 Stack 收成切片
+                            // 680 宽、真图按固有尺寸窄于它。Align 让 Stack 收成切片
                             // 实际尺寸；纸面本身已是左对齐，外观不变。
                             child: Align(
                               alignment: Alignment.topLeft,
@@ -1046,15 +784,6 @@ class _ZoomDialogState extends State<_ZoomDialog> {
                                   QuestionSlice(
                                     question: widget.question,
                                     maxHeight: 480,
-                                  ),
-                                  Positioned.fill(
-                                    child: IgnorePointer(
-                                      child: QuestionRegionOverlays(
-                                        question: widget.question,
-                                        visible: widget.visibleRegions,
-                                        realRects: widget.realRegionRects,
-                                      ),
-                                    ),
                                   ),
                                 ],
                               ),

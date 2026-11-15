@@ -475,17 +475,17 @@ class CollectTask {
   final Map<int, int> pageRotations;
 }
 
-/// 两层框：layer 1 整题框，layer 2 题干 / 选项 / 配图（只做辅助区，永不拆题）。
+/// 题级框：layer 1 整题框（完整题目就是最小单位，永不拆题）。
 /// §1.2(c)：表里有的字段模型里也要有（扩展模型，不另建 StoredQuestionBox）。
 /// 编辑器内新建的框只填 id/layer/type/x/y/w/h，其余为 NULL/默认值：
 /// confidence 只有 YOLO 框有值（手画框为 NULL），origin 默认 'manual'，
 /// collectTaskId 是修框阶段的草稿归属（确认后只保留 questionId），
-/// parentBoxId 是第 2 层框的父框（第 1 层框为 NULL），page 默认 1。
+/// parentBoxId 保留给旧数据行（新框恒为 NULL），page 默认 1。
 class QuestionBox {
   const QuestionBox({
     required this.id,
     required this.layer,
-    required this.type, // question / stem / option / figure
+    required this.type, // question；旧行可能取历史值（表 CHECK 约束为准）
     required this.x,
     required this.y,
     required this.w,

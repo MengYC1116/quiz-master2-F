@@ -58,9 +58,6 @@ class AppPalette {
     required this.paperBtnText,
     required this.paperStar,
     required this.paperStarOn,
-    required this.stem,
-    required this.option,
-    required this.figure,
     required this.math,
     required this.mathSoft,
     required this.mathInk,
@@ -115,9 +112,6 @@ class AppPalette {
   final Color paperBtnText;
   final Color paperStar;
   final Color paperStarOn;
-  final Color stem; // --stem 题干区
-  final Color option; // --option 选项区
-  final Color figure; // --figure 配图区
   final Color math; // --math 学科色·数学（圆点 / 数字 / 标签）
   final Color mathSoft; // --math-soft
   final Color mathInk; // --math-ink 深色下标签文字用此色
@@ -219,9 +213,6 @@ class DesignTokens {
     paperBtnText: Color(0xFF3D4438),
     paperStar: Color(0xFFB9C2CE),
     paperStarOn: Color(0xFFE8A13A),
-    stem: Color(0xFF2E7CF6),
-    option: Color(0xFF00A884),
-    figure: Color(0xFFF97316),
     math: Color(0xFF2E7CF6),
     mathSoft: Color(0xFFE1EDFF),
     mathInk: Color(0xFF175CD3),
@@ -288,9 +279,6 @@ class DesignTokens {
     paperBtnText: Color(0xFF3D4438),
     paperStar: Color(0xFFB9C2CE),
     paperStarOn: Color(0xFFE8A13A),
-    stem: Color(0xFF7FA8D0),
-    option: Color(0xFF8FB8A4),
-    figure: Color(0xFFA79BC0),
     math: Color(0xFF87A9CC),
     mathSoft: Color(0xFF262B33),
     mathInk: Color(0xFFACC8E2),
@@ -618,6 +606,12 @@ class DesignTokens {
   // 封面内「开始复习」15px/800、padding 9px 0、圆角 12px、上边距 10px；
   // 书架分页器上边距 16px。
   static const double shelfGridGap = 22;
+  // 封面固定宽 300px（B8-8：HTML 预览无固定宽，宽由 3 列网格撑出——
+  // 预览 `.wrap` max-width 1260 − padding 22×2 − 导航 216 −
+  // `.main` padding 30×2 = 书架 940px，(940 − 22×2) / 3 ≈ 299，
+  // 取整 300；高沿用 min-height 376，封面长宽比 300:376；
+  // 宽高只随字号缩放因子变，不随窗口变，窗口只改变每行本数）。
+  static const double bookWidth = 300;
   static const double bookMinHeight = 376;
   static const double bookPaddingTop = 34;
   static const double bookPaddingH = 18;
