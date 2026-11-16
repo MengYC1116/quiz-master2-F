@@ -250,12 +250,12 @@ Future<void> importBackupJsonIntoImpl(
       }
       // §2.3：恢复后 settings.schemaVersion 写回 2（备份里的 settings
       // 行若缺这一键，在此补写；若有，也以 2 为准）。
-      await db.customInsert(
-        'INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)',
-        variables: [
-          Variable.withString('schemaVersion'),
-          Variable.withString('${AppDatabase.schemaVersion}'),
-        ],
+      // B2：走 db_settings 的类型化 upsert（db.into(db.settings)，
+      // 不再手写 INSERT OR REPLACE SQL；与事务同连接，失败随事务回滚）。
+      await _upsertSettingInto(
+        db,
+        'schemaVersion',
+        '${AppDatabase.schemaVersion}',
       );
     });
   } on BackupRestoreException {
@@ -382,19 +382,36 @@ bool _isRestoreStagingDir(String name) {
 }
 
 /// §2.3/P3：zip 备份恢复（JSON + 文件一起恢复，恢复即完整）。
-/// 1. 解包并校验每个条目路径（zip slip：任一条目非法 → 拒绝整个包，
-///    见 zip_archive.dart；含 `imports/` / `slices/` 之外的文件
-///    条目也拒绝）；
-/// 2. SR-P2-5：文件进位前按峰值占用估算（现有占用 + 解压后总字节，
-///    SR2-19：staging 副本与原文件共存，峰值不是恢复后占用），
-///    超 2GB 拒绝整个恢复；
-/// 3. 先把文件解到 staging 目录（数据目录内的
-///    `.restore-staging-<时间戳>`），再校验 backup.json；
-/// 4. 校验通过后：文件原子替换进位（先把被覆盖的原文件挪到
-///    staging 的 `.overwritten/` 里），再走 [AppDatabase.importBackupJsonInto]
-///    整体覆盖数据库；
-/// 5. 任一步失败 → 删 staging、不动原库（数据库失败时已移入的
-///    文件也从 `.overwritten/` 移回）；成功后删 staging。
+/// B2：按 plan v9 §四第 2 阶段第 5 条“备份恢复”五步执行（缺一步即协议未闭合）：
+/// 1. 准备：zip 校验（路径、版本、容量峰值）通过后，先写恢复日志 PREPARING
+///    （[RestoreJournalStore.writeInitial]，原子更新），再建 staging 目录解压；
+///    正式文件与数据库在此之前一律不动；
+/// 2. 完整性验证：staging 里每个文件条目落盘后核对存在与字节数；
+/// 3. 一致快照：进维护状态（[AppDatabase._restoreMaintenance]，[db] getter
+///    拒绝业务取连接）→ 切 WAL（当前打开方式默认 journal_mode=delete，
+///    该模式下 wal_checkpoint 是空操作，busy 恒为 0，故必须先切 WAL；
+///    切不过说明另有连接占用，直接拒绝）→ `PRAGMA wal_checkpoint(TRUNCATE)`
+///    读第一列判定 busy（1 = 被活动读事务阻碍），busy 时重试等一会儿，
+///    仍 busy 则拒绝、不复制主库文件 → 复制主库 + -wal/-shm 为快照并校验
+///    （SQLite 文件头）；快照完成才写日志 SNAPSHOT_READY；
+/// 4. 切换：先写切换清单（manifest：每条待装文件的相对路径 + 是否有原文件，
+///    在 rollback 目录里），再写日志 FILES_SWITCHING，再逐文件进位——
+///    原文件先移进 rollback 目录（`imports-rollback/<id>/`，与正式目录
+///    同一文件系统，见 B-NEW-07 硬性约束），staging 文件再移进正式位置；
+///    两次移动的目标都不存在，不用 File.rename 覆盖已存在目标、不触发
+///    Win11 errno 5；未被备份引用的原文件不动（B2-5c 已钉死：恢复不删旧文件，
+///    孤儿扫描接住它们——故不用 plan 字面的整目录重命名，逐文件进位 +
+///    rollback 目录同样保证“被覆盖的原文件内容必须能回来”）；
+///    进位后核对正式文件存在与字节数，再写日志 DATABASE_RESTORING；
+/// 5. 写库 + 提交：[AppDatabase.importBackupJsonInto] 事务整体覆盖数据库；
+///    成功后写日志 COMMITTED，再清理 rollback 目录、快照、staging 与日志
+///    （日志最后删：清理中途崩溃，下次启动见 COMMITTED 只清残留、不回滚）。
+/// 任一步失败 → 补偿回滚（manifest 按磁盘实际状态把文件恢复原样；
+/// 数据库由导入事务保护，进程内不换库文件——连接还开着，换文件不安全；
+/// 快照只供崩溃后启动钩子用）并清理 staging / rollback / 快照 / 日志；
+/// DB 已提交后才失败的，不再动文件（新库新文件已一致），保留日志 +
+/// 快照 + rollback 目录，下次启动由启动钩子完整回滚。
+/// 故障保证范围（B-NEW-16）：只覆盖进程强制终止，不承诺断电恢复。
 /// 老 JSON 备份（`.qm2backup` 但内容是 JSON）不走这里，走
 /// [AppDatabase.importBackupJsonInto]（见设置页的魔数识别）。
 Future<void> importBackupZipIntoImpl(
@@ -442,13 +459,59 @@ Future<void> importBackupZipIntoImpl(
       '不需要的题目再恢复',
     );
   }
-  final stamp = DateTime.now().millisecondsSinceEpoch;
-  final staging = Directory(p.join(dir, '.restore-staging-$stamp'));
-  final overwritten = Directory(p.join(staging.path, '.overwritten'));
-  final movedIn = <String>[];
-  final backedUp = <({String current, String backup})>[];
+  // 本次恢复的任务 id 与三处位置（日志 / staging / rollback / 快照
+  // 全在数据目录内，同文件系统）。
+  final taskId = _nextRestoreTaskId();
+  final stagingDir = Directory(p.join(dir, 'restore-staging', taskId));
+  final rollbackDir = Directory(p.join(dir, 'imports-rollback', taskId));
+  final snapshotFile = File(p.join(dir, '.restore-snapshot-$taskId.db'));
+  final dbFile = File(p.join(dir, 'quiz-master2.db'));
+  final hadDbFile = dbFile.existsSync();
+  final store = RestoreJournalStore(dataDir: Directory(dir));
+
+  // 未完成的上次恢复：本次不许直接开始（启动钩子才是它的处理口径；
+  // 进程内没有关连接的安全回滚条件）。COMMITTED 残留（上次恢复已完成、
+  // 只剩收尾没清）例外：清掉残留材料后继续。
+  if (store.formalFile.existsSync() ||
+      store.backupFile.existsSync() ||
+      store.tmpFile.existsSync()) {
+    RestoreJournal? pending;
+    if (store.formalFile.existsSync()) {
+      try {
+        pending = await store.validateFile(store.formalFile);
+      } on JournalCorruptException catch (e) {
+        throw BackupRestoreException('恢复日志损坏，请重启应用完成恢复后再试：${e.message}');
+      }
+    }
+    if (pending != null && pending.stage == RestoreStage.committed) {
+      await _cleanupRestoreMaterials(dir: dir, journal: pending, store: store);
+    } else {
+      throw BackupRestoreException('上次备份恢复未完成，请重启应用完成恢复后再试');
+    }
+  }
+
+  AppDatabase._restoreMaintenance = true;
+  RestoreJournal? journal;
+  var dbCommitted = false;
   try {
-    // 上次崩溃残留的 staging（本次不是它）顺带清掉。
+    // 第 1 步（准备）：日志先于一切文件改动落盘。PREPARING 写完之前，
+    // 正式文件与数据库一律不动；staging 目录此时还没建。
+    journal = RestoreJournal(
+      taskId: taskId,
+      rollbackDir: rollbackDir.path,
+      stagingDir: stagingDir.path,
+      snapshotPath: snapshotFile.path,
+      stage: RestoreStage.preparing,
+      status: RestoreStatus.inProgress,
+    );
+    try {
+      await store.writeInitial(journal);
+    } on JournalCorruptException catch (e) {
+      throw BackupRestoreException('恢复日志写不进去，恢复已停止，原题库没动：${e.message}');
+    } on JournalUpdateException catch (e) {
+      throw BackupRestoreException('恢复日志写不进去，恢复已停止，原题库没动：${e.message}');
+    }
+    // 上次崩溃残留的旧式 staging（本次不是它）顺带清掉。
     // SR-P2-6：只清严格匹配 `.restore-staging-<纯数字时间戳>`
     // 的目录（见 [_isRestoreStagingDir]），同名用户目录不动。
     try {
@@ -458,47 +521,120 @@ Future<void> importBackupZipIntoImpl(
         }
       }
     } catch (_) {}
-    await staging.create(recursive: true);
-    await overwritten.create(recursive: true);
-    for (final e in entries) {
-      if (e.name == 'backup.json') continue;
-      final dest = File(p.join(staging.path, e.name));
+    await stagingDir.create(recursive: true);
+    for (final e in fileEntries) {
+      final dest = File(p.join(stagingDir.path, e.name));
       await dest.parent.create(recursive: true);
       await dest.writeAsBytes(e.bytes);
     }
-    // 文件进位：原文件先挪到 .overwritten/，失败可移回。
-    for (final e in entries) {
-      if (e.name == 'backup.json') continue;
-      final staged = File(p.join(staging.path, e.name));
-      final destPath = _resolveInsideDir(dir, e.name);
+    // 第 2 步（完整性验证）：staging 里每个文件条目都已落盘且字节数对得上。
+    for (final e in fileEntries) {
+      final staged = File(p.join(stagingDir.path, e.name));
+      if (!staged.existsSync() || staged.lengthSync() != e.bytes.length) {
+        throw BackupRestoreException('这份备份文件已损坏：${e.name} 解压后不完整');
+      }
+    }
+    // 第 3 步（一致快照）：内存库（数据目录下没有库文件）无文件可快照，
+    // 数据库由导入事务保护，跳过本步；文件库必须先拿到一致快照。
+    if (hadDbFile) {
+      await _takeRestoreSnapshot(db, dir, snapshotFile);
+    }
+    journal = await _advanceRestoreJournal(
+      store,
+      journal,
+      RestoreStage.snapshotReady,
+    );
+    // 第 4 步（切换）准备：先写切换清单（manifest），再推进日志。
+    // 清单记每条待装文件的相对路径 + 切换前正式位置是否有原文件；
+    // 启动回滚只凭清单 + 磁盘实际状态分派，不猜测。
+    final manifest = await _writeRestoreManifest(rollbackDir, fileEntries, dir);
+    journal = await _advanceRestoreJournal(
+      store,
+      journal,
+      RestoreStage.filesSwitching,
+    );
+    for (final item in manifest) {
+      final rel = item['rel'] as String;
+      final hadOriginal = item['hadOriginal'] == true;
+      final staged = File(p.join(stagingDir.path, rel));
+      final destPath = _resolveInsideDir(dir, rel);
       if (destPath == null) {
-        throw BackupRestoreException('这份备份里有非法路径：${e.name}');
+        throw BackupRestoreException('这份备份里有非法路径：$rel');
       }
       final dest = File(destPath);
       await dest.parent.create(recursive: true);
-      if (dest.existsSync()) {
-        final backup = File(p.join(overwritten.path, e.name));
+      if (hadOriginal && dest.existsSync()) {
+        // 原文件先移进 rollback 目录（目标不存在，rename 不覆盖）。
+        final backup = File(p.join(rollbackDir.path, rel));
         await backup.parent.create(recursive: true);
         await dest.rename(backup.path);
-        backedUp.add((current: dest.path, backup: backup.path));
       }
+      // staging 文件移进正式位置（目标不存在，rename 不覆盖）。
       await staged.rename(dest.path);
-      movedIn.add(dest.path);
     }
-    // 数据库整体覆盖（事务内；失败抛错走下面的回滚）。
+    // 进位后核对：每个条目都在正式位置且字节数对得上，再进写库阶段。
+    for (final e in fileEntries) {
+      final destPath = _resolveInsideDir(dir, e.name);
+      final dest = destPath == null ? null : File(destPath);
+      if (dest == null ||
+          !dest.existsSync() ||
+          dest.lengthSync() != e.bytes.length) {
+        throw BackupRestoreException('恢复失败：${e.name} 没能装进正式位置，原题库没动');
+      }
+    }
+    // 第 5 步（写库）：事务整体覆盖数据库（失败则事务回滚，库不动）。
+    journal = await _advanceRestoreJournal(
+      store,
+      journal,
+      RestoreStage.databaseRestoring,
+    );
     await AppDatabase.importBackupJsonInto(db, data);
+    dbCommitted = true;
+    // 提交：先写 COMMITTED，再清理。COMMITTED 写失败时直接删日志
+    // （DB 与文件已是新的且一致，删日志等于“已完成”；删不掉才报失败，
+    // 下次启动按 DATABASE_RESTORING 回滚到旧状态，与失败口径一致）。
+    try {
+      journal = await _advanceRestoreJournal(
+        store,
+        journal,
+        RestoreStage.committed,
+        status: RestoreStatus.completed,
+      );
+    } on BackupRestoreException {
+      await _deleteJournalFiles(store);
+      if (store.formalFile.existsSync() ||
+          store.backupFile.existsSync() ||
+          store.tmpFile.existsSync()) {
+        throw BackupRestoreException('恢复已写入新数据，但收尾记录失败，下次启动将自动回滚到恢复前状态，原题库没动');
+      }
+      journal = null;
+    }
   } catch (e) {
-    for (final m in movedIn) {
-      await _deletePathQuietly(m);
-    }
-    for (final b in backedUp.reversed) {
+    if (journal != null && !dbCommitted) {
+      // 进程内补偿：文件按 manifest 回滚（数据库由导入事务保护，
+      // 连接还开着，不动库文件）；回滚失败则保留日志 + rollback +
+      // 快照，下次启动重试回滚（此时不删日志）。
+      var fileRollbackOk = true;
       try {
-        if (File(b.backup).existsSync()) {
-          await File(b.backup).rename(b.current);
-        }
-      } catch (_) {}
+        await _rollbackRestoreFiles(dir: dir, rollbackDir: rollbackDir);
+      } catch (_) {
+        fileRollbackOk = false;
+      }
+      await _deleteDirQuietly(stagingDir);
+      if (fileRollbackOk) {
+        await _deleteDirQuietly(rollbackDir);
+        await _deleteRestoreSnapshotFiles(snapshotFile);
+        await _deleteJournalFiles(store);
+        await _deleteEmptyRestoreParents(dir);
+      }
+    } else if (journal != null && dbCommitted) {
+      // DB 已提交新数据，进程内无法在不断连接的情况下换回快照；
+      // 只删 staging，保留日志 + 快照 + rollback 目录，
+      // 下次启动由启动钩子完整回滚（文件 + 数据库）。
+      await _deleteDirQuietly(stagingDir);
+    } else {
+      await _deleteDirQuietly(stagingDir);
     }
-    await _deleteDirQuietly(staging);
     // SR-P2-6：区分错误来源，不再一律说“文件写不进去”——
     // 校验/数据问题（BackupRestoreException）原样抛；
     // 数据库错误是备份数据有问题（不是磁盘问题）；
@@ -510,8 +646,439 @@ Future<void> importBackupZipIntoImpl(
       throw BackupRestoreException('恢复失败：备份数据有问题，原题库没动');
     }
     throw BackupRestoreException('恢复失败：文件写不进去，原题库没动');
+  } finally {
+    AppDatabase._restoreMaintenance = false;
   }
-  await _deleteDirQuietly(staging);
+  // 成功收尾（COMMITTED 已写；只做清理，失败也尽力而为）：
+  // rollback 目录、快照、staging 先清，日志最后删——清理中途崩溃，
+  // 下次启动见 COMMITTED 只清残留、不回滚；父目录空了顺手删掉。
+  await _deleteDirQuietly(rollbackDir);
+  await _deleteRestoreSnapshotFiles(snapshotFile);
+  await _deleteDirQuietly(stagingDir);
+  await _deleteJournalFiles(store);
+  await _deleteEmptyRestoreParents(dir);
+}
+
+// ---------------------------------------------------------------------------
+// B2：备份恢复五步协议的支撑函数（启动钩子 + 快照 + 清单 + 回滚）。
+//
+// 恢复代码一律以磁盘实际状态为准，不凭错误码 / 状态推断文件位置
+// （Win11 实测：错误码读到 0 但文件根本没动，见 B-NEW-17）。
+// 回滚路径上不用 File.rename 覆盖已存在目标：原文件移回时正式位置
+// 是新内容，先删后移；新文件直接删。数据库快照拷回是唯一的例外——
+// 目标已存在，用 atomicReplaceFile（Win ReplaceFileW / Linux rename，
+// 见 journal_ffi.dart），替换后实地核查长度与文件头。
+// ---------------------------------------------------------------------------
+
+int _restoreTaskSeq = 0;
+
+/// 本次恢复的任务 id（毫秒戳 + 进程内序号，避免同毫秒两次恢复撞目录名）。
+String _nextRestoreTaskId() {
+  _restoreTaskSeq++;
+  return 'r${DateTime.now().millisecondsSinceEpoch}-$_restoreTaskSeq';
+}
+
+/// 日志阶段推进（原子更新；失败包成 [BackupRestoreException]，
+/// 让设置页走同一条可见错误通道展示，不要静默吞掉）。
+Future<RestoreJournal> _advanceRestoreJournal(
+  RestoreJournalStore store,
+  RestoreJournal journal,
+  RestoreStage stage, {
+  RestoreStatus? status,
+}) async {
+  final next = journal.copyWith(stage: stage, status: status ?? journal.status);
+  try {
+    return await store.updateStage(next);
+  } on JournalCorruptException catch (e) {
+    // 诊断用：报出失败瞬间的三处文件实际状态（B-NEW-17：以磁盘实际状态为准）。
+    final tmpExists = store.tmpFile.existsSync();
+    final formalExists = store.formalFile.existsSync();
+    final backupExists = store.backupFile.existsSync();
+    throw BackupRestoreException(
+      '恢复日志损坏，恢复已停止，原题库没动：${e.message}'
+      '（当时磁盘状态：临时日志存在=$tmpExists，正式日志存在=$formalExists，'
+      '备份日志存在=$backupExists）',
+    );
+  } on JournalUpdateException catch (e) {
+    throw BackupRestoreException('恢复日志写不进去，恢复已停止，原题库没动：${e.message}');
+  }
+}
+
+/// 一致快照（维护状态下、连接空闲时执行）：
+/// ① 切 WAL——当前打开方式默认 journal_mode=delete，该模式下
+///    wal_checkpoint 是空操作（busy 恒为 0，log 为 -1，见尖峰后实测），
+///    快照互斥无从谈起；切不过（另有连接占用）即拒绝，不在无法确认
+///    互斥时快照。切 WAL 是持久化 pragma，首恢复后库文件保持 WAL，
+///    搬库代码已连 -wal/-shm 一起搬（见 db_storage.dart），无连锁问题。
+/// ② `PRAGMA wal_checkpoint(TRUNCATE)` 读第一列判定 busy（1 = 有活动
+///    读事务阻碍），busy 时等 200ms 再试，最多 10 次，仍 busy 则拒绝、
+///    不复制主库文件（plan 验收 ⑤：必须用真实阻碍 TRUNCATE 的活动读
+///    事务，空闲连接不算）。
+/// ③ 复制主库 + -wal/-shm 为快照，校验快照存在、非空、SQLite 文件头。
+Future<void> _takeRestoreSnapshot(
+  QuizDatabase db,
+  String dir,
+  File snapshotFile,
+) async {
+  final modeRows = await db.customSelect('PRAGMA journal_mode=WAL').get();
+  final mode = modeRows.isEmpty ? '' : '${modeRows.first.data.values.first}';
+  if (mode != 'wal') {
+    throw BackupRestoreException('恢复被拒绝：数据库正被另一处使用，无法取得一致快照，请关闭其他页面后重试');
+  }
+  var busy = true;
+  for (var attempt = 0; attempt < 10; attempt++) {
+    final rows = await db.customSelect('PRAGMA wal_checkpoint(TRUNCATE)').get();
+    final first = rows.isEmpty ? 1 : rows.first.data.values.first;
+    busy = first is int ? first == 1 : first != 0;
+    if (!busy) break;
+    await Future.delayed(const Duration(milliseconds: 200));
+  }
+  if (busy) {
+    throw BackupRestoreException('恢复被拒绝：数据库正被另一处使用（检查点被占用），请稍后再试');
+  }
+  final dbPath = p.join(dir, 'quiz-master2.db');
+  await File(dbPath).copy(snapshotFile.path);
+  for (final suffix in ['-wal', '-shm']) {
+    final side = File('$dbPath$suffix');
+    if (side.existsSync()) {
+      await side.copy('${snapshotFile.path}$suffix');
+    }
+  }
+  if (!snapshotFile.existsSync() || snapshotFile.lengthSync() == 0) {
+    throw BackupRestoreException('恢复失败：数据库快照没能写出来，原题库没动');
+  }
+  final header = await snapshotFile.openRead(0, 16).first;
+  if (utf8.decode(header, allowMalformed: true) != 'SQLite format 3\u0000') {
+    throw BackupRestoreException('恢复失败：数据库快照已损坏，原题库没动');
+  }
+}
+
+/// 写切换清单（manifest.json，放在 rollback 目录里）：
+/// 每条待装文件的相对路径 + 切换前正式位置是否有原文件。
+/// 清单在 FILES_SWITCHING 日志推进前写完、flush 落盘；启动回滚
+/// 只凭清单 + 磁盘实际状态分派。
+Future<List<Map<String, Object?>>> _writeRestoreManifest(
+  Directory rollbackDir,
+  List<ZipEntryData> fileEntries,
+  String dir,
+) async {
+  final files = <Map<String, Object?>>[];
+  for (final e in fileEntries) {
+    final destPath = _resolveInsideDir(dir, e.name);
+    final hadOriginal = destPath != null && File(destPath).existsSync();
+    files.add({'rel': e.name, 'hadOriginal': hadOriginal});
+  }
+  await rollbackDir.create(recursive: true);
+  await File(p.join(rollbackDir.path, 'manifest.json'))
+      .writeAsString(jsonEncode({'version': 1, 'files': files}), flush: true);
+  return files;
+}
+
+/// 读切换清单；缺失或损坏返回 null（调用方退化为枚举 rollback 目录）。
+Future<List<Map<String, Object?>>?> _readRestoreManifest(
+  Directory rollbackDir,
+) async {
+  final file = File(p.join(rollbackDir.path, 'manifest.json'));
+  if (!file.existsSync()) return null;
+  try {
+    final decoded = jsonDecode(await file.readAsString());
+    if (decoded is! Map || decoded['version'] != 1) return null;
+    final files = decoded['files'];
+    if (files is! List) return null;
+    return [
+      for (final item in files)
+        if (item is Map<String, dynamic>) Map<String, Object?>.from(item),
+    ];
+  } catch (_) {
+    return null;
+  }
+}
+
+/// 日志里记录的路径（本实现写绝对路径；相对路径视为数据目录内相对位置，
+/// 越出数据目录的一律不认——清理/回滚不得删到数据目录外）。
+String? _resolveJournalRecordedPath(String dir, String recorded) {
+  final abs = p.isAbsolute(recorded)
+      ? p.normalize(recorded)
+      : p.normalize(p.join(dir, recorded));
+  final base = p.normalize(dir);
+  if (abs != base && !abs.startsWith('$base${p.separator}')) return null;
+  return abs;
+}
+
+/// 按磁盘实际状态把文件恢复到恢复前（启动钩子与进程内补偿共用）。
+/// 对清单里的每一项：
+/// - 有原文件、且原文件在 rollback 目录里 → 正式位置是新内容，
+///   先删后移，把原文件移回；
+/// - 有原文件、但 rollback 里没有 → 切换还没动它，正式文件就是原文件，不动；
+/// - 无原文件（新增）→ 正式位置若已装进来，删掉。
+/// 清单缺失/损坏时退化为枚举 rollback 目录、把其中文件移回正式位置
+/// （新增文件无法识别，留给孤儿扫描——协议 §6 允许的残留类）。
+Future<void> _rollbackRestoreFiles({
+  required String dir,
+  required Directory rollbackDir,
+}) async {
+  if (!rollbackDir.existsSync()) return;
+  final manifest = await _readRestoreManifest(rollbackDir);
+  Future<void> restoreOne(String rel) async {
+    final formalPath = _resolveInsideDir(dir, rel);
+    if (formalPath == null) return;
+    final backupFile = File(p.join(rollbackDir.path, rel));
+    if (!backupFile.existsSync()) return;
+    await _deletePathQuietly(formalPath);
+    await File(formalPath).parent.create(recursive: true);
+    await backupFile.rename(formalPath);
+  }
+
+  if (manifest != null) {
+    for (final item in manifest) {
+      final rel = item['rel'];
+      if (rel is! String) continue;
+      final hadOriginal = item['hadOriginal'] == true;
+      final backupFile = File(p.join(rollbackDir.path, rel));
+      if (hadOriginal) {
+        if (backupFile.existsSync()) {
+          await restoreOne(rel);
+        }
+        // rollback 里没有原文件 → 切换还没动它，正式文件就是原文件，不动。
+      } else {
+        // 新增文件：若已装进来，删掉。
+        final formalPath = _resolveInsideDir(dir, rel);
+        if (formalPath != null) await _deletePathQuietly(formalPath);
+      }
+    }
+    // 防御：rollback 目录里清单之外的残留文件也移回正式位置。
+    await for (final e in rollbackDir.list(recursive: true)) {
+      if (e is! File) continue;
+      final relPath = p
+          .relative(e.path, from: rollbackDir.path)
+          .replaceAll('\\', '/');
+      if (relPath == 'manifest.json') continue;
+      if (manifest.any((m) => m['rel'] == relPath)) continue;
+      await restoreOne(relPath);
+    }
+  } else {
+    await for (final e in rollbackDir.list(recursive: true)) {
+      if (e is! File) continue;
+      final relPath = p
+          .relative(e.path, from: rollbackDir.path)
+          .replaceAll('\\', '/');
+      if (relPath == 'manifest.json') continue;
+      await restoreOne(relPath);
+    }
+  }
+}
+
+/// 用快照恢复数据库文件（只供启动钩子：连接未建，换文件安全）。
+/// 顺序：删当前 -wal/-shm → 快照拷到同目录临时文件 → atomicReplaceFile
+/// 换进正式位置（目标已存在才用它；目标不存在直接拷）→ 拷回快照的
+/// -wal/-shm → 核查正式文件长度与文件头。替换后不只看返回码，
+/// 实地核查文件确实是快照内容（Win11 实测：错误码为 0 但文件没动）。
+Future<void> _restoreDbFromSnapshot({
+  required String dbPath,
+  required File snapshotFile,
+}) async {
+  if (!snapshotFile.existsSync() || snapshotFile.lengthSync() == 0) {
+    throw JournalCorruptException(
+      '恢复快照缺失或为空，无法把数据库恢复到恢复前状态，已停止启动以保护现有数据；'
+      '请手动处理后再启动（核对数据目录下的 restore-journal.json、'
+      'imports-rollback 目录与数据库快照文件，不要删除这些文件）',
+    );
+  }
+  final header = await snapshotFile.openRead(0, 16).first;
+  if (utf8.decode(header, allowMalformed: true) != 'SQLite format 3\u0000') {
+    throw JournalCorruptException(
+      '恢复快照已损坏，无法把数据库恢复到恢复前状态，已停止启动以保护现有数据；'
+      '请手动处理后再启动（核对数据目录下的 restore-journal.json、'
+      'imports-rollback 目录与数据库快照文件，不要删除这些文件）',
+    );
+  }
+  final dbFile = File(dbPath);
+  for (final suffix in ['-wal', '-shm']) {
+    await _deletePathQuietly('$dbPath$suffix');
+  }
+  if (dbFile.existsSync()) {
+    // 快照先拷到同目录临时文件再原子替换，快照原件保留——
+    // 回滚中途再崩，重启还能用同一快照重试（幂等）。
+    final tmp = File('$dbPath.restore-tmp');
+    try {
+      await snapshotFile.copy(tmp.path);
+      final code = await atomicReplaceFile(
+        target: dbPath,
+        replacement: tmp.path,
+        backup: '$dbPath.bak',
+      );
+      final ok =
+          dbFile.existsSync() &&
+          dbFile.lengthSync() == snapshotFile.lengthSync();
+      if (!ok) {
+        throw JournalCorruptException(
+          '恢复快照写回数据库失败（原子替换返回码 $code，但正式库文件与快照不一致），'
+          '已停止启动以保护现有数据；请手动处理后再启动',
+        );
+      }
+    } finally {
+      await _deletePathQuietly(tmp.path);
+      await _deletePathQuietly('$dbPath.bak');
+    }
+  } else {
+    await snapshotFile.copy(dbPath);
+  }
+  for (final suffix in ['-wal', '-shm']) {
+    final side = File('${snapshotFile.path}$suffix');
+    if (side.existsSync()) {
+      await side.copy('$dbPath$suffix');
+    }
+  }
+  final doneHeader = await dbFile.openRead(0, 16).first;
+  if (utf8.decode(doneHeader, allowMalformed: true) !=
+      'SQLite format 3\u0000') {
+    throw JournalCorruptException('恢复快照写回后数据库文件头不对，已停止启动以保护现有数据；请手动处理后再启动');
+  }
+}
+
+/// 删快照文件及其 -wal/-shm（静默，失败不阻断）。
+Future<void> _deleteRestoreSnapshotFiles(File snapshotFile) async {
+  for (final suffix in ['', '-wal', '-shm']) {
+    await _deletePathQuietly('${snapshotFile.path}$suffix');
+  }
+}
+
+/// 恢复工作目录的父目录（restore-staging / imports-rollback）在子目录
+/// 删完后若已空，顺手删掉（只删空目录：非空时 Directory.delete 抛错，
+/// 静默跳过，不动别人的任务目录）。
+Future<void> _deleteEmptyRestoreParents(String dir) async {
+  for (final name in ['restore-staging', 'imports-rollback']) {
+    try {
+      await Directory(p.join(dir, name)).delete();
+    } catch (_) {}
+  }
+}
+
+/// 删恢复日志三处文件（正式 / 备份 / 临时，静默，失败不阻断）。
+Future<void> _deleteJournalFiles(RestoreJournalStore store) async {
+  await _deletePathQuietly(store.formalFile.path);
+  await _deletePathQuietly(store.backupFile.path);
+  await _deletePathQuietly(store.tmpFile.path);
+}
+
+/// 清本次恢复的残留材料（rollback 目录、staging 目录、快照、日志；
+/// 日志最后删）。只删数据目录内的记录路径，越界的不碰。
+Future<void> _cleanupRestoreMaterials({
+  required String dir,
+  required RestoreJournal journal,
+  required RestoreJournalStore store,
+}) async {
+  final rollback = _resolveJournalRecordedPath(dir, journal.rollbackDir);
+  if (rollback != null) await _deleteDirQuietly(Directory(rollback));
+  final staging = _resolveJournalRecordedPath(dir, journal.stagingDir);
+  if (staging != null) await _deleteDirQuietly(Directory(staging));
+  final snapshot = _resolveJournalRecordedPath(dir, journal.snapshotPath);
+  if (snapshot != null) {
+    await _deleteRestoreSnapshotFiles(File(snapshot));
+  }
+  await _deleteJournalFiles(store);
+  await _deleteEmptyRestoreParents(dir);
+}
+
+/// B2：启动恢复——按日志阶段把中断的恢复回滚到恢复前状态。
+/// - PREPARING：快照不存在、正式数据没动过，只清准备材料；
+/// - SNAPSHOT_READY：切换没开始，正式文件与数据库都是原样，只清残留；
+/// - FILES_SWITCHING / DATABASE_RESTORING：文件按清单回滚；
+///   数据库用快照恢复（[restoreDb] 须为 true，即连接未建时）；
+///   快照缺失时：FILES_SWITCHING 下数据库还没动过（写库在
+///   DATABASE_RESTORING 才开始），只回滚文件；DATABASE_RESTORING
+///   下数据库可能已是新状态，无快照无法回滚，拒绝启动；
+/// - COMMITTED：不再回滚，只清残留。
+/// 回滚完成后再清理残留材料；回滚本身失败时保留现场（不删日志），
+/// 下次启动重试或人工处理。
+Future<void> rollbackInterruptedRestore({
+  required String dir,
+  required String dbPath,
+  required RestoreJournal journal,
+  required RestoreJournalStore store,
+  bool restoreDb = true,
+}) async {
+  if (journal.stage == RestoreStage.committed) {
+    await _cleanupRestoreMaterials(dir: dir, journal: journal, store: store);
+    return;
+  }
+  if (journal.stage.index >= RestoreStage.filesSwitching.index) {
+    final rollbackPath = _resolveJournalRecordedPath(dir, journal.rollbackDir);
+    final stagingPath = _resolveJournalRecordedPath(dir, journal.stagingDir);
+    if (rollbackPath == null) {
+      throw JournalCorruptException(
+        '恢复日志里的回滚目录不在数据目录内，无法安全回滚，已停止启动以保护现有数据；请手动处理后再启动',
+      );
+    }
+    final rollbackDir = Directory(rollbackPath);
+    if (!rollbackDir.existsSync()) {
+      // rollback 目录没了：进程内补偿删它在先（文件已恢复、staging 已清），
+      // 还是外部删的，分不清——看 staging 是否还在：staging 也没了，
+      // 按“补偿已做完、只剩日志没清”处理；staging 还在则拒绝。
+      final stagingGone =
+          stagingPath == null || !Directory(stagingPath).existsSync();
+      if (!stagingGone) {
+        throw JournalCorruptException(
+          '回滚目录缺失，无法把文件恢复到恢复前状态，已停止启动以保护现有数据；'
+          '请手动处理后再启动（核对数据目录下的 restore-journal.json、'
+          'imports-rollback 目录与数据库快照文件，不要删除这些文件）',
+        );
+      }
+    } else {
+      await _rollbackRestoreFiles(dir: dir, rollbackDir: rollbackDir);
+    }
+    if (restoreDb) {
+      final snapshotPath = _resolveJournalRecordedPath(
+        dir,
+        journal.snapshotPath,
+      );
+      final snapshotFile = snapshotPath == null ? null : File(snapshotPath);
+      final snapshotExists = snapshotFile != null && snapshotFile.existsSync();
+      if (snapshotExists) {
+        await _restoreDbFromSnapshot(
+          dbPath: dbPath,
+          snapshotFile: snapshotFile,
+        );
+      } else if (journal.stage == RestoreStage.databaseRestoring &&
+          File(dbPath).existsSync()) {
+        throw JournalCorruptException(
+          '恢复快照缺失，无法把数据库恢复到恢复前状态，已停止启动以保护现有数据；'
+          '请手动处理后再启动（核对数据目录下的 restore-journal.json、'
+          'imports-rollback 目录与数据库快照文件，不要删除这些文件）',
+        );
+      }
+      // FILES_SWITCHING + 快照缺失：写库还没开始，库文件本身就是原样，不用恢复。
+    }
+  }
+  await _cleanupRestoreMaterials(dir: dir, journal: journal, store: store);
+}
+
+/// B2：启动恢复钩子（database.dart 的 _openDb 在删老库之后、
+/// QuizDatabase.file 之前调用）。[locateAndRecover] 按“正式 → 备份 →
+/// 临时”顺序定位有效日志；日志损坏 → 抛 [JournalCorruptException]
+/// （带给用户看得懂的“恢复日志损坏，请手动处理”文案），_openDb
+/// 拒绝开库、不滑入 fallback、不静默继续。
+Future<void> performStartupRestoreIfNeeded(String dbPath) async {
+  final dir = p.dirname(dbPath);
+  final store = RestoreJournalStore(dataDir: Directory(dir));
+  late final RestoreJournal? journal;
+  try {
+    journal = await store.locateAndRecover();
+  } on JournalCorruptException catch (e) {
+    throw JournalCorruptException(
+      '恢复日志损坏，已停止启动以保护现有数据：${e.message}。'
+      '请手动处理后再启动（核对数据目录下的 restore-journal.json、'
+      'imports-rollback 目录与数据库快照文件，不要删除这些文件）',
+      path: e.path,
+    );
+  }
+  if (journal == null) return;
+  await rollbackInterruptedRestore(
+    dir: dir,
+    dbPath: dbPath,
+    journal: journal,
+    store: store,
+  );
 }
 
 extension AppDatabaseBackup on AppDatabase {

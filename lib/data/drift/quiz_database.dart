@@ -1,8 +1,11 @@
 // ARCH-PLAN-B 第 1 阶段：Drift 数据库对象（驱动切换）。
 // 独立 library 文件（不是 part 文件——Dart 规定 part 文件里不能再声明
 // part，而 drift_dev 生成的 quiz_database.g.dart 必须作为它的 part）。
-// 第 1 阶段不要表定义（`tables: []`），表定义是第 2 阶段的事；建表
-// 仍走 database.dart 的 createTablesImpl（customStatement 原样 DDL）。
+// 第 2 阶段：13 张表定义在 lib/data/drift/tables/（每表一个文件，
+// 尖峰 B-SPIKE-REPORT.md §1 三路对比零差异的配方），此处注册进 tables；
+// 建表仍走 database.dart 的 createTablesImpl（customStatement 原样 DDL），
+// onCreate 只调注入的回调，不由 Drift 生成建表——注册表只提供类型化查询，
+// 不改变建库行为。
 //
 // 回调注入的原因：建表 / 播种 / 回填逻辑在 database.dart 的 part 库里，
 // 本文件不能反向 import 它（会循环）。因此 onCreate 只调注入的
@@ -11,10 +14,43 @@ import 'dart:io';
 
 import 'package:drift/drift.dart';
 import 'package:drift/native.dart';
+import 'package:quiz_master2/models/models.dart'; // 生成文件里 QueueConverter
+// 用到 ReviewQueueItem（part 文件只认本文件的 import，不认 converters.dart 的）。
+import 'converters.dart'; // 生成文件里用到 StringListConverter 等转换器，同上。
+
+import 'tables/cause_records.dart';
+import 'tables/collect_tasks.dart';
+import 'tables/exams.dart';
+import 'tables/folders.dart';
+import 'tables/knowledge_points.dart';
+import 'tables/question_boxes.dart';
+import 'tables/questions.dart';
+import 'tables/recent_tasks.dart';
+import 'tables/review_history.dart';
+import 'tables/review_state.dart';
+import 'tables/settings.dart';
+import 'tables/subjects.dart';
+import 'tables/tags.dart';
 
 part 'quiz_database.g.dart';
 
-@DriftDatabase(tables: [])
+@DriftDatabase(
+  tables: [
+    Settings,
+    Tags,
+    Exams,
+    KnowledgePoints,
+    Folders,
+    Subjects,
+    RecentTasks,
+    ReviewHistory,
+    CauseRecords,
+    ReviewState,
+    CollectTasks,
+    QuestionBoxes,
+    Questions,
+  ],
+)
 class QuizDatabase extends _$QuizDatabase {
   QuizDatabase.file(
     File file, {

@@ -4,17 +4,119 @@
 
 part of 'database.dart';
 
+/// B2 第 2 阶段：collect_tasks / question_boxes 的 Drift 类型化映射。
+/// 行类 DbCollectTask / DbQuestionBox 由 quiz_database.g.dart 生成，
+/// page_rotations 的 `Map<int, int>` ↔ JSON 转换走表定义里的
+/// RotationsConverter（约定与 db_codec.dart 一致）。
+CollectTask _collectTaskFromDb(DbCollectTask r) => CollectTask(
+  id: r.id,
+  name: r.name,
+  fileName: r.fileName,
+  subjectId: r.subjectId,
+  status: CollectStatus.values.firstWhere(
+    (s) => s.name == r.status,
+    orElse: () => CollectStatus.queued,
+  ),
+  progress: r.progress,
+  pageCount: r.pageCount,
+  page: r.page,
+  error: r.error,
+  questionId: r.questionId,
+  // 旧 _collectTaskFromRow 同口径：created_at 为 0 视作无创建时间。
+  createdAt: r.createdAt == 0
+      ? null
+      : DateTime.fromMillisecondsSinceEpoch(r.createdAt),
+  sourcePath: r.sourcePath,
+  pageRotations: r.pageRotations,
+);
+
+/// upsert 的 UPDATE 分支：除 created_at 外全列写回（旧 UPDATE 语句
+/// 同口径——不碰 created_at，rowid 不变，任务列表顺序不动）。
+CollectTasksCompanion _collectTaskUpdateCompanion(CollectTask t) =>
+    CollectTasksCompanion(
+      id: Value(t.id),
+      name: Value(t.name),
+      fileName: Value(t.fileName),
+      subjectId: Value(t.subjectId),
+      status: Value(t.status.name),
+      progress: Value(t.progress),
+      pageCount: Value(t.pageCount),
+      page: Value(t.page),
+      error: Value(t.error),
+      questionId: Value(t.questionId),
+      sourcePath: Value(t.sourcePath),
+      pageRotations: Value(t.pageRotations),
+    );
+
+/// upsert 的 INSERT 分支：全列写，created_at 调用方没给就写当前时间。
+CollectTasksCompanion _collectTaskInsertCompanion(CollectTask t) =>
+    CollectTasksCompanion.insert(
+      id: t.id,
+      name: t.name,
+      fileName: t.fileName,
+      subjectId: t.subjectId,
+      status: Value(t.status.name),
+      progress: Value(t.progress),
+      pageCount: Value(t.pageCount),
+      page: Value(t.page),
+      error: Value(t.error),
+      questionId: Value(t.questionId),
+      createdAt: Value(
+        t.createdAt?.millisecondsSinceEpoch ??
+            DateTime.now().millisecondsSinceEpoch,
+      ),
+      sourcePath: Value(t.sourcePath),
+      pageRotations: Value(t.pageRotations),
+    );
+
+QuestionBox _questionBoxFromDb(DbQuestionBox r) => QuestionBox(
+  id: r.id,
+  collectTaskId: r.collectTaskId,
+  questionId: r.questionId,
+  parentBoxId: r.parentBoxId,
+  page: r.page,
+  layer: r.layer,
+  type: r.type,
+  x: r.x,
+  y: r.y,
+  w: r.w,
+  h: r.h,
+  confidence: r.confidence,
+  origin: r.origin,
+  updatedAt: DateTime.fromMillisecondsSinceEpoch(r.updatedAt),
+);
+
+/// 框写盘的 Companion：updated_at 为空时写当前时间（旧
+/// _questionBoxToRow 同口径）。
+QuestionBoxesCompanion _questionBoxCompanion(QuestionBox b) =>
+    QuestionBoxesCompanion.insert(
+      id: b.id,
+      collectTaskId: Value(b.collectTaskId),
+      questionId: Value(b.questionId),
+      parentBoxId: Value(b.parentBoxId),
+      page: Value(b.page),
+      layer: b.layer,
+      type: b.type,
+      x: b.x,
+      y: b.y,
+      w: b.w,
+      h: b.h,
+      confidence: Value(b.confidence),
+      origin: Value(b.origin),
+      updatedAt: (b.updatedAt ?? DateTime.now()).millisecondsSinceEpoch,
+    );
+
 /// §4.3：按 created_at 稳定排序（同毫秒建的批量任务用 rowid 兜底）。
+/// rowid 没有生成列，排序第二键走 CustomExpression('rowid')，
+/// 生成的 SQL 与旧 `ORDER BY created_at DESC, rowid DESC` 相同。
 Future<List<CollectTask>> allCollectTasksFromImpl(QuizDatabase db) async {
   final rows =
-      (await db
-              .customSelect(
-                'SELECT * FROM collect_tasks ORDER BY created_at DESC, rowid DESC',
-              )
-              .get())
-          .map((r) => r.data)
-          .toList();
-  return rows.map(_collectTaskFromRow).toList();
+      await (db.select(db.collectTasks)..orderBy([
+            (t) => OrderingTerm.desc(t.createdAt),
+            (t) => OrderingTerm.desc(CustomExpression<int>('rowid')),
+          ]))
+          .get();
+  return rows.map(_collectTaskFromDb).toList();
 }
 
 /// §4.3：UPDATE-first（照 upsertSubject 的正面先例）：REPLACE 是
@@ -23,53 +125,11 @@ Future<List<CollectTask>> allCollectTasksFromImpl(QuizDatabase db) async {
 /// 顺序就不动）；不存在时才 INSERT，并写 created_at（调用方没给
 /// 就写当前时间）。
 Future<void> upsertCollectTaskIntoImpl(QuizDatabase db, CollectTask t) async {
-  final values = _collectTaskToRow(t);
-  final updated = await db.customUpdate(
-    'UPDATE collect_tasks SET id = ?, name = ?, file_name = ?, '
-    'subject_id = ?, status = ?, progress = ?, page_count = ?, page = ?, '
-    'error = ?, question_id = ?, source_path = ?, page_rotations = ? '
-    'WHERE id = ?',
-    variables: [
-      Variable(values['id']),
-      Variable(values['name']),
-      Variable(values['file_name']),
-      Variable(values['subject_id']),
-      Variable(values['status']),
-      Variable(values['progress']),
-      Variable(values['page_count']),
-      Variable(values['page']),
-      Variable(values['error']),
-      Variable(values['question_id']),
-      Variable(values['source_path']),
-      Variable(values['page_rotations']),
-      Variable.withString(t.id),
-    ],
-  );
+  final updated = await (db.update(
+    db.collectTasks,
+  )..where((tbl) => tbl.id.equals(t.id))).write(_collectTaskUpdateCompanion(t));
   if (updated == 0) {
-    await db.customInsert(
-      'INSERT INTO collect_tasks (id, name, file_name, subject_id, status, '
-      'progress, page_count, page, error, question_id, source_path, '
-      'page_rotations, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '
-      '?, ?, ?)',
-      variables: [
-        Variable(values['id']),
-        Variable(values['name']),
-        Variable(values['file_name']),
-        Variable(values['subject_id']),
-        Variable(values['status']),
-        Variable(values['progress']),
-        Variable(values['page_count']),
-        Variable(values['page']),
-        Variable(values['error']),
-        Variable(values['question_id']),
-        Variable(values['source_path']),
-        Variable(values['page_rotations']),
-        Variable.withInt(
-          t.createdAt?.millisecondsSinceEpoch ??
-              DateTime.now().millisecondsSinceEpoch,
-        ),
-      ],
-    );
+    await db.into(db.collectTasks).insert(_collectTaskInsertCompanion(t));
   }
 }
 
@@ -85,12 +145,19 @@ Future<void> upsertCollectTaskIntoImpl(QuizDatabase db, CollectTask t) async {
 /// 恢复当次不扫——备份里带来的卡住行在下次启动开库时治好，见
 /// B9-1 报告“残留口子”。
 Future<int> backfillCollectDoneIntoImpl(QuizDatabase db) async {
-  return db.customUpdate('''
-    UPDATE collect_tasks SET status = 'done'
-    WHERE status = 'pendingOrganize'
-      AND question_id IS NOT NULL
-      AND question_id IN (SELECT id FROM questions WHERE is_organized = 1)
-  ''');
+  // 子查询走 questions 表的类型化读（is_organized = 1 的题 id），
+  // UPDATE 本体是 collect_tasks；questions 表的迁移归 W-questions，
+  // 这里只读、不改 questions 的任何写路径。
+  final organizedIds = db.selectOnly(db.questions)
+    ..addColumns([db.questions.id])
+    ..where(db.questions.isOrganized.equals(1));
+  return (db.update(db.collectTasks)..where(
+        (t) =>
+            t.status.equals('pendingOrganize') &
+            t.questionId.isNotNull() &
+            t.questionId.isInQuery(organizedIds),
+      ))
+      .write(const CollectTasksCompanion(status: Value('done')));
 }
 
 /// §1.2(c) + B2-6a：删任务（可单测版）：一次事务，不 bump。
@@ -106,42 +173,26 @@ Future<void> deleteCollectTaskFromImpl(QuizDatabase db, String id) async {
     // 先读任务指向的题：is_organized 在事务内读，避免读到删之间
     // 被整理工作台改掉状态。
     final taskRows =
-        (await db
-                .customSelect(
-                  'SELECT question_id FROM collect_tasks WHERE id = ? LIMIT 1',
-                  variables: [Variable.withString(id)],
-                )
-                .get())
-            .map((r) => r.data)
-            .toList();
-    final questionId = taskRows.isEmpty
-        ? null
-        : taskRows.first['question_id'] as String?;
+        await (db.select(db.collectTasks)
+              ..where((t) => t.id.equals(id))
+              ..limit(1))
+            .get();
+    final questionId = taskRows.isEmpty ? null : taskRows.first.questionId;
     if (questionId != null) {
-      final qRows =
-          (await db
-                  .customSelect(
-                    'SELECT is_organized, slice_path FROM questions '
-                    'WHERE id = ? LIMIT 1',
-                    variables: [Variable.withString(questionId)],
-                  )
-                  .get())
-              .map((r) => r.data)
-              .toList();
-      if (qRows.isNotEmpty && (qRows.first['is_organized'] as int?) != 1) {
-        sliceToClean = qRows.first['slice_path'] as String?;
+      // B2 集成：questions 读走 Drift 类型化（原 SELECT
+      // is_organized, slice_path ... WHERE id = ?）。
+      final qRow = await (db.select(
+        db.questions,
+      )..where((t) => t.id.equals(questionId))).getSingleOrNull();
+      if (qRow != null && qRow.isOrganized != 1) {
+        sliceToClean = qRow.slicePath;
         await _deleteQuestionTxn(db, questionId);
       }
     }
-    await db.customUpdate(
-      'DELETE FROM question_boxes '
-      'WHERE collect_task_id = ? AND question_id IS NULL',
-      variables: [Variable.withString(id)],
-    );
-    await db.customUpdate(
-      'DELETE FROM collect_tasks WHERE id = ?',
-      variables: [Variable.withString(id)],
-    );
+    await (db.delete(
+      db.questionBoxes,
+    )..where((b) => b.collectTaskId.equals(id) & b.questionId.isNull())).go();
+    await (db.delete(db.collectTasks)..where((t) => t.id.equals(id))).go();
   });
   await _deleteDataFileIfUnreferenced(db, sliceToClean);
   await _deleteTaskDirIfUnreferenced(db, id);
@@ -168,27 +219,24 @@ Future<void> _deleteDataFileIfUnreferenced(QuizDatabase db, String? rel) async {
 }
 
 Future<bool> _isFileReferenced(QuizDatabase db, String rel) async {
-  for (final col in ['source_path', 'page_image_path', 'slice_path']) {
-    final rows =
-        (await db
-                .customSelect(
-                  'SELECT id FROM questions WHERE $col = ? LIMIT 1',
-                  variables: [Variable.withString(rel)],
-                )
-                .get())
-            .map((r) => r.data)
-            .toList();
-    if (rows.isNotEmpty) return true;
-  }
+  // B2 集成：三列任一等于 rel 即被引用（原三条 SELECT id ...
+  // WHERE <col> = ? LIMIT 1 的 OR 等价形）。
+  final inQuestions =
+      await (db.select(db.questions)
+            ..where(
+              (t) =>
+                  t.sourcePath.equals(rel) |
+                  t.pageImagePath.equals(rel) |
+                  t.slicePath.equals(rel),
+            )
+            ..limit(1))
+          .getSingleOrNull();
+  if (inQuestions != null) return true;
   final tasks =
-      (await db
-              .customSelect(
-                'SELECT id FROM collect_tasks WHERE source_path = ? LIMIT 1',
-                variables: [Variable.withString(rel)],
-              )
-              .get())
-          .map((r) => r.data)
-          .toList();
+      await (db.select(db.collectTasks)
+            ..where((t) => t.sourcePath.equals(rel))
+            ..limit(1))
+          .get();
   return tasks.isNotEmpty;
 }
 
@@ -211,35 +259,29 @@ Future<void> _deleteTaskDirIfUnreferenced(
   if (!_safeTaskIdPattern.hasMatch(taskId)) return;
   final prefix = 'imports/$taskId/';
   final escaped = _likeEscape(prefix);
-  for (final col in ['source_path', 'page_image_path']) {
-    final rows =
-        (await db
-                .customSelect(
-                  'SELECT id FROM questions WHERE $col LIKE ? ESCAPE ? LIMIT 1',
-                  variables: [
-                    Variable.withString('$escaped%'),
-                    Variable.withString('\\'),
-                  ],
-                )
-                .get())
-            .map((r) => r.data)
-            .toList();
-    if (rows.isNotEmpty) return;
+  // B2 集成：questions 两列的 LIKE 粗筛走类型化 select；可空文本列
+  // 没有 Drift 原生 `like`（`like` 只在非空 Expression<String> 上），
+  // 故列本身用 CustomExpression<String> 按引用名取（与全仓已有的
+  // CustomExpression('rowid') 同一先例），pattern 与 ESCAPE 仍走
+  // `like` 的绑定变量。列名取自本函数内的硬编码列表，非用户输入。
+  for (final column in ['source_path', 'page_image_path']) {
+    final refs =
+        await (db.select(db.questions)
+              ..where(
+                (_) =>
+                    CustomExpression<String>('"$column"')
+                        .like('$escaped%', escapeChar: '\\'),
+              )
+              ..limit(1))
+            .get();
+    if (refs.isNotEmpty) return;
   }
   // SR-P2-15：拆分任务行的 source_path 也可能指向该目录。
   final taskRefs =
-      (await db
-              .customSelect(
-                'SELECT id FROM collect_tasks WHERE source_path LIKE ? '
-                'ESCAPE ? LIMIT 1',
-                variables: [
-                  Variable.withString('$escaped%'),
-                  Variable.withString('\\'),
-                ],
-              )
-              .get())
-          .map((r) => r.data)
-          .toList();
+      await (db.select(db.collectTasks)
+            ..where((t) => t.sourcePath.like('$escaped%', escapeChar: '\\'))
+            ..limit(1))
+          .get();
   if (taskRefs.isNotEmpty) return;
   final abs = _resolveInsideDir(
     AppDatabase.dataDirectoryPath(),
@@ -255,28 +297,7 @@ Future<void> _deleteTaskDirIfUnreferenced(
 /// §8.1：写框（可单测版）：直接对传入的库句柄写，不碰单例、不 bump。
 /// id 规则见 §1.2(c)：`box-<taskId>-p<page>-<uuid8>`（调用方生成）。
 Future<void> insertQuestionBoxIntoImpl(QuizDatabase db, QuestionBox b) async {
-  final row = _questionBoxToRow(b);
-  await db.customInsert(
-    'INSERT INTO question_boxes (id, collect_task_id, question_id, '
-    'parent_box_id, page, layer, type, x, y, w, h, confidence, origin, '
-    'updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-    variables: [
-      Variable(row['id']),
-      Variable(row['collect_task_id']),
-      Variable(row['question_id']),
-      Variable(row['parent_box_id']),
-      Variable(row['page']),
-      Variable(row['layer']),
-      Variable(row['type']),
-      Variable(row['x']),
-      Variable(row['y']),
-      Variable(row['w']),
-      Variable(row['h']),
-      Variable(row['confidence']),
-      Variable(row['origin']),
-      Variable(row['updated_at']),
-    ],
-  );
+  await db.into(db.questionBoxes).insert(_questionBoxCompanion(b));
 }
 
 /// §8.1：读某题的全部框（可单测版）。
@@ -285,16 +306,14 @@ Future<List<QuestionBox>> boxesForQuestionFromImpl(
   String questionId,
 ) async {
   final rows =
-      (await db
-              .customSelect(
-                'SELECT * FROM question_boxes WHERE question_id = ? '
-                'ORDER BY page ASC, id ASC',
-                variables: [Variable.withString(questionId)],
-              )
-              .get())
-          .map((r) => r.data)
-          .toList();
-  return rows.map(_questionBoxFromRow).toList();
+      await (db.select(db.questionBoxes)
+            ..where((b) => b.questionId.equals(questionId))
+            ..orderBy([
+              (b) => OrderingTerm.asc(b.page),
+              (b) => OrderingTerm.asc(b.id),
+            ]))
+          .get();
+  return rows.map(_questionBoxFromDb).toList();
 }
 
 /// §1.5：读某任务的全部草稿框（各页，用于“继续修框”恢复）。
@@ -303,17 +322,16 @@ Future<List<QuestionBox>> boxesForTaskFromImpl(
   String taskId,
 ) async {
   final rows =
-      (await db
-              .customSelect(
-                'SELECT * FROM question_boxes '
-                'WHERE collect_task_id = ? AND question_id IS NULL '
-                'ORDER BY page ASC, id ASC',
-                variables: [Variable.withString(taskId)],
-              )
-              .get())
-          .map((r) => r.data)
-          .toList();
-  return rows.map(_questionBoxFromRow).toList();
+      await (db.select(db.questionBoxes)
+            ..where(
+              (b) => b.collectTaskId.equals(taskId) & b.questionId.isNull(),
+            )
+            ..orderBy([
+              (b) => OrderingTerm.asc(b.page),
+              (b) => OrderingTerm.asc(b.id),
+            ]))
+          .get();
+  return rows.map(_questionBoxFromDb).toList();
 }
 
 /// §1.5：读某任务某页的草稿框。
@@ -323,20 +341,19 @@ Future<List<QuestionBox>> boxesForTaskPageFromImpl(
   int page,
 ) async {
   final rows =
-      (await db
-              .customSelect(
-                'SELECT * FROM question_boxes '
-                'WHERE collect_task_id = ? AND page = ? AND question_id IS NULL '
-                'ORDER BY page ASC, id ASC',
-                variables: [
-                  Variable.withString(taskId),
-                  Variable.withInt(page),
-                ],
-              )
-              .get())
-          .map((r) => r.data)
-          .toList();
-  return rows.map(_questionBoxFromRow).toList();
+      await (db.select(db.questionBoxes)
+            ..where(
+              (b) =>
+                  b.collectTaskId.equals(taskId) &
+                  b.page.equals(page) &
+                  b.questionId.isNull(),
+            )
+            ..orderBy([
+              (b) => OrderingTerm.asc(b.page),
+              (b) => OrderingTerm.asc(b.id),
+            ]))
+          .get();
+  return rows.map(_questionBoxFromDb).toList();
 }
 
 /// §1.5.1：读同一页图上全部已确认题的框（重框同页上下文）：
@@ -346,32 +363,26 @@ Future<List<QuestionBox>> boxesForPageImageFromImpl(
   QuizDatabase db,
   String pageImagePath,
 ) async {
+  // B2 集成：questions 读走 Drift 类型化（原 SELECT id FROM
+  // questions WHERE page_image_path = ? ORDER BY id ASC）。
   final qs =
-      (await db
-              .customSelect(
-                'SELECT id FROM questions WHERE page_image_path = ? '
-                'ORDER BY id ASC',
-                variables: [Variable.withString(pageImagePath)],
-              )
-              .get())
-          .map((r) => r.data)
-          .toList();
+      await (db.select(db.questions)
+            ..where((t) => t.pageImagePath.equals(pageImagePath))
+            ..orderBy([(t) => OrderingTerm.asc(t.id)]))
+          .get();
   if (qs.isEmpty) return const [];
-  final ids = qs.map((r) => r['id'] as String).toList();
-  final where = 'question_id IN (${List.filled(ids.length, '?').join(',')})';
+  final ids = qs.map((r) => r.id).toList();
   // SR2-27：与 boxesForTask 对齐，按页、id 排序——无 ORDER BY 时
   // SQLite 不保证行序（通常是 rowid 序，但不保证）。
   final rows =
-      (await db
-              .customSelect(
-                'SELECT * FROM question_boxes WHERE $where '
-                'ORDER BY page ASC, id ASC',
-                variables: [for (final id in ids) Variable.withString(id)],
-              )
-              .get())
-          .map((r) => r.data)
-          .toList();
-  return rows.map(_questionBoxFromRow).toList();
+      await (db.select(db.questionBoxes)
+            ..where((b) => b.questionId.isIn(ids))
+            ..orderBy([
+              (b) => OrderingTerm.asc(b.page),
+              (b) => OrderingTerm.asc(b.id),
+            ]))
+          .get();
+  return rows.map(_questionBoxFromDb).toList();
 }
 
 /// §1.5：草稿保存（可单测版）：一次事务。
@@ -394,11 +405,13 @@ Future<void> saveDraftBoxesIntoImpl(
   final pages = <int>{...boxesByPage.keys};
   await db.transaction(() async {
     for (final page in pages) {
-      await db.customUpdate(
-        'DELETE FROM question_boxes '
-        'WHERE collect_task_id = ? AND page = ? AND question_id IS NULL',
-        variables: [Variable.withString(taskId), Variable.withInt(page)],
-      );
+      await (db.delete(db.questionBoxes)..where(
+            (b) =>
+                b.collectTaskId.equals(taskId) &
+                b.page.equals(page) &
+                b.questionId.isNull(),
+          ))
+          .go();
       final flat = <QuestionBox>[...?boxesByPage[page]];
       for (final b in flat) {
         await _collectInsertBoxOrReplace(
@@ -414,15 +427,16 @@ Future<void> saveDraftBoxesIntoImpl(
     }
     // SR-P2-14：任务行不存在时 update 影响 0 行 → 抛错回滚，
     // 不让框写进去、旋转角丢了，调用方还以为保存成功。
-    final updated = await db.customUpdate(
-      'UPDATE collect_tasks SET page_rotations = ? WHERE id = ?',
-      variables: [
-        Variable.withString(
-          jsonEncode({for (final e in rotations.entries) '${e.key}': e.value}),
-        ),
-        Variable.withString(taskId),
-      ],
-    );
+    final updated =
+        await (db.update(
+          db.collectTasks,
+        )..where((t) => t.id.equals(taskId))).write(
+          CollectTasksCompanion(
+            pageRotations: Value({
+              for (final e in rotations.entries) e.key: e.value,
+            }),
+          ),
+        );
     if (updated != 1) {
       throw StateError('收集任务不存在，草稿保存失败：$taskId');
     }
@@ -460,16 +474,18 @@ Future<void> replaceQuestionBoxesAndSliceIntoImpl(
 }) async {
   await db.transaction(() async {
     await _replaceBoxesTxn(db, questionId, boxes);
-    final updated = await db.customUpdate(
-      'UPDATE questions SET slice_path = ?, slice_width = ?, '
-      'slice_height = ? WHERE id = ?',
-      variables: [
-        Variable.withString(slicePath),
-        Variable.withInt(sliceWidth),
-        Variable.withInt(sliceHeight),
-        Variable.withString(questionId),
-      ],
-    );
+    // B2 集成：题的切片回写走 Drift 类型化 update（原 UPDATE
+    // questions SET slice_path/slice_width/slice_height ...）。
+    final updated =
+        await (db.update(
+          db.questions,
+        )..where((t) => t.id.equals(questionId))).write(
+          QuestionsCompanion(
+            slicePath: Value(slicePath),
+            sliceWidth: Value(sliceWidth),
+            sliceHeight: Value(sliceHeight),
+          ),
+        );
     if (updated != 1) {
       throw StateError('题目不存在，无法保存重框切片：$questionId');
     }
@@ -482,40 +498,19 @@ Future<void> replaceQuestionBoxesAndSliceIntoImpl(
 /// [txn] 是事务内复用的数据库连接（Drift 里事务回调不带 txn 参数，
 /// 直接传外层 [QuizDatabase]，其调用走事务专属执行器）。
 Future<void> _replaceBoxesTxn(
-  DatabaseConnectionUser txn,
+  QuizDatabase txn,
   String questionId,
   List<QuestionBox> boxes,
 ) async {
   await _deleteBoxesForQuestionTxn(txn, questionId);
   for (final b in boxes) {
-    final row = _questionBoxToRow(
+    await _collectInsertBoxOrReplace(
+      txn,
       b.copyWith(
         questionId: questionId,
         clearCollectTaskId: true,
         updatedAt: DateTime.now(),
       ),
-    );
-    await txn.customInsert(
-      'INSERT OR REPLACE INTO question_boxes (id, collect_task_id, '
-      'question_id, parent_box_id, page, layer, type, x, y, w, h, '
-      'confidence, origin, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, '
-      '?, ?, ?, ?, ?, ?)',
-      variables: [
-        Variable(row['id']),
-        Variable(row['collect_task_id']),
-        Variable(row['question_id']),
-        Variable(row['parent_box_id']),
-        Variable(row['page']),
-        Variable(row['layer']),
-        Variable(row['type']),
-        Variable(row['x']),
-        Variable(row['y']),
-        Variable(row['w']),
-        Variable(row['h']),
-        Variable(row['confidence']),
-        Variable(row['origin']),
-        Variable(row['updated_at']),
-      ],
     );
   }
 }
@@ -523,28 +518,20 @@ Future<void> _replaceBoxesTxn(
 /// 删某题的全部框（事务内）：先删 parent_box_id 指向该题框的
 /// 旧行，再删该题的框。
 Future<void> _deleteBoxesForQuestionTxn(
-  DatabaseConnectionUser txn,
+  QuizDatabase txn,
   String questionId,
 ) async {
-  final ownBoxes =
-      (await txn
-              .customSelect(
-                'SELECT id FROM question_boxes WHERE question_id = ?',
-                variables: [Variable.withString(questionId)],
-              )
-              .get())
-          .map((r) => r.data)
-          .toList();
-  for (final row in ownBoxes) {
-    await txn.customUpdate(
-      'DELETE FROM question_boxes WHERE parent_box_id = ?',
-      variables: [Variable.withString(row['id'] as String)],
-    );
+  final ownIds = await (txn.select(
+    txn.questionBoxes,
+  )..where((b) => b.questionId.equals(questionId))).map((r) => r.id).get();
+  for (final id in ownIds) {
+    await (txn.delete(
+      txn.questionBoxes,
+    )..where((b) => b.parentBoxId.equals(id))).go();
   }
-  await txn.customUpdate(
-    'DELETE FROM question_boxes WHERE question_id = ?',
-    variables: [Variable.withString(questionId)],
-  );
+  await (txn.delete(
+    txn.questionBoxes,
+  )..where((b) => b.questionId.equals(questionId))).go();
 }
 
 /// §1.5：确认拆题四步同事务（可单测版；切片写盘在事务**前**，
@@ -585,30 +572,26 @@ Future<void> confirmSplitIntoImpl(
     // 这里；数据层仍要防呆。保留任务与原任务同 id 是刻意设计
     // （先删原任务、后插保留任务），不在此列。
     for (final q in questions) {
+      // B2 集成：存在性查询走 Drift 类型化（原 SELECT id FROM
+      // questions WHERE id = ? LIMIT 1）。
       final exists =
-          (await db
-                  .customSelect(
-                    'SELECT id FROM questions WHERE id = ? LIMIT 1',
-                    variables: [Variable.withString(q.id)],
-                  )
-                  .get())
-              .map((r) => r.data)
-              .toList();
-      if (exists.isNotEmpty) {
+          await (db.select(db.questions)
+                ..where((t) => t.id.equals(q.id))
+                ..limit(1))
+              .getSingleOrNull();
+      if (exists != null) {
         throw StateError('拆题失败：题目已存在，请勿重复确认：${q.id}');
       }
     }
     for (final t in splitTasks) {
+      // B2 集成：存在性查询走 Drift 类型化（原 SELECT id FROM
+      // collect_tasks WHERE id = ? LIMIT 1）。
       final exists =
-          (await db
-                  .customSelect(
-                    'SELECT id FROM collect_tasks WHERE id = ? LIMIT 1',
-                    variables: [Variable.withString(t.id)],
-                  )
-                  .get())
-              .map((r) => r.data)
-              .toList();
-      if (exists.isNotEmpty) {
+          await (db.select(db.collectTasks)
+                ..where((tbl) => tbl.id.equals(t.id))
+                ..limit(1))
+              .getSingleOrNull();
+      if (exists != null) {
         throw StateError('拆题失败：拆分任务已存在，请勿重复确认：${t.id}');
       }
     }
@@ -639,71 +622,35 @@ Future<void> confirmSplitIntoImpl(
       }
     }
     for (final t in splitTasks) {
-      final values = _collectTaskToRow(t);
-      await db.customInsert(
-        'INSERT INTO collect_tasks (id, name, file_name, subject_id, '
-        'status, progress, page_count, page, error, question_id, '
-        'source_path, page_rotations, created_at) VALUES (?, ?, ?, ?, ?, '
-        '?, ?, ?, ?, ?, ?, ?, ?)',
-        variables: [
-          Variable(values['id']),
-          Variable(values['name']),
-          Variable(values['file_name']),
-          Variable(values['subject_id']),
-          Variable(values['status']),
-          Variable(values['progress']),
-          Variable(values['page_count']),
-          Variable(values['page']),
-          Variable(values['error']),
-          Variable(values['question_id']),
-          Variable(values['source_path']),
-          Variable(values['page_rotations']),
-          Variable.withInt(
-            t.createdAt?.millisecondsSinceEpoch ??
-                DateTime.now().millisecondsSinceEpoch,
-          ),
-        ],
-      );
+      // B2 集成：拆分任务行走 Drift 类型化 insert（普通 INSERT，
+      // 冲突即抛，与原 customInsert 同口径；前面的 SR-P2-10 防呆
+      // 已拦截重复 id）。不再走 _collectTaskToRow。
+      await db
+          .into(db.collectTasks)
+          .insert(_collectTaskInsertCompanion(t), mode: InsertMode.insert);
     }
     // 删原任务：残留的草稿框（本次没确认的页/删掉的框）随任务删，
     // 已回填 question_id 的框不受影响（见 deleteCollectTaskFrom）。
-    await db.customUpdate(
-      'DELETE FROM question_boxes '
-      'WHERE collect_task_id = ? AND question_id IS NULL',
-      variables: [Variable.withString(originalTask.id)],
-    );
-    await db.customUpdate(
-      'DELETE FROM collect_tasks WHERE id = ?',
-      variables: [Variable.withString(originalTask.id)],
-    );
+    // B2 集成：两条 DELETE 走 Drift 类型化。
+    await (db.delete(db.questionBoxes)..where(
+          (b) =>
+              b.collectTaskId.equals(originalTask.id) & b.questionId.isNull(),
+        ))
+        .go();
+    await (db.delete(
+      db.collectTasks,
+    )..where((t) => t.id.equals(originalTask.id))).go();
     // SR-P1-2：同一事务内重建保留任务 + 写回未框页草稿。
     // 保留任务与原任务同 id（先删后插）。
     if (retainedTask != null) {
-      final retainedValues = _collectTaskToRow(retainedTask);
-      await db.customInsert(
-        'INSERT OR REPLACE INTO collect_tasks (id, name, file_name, '
-        'subject_id, status, progress, page_count, page, error, '
-        'question_id, source_path, page_rotations, created_at) '
-        'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-        variables: [
-          Variable(retainedValues['id']),
-          Variable(retainedValues['name']),
-          Variable(retainedValues['file_name']),
-          Variable(retainedValues['subject_id']),
-          Variable(retainedValues['status']),
-          Variable(retainedValues['progress']),
-          Variable(retainedValues['page_count']),
-          Variable(retainedValues['page']),
-          Variable(retainedValues['error']),
-          Variable(retainedValues['question_id']),
-          Variable(retainedValues['source_path']),
-          Variable(retainedValues['page_rotations']),
-          Variable.withInt(
-            retainedTask.createdAt?.millisecondsSinceEpoch ??
-                DateTime.now().millisecondsSinceEpoch,
-          ),
-        ],
-      );
+      // B2 集成：保留任务行走 Drift 类型化 insertOrReplace（原
+      // INSERT OR REPLACE 同口径；先删原任务、后插同 id 行）。
+      await db
+          .into(db.collectTasks)
+          .insert(
+            _collectTaskInsertCompanion(retainedTask),
+            mode: InsertMode.insertOrReplace,
+          );
       final retainedPages = <int>{...retainedBoxesByPage.keys};
       for (final page in retainedPages) {
         final flat = <QuestionBox>[...?retainedBoxesByPage[page]];
@@ -728,82 +675,21 @@ Future<void> confirmSplitIntoImpl(
 
 /// 确认拆题里建题那一步：普通 INSERT（冲突即抛，与旧
 /// `ConflictAlgorithm.fail` 同口径——不存在时才插，重复确认在
-/// 前面已显式拦截）。列顺序与 [_toRow] 的键顺序一致。
-Future<void> _collectInsertQuestion(
-  DatabaseConnectionUser db,
-  Question q,
-) async {
-  final row = _toRow(q);
-  await db.customInsert(
-    'INSERT INTO questions (id, title, subject_id, folder_ids, exam_id, '
-    'knowledge_ids, error_types, custom_error_types, tags, answer, '
-    'explanation, notes, review_count, is_organized, is_demo, '
-    'is_favorite, is_archived, review_joined, created_at, slice_kind, '
-    'slice_text, source_path, source_kind, source_page, page_image_path, '
-    'slice_path, slice_width, slice_height) VALUES (?, ?, ?, ?, ?, ?, ?, '
-    '?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-    variables: [
-      Variable(row['id']),
-      Variable(row['title']),
-      Variable(row['subject_id']),
-      Variable(row['folder_ids']),
-      Variable(row['exam_id']),
-      Variable(row['knowledge_ids']),
-      Variable(row['error_types']),
-      Variable(row['custom_error_types']),
-      Variable(row['tags']),
-      Variable(row['answer']),
-      Variable(row['explanation']),
-      Variable(row['notes']),
-      Variable(row['review_count']),
-      Variable(row['is_organized']),
-      Variable(row['is_demo']),
-      Variable(row['is_favorite']),
-      Variable(row['is_archived']),
-      Variable(row['review_joined']),
-      Variable(row['created_at']),
-      Variable(row['slice_kind']),
-      Variable(row['slice_text']),
-      Variable(row['source_path']),
-      Variable(row['source_kind']),
-      Variable(row['source_page']),
-      Variable(row['page_image_path']),
-      Variable(row['slice_path']),
-      Variable(row['slice_width']),
-      Variable(row['slice_height']),
-    ],
-  );
+/// 前面已显式拦截）。B2 集成：走 Drift 类型化 insert + db_questions
+/// 的 [_questionCompanion]（与旧 [_toRow] 同列、同值），不再走
+/// _toRow / customInsert。
+Future<void> _collectInsertQuestion(QuizDatabase db, Question q) async {
+  await db
+      .into(db.questions)
+      .insert(_questionCompanion(q), mode: InsertMode.insert);
 }
 
 /// 插一个框（INSERT OR REPLACE，与旧 `ConflictAlgorithm.replace`
 /// 同口径）。本文件三处插框共用（草稿保存、换框、确认拆题回填）。
-Future<void> _collectInsertBoxOrReplace(
-  DatabaseConnectionUser db,
-  QuestionBox b,
-) async {
-  final row = _questionBoxToRow(b);
-  await db.customInsert(
-    'INSERT OR REPLACE INTO question_boxes (id, collect_task_id, '
-    'question_id, parent_box_id, page, layer, type, x, y, w, h, '
-    'confidence, origin, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, '
-    '?, ?, ?, ?, ?, ?)',
-    variables: [
-      Variable(row['id']),
-      Variable(row['collect_task_id']),
-      Variable(row['question_id']),
-      Variable(row['parent_box_id']),
-      Variable(row['page']),
-      Variable(row['layer']),
-      Variable(row['type']),
-      Variable(row['x']),
-      Variable(row['y']),
-      Variable(row['w']),
-      Variable(row['h']),
-      Variable(row['confidence']),
-      Variable(row['origin']),
-      Variable(row['updated_at']),
-    ],
-  );
+Future<void> _collectInsertBoxOrReplace(QuizDatabase db, QuestionBox b) async {
+  await db
+      .into(db.questionBoxes)
+      .insert(_questionBoxCompanion(b), mode: InsertMode.insertOrReplace);
 }
 
 extension AppDatabaseCollect on AppDatabase {
@@ -816,16 +702,12 @@ extension AppDatabaseCollect on AppDatabase {
   Future<void> upsertCollectTask(CollectTask t) async {
     final d = await db;
     final old =
-        (await d
-                .customSelect(
-                  'SELECT status FROM collect_tasks WHERE id = ? LIMIT 1',
-                  variables: [Variable.withString(t.id)],
-                )
-                .get())
-            .map((r) => r.data)
-            .toList();
+        await (d.select(d.collectTasks)
+              ..where((tbl) => tbl.id.equals(t.id))
+              ..limit(1))
+            .get();
     await AppDatabase.upsertCollectTaskInto(d, t);
-    if (old.isEmpty || old.first['status'] != t.status.name) {
+    if (old.isEmpty || old.first.status != t.status.name) {
       // 新任务或状态变化才发事件：进度百分比高频更新不触发角标重读。
       DataChangeBus.instance.emit(
         const DataChangeEvent(kinds: {DataChangeKind.badges}),

@@ -293,7 +293,7 @@ void main() {
   });
 
   group('SR-P2-61 解不开的图片进 failed', () {
-    test('.txt 改 .jpg：failed，提示“这张图片打不开”，目录已删', () async {
+    test('.txt 改 .jpg：failed，提示“这张图片打不开”，原图保留（B-NEW-10）', () async {
       await openMemoryDb();
       final fake = File('${_tmp.path}/p2-61.jpg');
       await fake.writeAsString('这根本不是一张图片，只是一段文字。' * 20);
@@ -301,13 +301,23 @@ void main() {
       expect(tasks.length, 1);
       expect(tasks.first.status, CollectStatus.failed);
       expect(tasks.first.error, contains('打不开'));
+      // B2 B-NEW-10/B-NEW-12：解不开图片的失败清理只删派生文件、
+      // 保留原图；复制完成时 sourcePath 已立即持久化，失败行可重试。
+      expect(
+        tasks.first.sourcePath,
+        ImportService.originalRelative(tasks.first.id, 'jpg'),
+      );
       expect(
         Directory(
           AppDatabase.resolveDataPath(
             ImportService.taskDirRelative(tasks.first.id),
           )!,
         ).existsSync(),
-        isFalse,
+        isTrue,
+      );
+      expect(
+        File(AppDatabase.resolveDataPath(tasks.first.sourcePath)!).existsSync(),
+        isTrue,
       );
     });
 

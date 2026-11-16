@@ -375,6 +375,10 @@ class ImportService {
           originalRelative(id, ext),
         )!;
         cleanupDir = dirAbs;
+        // B2 B-NEW-12：lastDbPct 提到复制 try 之外——复制完成后立即
+        // 持久化 source_path 时，要把已写库的进度原样带回去（不能写
+        // 回 task.progress 的 0，否则进度从 70% 跌回 0）。
+        var lastDbPct = -1;
         try {
           await Directory(dirAbs).create(recursive: true);
           final total = await file.length();
@@ -382,7 +386,6 @@ class ImportService {
           var lastReported = -1;
           // SR-P2-62：进度写库节流到每 5 个百分点一次（0→70% 原来最多
           // 约 70 次写库，现约 15 次）；UI 回调 onProgress 保持逐次。
-          var lastDbPct = -1;
           final sink = File(targetAbs).openWrite();
           try {
             await for (final chunk in file.openRead()) {
@@ -413,9 +416,48 @@ class ImportService {
           tasks[tasks.length - 1] = task;
           continue;
         }
+        // B2 B-NEW-12：原图落盘后立即持久化 source_path——在渲染 /
+        // 归一化之前补一次 upsert，崩溃窗口只剩“落盘→本次 upsert”
+        // 之间（兜底仍是 taskId + 固定命名定位原图，见协议第 1 条）。
+        // upsertCollectTaskInto 是 UPDATE-first 全列写回（除
+        // created_at 外全列，见 db_collect.dart），所以不能只传
+        // sourcePath：把任务现有的全部字段值原样带回，只改
+        // sourcePath（与已写库的进度 lastDbPct）；状态仍为 importing，
+        // created_at 不变（UPDATE 分支不碰它）。
+        final persistedTask = CollectTask(
+          id: task.id,
+          name: task.name,
+          fileName: task.fileName,
+          subjectId: task.subjectId,
+          status: task.status,
+          progress: lastDbPct < 0 ? task.progress : lastDbPct,
+          pageCount: task.pageCount,
+          page: task.page,
+          error: task.error,
+          questionId: task.questionId,
+          createdAt: task.createdAt,
+          sourcePath: originalRelative(id, ext),
+          pageRotations: task.pageRotations,
+        );
+        try {
+          await _db.upsertCollectTask(persistedTask);
+          task = persistedTask;
+        } catch (e) {
+          // 持久化本身失败：原图已在盘上，失败行仍带 sourcePath
+          //（引用真实存在的文件，不悬空），走 _failAndClean
+          //（只清派生文件、保留原图），任务可凭原图重试。
+          final failedTask = await _failAndClean(
+            persistedTask,
+            dirAbs,
+            '导入失败：原图已存进来了，但写不进任务列表（$e）',
+          );
+          tasks[tasks.length - 1] = failedTask;
+          continue;
+        }
         // PDF：复制完先读页数判 20 页上限，再整本渲染成页图
         // （70→100%）；加密 / 损坏 / 超页 / 渲染失败都进 failed
-        // 任务并删目录，不建无页图任务。
+        // 任务（B-NEW-10：只清派生文件、保留原图供重试），
+        // 不建无页图任务。
         if (ext == 'pdf') {
           // SR2-1：_importPdf 调用点也兜底——其内部失败已由
           // _failAndClean 转成 failed 任务（SR2-2 保证 _failAndClean
@@ -438,8 +480,9 @@ class ImportService {
         // EXIF 方向归一化（仅 != 1 时生成副本；镜像方向显式失败）。
         // SR2-1(b)：分清两种失败——
         //   (1) “已判定解不开图片”（canDecode 为假 / 镜像方向 2/4/5/7）：
-        //       目录已删，失败后绝不再复活成 needBox；失败行的 upsert
-        //       各自包 try，写不进也只返回内存 failed 任务；
+        //       走 _failAndClean（B-NEW-10：只清派生文件、保留原图，
+        //       失败行 sourcePath 仍指向原图，可重试），失败后绝不
+        //       再复活成 needBox；
         //   (2) “读盘 / 写盘失败”（读不到原图、归一化写盘失败）：
         //       原因不明，保留旧降级（原图已拷进库，修框时按原图走）。
         Uint8List? bytes;
@@ -480,13 +523,10 @@ class ImportService {
           }
         }
         if (decodeError != null) {
-          try {
-            await Directory(dirAbs).delete(recursive: true);
-          } catch (_) {}
-          task = _failed(task, decodeError);
-          try {
-            await _db.upsertCollectTask(task);
-          } catch (_) {}
+          // B2 B-NEW-10：与 _failAndClean 同款——只清派生文件、保留
+          // 原图（原图已在立即持久化时写进 sourcePath，失败行指向
+          // 真实存在的文件，可重试）；不再整目录删掉。
+          task = await _failAndClean(task, dirAbs, decodeError);
           tasks[tasks.length - 1] = task;
           continue;
         }
@@ -515,8 +555,8 @@ class ImportService {
         );
         // 状态变化（importing → needBox）才 bump（见 §4.3 节流）。
         // SR2-1：图片尾部 upsert 与 PDF 分支同款包进 try/catch，
-        // 失败走 _failAndClean（失败任务 + 清目录）；其自身写库再
-        // 失败时只返回内存里的 failed 任务，绝不逃出 enqueue。
+        // 失败走 _failAndClean（失败任务 + 只清派生文件、保留原图）；
+        // 其自身写库再失败时只返回内存里的 failed 任务，绝不逃出 enqueue。
         try {
           await _db.upsertCollectTask(task);
         } catch (e) {
@@ -568,7 +608,7 @@ class ImportService {
   /// PDF 导入（原文件已复制进库，[originalAbs] 是库内副本）：
   /// 先读页数（不渲染）判 20 页上限 → 再整本渲染成页图。
   /// 返回成功（needBox，pageCount 为真实页数）或失败任务；
-  /// 失败时删掉任务目录（不留原文件与半截页图）。
+  /// 失败时走 _failAndClean（B-NEW-10：只清派生文件、保留原图）。
   Future<CollectTask> _importPdf(
     CollectTask task,
     String originalAbs,
@@ -584,7 +624,7 @@ class ImportService {
       return _failAndClean(task, dirAbs, '文件损坏：${e.reason}');
     } catch (e) {
       // 兜底（磁盘满等 FileSystemException）：不让异常逃出 enqueue，
-      // 任务进 failed 并清掉半写目录，不卡在导入中。
+      // 任务进 failed 并清掉半写派生文件（原图保留），不卡在导入中。
       return _failAndClean(task, dirAbs, '导入失败：这个 PDF 没导进去（$e）');
     }
     if (total == 0) {
@@ -631,8 +671,8 @@ class ImportService {
     } on PdfCorruptException catch (e) {
       return _failAndClean(task, dirAbs, '文件损坏：${e.reason}');
     } catch (e) {
-      // 兜底（渲染中途磁盘满等）：同上，失败任务 + 清半写目录，
-      // 不让任务卡在导入中。
+      // 兜底（渲染中途磁盘满等）：同上，失败任务 + 清半写派生文件
+      //（原图保留），不让任务卡在导入中。
       return _failAndClean(task, dirAbs, '导入失败：渲染这份 PDF 时出了问题（$e）');
     }
     final done = CollectTask(
@@ -649,8 +689,8 @@ class ImportService {
     );
     // 状态变化（importing → needBox）才 bump（见 §4.3 节流）。
     // SR-P1-4：这一步写库失败也不能逃出 enqueue——先走
-    // _failAndClean（失败任务 + 清目录）；其自身写库再失败时
-    // 返回内存里的 failed 任务，绝不抛到 enqueue 外卡住整批。
+    // _failAndClean（失败任务 + 只清派生文件、保留原图）；其自身写库
+    // 再失败时返回内存里的 failed 任务，绝不抛到 enqueue 外卡住整批。
     // SR2-2：_failAndClean 内部已有兜底，不再抛错，这里不再套 try。
     try {
       await _db.upsertCollectTask(done);
@@ -663,23 +703,117 @@ class ImportService {
     return done;
   }
 
-  /// 失败任务 + 删任务目录（不留半截文件），返回已写库的失败任务。
+  /// 失败任务 + 只清派生文件（B2 B-NEW-10），返回已写库的失败任务。
   /// SR2-2：自身的写库也包进 try——13 处调用点只有尾部 1 处有保护，
   /// 在这里包一处，十三处受益；写不进时只返回内存里的 failed 任务，
   /// 本函数绝不抛错。
+  ///
+  /// 清理范围：只删派生文件——`pages/`（PDF 渲染页图，含旋转烘焙
+  /// 页图）与 `page-normalized.png`（EXIF 归一化副本）；原始输入
+  /// 文件 `imports/<taskId>/original.*` 一律保留，失败任务凭它
+  /// 重试（见 [retryFromStoredOriginal]）。顺序按协议第 1 条：
+  /// 先写库（失败行，sourcePath 保持指向保留的原图），写库成功
+  /// 后再删派生文件；写库失败时不删任何文件。collect_tasks 行不存
+  /// 派生文件路径（页图按 taskId 派生，见 pageImageRelativeForTask），
+  /// 所以没有需要先清的库路径字段；失败行引用的唯一文件就是保留
+  /// 的原图，写库前校验它仍在盘上（sourcePath 若指向已不存在的
+  /// 文件则清掉，不留悬空引用；路径解析不到时不动，不误删有效引用）。
   Future<CollectTask> _failAndClean(
     CollectTask task,
     String dirAbs,
     String error,
   ) async {
-    try {
-      await Directory(dirAbs).delete(recursive: true);
-    } catch (_) {}
-    final failed = _failed(task, error);
+    final failed = _failed(
+      task,
+      error,
+      sourcePath: _sourcePathIfFileExists(task.sourcePath),
+    );
     try {
       await _db.upsertCollectTask(failed);
+    } catch (_) {
+      return failed;
+    }
+    // 写库成功后才删派生文件；原图（original.*）一律保留。
+    try {
+      final pagesDir = Directory('$dirAbs/pages');
+      if (await pagesDir.exists()) {
+        await pagesDir.delete(recursive: true);
+      }
+    } catch (_) {}
+    try {
+      final normalized = File('$dirAbs/page-normalized.png');
+      if (await normalized.exists()) await normalized.delete();
     } catch (_) {}
     return failed;
+  }
+
+  /// sourcePath 指向的文件若已不在盘上，返回 ''（不留悬空引用）；
+  /// 为空或路径解析不到时原样返回，不误删有效引用。
+  String _sourcePathIfFileExists(String sourcePath) {
+    if (sourcePath.isEmpty) return sourcePath;
+    final abs = AppDatabase.resolveDataPath(sourcePath);
+    if (abs == null) return sourcePath;
+    return File(abs).existsSync() ? sourcePath : '';
+  }
+
+  /// B2 ⑫：按 taskId + 固定命名定位库内原图（协议第 1 条的唯一口径，
+  /// 不依赖 source_path 是否已持久化；与 db_orphans.dart 的保护口径
+  /// 同款：`original` 或 `original.*`）。返回匹配到的候选文件
+  /// （0 个、1 个或多个——调用方按候选数处理，不得自行挑选）。
+  static List<File> locateStoredOriginals(String taskId) {
+    final dirAbs = AppDatabase.resolveDataPath(taskDirRelative(taskId));
+    if (dirAbs == null) return const [];
+    final dir = Directory(dirAbs);
+    if (!dir.existsSync()) return const [];
+    return dir.listSync().whereType<File>().where((f) {
+      final name = f.uri.pathSegments.last;
+      return name == 'original' || name.startsWith('original.');
+    }).toList();
+  }
+
+  /// B2 ⑫：用库内保留的原图重试失败任务（导入/重试入口）。
+  /// 批量重试（collect_notifier 的 retryBatchFailures /
+  /// retryBatchPath）用的是用户原路径重导，不走这里；这里是
+  /// “原路径已不在手边、只能凭库内原图重试”的入口（崩溃后恢复的
+  /// 失败任务、以及后续收集页按任务重试的接线点——接线本身在
+  /// collect_notifier，不在本文件）。
+  /// - 恰好一个 original.* 候选：用它重新走一次 [enqueue]
+  ///   （与批量重试同一机制：成功时建新任务行，旧失败行保留——
+  ///   与批量重试“失败行留着、新行另建”的行为一致）；
+  /// - 找不到原图，或找到多个候选：不挑其中一个、不删任何一个，
+  ///   任务标失败并提示用户重新提供原文件（走 _failAndClean +
+  ///   任务 error 文案，与其它失败同一通道，不新造提示体系）。
+  ///   无文件时 sourcePath 会被清掉（原引用已悬空）；多候选时
+  ///   sourcePath 若仍指向真实存在的文件则保留，否则清掉。
+  /// 返回重试结果任务（成功为 needBox，异常为 failed）。
+  Future<CollectTask> retryFromStoredOriginal(
+    CollectTask task, {
+    void Function(String taskId, int progress)? onProgress,
+  }) async {
+    final dirAbs = AppDatabase.resolveDataPath(taskDirRelative(task.id));
+    final candidates = locateStoredOriginals(task.id);
+    if (candidates.length != 1) {
+      final error = candidates.isEmpty
+          ? '找不到原来导入的文件，请重新提供原文件再导入'
+          : '这个任务有多个原文件，无法确定用哪一个，请重新提供原文件再导入';
+      if (dirAbs == null) {
+        // 数据目录解析不到：连任务目录都定位不了，只写失败行
+        //（_failAndClean 的删派生步骤无目录可删）；sourcePath 清掉，
+        // 不留指向未知位置的引用。
+        final failed = _failed(task, error, sourcePath: '');
+        try {
+          await _db.upsertCollectTask(failed);
+        } catch (_) {}
+        return failed;
+      }
+      return _failAndClean(task, dirAbs, error);
+    }
+    final retried = await enqueue(
+      [candidates.single.path],
+      subjectId: task.subjectId,
+      onProgress: onProgress,
+    );
+    return retried.first;
   }
 
   /// 进度更新：只写 progress，不改 status，不 bump（§4.3 节流）。
@@ -703,18 +837,21 @@ class ImportService {
     await AppDatabase.upsertCollectTaskInto(d, updated);
   }
 
-  CollectTask _failed(CollectTask task, String error) => CollectTask(
-    id: task.id,
-    name: task.name,
-    fileName: task.fileName,
-    subjectId: task.subjectId,
-    status: CollectStatus.failed,
-    progress: 0,
-    pageCount: task.pageCount,
-    page: task.page,
-    error: error,
-    createdAt: task.createdAt,
-    sourcePath: task.sourcePath,
-    pageRotations: task.pageRotations,
-  );
+  /// [sourcePath] 为空串时把失败行的 sourcePath 清掉（原引用已悬空）；
+  /// 不传时沿用任务现有的 sourcePath。
+  CollectTask _failed(CollectTask task, String error, {String? sourcePath}) =>
+      CollectTask(
+        id: task.id,
+        name: task.name,
+        fileName: task.fileName,
+        subjectId: task.subjectId,
+        status: CollectStatus.failed,
+        progress: 0,
+        pageCount: task.pageCount,
+        page: task.page,
+        error: error,
+        createdAt: task.createdAt,
+        sourcePath: sourcePath ?? task.sourcePath,
+        pageRotations: task.pageRotations,
+      );
 }

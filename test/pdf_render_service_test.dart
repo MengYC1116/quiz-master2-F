@@ -336,12 +336,18 @@ void main() {
       expect(t.error, contains('21 页'));
       expect(t.error, contains('20 页上限'));
       expect(t.error, contains('分批'));
-      expect(t.sourcePath, isEmpty);
+      // B2 B-NEW-10/B-NEW-12：超页失败走 _failAndClean，只清派生
+      // 文件、保留原图；失败行 sourcePath 指向真实文件、可重试。
+      expect(t.sourcePath, ImportService.originalRelative(t.id, 'pdf'));
       expect(
         Directory(
           AppDatabase.resolveDataPath(ImportService.taskDirRelative(t.id))!,
         ).existsSync(),
-        isFalse,
+        isTrue,
+      );
+      expect(
+        File(AppDatabase.resolveDataPath(t.sourcePath)!).existsSync(),
+        isTrue,
       );
     }, timeout: const Timeout(Duration(minutes: 5)));
 
@@ -375,16 +381,21 @@ void main() {
       final t = tasks.first;
       expect(t.status, CollectStatus.failed);
       expect(t.error, '这个 PDF 带密码，解开密码再导');
-      expect(t.sourcePath, isEmpty);
+      // B2 B-NEW-10/B-NEW-12：同上，原图保留、失败行带 sourcePath。
+      expect(t.sourcePath, ImportService.originalRelative(t.id, 'pdf'));
       expect(
         Directory(
           AppDatabase.resolveDataPath(ImportService.taskDirRelative(t.id))!,
         ).existsSync(),
-        isFalse,
+        isTrue,
+      );
+      expect(
+        File(AppDatabase.resolveDataPath(t.sourcePath)!).existsSync(),
+        isTrue,
       );
     }, timeout: const Timeout(Duration(minutes: 5)));
 
-    test('损坏 PDF 导入：失败、提示具体原因、不建任务目录', () async {
+    test('损坏 PDF 导入：失败、提示具体原因、原图保留', () async {
       await openMemoryDb();
       final service = ImportService(AppDatabase.instance);
       final pdf = File('${_tmp.path}/bad.pdf');
@@ -393,11 +404,17 @@ void main() {
       final t = tasks.first;
       expect(t.status, CollectStatus.failed);
       expect(t.error, startsWith('文件损坏：'));
+      // B2 B-NEW-10/B-NEW-12：同上，原图保留、失败行带 sourcePath。
+      expect(t.sourcePath, ImportService.originalRelative(t.id, 'pdf'));
       expect(
         Directory(
           AppDatabase.resolveDataPath(ImportService.taskDirRelative(t.id))!,
         ).existsSync(),
-        isFalse,
+        isTrue,
+      );
+      expect(
+        File(AppDatabase.resolveDataPath(t.sourcePath)!).existsSync(),
+        isTrue,
       );
     }, timeout: const Timeout(Duration(minutes: 5)));
   });
@@ -428,7 +445,7 @@ void main() {
       frame.image.dispose();
     }, timeout: const Timeout(Duration(minutes: 5)));
 
-    test('假引擎第 2 页渲染失败：失败任务、目录已删，不建无页图任务', () async {
+    test('假引擎第 2 页渲染失败：失败任务、原图保留，不建无页图任务', () async {
       await openMemoryDb();
       final service = ImportService(
         AppDatabase.instance,
@@ -442,11 +459,22 @@ void main() {
       final t = tasks.first;
       expect(t.status, CollectStatus.failed);
       expect(t.error, startsWith('文件损坏：'));
-      expect(t.sourcePath, isEmpty);
+      // B2 B-NEW-10/B-NEW-12：渲染失败只清派生页图、保留原图；
+      // 失败行 sourcePath 指向真实文件、可重试。
+      expect(t.sourcePath, ImportService.originalRelative(t.id, 'pdf'));
       expect(
         Directory(
           AppDatabase.resolveDataPath(ImportService.taskDirRelative(t.id))!,
         ).existsSync(),
+        isTrue,
+      );
+      expect(
+        File(AppDatabase.resolveDataPath(t.sourcePath)!).existsSync(),
+        isTrue,
+      );
+      expect(
+        Directory(AppDatabase.resolveDataPath('imports/${t.id}/pages')!)
+            .existsSync(),
         isFalse,
       );
     }, timeout: const Timeout(Duration(minutes: 5)));

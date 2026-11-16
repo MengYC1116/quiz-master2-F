@@ -13,6 +13,8 @@ import '../services/zip_archive.dart';
 import 'data_change_events.dart';
 import 'demo_data.dart';
 import 'drift/quiz_database.dart';
+import 'journal_ffi.dart';
+import 'restore_journal.dart';
 // B4：database.dart 拆分——AppDatabase 类与对外接口保留在此文件，
 // 实现按职责拆到以下 part 文件（同一库，共享库私有成员；纯重构，
 // 不改行为、不改签名、不改调用方与测试）。
@@ -106,11 +108,6 @@ Variable _variable(Object? value) => switch (value) {
 List<Variable> _variables(Map<String, Object?> row) =>
     row.values.map(_variable).toList();
 
-/// B1-Drift：把 `customSelect` 的结果转成与 sqflite 行同形的
-/// `List<Map<String, Object?>>`——行访问代码 `row['col']` 不用改。
-List<Map<String, Object?>> _rows(List<QueryRow> rows) =>
-    rows.map((r) => r.data).toList();
-
 /// v2 全新数据库（version 2，无迁移历史；§6 第 1 条：老 v1 库首次启动
 /// 直接删除，不迁移；新库从空开始，不预置演示数据）。
 /// - Win11：`%LOCALAPPDATA%\quiz-master2\quiz-master2.db`；
@@ -191,6 +188,15 @@ class AppDatabase {
   Future<QuizDatabase>? _dbFuture;
   String? dbPathUsed;
 
+  /// B2：备份恢复维护状态。恢复期间（快照 → 切换 → 写库）禁止业务访问：
+  /// 单连接应用里业务读写都走 [db] getter，维护中取连接即拒绝；
+  /// 恢复流程本身用调用方传入的已打开连接，不受影响。
+  /// [importBackupZipIntoImpl] 在快照前置起、收尾后清掉（finally）。
+  static bool _restoreMaintenance = false;
+
+  /// B2：是否正处于备份恢复维护状态（测试用）。
+  static bool get inRestoreMaintenance => _restoreMaintenance;
+
   /// 数据库位置可改：设置页改位置后，把新路径写进默认数据目录下的
   /// `db_location.txt` 标记文件；下次启动先读标记文件，读到就用它。
   /// （设置本身存在数据库里，换库后读不到旧设置，所以位置必须存在库外。）
@@ -230,10 +236,7 @@ class AppDatabase {
   static Future<QuizDatabase> openForTest({String? path}) async {
     final db = path == null
         ? QuizDatabase.memory(onCreateTables: createTablesImpl)
-        : QuizDatabase.file(
-            File(path),
-            onCreateTables: createTablesImpl,
-          );
+        : QuizDatabase.file(File(path), onCreateTables: createTablesImpl);
     // B1-Drift：与 openAtImpl 同理——Drift 是懒打开，不发查询就不建
     // 文件、不跑 onCreate；本方法的契约是“不存在则新建”（文件库须
     // 在打开后即存在，见 SR-P2-11 v2 测试），因此发一条 SELECT 1
@@ -267,6 +270,11 @@ class AppDatabase {
   /// 打开失败时清掉缓存，下次重试重新打开——失败的 Future 不会
   /// 被永久缓存。`migrateToDirectory` 关库时同时清 `_dbFuture`。
   Future<QuizDatabase> get db {
+    // B2：恢复维护状态下拒绝业务取连接（见 [_restoreMaintenance]）。
+    // 恢复流程本身不走这里（用调用方传入的已打开连接）。
+    if (_restoreMaintenance) {
+      throw StateError('正在恢复备份，数据库处于维护状态，请稍后再试');
+    }
     final cached = _dbFuture;
     if (cached != null) return cached;
     late final Future<QuizDatabase> opened;
@@ -286,10 +294,22 @@ class AppDatabase {
     var dbPath = p.join(dataDir.path, 'quiz-master2.db');
     try {
       await dataDir.create(recursive: true);
+      // B2 启动恢复钩子（plan §四第 2 阶段第 5 条 + B-NEW-17）：
+      // 时序是“删老库 → 启动恢复 → QuizDatabase.file”。删老库在
+      // openAtImpl 内（db_schema.dart，本阶段不改该文件）也会跑一次，
+      // 这里先显式跑一次以保证该时序；第二次调用是幂等的（老库已删
+      // 或已是 v2 时直接返回 false，只多一次只读探针）。
+      // 启动恢复在开库前跑：回滚要换库文件（快照拷回），连接未建时才安全。
+      await AppDatabase.deleteLegacyDatabaseIfPresent(dbPath);
+      await performStartupRestoreIfNeeded(dbPath);
       _db = await openAt(dbPath);
     } on LegacyDatabaseException {
       // 删老库失败 / 库文件无法确认版本：拒绝打开，不滑入
       // fallback（否则新旧库并存）。
+      rethrow;
+    } on JournalCorruptException {
+      // 恢复日志损坏 / 快照缺失 / 回滚目录缺失：拒绝开库，不滑入
+      // fallback（否则中断的恢复会被静默丢下、新旧库并存）。
       rethrow;
     } catch (e) {
       // B3-P01：fallback 只收窄到“主位置无库文件”的不可写情况。
@@ -359,8 +379,7 @@ class AppDatabase {
   static bool shouldFallbackAfterOpenFailure(String dbPath) =>
       shouldFallbackAfterOpenFailureImpl(dbPath);
 
-  static Future<QuizDatabase> openAt(String dbPath) =>
-      openAtImpl(dbPath);
+  static Future<QuizDatabase> openAt(String dbPath) => openAtImpl(dbPath);
 
   static Future<bool> deleteLegacyDatabaseIfPresent(String dbPath) =>
       deleteLegacyDatabaseIfPresentImpl(dbPath);
@@ -436,7 +455,8 @@ class AppDatabase {
   static Future<int> deleteFolderFrom(QuizDatabase db, Folder f) =>
       deleteFolderFromImpl(db, f);
 
-  static Future<List<String>> allTagsFrom(QuizDatabase db) => allTagsFromImpl(db);
+  static Future<List<String>> allTagsFrom(QuizDatabase db) =>
+      allTagsFromImpl(db);
 
   static Future<void> renameTagFrom(
     QuizDatabase db,
@@ -447,7 +467,8 @@ class AppDatabase {
   static Future<void> deleteTagFrom(QuizDatabase db, String name) =>
       deleteTagFromImpl(db, name);
 
-  static Future<List<Exam>> allExamsFrom(QuizDatabase db) => allExamsFromImpl(db);
+  static Future<List<Exam>> allExamsFrom(QuizDatabase db) =>
+      allExamsFromImpl(db);
 
   static Future<void> insertExamInto(QuizDatabase db, Exam e) =>
       insertExamIntoImpl(db, e);
@@ -610,8 +631,10 @@ class AppDatabase {
       loadOrganizedTodayFromImpl(db, now: now);
 
   /// B11-10 今日小结：今天已整理题数 +1（跃迁时调，见 db_questions.dart）。
-  static Future<void> bumpOrganizedTodayInto(QuizDatabase db, {DateTime? now}) =>
-      bumpOrganizedTodayIntoImpl(db, now: now);
+  static Future<void> bumpOrganizedTodayInto(
+    QuizDatabase db, {
+    DateTime? now,
+  }) => bumpOrganizedTodayIntoImpl(db, now: now);
   // -- db_backup.dart --
 
   static Future<String> exportBackupJsonFrom(QuizDatabase db) =>

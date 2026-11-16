@@ -150,29 +150,22 @@ extension AppDatabasePaths on AppDatabase {
         AppDatabase.testMarkerDirectory ?? _defaultDataDirectoryPath();
     final markerFile = File(p.join(markerDir, 'db_location.txt'));
     final d = await db;
-    final oldRows = _rows(
-      await d
-          .customSelect(
-            'SELECT value FROM settings WHERE key = ?',
-            variables: [Variable.withString('databaseLocation')],
-          )
-          .get(),
-    );
-    final oldSetting = oldRows.isEmpty
-        ? null
-        : oldRows.first['value'] as String?;
+    // B2 集成：旧值读走 db_settings 的类型化读（原 SELECT value
+    // FROM settings WHERE key = ?）。
+    final oldSetting = await _settingValueInto(d, 'databaseLocation');
     await saveSetting('databaseLocation', trimmed);
     try {
       await Directory(markerDir).create(recursive: true);
       await markerFile.writeAsString(trimmed);
     } catch (e) {
       // 标记没写成：设置回滚到旧值（无旧值则删行），再抛原错。
+      // B2 集成：回滚 DELETE 走 Drift 类型化删除；写回旧值仍走
+      // saveSetting（已类型化）。回滚语义不变。
       try {
         if (oldSetting == null) {
-          await d.customUpdate(
-            'DELETE FROM settings WHERE key = ?',
-            variables: [Variable.withString('databaseLocation')],
-          );
+          await (d.delete(
+            d.settings,
+          )..where((t) => t.key.equals('databaseLocation'))).go();
         } else {
           await saveSetting('databaseLocation', oldSetting);
         }

@@ -17,6 +17,10 @@ dependencies:
   drift: ^2.35.4
   # deleteLegacy 只读版本探针直接用 package:sqlite3，显式声明直接依赖。
   sqlite3: ^3.5.2
+  # ARCH-PLAN-B 第 2 阶段：恢复日志原子替换 / 父目录 fsync 的 FFI
+  #（ReplaceFileW / CreateFileW / FlushFileBuffers / libc open+fsync，
+  # 见 lib/data/journal_ffi.dart；B-NEW-14 / B-NEW-17）。
+  ffi: ^2.1.0
   # ARCH-PLAN-A 第 1 阶段：Riverpod 3.x 手写 Provider，不用代码生成
   #（见 docs/ui-replication/ARCH-PLAN-A-STATE-MGMT-DRAFT.md §四）。
   # ^3.4.3 可解析到 3.5.0（最低 Dart 3.12，与 Dart 3.13.7 兼容）。

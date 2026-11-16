@@ -144,10 +144,22 @@ void main() {
       for (final t in tasks) {
         expect(t.status, CollectStatus.failed);
         expect(t.error, contains('写不进任务列表'));
+        // B2 B-NEW-10/B-NEW-12：失败清理只删派生文件、保留原图；
+        // 复制完成时 sourcePath 已立即持久化，失败行指向真实文件。
+        expect(t.sourcePath, ImportService.originalRelative(t.id, 'pdf'));
         expect(
           Directory(
             AppDatabase.resolveDataPath(ImportService.taskDirRelative(t.id))!,
           ).existsSync(),
+          isTrue,
+        );
+        expect(
+          File(AppDatabase.resolveDataPath(t.sourcePath)!).existsSync(),
+          isTrue,
+        );
+        expect(
+          Directory(AppDatabase.resolveDataPath('imports/${t.id}/pages')!)
+              .existsSync(),
           isFalse,
         );
       }
@@ -195,11 +207,17 @@ void main() {
       for (final t in tasks) {
         expect(t.status, CollectStatus.failed);
         expect(t.error, contains('写不进任务列表'));
+        // B2 B-NEW-10/B-NEW-12：同上，原图保留、失败行带 sourcePath。
+        expect(t.sourcePath, ImportService.originalRelative(t.id, 'jpg'));
         expect(
           Directory(
             AppDatabase.resolveDataPath(ImportService.taskDirRelative(t.id))!,
           ).existsSync(),
-          isFalse,
+          isTrue,
+        );
+        expect(
+          File(AppDatabase.resolveDataPath(t.sourcePath)!).existsSync(),
+          isTrue,
         );
       }
       // 库里也是 failed 行（_failAndClean 的重试写成功了），
@@ -232,19 +250,36 @@ void main() {
       expect(tasks.length, 1);
       expect(tasks.first.status, CollectStatus.failed);
       expect(tasks.first.error, contains('文件损坏'));
+      // B2 B-NEW-10/B-NEW-12：_failAndClean 写库失败时不删任何文件
+      //（先写库、成功后再删派生文件的顺序）；任务目录与原图都在，
+      // 内存 failed 任务的 sourcePath 仍指向原图。
+      expect(
+        tasks.first.sourcePath,
+        ImportService.originalRelative(tasks.first.id, 'pdf'),
+      );
       expect(
         Directory(
           AppDatabase.resolveDataPath(
             ImportService.taskDirRelative(tasks.first.id),
           )!,
         ).existsSync(),
-        isFalse,
+        isTrue,
+      );
+      expect(
+        File(AppDatabase.resolveDataPath(tasks.first.sourcePath)!).existsSync(),
+        isTrue,
       );
       // 库里只剩初始 importing 行——failed 行写不进去是触发器模拟的
       // “库已坏到 failed 行也写不进”的降级态，内存结果为准。
+      // B2 B-NEW-12：复制后的立即持久化（importing，不被触发器拦）
+      // 已成功，库里这行 sourcePath 已指向原图。
       final stored = await AppDatabase.instance.allCollectTasks();
       expect(stored.length, 1);
       expect(stored.first.status, CollectStatus.importing);
+      expect(
+        stored.first.sourcePath,
+        ImportService.originalRelative(tasks.first.id, 'pdf'),
+      );
     });
 
     test(

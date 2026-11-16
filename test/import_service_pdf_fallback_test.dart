@@ -65,7 +65,7 @@ void main() {
   });
 
   group('_importPdf 兜底 catch', () {
-    test('读页数时磁盘满：enqueue 不抛、任务失败、半写目录已删', () async {
+    test('读页数时磁盘满：enqueue 不抛、任务失败、原图保留（B-NEW-10）', () async {
       await openMemoryDb();
       final service = ImportService(
         AppDatabase.instance,
@@ -82,15 +82,22 @@ void main() {
       final t = tasks.first;
       expect(t.status, CollectStatus.failed);
       expect(t.error, startsWith('导入失败：'));
+      // B2 B-NEW-10/B-NEW-12：失败清理只删派生文件、保留原图；
+      // 复制完成时 sourcePath 已立即持久化，失败行指向真实文件。
+      expect(t.sourcePath, ImportService.originalRelative(t.id, 'pdf'));
       expect(
         Directory(
           AppDatabase.resolveDataPath(ImportService.taskDirRelative(t.id))!,
         ).existsSync(),
-        isFalse,
+        isTrue,
+      );
+      expect(
+        File(AppDatabase.resolveDataPath(t.sourcePath)!).existsSync(),
+        isTrue,
       );
     });
 
-    test('渲染中途磁盘满：同样失败、不卡导入中、目录已删', () async {
+    test('渲染中途磁盘满：同样失败、不卡导入中、原图保留（B-NEW-10）', () async {
       await openMemoryDb();
       final service = ImportService(
         AppDatabase.instance,
@@ -103,10 +110,21 @@ void main() {
       final t = tasks.first;
       expect(t.status, CollectStatus.failed);
       expect(t.error, startsWith('导入失败：'));
+      // 同上：任务目录保留（原图在），只清渲染一半的派生页图。
+      expect(t.sourcePath, ImportService.originalRelative(t.id, 'pdf'));
       expect(
         Directory(
           AppDatabase.resolveDataPath(ImportService.taskDirRelative(t.id))!,
         ).existsSync(),
+        isTrue,
+      );
+      expect(
+        File(AppDatabase.resolveDataPath(t.sourcePath)!).existsSync(),
+        isTrue,
+      );
+      expect(
+        Directory(AppDatabase.resolveDataPath('imports/${t.id}/pages')!)
+            .existsSync(),
         isFalse,
       );
     });

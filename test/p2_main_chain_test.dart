@@ -140,7 +140,7 @@ void main() {
       expect(progress.last, 100);
     });
 
-    test('PDF 导入：损坏的 PDF（只有文件头）显式失败，不留任务目录', () async {
+    test('PDF 导入：损坏的 PDF（只有文件头）显式失败，原图保留、可重试', () async {
       await openMemoryDb();
       final service = ImportService(AppDatabase.instance);
       final pdf = File('${_tmp.path}/x.pdf');
@@ -148,14 +148,23 @@ void main() {
       final tasks = await service.enqueue([pdf.path], subjectId: 'math');
       expect(tasks.first.status, CollectStatus.failed);
       expect(tasks.first.error, startsWith('文件损坏：'));
-      expect(tasks.first.sourcePath, isEmpty);
+      // B2 B-NEW-10/B-NEW-12：失败清理只删派生文件、保留原图；
+      // 复制完成时 sourcePath 已立即持久化，失败行指向真实文件。
+      expect(
+        tasks.first.sourcePath,
+        ImportService.originalRelative(tasks.first.id, 'pdf'),
+      );
       expect(
         Directory(
           AppDatabase.resolveDataPath(
             ImportService.taskDirRelative(tasks.first.id),
           )!,
         ).existsSync(),
-        isFalse,
+        isTrue,
+      );
+      expect(
+        File(AppDatabase.resolveDataPath(tasks.first.sourcePath)!).existsSync(),
+        isTrue,
       );
     });
 
@@ -187,7 +196,7 @@ void main() {
       expect(norm.existsSync(), isFalse);
     });
 
-    test('EXIF 镜像方向 2：显式失败，提示镜像方向，导入目录已删', () async {
+    test('EXIF 镜像方向 2：显式失败，提示镜像方向，原图保留', () async {
       await openMemoryDb();
       // 把方向 6 的固件改成方向 2：大端 TIFF，orientation
       // tag 在偏移 40，值 SHORT 在偏移 48..49（00 06 → 00 02）。
@@ -205,11 +214,18 @@ void main() {
       final t = tasks.first;
       expect(t.status, CollectStatus.failed);
       expect(t.error, contains('镜像方向（EXIF 2）'));
+      // B2 B-NEW-10/B-NEW-12：镜像方向失败走 _failAndClean，只清
+      // 派生文件、保留原图；失败行 sourcePath 指向真实文件、可重试。
+      expect(t.sourcePath, ImportService.originalRelative(t.id, 'jpg'));
       expect(
         Directory(
           AppDatabase.resolveDataPath(ImportService.taskDirRelative(t.id))!,
         ).existsSync(),
-        isFalse,
+        isTrue,
+      );
+      expect(
+        File(AppDatabase.resolveDataPath(t.sourcePath)!).existsSync(),
+        isTrue,
       );
     });
   });

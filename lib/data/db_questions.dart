@@ -1,16 +1,26 @@
 // B4：database.dart 拆分——题目 / 错因记录 / 复习状态与队列 / 删题事务。
 // 与 database.dart 同一库（part of），共享库私有成员；纯重构，行为不变。
+// ARCH-PLAN-B 第 2 阶段（W-questions）：cause_records、review_history、
+// review_state、questions 四张表全部走 Drift 类型化查询（db.select /
+// db.into / db.update / db.delete + Companion），不再有这四张表的
+// customSelect / customInsert / customUpdate SQL 字符串；行映射走本文件
+// 底部的 _questionFromDb / _causeRecordFromDb（DbXxx 行类 → 模型类）与
+// _questionCompanion / _causeRecordCompanion（模型类 → Companion）。
+// 共享的 db_codec.dart 旧助手（_toRow / _fromRow / _causeFromRow /
+// _causeRecordToRow）已在 B2 集成时删：db_catalog.dart 与
+// db_collect.dart（confirmSplitIntoImpl）已全部转类型化，不再用它们。
 
 part of 'database.dart';
 
 /// §8.1：读全部题（可单测版）：直接对传入的库句柄读，不碰单例。
 Future<List<Question>> allQuestionsFromImpl(QuizDatabase db) async {
-  final rows = _rows(
-    await db
-        .customSelect('SELECT * FROM questions ORDER BY created_at DESC')
-        .get(),
-  );
-  return rows.map(_fromRow).toList();
+  final rows =
+      await (db.select(db.questions)..orderBy([
+            (t) =>
+                OrderingTerm(expression: t.createdAt, mode: OrderingMode.desc),
+          ]))
+          .get();
+  return rows.map(_questionFromDb).toList();
 }
 
 /// SR-P2-8：手动加入 / 取消加入复习（可单测版）：题行 + 错因记录
@@ -20,14 +30,13 @@ Future<List<Question>> allQuestionsFromImpl(QuizDatabase db) async {
 /// 对无记录的题静默跳过——题从复习计数里消失，用户以为已加入、
 /// 实际永远排不到。`joined && causes.isEmpty` 时不写库、返回 false
 /// （错因是空的题加不进复习，与旧仓库口径一致）。
-/// 播种用 [_seedCauseRecordsFor]（ConflictAlgorithm.ignore，
-/// 已有记录不动；再加入时接着治）。
+/// 播种用 [_seedCauseRecordsTyped]（insertOrIgnore，已有记录不动；
+/// 再加入时接着治）。
 /// SR2-14：题行只按列 UPDATE `review_joined`，不用整行 REPLACE——
-/// 旧写法 `_toRow(q.copyWith(reviewJoined: joined))` 会把内存旧快照
-/// 里的 `review_count`（如 5）写回库里，覆盖自查刚用 SQL `+1` 加
-/// 出来的 6。`review_count` 只应由 SQL `+1` 改，任何整行写都不应
-/// 带它（见 [upsertQuestionIntoImpl]）。题行不存在时才整行 INSERT
-/// （新题入库，快照值即初始值，无可覆盖的库内值）。
+/// 旧写法整行写回会把内存旧快照里的 `review_count`（如 5）写回库里，
+/// 覆盖自查刚用 SQL `+1` 加出来的 6。`review_count` 只应由 SQL `+1` 改，
+/// 任何整行写都不应带它（见 [upsertQuestionIntoImpl]）。题行不存在时才整行
+/// INSERT（新题入库，快照值即初始值，无可覆盖的库内值）。
 Future<bool> setReviewJoinedIntoImpl(
   QuizDatabase db,
   Question q,
@@ -36,29 +45,20 @@ Future<bool> setReviewJoinedIntoImpl(
   final causes = q.allCauses;
   if (joined && causes.isEmpty) return false;
   await db.transaction(() async {
-    final updated = await db.customUpdate(
-      'UPDATE questions SET review_joined = ? WHERE id = ?',
-      variables: [
-        Variable.withInt(joined ? 1 : 0),
-        Variable.withString(q.id),
-      ],
-    );
+    final updated =
+        await (db.update(db.questions)..where((t) => t.id.equals(q.id))).write(
+          QuestionsCompanion(reviewJoined: Value(joined ? 1 : 0)),
+        );
     if (updated == 0) {
-      await db.customInsert(
-        'INSERT OR REPLACE INTO questions '
-        '(id, title, subject_id, folder_ids, exam_id, knowledge_ids, '
-        'error_types, custom_error_types, tags, answer, explanation, notes, '
-        'review_count, is_organized, is_demo, is_favorite, is_archived, '
-        'review_joined, created_at, slice_kind, slice_text, source_path, '
-        'source_kind, source_page, page_image_path, slice_path, slice_width, '
-        'slice_height) '
-        'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '
-        '?, ?, ?, ?, ?, ?, ?, ?)',
-        variables: _variables(_toRow(q.copyWith(reviewJoined: joined))),
-      );
+      await db
+          .into(db.questions)
+          .insert(
+            _questionCompanion(q.copyWith(reviewJoined: joined)),
+            mode: InsertMode.insertOrReplace,
+          );
     }
     if (joined) {
-      await _seedCauseRecordsFor(db, q, joinedAt: DateTime.now());
+      await _seedCauseRecordsTyped(db, q, joinedAt: DateTime.now());
     }
   });
   return true;
@@ -73,27 +73,18 @@ Future<void> syncCauseRecordsIntoImpl(QuizDatabase db, Question q) async {
   if (!q.reviewJoined) return;
   final causes = q.allCauses.toSet();
   await db.transaction(() async {
-    final rows = _rows(
-      await db
-          .customSelect(
-            'SELECT cause FROM cause_records WHERE question_id = ?',
-            variables: [Variable.withString(q.id)],
-          )
-          .get(),
-    );
+    final rows = await (db.select(
+      db.causeRecords,
+    )..where((t) => t.questionId.equals(q.id))).get();
     for (final row in rows) {
-      final cause = row['cause'] as String;
-      if (!causes.contains(cause)) {
-        await db.customUpdate(
-          'DELETE FROM cause_records WHERE question_id = ? AND cause = ?',
-          variables: [
-            Variable.withString(q.id),
-            Variable.withString(cause),
-          ],
-        );
+      if (!causes.contains(row.cause)) {
+        await (db.delete(db.causeRecords)..where(
+              (t) => t.questionId.equals(q.id) & t.cause.equals(row.cause),
+            ))
+            .go();
       }
     }
-    await _seedCauseRecordsFor(db, q, joinedAt: DateTime.now());
+    await _seedCauseRecordsTyped(db, q, joinedAt: DateTime.now());
   });
 }
 
@@ -107,6 +98,8 @@ Future<void> syncCauseRecordsIntoImpl(QuizDatabase db, Question q) async {
 /// remedyHistory / joinedAt 也以库内值为准（不拿旧快照覆盖）；
 /// 无行时（记录还没入库）才按传入的 [updated] 写。
 /// 返回实际写库的记录（调用方用它刷新界面，不再用快照推导值）。
+/// `review_count` 的 +1 用 Companion.custom 的列自增表达式（与旧
+/// `SET review_count = review_count + 1` 同语义），不在 Dart 侧读改写。
 Future<CauseRecord> recordSelfCheckIntoImpl(
   QuizDatabase db, {
   required CauseRecord updated,
@@ -118,43 +111,28 @@ Future<CauseRecord> recordSelfCheckIntoImpl(
 }) async {
   late CauseRecord written;
   await db.transaction(() async {
+    Future<DbCauseRecord?> readCurrent() =>
+        (db.select(db.causeRecords)..where(
+              (t) =>
+                  t.questionId.equals(updated.questionId) &
+                  t.cause.equals(updated.cause),
+            ))
+            .getSingleOrNull();
     if (result == 'unsure') {
       // “不确定”不算，不写库：返回库内现有行（有）或传入值（无）。
-      final rows = _rows(
-        await db
-            .customSelect(
-              'SELECT * FROM cause_records WHERE question_id = ? AND cause = ? LIMIT 1',
-              variables: [
-                Variable.withString(updated.questionId),
-                Variable.withString(updated.cause),
-              ],
-            )
-            .get(),
-      );
-      written = rows.isEmpty ? updated : _causeFromRow(rows.first);
+      final row = await readCurrent();
+      written = row == null ? updated : _causeRecordFromDb(row);
       return;
     }
-    final rows = _rows(
-      await db
-          .customSelect(
-            'SELECT * FROM cause_records WHERE question_id = ? AND cause = ? LIMIT 1',
-            variables: [
-              Variable.withString(updated.questionId),
-              Variable.withString(updated.cause),
-            ],
-          )
-          .get(),
-    );
+    final row = await readCurrent();
     final now = DateTime.now();
     final today = DateTime(now.year, now.month, now.day);
-    if (rows.isEmpty) {
+    if (row == null) {
       written = updated;
     } else {
-      final current = _causeFromRow(rows.first);
+      final current = _causeRecordFromDb(row);
       if (result == 'solved') {
-        final count = isRecheck
-            ? current.solvedCount
-            : current.solvedCount + 1;
+        final count = isRecheck ? current.solvedCount : current.solvedCount + 1;
         if (isRecheck || count >= cureChecks) {
           written = current.copyWith(
             status: CauseStatus.solved,
@@ -181,25 +159,27 @@ Future<CauseRecord> recordSelfCheckIntoImpl(
         );
       }
     }
-    await db.customInsert(
-      'INSERT OR REPLACE INTO cause_records '
-      '(question_id, cause, subject_id, status, solved_count, last_check, '
-      'recheck_date, remedy_history, joined_at) '
-      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-      variables: _variables(_causeRecordToRow(written)),
-    );
-    await db.customInsert(
-      'INSERT INTO review_history (question_id, result, reviewed_at) '
-      'VALUES (?, ?, ?)',
-      variables: [
-        Variable.withString(questionId),
-        Variable.withString(result),
-        Variable.withInt(DateTime.now().millisecondsSinceEpoch),
-      ],
-    );
-    await db.customUpdate(
-      'UPDATE questions SET review_count = review_count + 1 WHERE id = ?',
-      variables: [Variable.withString(questionId)],
+    await db
+        .into(db.causeRecords)
+        .insert(
+          _causeRecordCompanion(written),
+          mode: InsertMode.insertOrReplace,
+        );
+    await db
+        .into(db.reviewHistory)
+        .insert(
+          ReviewHistoryCompanion.insert(
+            questionId: questionId,
+            result: result,
+            reviewedAt: DateTime.now().millisecondsSinceEpoch,
+          ),
+        );
+    await (db.update(
+      db.questions,
+    )..where((t) => t.id.equals(questionId))).write(
+      QuestionsCompanion.custom(
+        reviewCount: db.questions.reviewCount + const Constant(1),
+      ),
     );
   });
   return written;
@@ -219,46 +199,20 @@ Future<void> upsertQuestionIntoImpl(QuizDatabase db, Question q) async {
   // 不计；已整理题的重复保存也不计（旧行已是已整理）。
   var countOrganizedToday = false;
   if (q.isOrganized) {
-    final old = _rows(
-      await db
-          .customSelect(
-            'SELECT is_organized FROM questions WHERE id = ? LIMIT 1',
-            variables: [Variable.withString(q.id)],
-          )
-          .get(),
-    );
-    countOrganizedToday =
-        old.isNotEmpty && (old.first['is_organized'] as int?) != 1;
+    final old = await (db.select(
+      db.questions,
+    )..where((t) => t.id.equals(q.id))).getSingleOrNull();
+    countOrganizedToday = old != null && old.isOrganized != 1;
   }
-  final values = _toRow(q)
-    ..remove('review_count')
-    ..remove('id');
-  final updated = await db.customUpdate(
-    // 列顺序与 _toRow 去掉 id / review_count 后一致（26 列）：
-    // UPDATE 的列里不含 review_count（见函数头注释）。
-    'UPDATE questions SET title = ?, subject_id = ?, folder_ids = ?, '
-    'exam_id = ?, knowledge_ids = ?, error_types = ?, '
-    'custom_error_types = ?, tags = ?, answer = ?, explanation = ?, '
-    'notes = ?, is_organized = ?, is_demo = ?, is_favorite = ?, '
-    'is_archived = ?, review_joined = ?, created_at = ?, slice_kind = ?, '
-    'slice_text = ?, source_path = ?, source_kind = ?, source_page = ?, '
-    'page_image_path = ?, slice_path = ?, slice_width = ?, '
-    'slice_height = ? WHERE id = ?',
-    variables: [..._variables(values), Variable.withString(q.id)],
-  );
+  final updated =
+      await (db.update(db.questions)..where((t) => t.id.equals(q.id))).write(
+        // UPDATE 的列里不含 review_count（见函数头注释）与 id（WHERE 已定）。
+        _questionCompanion(q, includeId: false, includeReviewCount: false),
+      );
   if (updated == 0) {
-    await db.customInsert(
-      'INSERT OR REPLACE INTO questions '
-      '(id, title, subject_id, folder_ids, exam_id, knowledge_ids, '
-      'error_types, custom_error_types, tags, answer, explanation, notes, '
-      'review_count, is_organized, is_demo, is_favorite, is_archived, '
-      'review_joined, created_at, slice_kind, slice_text, source_path, '
-      'source_kind, source_page, page_image_path, slice_path, slice_width, '
-      'slice_height) '
-      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '
-      '?, ?, ?, ?, ?, ?, ?, ?)',
-      variables: _variables(_toRow(q)),
-    );
+    await db
+        .into(db.questions)
+        .insert(_questionCompanion(q), mode: InsertMode.insertOrReplace);
   }
   // B9-1：题变为已整理时，同句柄把指向它的收集任务置 done。
   // 这是全部整理路径的汇合点（整理确认、批量整理都走 repo.save →
@@ -270,15 +224,15 @@ Future<void> upsertQuestionIntoImpl(QuizDatabase db, Question q) async {
   // 与题写同一句柄，不另开事务：调用方若传进来的是 Transaction，
   // 任务改动与题改动同事务；传普通 Database 时与旧写法同口径
   // （本题写本身也不是事务）。
+  // 注（B2-W-questions）：这条是 collect_tasks 表的操作，语句本身在
+  // 本文件内，顺手改为类型化；collect_tasks 表的其余迁移归 W-collect。
   if (q.isOrganized) {
-    await db.customUpdate(
-      'UPDATE collect_tasks SET status = ? WHERE question_id = ? AND status = ?',
-      variables: [
-        Variable.withString(CollectStatus.done.name),
-        Variable.withString(q.id),
-        Variable.withString(CollectStatus.pendingOrganize.name),
-      ],
-    );
+    await (db.update(db.collectTasks)..where(
+          (t) =>
+              t.questionId.equals(q.id) &
+              t.status.equals(CollectStatus.pendingOrganize.name),
+        ))
+        .write(CollectTasksCompanion(status: Value(CollectStatus.done.name)));
   }
   // B11-10：跃迁才 +1（见函数开头；settings 键 organizedToday）。
   if (countOrganizedToday) {
@@ -296,14 +250,11 @@ Future<void> deleteQuestionFromImpl(QuizDatabase db, String id) async {
 }
 
 Future<String?> _slicePathOf(QuizDatabase db, String id) async {
-  final row = await db
-      .customSelect(
-        'SELECT slice_path FROM questions WHERE id = ? LIMIT 1',
-        variables: [Variable.withString(id)],
-      )
-      .getSingleOrNull();
+  final row = await (db.select(
+    db.questions,
+  )..where((t) => t.id.equals(id))).getSingleOrNull();
   if (row == null) return null;
-  return row.data['slice_path'] as String?;
+  return row.slicePath;
 }
 
 /// §4.5/§3.4：从复习队列里去掉该题的项（队列是 ReviewQueueItem
@@ -312,21 +263,15 @@ Future<void> _removeFromReviewQueueTxn(
   QuizDatabase db,
   String questionId,
 ) async {
-  final rows = _rows(
-    await db
-        .customSelect('SELECT queue FROM review_state WHERE id = 1 LIMIT 1')
-        .get(),
-  );
-  if (rows.isEmpty) return;
-  final queue = AppDatabase.decodeQueue(rows.first['queue']);
+  final row = await (db.select(
+    db.reviewState,
+  )..where((t) => t.id.equals(1))).getSingleOrNull();
+  if (row == null) return;
+  final queue = row.queue;
   final kept = queue.where((e) => e.questionId != questionId).toList();
   if (kept.length == queue.length) return;
-  await db.customUpdate(
-    'UPDATE review_state SET queue = ? WHERE id = ?',
-    variables: [
-      Variable.withString(AppDatabase.encodeQueue(kept)),
-      Variable.withInt(1),
-    ],
+  await (db.update(db.reviewState)..where((t) => t.id.equals(1))).write(
+    ReviewStateCompanion(queue: Value(kept)),
   );
 }
 
@@ -335,44 +280,32 @@ Future<void> _removeFromReviewQueueTxn(
 /// 复习队列里的项 → §1.2(c) 该题的框（含第 1 层框及其子框，
 /// parent_box_id 指向该题整题框的行）→ 题目行。
 /// 注意：页图不删（同页多题共享）；切片文件在事务提交后由调用方
-/// 处理（P2 落盘后，见 §4.5）。
+/// 处理（P2 落盘后，见 §4.5）。顺序约束（plan 协议）：先删数据库行，
+/// 再删切片文件——顺序不变，文件删除在 [deleteQuestionFromImpl] 里
+/// 事务提交后才做。
 Future<void> _deleteQuestionTxn(QuizDatabase db, String id) async {
-  await db.customUpdate(
-    'DELETE FROM cause_records WHERE question_id = ?',
-    variables: [Variable.withString(id)],
-  );
-  await db.customUpdate(
-    'DELETE FROM review_history WHERE question_id = ?',
-    variables: [Variable.withString(id)],
-  );
-  await db.customUpdate(
-    'UPDATE collect_tasks SET question_id = NULL WHERE question_id = ?',
-    variables: [Variable.withString(id)],
-  );
+  await (db.delete(
+    db.causeRecords,
+  )..where((t) => t.questionId.equals(id))).go();
+  await (db.delete(
+    db.reviewHistory,
+  )..where((t) => t.questionId.equals(id))).go();
+  await (db.update(db.collectTasks)..where((t) => t.questionId.equals(id)))
+      .write(const CollectTasksCompanion(questionId: Value(null)));
   await _removeFromReviewQueueTxn(db, id);
   // 先删子框（parent_box_id 指向该题整题框的行），再删该题的框。
-  final ownBoxes = _rows(
-    await db
-        .customSelect(
-          'SELECT id FROM question_boxes WHERE question_id = ?',
-          variables: [Variable.withString(id)],
-        )
-        .get(),
-  );
-  for (final row in ownBoxes) {
-    await db.customUpdate(
-      'DELETE FROM question_boxes WHERE parent_box_id = ?',
-      variables: [Variable.withString(row['id'] as String)],
-    );
+  final ownBoxes = await (db.select(
+    db.questionBoxes,
+  )..where((t) => t.questionId.equals(id))).get();
+  for (final box in ownBoxes) {
+    await (db.delete(
+      db.questionBoxes,
+    )..where((t) => t.parentBoxId.equals(box.id))).go();
   }
-  await db.customUpdate(
-    'DELETE FROM question_boxes WHERE question_id = ?',
-    variables: [Variable.withString(id)],
-  );
-  await db.customUpdate(
-    'DELETE FROM questions WHERE id = ?',
-    variables: [Variable.withString(id)],
-  );
+  await (db.delete(
+    db.questionBoxes,
+  )..where((t) => t.questionId.equals(id))).go();
+  await (db.delete(db.questions)..where((t) => t.id.equals(id))).go();
 }
 
 extension AppDatabaseQuestions on AppDatabase {
@@ -381,35 +314,32 @@ extension AppDatabaseQuestions on AppDatabase {
 
   Future<Question?> questionById(String id) async {
     final d = await db;
-    final row = await d
-        .customSelect(
-          'SELECT * FROM questions WHERE id = ? LIMIT 1',
-          variables: [Variable.withString(id)],
-        )
-        .getSingleOrNull();
+    final row = await (d.select(
+      d.questions,
+    )..where((t) => t.id.equals(id))).getSingleOrNull();
     if (row == null) return null;
-    return _fromRow(row.data);
+    return _questionFromDb(row);
   }
 
   Future<List<({String result, DateTime reviewedAt})>> reviewHistory(
     String questionId,
   ) async {
     final d = await db;
-    final rows = _rows(
-      await d
-          .customSelect(
-            'SELECT * FROM review_history WHERE question_id = ? ORDER BY reviewed_at DESC',
-            variables: [Variable.withString(questionId)],
-          )
-          .get(),
-    );
+    final rows =
+        await (d.select(d.reviewHistory)
+              ..where((t) => t.questionId.equals(questionId))
+              ..orderBy([
+                (t) => OrderingTerm(
+                  expression: t.reviewedAt,
+                  mode: OrderingMode.desc,
+                ),
+              ]))
+            .get();
     return rows
         .map(
           (r) => (
-            result: r['result'] as String,
-            reviewedAt: DateTime.fromMillisecondsSinceEpoch(
-              r['reviewed_at'] as int,
-            ),
+            result: r.result,
+            reviewedAt: DateTime.fromMillisecondsSinceEpoch(r.reviewedAt),
           ),
         )
         .toList();
@@ -420,45 +350,41 @@ extension AppDatabaseQuestions on AppDatabase {
     required String result,
   }) async {
     final d = await db;
-    await d.customInsert(
-      'INSERT INTO review_history (question_id, result, reviewed_at) '
-      'VALUES (?, ?, ?)',
-      variables: [
-        Variable.withString(questionId),
-        Variable.withString(result),
-        Variable.withInt(DateTime.now().millisecondsSinceEpoch),
-      ],
-    );
+    await d
+        .into(d.reviewHistory)
+        .insert(
+          ReviewHistoryCompanion.insert(
+            questionId: questionId,
+            result: result,
+            reviewedAt: DateTime.now().millisecondsSinceEpoch,
+          ),
+        );
   }
 
   Future<List<CauseRecord>> allCauseRecords() async {
     final d = await db;
-    final rows = _rows(
-      await d
-          .customSelect(
-            'SELECT * FROM cause_records ORDER BY joined_at ASC, id ASC',
-          )
-          .get(),
-    );
-    return rows.map(_causeFromRow).toList();
+    final rows =
+        await (d.select(d.causeRecords)..orderBy([
+              (t) => OrderingTerm(expression: t.joinedAt),
+              (t) => OrderingTerm(expression: t.id),
+            ]))
+            .get();
+    return rows.map(_causeRecordFromDb).toList();
   }
 
   Future<List<CauseRecord>> causeRecordsForQuestion(String questionId) async {
     final d = await db;
-    final rows = _rows(
-      await d
-          .customSelect(
-            'SELECT * FROM cause_records WHERE question_id = ? ORDER BY id ASC',
-            variables: [Variable.withString(questionId)],
-          )
-          .get(),
-    );
-    return rows.map(_causeFromRow).toList();
+    final rows =
+        await (d.select(d.causeRecords)
+              ..where((t) => t.questionId.equals(questionId))
+              ..orderBy([(t) => OrderingTerm(expression: t.id)]))
+            .get();
+    return rows.map(_causeRecordFromDb).toList();
   }
 
   Future<void> ensureCauseRecords(Question q) async {
     final d = await db;
-    await _seedCauseRecordsFor(d, q, joinedAt: DateTime.now());
+    await _seedCauseRecordsTyped(d, q, joinedAt: DateTime.now());
   }
 
   /// SR3-4：方法名即语义——只改 `remedy_history` 列，不整行
@@ -473,22 +399,18 @@ extension AppDatabaseQuestions on AppDatabase {
   /// INSERT（新记录无可覆盖的库内值，全列写无 SR2-14 同类风险）。
   Future<void> updateCauseRemedy(CauseRecord r) async {
     final d = await db;
-    final updated = await d.customUpdate(
-      'UPDATE cause_records SET remedy_history = ? WHERE question_id = ? AND cause = ?',
-      variables: [
-        Variable.withString(AppDatabase.encodeRemedyList(r.remedyHistory)),
-        Variable.withString(r.questionId),
-        Variable.withString(r.cause),
-      ],
-    );
+    final updated =
+        await (d.update(d.causeRecords)..where(
+              (t) =>
+                  t.questionId.equals(r.questionId) & t.cause.equals(r.cause),
+            ))
+            .write(
+              CauseRecordsCompanion(remedyHistory: Value(r.remedyHistory)),
+            );
     if (updated == 0) {
-      await d.customInsert(
-        'INSERT OR REPLACE INTO cause_records '
-        '(question_id, cause, subject_id, status, solved_count, last_check, '
-        'recheck_date, remedy_history, joined_at) '
-        'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-        variables: _variables(_causeRecordToRow(r)),
-      );
+      await d
+          .into(d.causeRecords)
+          .insert(_causeRecordCompanion(r), mode: InsertMode.insertOrReplace);
     }
     // Stage 4：补救历史是复习记录；行不存在时整行 INSERT 可能新建一条
     // 待解决记录，会影响角标——沿用旧 bump 口径，两种 kind 都发。
@@ -561,18 +483,17 @@ extension AppDatabaseQuestions on AppDatabase {
 
   Future<void> deleteCauseRecordsForQuestion(String questionId) async {
     final d = await db;
-    await d.customUpdate(
-      'DELETE FROM cause_records WHERE question_id = ?',
-      variables: [Variable.withString(questionId)],
-    );
+    await (d.delete(
+      d.causeRecords,
+    )..where((t) => t.questionId.equals(questionId))).go();
   }
 
   Future<void> deleteCauseRecord(String questionId, String cause) async {
     final d = await db;
-    await d.customUpdate(
-      'DELETE FROM cause_records WHERE question_id = ? AND cause = ?',
-      variables: [Variable.withString(questionId), Variable.withString(cause)],
-    );
+    await (d.delete(d.causeRecords)..where(
+          (t) => t.questionId.equals(questionId) & t.cause.equals(cause),
+        ))
+        .go();
   }
 
   Future<void> saveReviewState({
@@ -580,39 +501,37 @@ extension AppDatabaseQuestions on AppDatabase {
     required int position,
   }) async {
     final d = await db;
-    await d.customInsert(
-      'INSERT OR REPLACE INTO review_state (id, queue, position, updated_at) '
-      'VALUES (?, ?, ?, ?)',
-      variables: [
-        Variable.withInt(1),
-        Variable.withString(AppDatabase.encodeQueue(queue)),
-        Variable.withInt(position),
-        Variable.withInt(DateTime.now().millisecondsSinceEpoch),
-      ],
-    );
+    await d
+        .into(d.reviewState)
+        .insert(
+          ReviewStateCompanion.insert(
+            id: const Value(1),
+            queue: Value(queue),
+            position: Value(position),
+            updatedAt: DateTime.now().millisecondsSinceEpoch,
+          ),
+          mode: InsertMode.insertOrReplace,
+        );
   }
 
   Future<ReviewSessionState?> loadReviewState() async {
     final d = await db;
-    final row = await d
-        .customSelect('SELECT * FROM review_state WHERE id = 1 LIMIT 1')
-        .getSingleOrNull();
+    final row = await (d.select(
+      d.reviewState,
+    )..where((t) => t.id.equals(1))).getSingleOrNull();
     if (row == null) return null;
-    final r = row.data;
-    final queue = AppDatabase.decodeQueue(r['queue']);
+    final queue = row.queue;
     if (queue.isEmpty) return null;
     return ReviewSessionState(
       queue: queue,
-      position: (r['position'] as int?) ?? 0,
-      updatedAt: DateTime.fromMillisecondsSinceEpoch(r['updated_at'] as int),
+      position: row.position,
+      updatedAt: DateTime.fromMillisecondsSinceEpoch(row.updatedAt),
     );
   }
 
   Future<void> clearReviewState() async {
     final d = await db;
-    await d.customUpdate(
-      'DELETE FROM review_state WHERE id = 1',
-    );
+    await (d.delete(d.reviewState)..where((t) => t.id.equals(1))).go();
   }
 
   Future<void> upsertQuestion(Question q) async {
@@ -641,5 +560,140 @@ extension AppDatabaseQuestions on AppDatabase {
         questionId: id,
       ),
     );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Drift 行映射（本文件私有）：DbXxx 行类 ↔ 模型类。
+// 与 db_codec.dart 的旧 _toRow / _fromRow / _causeFromRow /
+// _causeRecordToRow 同口径（bool ↔ 0/1、DateTime ↔ 毫秒、枚举存 name、
+// 多值字段经 StringListConverter 走 JSON 文本、queue 经 QueueConverter
+// 走对象数组），只是读写走类型化列，不再拼 SQL 字符串。
+// ---------------------------------------------------------------------------
+
+Question _questionFromDb(DbQuestion r) => Question(
+  id: r.id,
+  title: r.title,
+  subjectId: r.subjectId,
+  folderIds: r.folderIds,
+  examId: r.examId,
+  knowledgePointIds: r.knowledgeIds,
+  errorTypes: r.errorTypes,
+  customErrorTypes: r.customErrorTypes,
+  tags: r.tags,
+  answer: r.answer,
+  explanation: r.explanation,
+  notes: r.notes,
+  reviewCount: r.reviewCount,
+  isOrganized: r.isOrganized == 1,
+  isDemo: r.isDemo == 1,
+  isFavorite: r.isFavorite == 1,
+  isArchived: r.isArchived == 1,
+  reviewJoined: r.reviewJoined == 1,
+  createdAt: DateTime.fromMillisecondsSinceEpoch(r.createdAt),
+  sliceKind: r.sliceKind,
+  sliceText: r.sliceText,
+  sourcePath: r.sourcePath,
+  sourceKind: r.sourceKind,
+  sourcePage: r.sourcePage,
+  pageImagePath: r.pageImagePath,
+  slicePath: r.slicePath,
+  sliceWidth: r.sliceWidth,
+  sliceHeight: r.sliceHeight,
+);
+
+QuestionsCompanion _questionCompanion(
+  Question q, {
+  bool includeId = true,
+  bool includeReviewCount = true,
+}) => QuestionsCompanion(
+  id: includeId ? Value(q.id) : const Value.absent(),
+  title: Value(q.title),
+  subjectId: Value(q.subjectId),
+  folderIds: Value(q.folderIds),
+  examId: Value(q.examId),
+  knowledgeIds: Value(q.knowledgePointIds),
+  errorTypes: Value(q.errorTypes),
+  customErrorTypes: Value(q.customErrorTypes),
+  tags: Value(q.tags),
+  answer: Value(q.answer),
+  explanation: Value(q.explanation),
+  notes: Value(q.notes),
+  reviewCount: includeReviewCount ? Value(q.reviewCount) : const Value.absent(),
+  isOrganized: Value(q.isOrganized ? 1 : 0),
+  isDemo: Value(q.isDemo ? 1 : 0),
+  isFavorite: Value(q.isFavorite ? 1 : 0),
+  isArchived: Value(q.isArchived ? 1 : 0),
+  reviewJoined: Value(q.reviewJoined ? 1 : 0),
+  createdAt: Value(q.createdAt.millisecondsSinceEpoch),
+  sliceKind: Value(q.sliceKind),
+  sliceText: Value(q.sliceText),
+  sourcePath: Value(q.sourcePath),
+  sourceKind: Value(q.sourceKind),
+  sourcePage: Value(q.sourcePage),
+  pageImagePath: Value(q.pageImagePath),
+  slicePath: Value(q.slicePath),
+  sliceWidth: Value(q.sliceWidth),
+  sliceHeight: Value(q.sliceHeight),
+);
+
+CauseRecord _causeRecordFromDb(DbCauseRecord r) => CauseRecord(
+  questionId: r.questionId,
+  cause: r.cause,
+  subjectId: r.subjectId,
+  status: switch (r.status) {
+    'inProgress' => CauseStatus.inProgress,
+    'solved' => CauseStatus.solved,
+    _ => CauseStatus.pending,
+  },
+  solvedCount: r.solvedCount,
+  lastCheck: r.lastCheck == null
+      ? null
+      : DateTime.fromMillisecondsSinceEpoch(r.lastCheck!),
+  recheckDate: r.recheckDate == null
+      ? null
+      : DateTime.fromMillisecondsSinceEpoch(r.recheckDate!),
+  remedyHistory: r.remedyHistory,
+  joinedAt: DateTime.fromMillisecondsSinceEpoch(r.joinedAt),
+);
+
+CauseRecordsCompanion _causeRecordCompanion(CauseRecord r) =>
+    CauseRecordsCompanion(
+      questionId: Value(r.questionId),
+      cause: Value(r.cause),
+      subjectId: Value(r.subjectId),
+      status: Value(r.status.name),
+      solvedCount: Value(r.solvedCount),
+      lastCheck: Value(r.lastCheck?.millisecondsSinceEpoch),
+      recheckDate: Value(r.recheckDate?.millisecondsSinceEpoch),
+      remedyHistory: Value(r.remedyHistory),
+      joinedAt: Value(r.joinedAt.millisecondsSinceEpoch),
+    );
+
+/// 错因记录播种（类型化版）：每个错因一条待解决记录（已存在的不动）。
+/// 与已删的 db_schema.dart `_seedCauseRecordsFor`（customInsert
+/// OR IGNORE）同语义；db_schema.dart 的旧函数已在 B2 集成时删。
+Future<void> _seedCauseRecordsTyped(
+  QuizDatabase db,
+  Question q, {
+  required DateTime joinedAt,
+  int solvedCount = 0,
+}) async {
+  for (final cause in q.allCauses) {
+    await db
+        .into(db.causeRecords)
+        .insert(
+          CauseRecordsCompanion.insert(
+            questionId: q.id,
+            cause: cause,
+            subjectId: q.subjectId,
+            solvedCount: Value(solvedCount),
+            // remedy_history 必须显式写 '[]'：列默认值是 ''，旧代码显式写
+            // '[]'；缺省会让存储表示从 '[]' 漂成 ''（p2_json_fields 回归）。
+            remedyHistory: const Value([]),
+            joinedAt: joinedAt.millisecondsSinceEpoch,
+          ),
+          mode: InsertMode.insertOrIgnore,
+        );
   }
 }

@@ -16,6 +16,13 @@ part of 'database.dart';
 /// 的其它杂文件仍按孤儿处理）。
 /// 附带：同一口径也被 zip 备份共用（db_backup.dart），修后未拆分
 /// 任务的页图也会进备份，恢复后任务不再丢页图。
+///
+/// B2 第 2 阶段（B-NEW-15）：`imports/<taskId>/original.*` 也受保护——
+/// 只要 collect_tasks 里存在该 taskId 的任务行，即使其 source_path
+/// 暂时为空（原始文件刚落盘、source_path 还没来得及持久化的崩溃
+/// 窗口），该原始输入文件也不得判定为孤儿、不得被一键清理删除。
+/// 实现按任务目录枚举现存的 `original.*` 文件（不按 source_path
+/// 猜扩展名、不挑选候选：扫描只做保护，不做恢复定位）。
 Future<Set<String>> _referencedRelativePaths(
   QuizDatabase db,
   String dataDir,
@@ -27,33 +34,36 @@ Future<Set<String>> _referencedRelativePaths(
     if (rel != null) refs.add(rel);
   }
 
-  for (final row
-      in (await db
-              .customSelect(
-                'SELECT source_path, page_image_path, slice_path FROM questions',
-              )
-              .get())
-          .map((r) => r.data)) {
-    add(row['source_path']);
-    add(row['page_image_path']);
-    add(row['slice_path']);
+  // B2 集成：questions 三列读走 Drift 类型化（原 SELECT
+  // source_path, page_image_path, slice_path FROM questions）。
+  for (final row in await db.select(db.questions).get()) {
+    add(row.sourcePath);
+    add(row.pageImagePath);
+    add(row.slicePath);
   }
-  for (final row
-      in (await db
-              .customSelect('SELECT id, source_path FROM collect_tasks')
-              .get())
-          .map((r) => r.data)) {
-    add(row['source_path']);
-    final taskId = row['id'];
+  for (final row in await db.select(db.collectTasks).get()) {
+    add(row.sourcePath);
+    final taskId = row.id;
     // 任务 id 是应用生成的目录名；含分隔符即不合法，跳过派生口径，
     // 防止 p.join 被带出 imports/<taskId>/。
-    if (taskId is! String ||
-        taskId.isEmpty ||
-        taskId.contains('/') ||
-        taskId.contains('\\')) {
+    if (taskId.isEmpty || taskId.contains('/') || taskId.contains('\\')) {
       continue;
     }
     add('imports/$taskId/page-normalized.png');
+    // B-NEW-15：任务行存在即保护其原始输入文件。枚举任务目录里
+    // 现存的 original.*（source_path 为空的崩溃窗口也保得住；
+    // 多个候选全保护，不挑选、不删除——恢复定位的多候选异常
+    // 处理在导入/重试入口，不在扫描里做）。
+    final taskDir = Directory(p.join(dataDir, 'imports', taskId));
+    if (taskDir.existsSync()) {
+      for (final e in taskDir.listSync()) {
+        if (e is! File) continue;
+        final name = p.basename(e.path);
+        if (name == 'original' || name.startsWith('original.')) {
+          add(p.relative(e.path, from: dataDir));
+        }
+      }
+    }
     final pagesDir = Directory(p.join(dataDir, 'imports', taskId, 'pages'));
     if (!pagesDir.existsSync()) continue;
     for (final e in pagesDir.listSync()) {

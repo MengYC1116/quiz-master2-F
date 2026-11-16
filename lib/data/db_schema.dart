@@ -65,10 +65,7 @@ Future<bool> deleteLegacyDatabaseIfPresentImpl(String dbPath) async {
   if (!file.existsSync()) return false;
   int version;
   try {
-    final probe = sqlite3.sqlite3.open(
-      dbPath,
-      mode: sqlite3.OpenMode.readOnly,
-    );
+    final probe = sqlite3.sqlite3.open(dbPath, mode: sqlite3.OpenMode.readOnly);
     try {
       final rows = probe.select('PRAGMA user_version');
       version = rows.first['user_version'] as int;
@@ -218,37 +215,12 @@ Future<void> createTablesImpl(QuizDatabase db) async {
   );
 }
 
-/// 错因记录播种：每个错因一条待解决记录（已存在的不动）。
-/// 参数是 [DatabaseConnectionUser]（Database 与事务内同一连接的
-/// 公共父类），SR-P2-8 的事务版加入/同步在事务内直接调它，不另开事务。
-/// B1-Drift：insert 换 customInsert，OR IGNORE 语义保留。
-Future<void> _seedCauseRecordsFor(
-  DatabaseConnectionUser db,
-  Question q, {
-  required DateTime joinedAt,
-  int solvedCount = 0,
-}) async {
-  for (final cause in q.allCauses) {
-    await db.customInsert(
-      'INSERT OR IGNORE INTO cause_records '
-      '(question_id, cause, subject_id, status, solved_count, '
-      'last_check, recheck_date, remedy_history, joined_at) '
-      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-      variables: _variables({
-        'question_id': q.id,
-        'cause': cause,
-        'subject_id': q.subjectId,
-        'status': 'pending',
-        'solved_count': solvedCount,
-        'last_check': null,
-        'recheck_date': null,
-        'remedy_history': '[]',
-        'joined_at': joinedAt.millisecondsSinceEpoch,
-      }),
-    );
-  }
-}
-
+/// B2 集成：`_seedCauseRecordsFor` 已删——全仓 grep 零产品调用方
+///（仅剩 p2_json_fields_test 的测试名提及，其本体走
+/// ensureCauseRecords → 类型化的 _seedCauseRecordsTyped）；错因
+/// 播种走 db_questions.dart 的 [_seedCauseRecordsTyped]。
+/// onCreate 的其他种子逻辑（subjects/folders/tags/exams/
+/// knowledge_points/schemaVersion 原始 DDL）保留不动。
 Future<void> _seed(QuizDatabase db) async {
   for (final s in Subject.all) {
     await db.customInsert(
