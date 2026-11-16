@@ -1,18 +1,14 @@
 // P2 §3：多值字段 JSON 编解码收口 + 11 处写点 + review queue。
 // 内存库，不碰真实用户库。含 `,`/`|` 的值必须原样往返（旧逗号拆分
 // 会把一个值拆成两个）；非法值（不是 JSON 数组）按空列表处理，不猜拆分。
+import 'package:drift/drift.dart' hide isNull, isNotNull;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:quiz_master2/data/database.dart';
+import 'package:quiz_master2/data/drift/quiz_database.dart';
 import 'package:quiz_master2/models/models.dart';
-import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
-Future<Database> openMemoryDb() async {
-  sqfliteFfiInit();
-  final db = await databaseFactoryFfi.openDatabase(inMemoryDatabasePath,
-      options: OpenDatabaseOptions(
-          version: 2,
-          onCreate: (db, version) async =>
-              AppDatabase.createTables(db)));
+Future<QuizDatabase> openMemoryDb() async {
+  final db = await AppDatabase.openForTest();
   AppDatabase.useDatabaseForTest(db);
   addTearDown(() async => db.close());
   return db;
@@ -25,54 +21,79 @@ Question q({
   List<String> errorTypes = const ['计算错误'],
   List<String> customErrorTypes = const [],
   List<String> tags = const ['易错', '常考'],
-}) =>
-    Question(
-      id: id,
-      title: '题 $id',
-      subjectId: 'math',
-      folderIds: folderIds,
-      knowledgePointIds: knowledgePointIds,
-      errorTypes: errorTypes,
-      customErrorTypes: customErrorTypes,
-      tags: tags,
-      createdAt: DateTime(2026, 11, 14),
-    );
+}) => Question(
+  id: id,
+  title: '题 $id',
+  subjectId: 'math',
+  folderIds: folderIds,
+  knowledgePointIds: knowledgePointIds,
+  errorTypes: errorTypes,
+  customErrorTypes: customErrorTypes,
+  tags: tags,
+  createdAt: DateTime(2026, 11, 14),
+);
 
-Future<void> seedBase(Database db) async {
-  await db.insert('folders', {
-    'id': 'f1',
-    'name': '试卷',
-    'subject_id': 'math',
-    'parent_id': null,
-    'sort_order': 0,
-  });
-  await db.insert('folders', {
-    'id': 'f2',
-    'name': '平时作业',
-    'subject_id': 'math',
-    'parent_id': null,
-    'sort_order': 1,
-  });
-  await db.insert('tags', {'id': 'tag-易错', 'name': '易错'});
-  await db.insert('tags', {'id': 'tag-常考', 'name': '常考'});
-  await db.insert('knowledge_points', {
-    'id': 'kp1',
-    'subject_id': 'math',
-    'chapter': '第一章',
-    'name': '极限',
-  });
-  await db.insert('knowledge_points', {
-    'id': 'kp2',
-    'subject_id': 'math',
-    'chapter': '第一章',
-    'name': '导数',
-  });
-  await db.insert('knowledge_points', {
-    'id': 'kp3',
-    'subject_id': 'math',
-    'chapter': '第二章',
-    'name': '积分',
-  });
+Future<void> seedBase(QuizDatabase db) async {
+  await db.customInsert(
+    'INSERT INTO folders (id, name, subject_id, parent_id, sort_order) '
+    'VALUES (?, ?, ?, ?, ?)',
+    variables: [
+      Variable.withString('f1'),
+      Variable.withString('试卷'),
+      Variable.withString('math'),
+      const Variable<String>(null),
+      Variable.withInt(0),
+    ],
+  );
+  await db.customInsert(
+    'INSERT INTO folders (id, name, subject_id, parent_id, sort_order) '
+    'VALUES (?, ?, ?, ?, ?)',
+    variables: [
+      Variable.withString('f2'),
+      Variable.withString('平时作业'),
+      Variable.withString('math'),
+      const Variable<String>(null),
+      Variable.withInt(1),
+    ],
+  );
+  await db.customInsert(
+    'INSERT INTO tags (id, name) VALUES (?, ?)',
+    variables: [Variable.withString('tag-易错'), Variable.withString('易错')],
+  );
+  await db.customInsert(
+    'INSERT INTO tags (id, name) VALUES (?, ?)',
+    variables: [Variable.withString('tag-常考'), Variable.withString('常考')],
+  );
+  await db.customInsert(
+    'INSERT INTO knowledge_points (id, subject_id, chapter, name) '
+    'VALUES (?, ?, ?, ?)',
+    variables: [
+      Variable.withString('kp1'),
+      Variable.withString('math'),
+      Variable.withString('第一章'),
+      Variable.withString('极限'),
+    ],
+  );
+  await db.customInsert(
+    'INSERT INTO knowledge_points (id, subject_id, chapter, name) '
+    'VALUES (?, ?, ?, ?)',
+    variables: [
+      Variable.withString('kp2'),
+      Variable.withString('math'),
+      Variable.withString('第一章'),
+      Variable.withString('导数'),
+    ],
+  );
+  await db.customInsert(
+    'INSERT INTO knowledge_points (id, subject_id, chapter, name) '
+    'VALUES (?, ?, ?, ?)',
+    variables: [
+      Variable.withString('kp3'),
+      Variable.withString('math'),
+      Variable.withString('第二章'),
+      Variable.withString('积分'),
+    ],
+  );
 }
 
 void main() {
@@ -90,7 +111,15 @@ void main() {
     });
 
     test('空串 / NULL / 非法值解码为空列表，不猜逗号拆分', () {
-      for (final bad in [null, '', 'a,b', 'a|b', 'not json', '123', '{"a":1}']) {
+      for (final bad in [
+        null,
+        '',
+        'a,b',
+        'a|b',
+        'not json',
+        '123',
+        '{"a":1}',
+      ]) {
         expect(AppDatabase.decodeStringList(bad), isEmpty, reason: '$bad');
         expect(AppDatabase.decodeRemedyList(bad), isEmpty, reason: '$bad');
         expect(AppDatabase.decodeQueue(bad), isEmpty, reason: '$bad');
@@ -112,12 +141,16 @@ void main() {
 
     test('saveReviewState / loadReviewState 往返（含 | 与逗号）', () async {
       final db = await openMemoryDb();
-      await db.insert('questions', {
-        'id': 'q|1',
-        'title': 't',
-        'subject_id': 'math',
-        'created_at': 0,
-      });
+      await db.customInsert(
+        'INSERT INTO questions (id, title, subject_id, created_at) '
+        'VALUES (?, ?, ?, ?)',
+        variables: [
+          Variable.withString('q|1'),
+          Variable.withString('t'),
+          Variable.withString('math'),
+          Variable.withInt(0),
+        ],
+      );
       const queue = [
         ReviewQueueItem(questionId: 'q|1', cause: '审题，失误'),
         ReviewQueueItem(questionId: 'q2', cause: '方法不会'),
@@ -145,9 +178,12 @@ void main() {
       final db = await openMemoryDb();
       await seedBase(db);
       await AppDatabase.instance.upsertQuestion(
-          q(tags: const ['a,b', 'c|d', '常考']));
+        q(tags: const ['a,b', 'c|d', '常考']),
+      );
       await AppDatabase.deleteFolderFrom(
-          db, const Folder(id: 'f1', name: '试卷', subjectId: 'math'));
+        db,
+        const Folder(id: 'f1', name: '试卷', subjectId: 'math'),
+      );
       final back = (await AppDatabase.instance.allQuestions()).first;
       expect(back.folderIds, ['f2']);
       expect(back.tags, ['a,b', 'c|d', '常考']);
@@ -187,7 +223,8 @@ void main() {
       final db = await openMemoryDb();
       await seedBase(db);
       await AppDatabase.instance.upsertQuestion(
-          q(knowledgePointIds: const ['kp1', 'kp2', 'kp3']));
+        q(knowledgePointIds: const ['kp1', 'kp2', 'kp3']),
+      );
       await AppDatabase.deleteChapterFrom(db, 'math', '第一章');
       final back = (await AppDatabase.instance.allQuestions()).first;
       expect(back.knowledgePointIds, ['kp3']);
@@ -196,16 +233,21 @@ void main() {
 
     test('手写旧格式行（tags 栏是裸逗号串）读出来是空列表，不猜拆分', () async {
       final db = await openMemoryDb();
-      await db.insert('questions', {
-        'id': 'q-old',
-        'title': '旧行',
-        'subject_id': 'math',
-        'folder_ids': 'f1,f2',
-        'knowledge_ids': 'kp1|kp2',
-        'error_types': '',
-        'tags': '易错,常考',
-        'created_at': 0,
-      });
+      await db.customInsert(
+        'INSERT INTO questions (id, title, subject_id, folder_ids, '
+        'knowledge_ids, error_types, tags, created_at) '
+        'VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+        variables: [
+          Variable.withString('q-old'),
+          Variable.withString('旧行'),
+          Variable.withString('math'),
+          Variable.withString('f1,f2'),
+          Variable.withString('kp1|kp2'),
+          Variable.withString(''),
+          Variable.withString('易错,常考'),
+          Variable.withInt(0),
+        ],
+      );
       final back = await AppDatabase.instance.questionById('q-old');
       expect(back, isNotNull);
       expect(back!.folderIds, isEmpty);
@@ -218,18 +260,24 @@ void main() {
     test('_seedCauseRecordsFor 写 []：新种错因记录 remedyHistory 为空', () async {
       final db = await openMemoryDb();
       await seedBase(db);
-      final question = q(errorTypes: const ['计算错误'], customErrorTypes: const ['手滑']);
+      final question = q(
+        errorTypes: const ['计算错误'],
+        customErrorTypes: const ['手滑'],
+      );
       await AppDatabase.instance.upsertQuestion(question);
       await AppDatabase.instance.ensureCauseRecords(question);
-      final records =
-          await AppDatabase.instance.causeRecordsForQuestion('q1');
+      final records = await AppDatabase.instance.causeRecordsForQuestion('q1');
       expect(records.length, 2);
       for (final r in records) {
         expect(r.remedyHistory, isEmpty);
       }
       // 库里存的是 '[]'，不是 ''。
-      final rows = await db.query('cause_records',
-          columns: ['remedy_history']);
+      final rows =
+          (await db
+                  .customSelect('SELECT remedy_history FROM cause_records')
+                  .get())
+              .map((r) => r.data)
+              .toList();
       expect(rows.map((r) => r['remedy_history']).toSet(), {'[]'});
     });
   });

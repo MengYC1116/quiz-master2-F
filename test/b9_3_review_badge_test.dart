@@ -16,8 +16,11 @@
 //
 // 整应用 `pumpAndSettle` 永不静止（见 `s8b3_startup_test.dart`
 // 文件头），用有界手动 pump（B8-1 同款 `_pumpUntil`）；
-// testWidgets 体跑在 fake async 里，真实 ffi 数据库的 Future
-// 须用 `tester.runAsync` 切回真实异步等它完成。
+// Drift 走同步 sqlite3 调用，仓库方法在 widget 测试里直接 await
+// 即可；`tester.runAsync` 只用于 Future.delayed 这类真实延时。
+// 注意：播种必须在测试体内做——setUp 跑在 fake async 区之外，
+// setUp 里打开的库在测试体里 await 仓库方法会挂住（B Stage 1
+// 探针 11/12/13）；同理 runAsync 里多段仓库调用也会挂住。
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -149,25 +152,24 @@ Future<void> _seedTwoDue(QuestionRepository repo) async {
 
 /// 把一条错因记录自查“已解决”到治愈（默认 cureChecks=2，需两次；
 /// 复查日顺延到今天 +7 天，不到复查时间，桶落 solved）。
+/// Drift 同步调用，直接 await（见文件头）。
 Future<CauseRecord> _cureCause(
-  WidgetTester tester,
   QuestionRepository repo,
   CauseRecord rec,
 ) async {
   var cur = rec;
   for (var i = 0; i < 2; i++) {
-    cur = (await tester.runAsync(() => repo.recordSelfCheck(cur, 'solved')))!;
+    cur = await repo.recordSelfCheck(cur, 'solved');
   }
   expect(cur.status, CauseStatus.solved);
   return cur;
 }
 
-/// 某题的全部错因记录（runAsync 等真实 ffi 完成）。
+/// 某题的全部错因记录（Drift 同步调用，直接 await）。
 Future<List<CauseRecord>> _recordsFor(
-  WidgetTester tester,
   QuestionRepository repo,
   String questionId,
-) async => (await tester.runAsync(() => repo.causeRecordsFor(questionId)))!;
+) async => await repo.causeRecordsFor(questionId);
 
 void main() {
   group('A：AppNavBar 复习角标', () {
@@ -199,15 +201,16 @@ void main() {
   });
 
   group('B：整应用复习角标（共享口径：数题不数错因）', () {
-    late QuestionRepository repo;
-
-    setUp(() async {
-      repo = await _seedMemoryRepo();
+    // 播种必须在测试体内做（见文件头）：setUp 在 fake async 区之外，
+    // setUp 里打开的库在测试体里 await 仓库方法会挂住。
+    Future<QuestionRepository> seedB() async {
+      final repo = await _seedMemoryRepo();
       await _seedTwoDue(repo);
       addTearDown(() async {
         await AppDatabase.resetForTest();
       });
-    });
+      return repo;
+    }
 
     Future<void> pumpApp(WidgetTester tester) async {
       tester.view.physicalSize = const Size(1280, 900);
@@ -218,6 +221,7 @@ void main() {
     }
 
     testWidgets('多错因一题只计 1：两道待复习题（q1 有 2 个待解决错因）角标是 2 不是 3', (tester) async {
+      final repo = await seedB();
       await pumpApp(tester);
       await _pumpUntil(
         tester,
@@ -230,12 +234,12 @@ void main() {
       // - 复习页顶三数（review_page.dart _metaCounts）同样按题数：
       //   q1 两条 + q2 一条错因记录 = 2 道题（见本用例末尾进复习页
       //   的断言与 test/b9_4_review_header_count_test.dart）。
-      final due = (await tester.runAsync(() => repo.dueToday()))!;
+      final due = await repo.dueToday();
       expect(due.map((q) => q.id), unorderedEquals(['q1', 'q2']));
-      final q1Records = await _recordsFor(tester, repo, 'q1');
+      final q1Records = await _recordsFor(repo, 'q1');
       expect(q1Records.length, 2);
       expect(q1Records.where((r) => r.status != CauseStatus.solved).length, 2);
-      final q2Records = await _recordsFor(tester, repo, 'q2');
+      final q2Records = await _recordsFor(repo, 'q2');
       expect(q2Records.length, 1);
 
       // 折叠态：角标同样显示（图标模式右上角）。
@@ -266,6 +270,7 @@ void main() {
     });
 
     testWidgets('治愈一条后角标即减一：不进复习页、只切导航，角标已更新', (tester) async {
+      final repo = await seedB();
       await pumpApp(tester);
       await _pumpUntil(
         tester,
@@ -278,8 +283,8 @@ void main() {
       // 自查走仓库方法（与复习页会话内同一 recordSelfCheck 入口），
       // 不打开复习页——角标靠 recordSelfCheck 的变更事件
       // + badgeCountsProvider 订阅刷新。
-      for (final rec in await _recordsFor(tester, repo, 'q1')) {
-        await _cureCause(tester, repo, rec);
+      for (final rec in await _recordsFor(repo, 'q1')) {
+        await _cureCause(repo, rec);
       }
       // 只切导航（首页 → 收集中心 → 首页），不进复习页。
       await _goNav(tester, '收集中心');
@@ -291,8 +296,8 @@ void main() {
       );
 
       // 再治愈 q2 唯一的错因：无待复习题，角标隐藏（0 不渲染）。
-      for (final rec in await _recordsFor(tester, repo, 'q2')) {
-        await _cureCause(tester, repo, rec);
+      for (final rec in await _recordsFor(repo, 'q2')) {
+        await _cureCause(repo, rec);
       }
       await _goNav(tester, '收集中心');
       await _goNav(tester, '首页');
@@ -303,12 +308,13 @@ void main() {
             _navText('2').evaluate().isEmpty,
         reason: '全部治愈后复习角标未隐藏',
       );
-      final due = (await tester.runAsync(() => repo.dueToday()))!;
+      final due = await repo.dueToday();
       expect(due, isEmpty);
       expect(tester.takeException(), isNull);
     });
 
     testWidgets('取消加入复习后角标即减（不进复习页）', (tester) async {
+      final repo = await seedB();
       await pumpApp(tester);
       await _pumpUntil(
         tester,
@@ -317,9 +323,9 @@ void main() {
       );
 
       // 取消 q1 的加入复习（记录保留，桶不再计入要复习）。
-      final q1 = await tester.runAsync(() => repo.questionById('q1'));
+      final q1 = await repo.questionById('q1');
       expect(
-        await tester.runAsync(() => repo.setReviewJoined(q1!, false)),
+        await repo.setReviewJoined(q1!, false),
         isTrue,
       );
       await _goNav(tester, '收集中心');

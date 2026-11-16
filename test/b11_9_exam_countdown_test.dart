@@ -2,10 +2,12 @@
 // 设置页考试管理 / 首页倒计时条（widget）。
 // 考试事件与试卷完全脱钩（独立数据，见 lib/models/exam_event.dart）。
 // 测试一律用内存库 / FakeRepo，不碰真实库。
+import 'package:drift/drift.dart' hide isNull, isNotNull;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:quiz_master2/data/database.dart';
+import 'package:quiz_master2/data/drift/quiz_database.dart';
 import 'package:quiz_master2/data/repository.dart';
 import 'package:quiz_master2/models/exam_event.dart';
 import 'package:quiz_master2/models/models.dart';
@@ -13,7 +15,6 @@ import 'package:quiz_master2/modules/home/home_page.dart';
 import 'package:quiz_master2/modules/settings/settings_page.dart';
 import 'package:quiz_master2/state/repository_provider.dart';
 import 'package:quiz_master2/theme/app_theme.dart';
-import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 DateTime _day(DateTime d) => DateTime(d.year, d.month, d.day);
 
@@ -130,16 +131,7 @@ void main() {
 
   // ---------- 存储：settings 表 JSON 往返 ----------
   group('B11-9 存储（内存库）', () {
-    Future<Database> openTestDb() async {
-      sqfliteFfiInit();
-      return databaseFactoryFfi.openDatabase(
-        inMemoryDatabasePath,
-        options: OpenDatabaseOptions(
-          version: 1,
-          onCreate: (db, version) async => AppDatabase.createTables(db),
-        ),
-      );
-    }
+    Future<QuizDatabase> openTestDb() => AppDatabase.openForTest();
 
     test('空库读出空列表；写后读回一致；坏 JSON 按空列表', () async {
       final db = await openTestDb();
@@ -157,17 +149,24 @@ void main() {
       expect(back.first.date, DateTime(2026, 11, 20));
 
       // 坏 JSON / 坏行：不抛错，坏行跳过。
-      await db.insert('settings', {
-        'key': AppDatabase.examEventsKey,
-        'value': 'not json',
-      }, conflictAlgorithm: ConflictAlgorithm.replace);
+      await db.customInsert(
+        'INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)',
+        variables: [
+          Variable.withString(AppDatabase.examEventsKey),
+          Variable.withString('not json'),
+        ],
+      );
       expect(await AppDatabase.loadExamEventsFrom(db), isEmpty);
-      await db.insert('settings', {
-        'key': AppDatabase.examEventsKey,
-        'value':
+      await db.customInsert(
+        'INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)',
+        variables: [
+          Variable.withString(AppDatabase.examEventsKey),
+          Variable.withString(
             '[{"id":"ok","name":"期末","date":"2026-12-25"},'
             '{"id":"","name":"坏行","date":"2026-12-25"}]',
-      }, conflictAlgorithm: ConflictAlgorithm.replace);
+          ),
+        ],
+      );
       final partial = await AppDatabase.loadExamEventsFrom(db);
       expect(partial.map((e) => e.id).toList(), ['ok']);
     });

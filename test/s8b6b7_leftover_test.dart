@@ -8,9 +8,10 @@
 //   待定3 首页横幅点“知道了”调回调见 test/home_page_test.dart。
 import 'dart:io';
 
+import 'package:drift/drift.dart' hide isNull, isNotNull;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:quiz_master2/data/database.dart';
-import 'package:sqflite_common_ffi/sqflite_ffi.dart';
+import 'package:quiz_master2/data/drift/quiz_database.dart';
 
 void main() {
   // 全文件：每个测试前把 testDataDirectory 指到 fresh 临时目录，
@@ -44,13 +45,15 @@ void main() {
   });
 
   group('待定3 备份失败标志（内存库）', () {
-    late Database db;
+    late QuizDatabase db;
 
     setUp(() async {
       // 内存库只建表不播种，不读真实库；复位与临时目录清理见文件级 setUp。
       db = await AppDatabase.openForTest();
-      await db.delete('settings',
-          where: 'key = ?', whereArgs: [AppDatabase.backupFailedKey]);
+      await db.customUpdate(
+        'DELETE FROM settings WHERE key = ?',
+        variables: [Variable.withString(AppDatabase.backupFailedKey)],
+      );
       addTearDown(() async {
         try {
           await db.close();
@@ -68,8 +71,10 @@ void main() {
 
     test('标志键与 lastRoute / 提醒键不同，不会互相覆盖', () {
       expect(AppDatabase.backupFailedKey, isNot(AppDatabase.lastRouteKey));
-      expect(AppDatabase.backupFailedKey,
-          isNot(AppDatabase.lastRecheckReminderKey));
+      expect(
+        AppDatabase.backupFailedKey,
+        isNot(AppDatabase.lastRecheckReminderKey),
+      );
     });
   });
 }

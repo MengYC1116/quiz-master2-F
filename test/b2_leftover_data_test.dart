@@ -5,39 +5,41 @@
 // 不写真实标记文件。
 import 'dart:io';
 
+import 'package:drift/drift.dart' hide isNull, isNotNull;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path/path.dart' as p;
 import 'package:quiz_master2/data/database.dart';
+import 'package:quiz_master2/data/drift/quiz_database.dart';
 import 'package:quiz_master2/models/models.dart';
-import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
-Future<Database> openTestDb() async {
-  sqfliteFfiInit();
-  return databaseFactoryFfi.openDatabase(inMemoryDatabasePath,
-      options: OpenDatabaseOptions(
-          version: 1,
-          onCreate: (db, version) async =>
-              AppDatabase.createTables(db)));
+Future<QuizDatabase> openTestDb() => AppDatabase.openForTest();
+
+Future<void> insertQuestionRow(
+  QuizDatabase db,
+  String id, {
+  String tags = '',
+  String knowledgeIds = '',
+}) async {
+  await db.customInsert(
+    'INSERT INTO questions (id, title, subject_id, folder_ids, created_at, '
+    'tags, knowledge_ids) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    variables: [
+      Variable.withString(id),
+      Variable.withString('t-$id'),
+      Variable.withString('math'),
+      Variable.withString(''),
+      Variable.withInt(1000),
+      Variable.withString(tags),
+      Variable.withString(knowledgeIds),
+    ],
+  );
 }
 
-Future<void> insertQuestionRow(Database db, String id,
-    {String tags = '', String knowledgeIds = ''}) async {
-  await db.insert('questions', {
-    'id': id,
-    'title': 't-$id',
-    'subject_id': 'math',
-    'folder_ids': '',
-    'created_at': 1000,
-    'tags': tags,
-    'knowledge_ids': knowledgeIds,
-  });
-}
-
-Future<Map<String, int>> _rowids(Database db, String table) async {
-  return {
-    for (final r in await db.query(table, columns: ['id', 'rowid']))
-      r['id'] as String: r['rowid'] as int,
-  };
+Future<Map<String, int>> _rowids(QuizDatabase db, String table) async {
+  final rows = (await db.customSelect('SELECT id, rowid FROM $table').get())
+      .map((r) => r.data)
+      .toList();
+  return {for (final r in rows) r['id'] as String: r['rowid'] as int};
 }
 
 void main() {
@@ -45,73 +47,123 @@ void main() {
     test('renameTagFrom 中途失败：标签行与题上的标签整体回滚', () async {
       final db = await openTestDb();
       addTearDown(() async => db.close());
-      await db.insert('tags', {'id': 'tag-易错', 'name': '易错'});
-      await db.insert('tags', {'id': 'tag-常考', 'name': '常考'});
-      await insertQuestionRow(db, 'q1',
-          tags: AppDatabase.encodeStringList(['易错', '常考']));
+      await db.customInsert(
+        'INSERT INTO tags (id, name) VALUES (?, ?)',
+        variables: [Variable.withString('tag-易错'), Variable.withString('易错')],
+      );
+      await db.customInsert(
+        'INSERT INTO tags (id, name) VALUES (?, ?)',
+        variables: [Variable.withString('tag-常考'), Variable.withString('常考')],
+      );
+      await insertQuestionRow(
+        db,
+        'q1',
+        tags: AppDatabase.encodeStringList(['易错', '常考']),
+      );
       // 让第二步（改题上的标签）必失败：标签行已改名，题还没改。
-      await db.execute(
-          "CREATE TRIGGER trg_fail_qup BEFORE UPDATE ON questions "
-          "BEGIN SELECT RAISE(ABORT, 'boom'); END;");
-      await expectLater(AppDatabase.renameTagFrom(db, '易错', '常考'),
-          throwsA(anything));
+      await db.customStatement(
+        "CREATE TRIGGER trg_fail_qup BEFORE UPDATE ON questions "
+        "BEGIN SELECT RAISE(ABORT, 'boom'); END;",
+      );
+      await expectLater(
+        AppDatabase.renameTagFrom(db, '易错', '常考'),
+        throwsA(anything),
+      );
       // 回滚：标签行还是旧名，题上的标签没变。
       expect(
-          (await db.query('tags')).map((r) => r['name']).toList(),
-          ['易错', '常考']);
-      final q = await db.query('questions');
-      expect(q.single['tags'],
-          AppDatabase.encodeStringList(['易错', '常考']));
+        (await db.customSelect('SELECT * FROM tags').get())
+            .map((r) => r.data['name'])
+            .toList(),
+        ['易错', '常考'],
+      );
+      final q = (await db.customSelect('SELECT * FROM questions').get())
+          .map((r) => r.data)
+          .toList();
+      expect(q.single['tags'], AppDatabase.encodeStringList(['易错', '常考']));
     });
 
     test('deleteTagFrom 中途失败：标签行与题上的标签整体回滚', () async {
       final db = await openTestDb();
       addTearDown(() async => db.close());
-      await db.insert('tags', {'id': 'tag-易错', 'name': '易错'});
-      await db.insert('tags', {'id': 'tag-常考', 'name': '常考'});
-      await insertQuestionRow(db, 'q1',
-          tags: AppDatabase.encodeStringList(['易错', '常考']));
-      await db.execute(
-          "CREATE TRIGGER trg_fail_qup BEFORE UPDATE ON questions "
-          "BEGIN SELECT RAISE(ABORT, 'boom'); END;");
-      await expectLater(
-          AppDatabase.deleteTagFrom(db, '易错'), throwsA(anything));
+      await db.customInsert(
+        'INSERT INTO tags (id, name) VALUES (?, ?)',
+        variables: [Variable.withString('tag-易错'), Variable.withString('易错')],
+      );
+      await db.customInsert(
+        'INSERT INTO tags (id, name) VALUES (?, ?)',
+        variables: [Variable.withString('tag-常考'), Variable.withString('常考')],
+      );
+      await insertQuestionRow(
+        db,
+        'q1',
+        tags: AppDatabase.encodeStringList(['易错', '常考']),
+      );
+      await db.customStatement(
+        "CREATE TRIGGER trg_fail_qup BEFORE UPDATE ON questions "
+        "BEGIN SELECT RAISE(ABORT, 'boom'); END;",
+      );
+      await expectLater(AppDatabase.deleteTagFrom(db, '易错'), throwsA(anything));
       expect(
-          (await db.query('tags')).map((r) => r['name']).toList(),
-          ['易错', '常考']);
-      final q = await db.query('questions');
-      expect(q.single['tags'],
-          AppDatabase.encodeStringList(['易错', '常考']));
+        (await db.customSelect('SELECT * FROM tags').get())
+            .map((r) => r.data['name'])
+            .toList(),
+        ['易错', '常考'],
+      );
+      final q = (await db.customSelect('SELECT * FROM questions').get())
+          .map((r) => r.data)
+          .toList();
+      expect(q.single['tags'], AppDatabase.encodeStringList(['易错', '常考']));
     });
 
     test('deleteKnowledgePointFrom 中途失败：知识点行与题整体回滚', () async {
       final db = await openTestDb();
       addTearDown(() async => db.close());
-      await db.insert('knowledge_points', {
-        'id': 'kp1',
-        'subject_id': 'math',
-        'chapter': '第一章',
-        'name': '极限'
-      });
-      await db.insert('knowledge_points', {
-        'id': 'kp2',
-        'subject_id': 'math',
-        'chapter': '第一章',
-        'name': '导数'
-      });
-      await insertQuestionRow(db, 'q1',
-          knowledgeIds: AppDatabase.encodeStringList(['kp1', 'kp2']));
-      await db.execute(
-          "CREATE TRIGGER trg_fail_qup BEFORE UPDATE ON questions "
-          "BEGIN SELECT RAISE(ABORT, 'boom'); END;");
-      await expectLater(AppDatabase.deleteKnowledgePointFrom(db, 'kp1'),
-          throwsA(anything));
+      await db.customInsert(
+        'INSERT INTO knowledge_points (id, subject_id, chapter, name) '
+        'VALUES (?, ?, ?, ?)',
+        variables: [
+          Variable.withString('kp1'),
+          Variable.withString('math'),
+          Variable.withString('第一章'),
+          Variable.withString('极限'),
+        ],
+      );
+      await db.customInsert(
+        'INSERT INTO knowledge_points (id, subject_id, chapter, name) '
+        'VALUES (?, ?, ?, ?)',
+        variables: [
+          Variable.withString('kp2'),
+          Variable.withString('math'),
+          Variable.withString('第一章'),
+          Variable.withString('导数'),
+        ],
+      );
+      await insertQuestionRow(
+        db,
+        'q1',
+        knowledgeIds: AppDatabase.encodeStringList(['kp1', 'kp2']),
+      );
+      await db.customStatement(
+        "CREATE TRIGGER trg_fail_qup BEFORE UPDATE ON questions "
+        "BEGIN SELECT RAISE(ABORT, 'boom'); END;",
+      );
+      await expectLater(
+        AppDatabase.deleteKnowledgePointFrom(db, 'kp1'),
+        throwsA(anything),
+      );
       expect(
-          (await db.query('knowledge_points')).map((r) => r['id']).toList(),
-          ['kp1', 'kp2']);
-      final q = await db.query('questions');
-      expect(q.single['knowledge_ids'],
-          AppDatabase.encodeStringList(['kp1', 'kp2']));
+        (await db.customSelect('SELECT * FROM knowledge_points').get())
+            .map((r) => r.data['id'])
+            .toList(),
+        ['kp1', 'kp2'],
+      );
+      final q = (await db.customSelect('SELECT * FROM questions').get())
+          .map((r) => r.data)
+          .toList();
+      expect(
+        q.single['knowledge_ids'],
+        AppDatabase.encodeStringList(['kp1', 'kp2']),
+      );
     });
 
     test('deleteChapterFrom 中途失败：该章知识点行与题整体回滚', () async {
@@ -122,28 +174,43 @@ void main() {
         ('kp2', '第一章', '导数'),
         ('kp3', '第二章', '积分'),
       ]) {
-        await db.insert('knowledge_points', {
-          'id': kp.$1,
-          'subject_id': 'math',
-          'chapter': kp.$2,
-          'name': kp.$3,
-        });
+        await db.customInsert(
+          'INSERT INTO knowledge_points (id, subject_id, chapter, name) '
+          'VALUES (?, ?, ?, ?)',
+          variables: [
+            Variable.withString(kp.$1),
+            Variable.withString('math'),
+            Variable.withString(kp.$2),
+            Variable.withString(kp.$3),
+          ],
+        );
       }
-      await insertQuestionRow(db, 'q1',
-          knowledgeIds:
-              AppDatabase.encodeStringList(['kp1', 'kp2', 'kp3']));
-      await db.execute(
-          "CREATE TRIGGER trg_fail_qup BEFORE UPDATE ON questions "
-          "BEGIN SELECT RAISE(ABORT, 'boom'); END;");
+      await insertQuestionRow(
+        db,
+        'q1',
+        knowledgeIds: AppDatabase.encodeStringList(['kp1', 'kp2', 'kp3']),
+      );
+      await db.customStatement(
+        "CREATE TRIGGER trg_fail_qup BEFORE UPDATE ON questions "
+        "BEGIN SELECT RAISE(ABORT, 'boom'); END;",
+      );
       await expectLater(
-          AppDatabase.deleteChapterFrom(db, 'math', '第一章'),
-          throwsA(anything));
+        AppDatabase.deleteChapterFrom(db, 'math', '第一章'),
+        throwsA(anything),
+      );
       expect(
-          (await db.query('knowledge_points')).map((r) => r['id']).toList(),
-          ['kp1', 'kp2', 'kp3']);
-      final q = await db.query('questions');
-      expect(q.single['knowledge_ids'],
-          AppDatabase.encodeStringList(['kp1', 'kp2', 'kp3']));
+        (await db.customSelect('SELECT * FROM knowledge_points').get())
+            .map((r) => r.data['id'])
+            .toList(),
+        ['kp1', 'kp2', 'kp3'],
+      );
+      final q = (await db.customSelect('SELECT * FROM questions').get())
+          .map((r) => r.data)
+          .toList();
+      expect(
+        q.single['knowledge_ids'],
+        AppDatabase.encodeStringList(['kp1', 'kp2', 'kp3']),
+      );
     });
   });
 
@@ -152,7 +219,10 @@ void main() {
       final db = await openTestDb();
       addTearDown(() async => db.close());
       for (final t in ['易错', '常考', '重点']) {
-        await db.insert('tags', {'id': 'tag-$t', 'name': t});
+        await db.customInsert(
+          'INSERT INTO tags (id, name) VALUES (?, ?)',
+          variables: [Variable.withString('tag-$t'), Variable.withString(t)],
+        );
       }
       expect(await AppDatabase.allTagsFrom(db), ['易错', '常考', '重点']);
       await AppDatabase.renameTagFrom(db, '易错', '易错题');
@@ -162,74 +232,100 @@ void main() {
     test('insertExamInto 更新不改变顺序、不改 rowid；新试卷插到末尾', () async {
       final db = await openTestDb();
       addTearDown(() async => db.close());
-      await AppDatabase.insertExamInto(
-          db, const Exam(id: 'e1', name: '期中'));
-      await AppDatabase.insertExamInto(
-          db, const Exam(id: 'e2', name: '期末'));
-      await AppDatabase.insertExamInto(
-          db, const Exam(id: 'e3', name: '模拟'));
+      await AppDatabase.insertExamInto(db, const Exam(id: 'e1', name: '期中'));
+      await AppDatabase.insertExamInto(db, const Exam(id: 'e2', name: '期末'));
+      await AppDatabase.insertExamInto(db, const Exam(id: 'e3', name: '模拟'));
       final rowidBefore = await _rowids(db, 'exams');
-      expect(
-          (await AppDatabase.allExamsFrom(db)).map((e) => e.id).toList(),
-          ['e1', 'e2', 'e3']);
+      expect((await AppDatabase.allExamsFrom(db)).map((e) => e.id).toList(), [
+        'e1',
+        'e2',
+        'e3',
+      ]);
       // 同 id 再插一次（改名+改日期）：REPLACE 会把 e1 顶到表尾，
       // UPDATE-first 不会。
       await AppDatabase.insertExamInto(
-          db,
-          Exam(
-              id: 'e1',
-              name: '期中考试',
-              date: DateTime.fromMillisecondsSinceEpoch(2000)));
+        db,
+        Exam(
+          id: 'e1',
+          name: '期中考试',
+          date: DateTime.fromMillisecondsSinceEpoch(2000),
+        ),
+      );
       final exams = await AppDatabase.allExamsFrom(db);
       expect(exams.map((e) => e.id).toList(), ['e1', 'e2', 'e3']);
       expect(exams.first.name, '期中考试');
       expect(exams.first.date, DateTime.fromMillisecondsSinceEpoch(2000));
       expect(await _rowids(db, 'exams'), rowidBefore);
-      await AppDatabase.insertExamInto(
-          db, const Exam(id: 'e4', name: '月考'));
-      expect(
-          (await AppDatabase.allExamsFrom(db)).map((e) => e.id).toList(),
-          ['e1', 'e2', 'e3', 'e4']);
+      await AppDatabase.insertExamInto(db, const Exam(id: 'e4', name: '月考'));
+      expect((await AppDatabase.allExamsFrom(db)).map((e) => e.id).toList(), [
+        'e1',
+        'e2',
+        'e3',
+        'e4',
+      ]);
     });
 
-    test('insertKnowledgePointInto 更新不改变顺序、不改 rowid；新知识点插到末尾',
-        () async {
+    test('insertKnowledgePointInto 更新不改变顺序、不改 rowid；新知识点插到末尾', () async {
       final db = await openTestDb();
       addTearDown(() async => db.close());
       for (final kp in [
         const KnowledgePoint(
-            id: 'kp1', subjectId: 'math', chapter: '第一章', name: '极限'),
+          id: 'kp1',
+          subjectId: 'math',
+          chapter: '第一章',
+          name: '极限',
+        ),
         const KnowledgePoint(
-            id: 'kp2', subjectId: 'math', chapter: '第一章', name: '导数'),
+          id: 'kp2',
+          subjectId: 'math',
+          chapter: '第一章',
+          name: '导数',
+        ),
         const KnowledgePoint(
-            id: 'kp3', subjectId: 'math', chapter: '第二章', name: '积分'),
+          id: 'kp3',
+          subjectId: 'math',
+          chapter: '第二章',
+          name: '积分',
+        ),
       ]) {
         await AppDatabase.insertKnowledgePointInto(db, kp);
       }
       final rowidBefore = await _rowids(db, 'knowledge_points');
       expect(
-          (await AppDatabase.allKnowledgePointsFrom(db))
-              .map((k) => k.id)
-              .toList(),
-          ['kp1', 'kp2', 'kp3']);
+        (await AppDatabase.allKnowledgePointsFrom(db))
+            .map((k) => k.id)
+            .toList(),
+        ['kp1', 'kp2', 'kp3'],
+      );
       // 同 id 再插一次（改名）：REPLACE 会把 kp1 顶到表尾。
       await AppDatabase.insertKnowledgePointInto(
-          db,
-          const KnowledgePoint(
-              id: 'kp1', subjectId: 'math', chapter: '第一章', name: '极限概念'));
+        db,
+        const KnowledgePoint(
+          id: 'kp1',
+          subjectId: 'math',
+          chapter: '第一章',
+          name: '极限概念',
+        ),
+      );
       final kps = await AppDatabase.allKnowledgePointsFrom(db);
       expect(kps.map((k) => k.id).toList(), ['kp1', 'kp2', 'kp3']);
       expect(kps.first.name, '极限概念');
       expect(await _rowids(db, 'knowledge_points'), rowidBefore);
       await AppDatabase.insertKnowledgePointInto(
-          db,
-          const KnowledgePoint(
-              id: 'kp4', subjectId: 'math', chapter: '第二章', name: '定积分'));
+        db,
+        const KnowledgePoint(
+          id: 'kp4',
+          subjectId: 'math',
+          chapter: '第二章',
+          name: '定积分',
+        ),
+      );
       expect(
-          (await AppDatabase.allKnowledgePointsFrom(db))
-              .map((k) => k.id)
-              .toList(),
-          ['kp1', 'kp2', 'kp3', 'kp4']);
+        (await AppDatabase.allKnowledgePointsFrom(db))
+            .map((k) => k.id)
+            .toList(),
+        ['kp1', 'kp2', 'kp3', 'kp4'],
+      );
     });
 
     test('改知识点名（renameKnowledgePoint，单步 UPDATE）不改变顺序', () async {
@@ -237,9 +333,17 @@ void main() {
       addTearDown(() async => db.close());
       for (final kp in [
         const KnowledgePoint(
-            id: 'kp1', subjectId: 'math', chapter: '第一章', name: '极限'),
+          id: 'kp1',
+          subjectId: 'math',
+          chapter: '第一章',
+          name: '极限',
+        ),
         const KnowledgePoint(
-            id: 'kp2', subjectId: 'math', chapter: '第一章', name: '导数'),
+          id: 'kp2',
+          subjectId: 'math',
+          chapter: '第一章',
+          name: '导数',
+        ),
       ]) {
         await AppDatabase.insertKnowledgePointInto(db, kp);
       }
@@ -286,39 +390,41 @@ void main() {
       final backups = <({String current, String backup})>[];
       final moved = <String>[];
       final outcome = await AppDatabase.migrateDataFiles(
-          dirs.src.path, dirs.dst.path,
-          overwrite: true,
-          keepBackups: true,
-          outBackups: backups,
-          outMoved: moved);
+        dirs.src.path,
+        dirs.dst.path,
+        overwrite: true,
+        keepBackups: true,
+        outBackups: backups,
+        outMoved: moved,
+      );
       expect(outcome, DbMigrationOutcome.migrated);
       expect(
-          File(p.join(dirs.dst.path, 'quiz-master2.db'))
-              .readAsStringSync(),
-          'NEW-DB');
+        File(p.join(dirs.dst.path, 'quiz-master2.db')).readAsStringSync(),
+        'NEW-DB',
+      );
       expect(
-          File(p.join(dirs.dst.path, 'slices', 'new.png'))
-              .readAsStringSync(),
-          'NEW-SLICE');
+        File(p.join(dirs.dst.path, 'slices', 'new.png')).readAsStringSync(),
+        'NEW-SLICE',
+      );
       // .old 备份还在（库文件 + slices 目录），等提交点成功后再删。
       expect(backups.length, 2);
       for (final b in backups) {
         expect(
-            File(b.backup).existsSync() ||
-                Directory(b.backup).existsSync(),
-            isTrue);
+          File(b.backup).existsSync() || Directory(b.backup).existsSync(),
+          isTrue,
+        );
       }
       expect(moved, contains(p.join(dirs.dst.path, 'quiz-master2.db')));
       expect(moved, contains(p.join(dirs.dst.path, 'slices')));
       expect(
-          dirs.dst
-              .listSync()
-              .where((e) => p.basename(e.path).contains('staging')),
-          isEmpty);
+        dirs.dst.listSync().where(
+          (e) => p.basename(e.path).contains('staging'),
+        ),
+        isEmpty,
+      );
     });
 
-    test('rollbackMigrationFiles：新位置复原，旧库旧图回来、新文件没了',
-        () async {
+    test('rollbackMigrationFiles：新位置复原，旧库旧图回来、新文件没了', () async {
       final tmp = await Directory.systemTemp.createTemp('qm2-b2-5a-rb-');
       addTearDown(() async {
         try {
@@ -329,30 +435,32 @@ void main() {
       final backups = <({String current, String backup})>[];
       final moved = <String>[];
       final outcome = await AppDatabase.migrateDataFiles(
-          dirs.src.path, dirs.dst.path,
-          overwrite: true,
-          keepBackups: true,
-          outBackups: backups,
-          outMoved: moved);
+        dirs.src.path,
+        dirs.dst.path,
+        overwrite: true,
+        keepBackups: true,
+        outBackups: backups,
+        outMoved: moved,
+      );
       expect(outcome, DbMigrationOutcome.migrated);
       // 模拟标记写失败后的回滚。
       await AppDatabase.rollbackMigrationFiles(moved, backups);
       expect(
-          File(p.join(dirs.dst.path, 'quiz-master2.db'))
-              .readAsStringSync(),
-          'OLD-DB');
+        File(p.join(dirs.dst.path, 'quiz-master2.db')).readAsStringSync(),
+        'OLD-DB',
+      );
       expect(
-          File(p.join(dirs.dst.path, 'slices', 'old.png'))
-              .readAsStringSync(),
-          'OLD-SLICE');
+        File(p.join(dirs.dst.path, 'slices', 'old.png')).readAsStringSync(),
+        'OLD-SLICE',
+      );
       expect(
-          File(p.join(dirs.dst.path, 'slices', 'new.png')).existsSync(),
-          isFalse);
+        File(p.join(dirs.dst.path, 'slices', 'new.png')).existsSync(),
+        isFalse,
+      );
       expect(
-          dirs.dst
-              .listSync()
-              .where((e) => p.basename(e.path).contains('.old-')),
-          isEmpty);
+        dirs.dst.listSync().where((e) => p.basename(e.path).contains('.old-')),
+        isEmpty,
+      );
     });
   });
 
@@ -383,17 +491,18 @@ void main() {
       required bool targetExists,
       required bool markerIsFile,
     }) async {
-      sqfliteFfiInit();
-      final tmp =
-          await Directory.systemTemp.createTemp('qm2-b2-5a-e2e-');
+      final tmp = await Directory.systemTemp.createTemp('qm2-b2-5a-e2e-');
       final prevDataDir = AppDatabase.testDataDirectory;
       final prevMarkerDir = AppDatabase.testMarkerDirectory;
       final prevDbPath = AppDatabase.instance.dbPathUsed;
-      addTearDown(() => resetSingletons(
+      addTearDown(
+        () => resetSingletons(
           prevDataDir: prevDataDir,
           prevMarkerDir: prevMarkerDir,
           prevDbPath: prevDbPath,
-          tmp: tmp));
+          tmp: tmp,
+        ),
+      );
       final srcDir = Directory(p.join(tmp.path, 'src'))
         ..createSync(recursive: true);
       final dstDir = Directory(p.join(tmp.path, 'dst'));
@@ -430,63 +539,66 @@ void main() {
       final tmp = await setUpE2E(targetExists: true, markerIsFile: false);
       final dstDir = Directory(p.join(tmp.path, 'dst'));
       final markerDir = Directory(p.join(tmp.path, 'marker'));
-      final outcome = await AppDatabase.instance
-          .migrateToDirectory(dstDir.path, overwrite: true);
+      final outcome = await AppDatabase.instance.migrateToDirectory(
+        dstDir.path,
+        overwrite: true,
+      );
       expect(outcome, DbMigrationOutcome.migrated);
       expect(
-          File(p.join(markerDir.path, 'db_location.txt'))
-              .readAsStringSync(),
-          dstDir.path);
+        File(p.join(markerDir.path, 'db_location.txt')).readAsStringSync(),
+        dstDir.path,
+      );
       expect(
-          File(p.join(dstDir.path, 'slices', 'new.png'))
-              .readAsStringSync(),
-          'NEW-SLICE');
+        File(p.join(dstDir.path, 'slices', 'new.png')).readAsStringSync(),
+        'NEW-SLICE',
+      );
       expect(
-          dstDir
-              .listSync()
-              .where((e) => p.basename(e.path).contains('.old-')),
-          isEmpty);
+        dstDir.listSync().where((e) => p.basename(e.path).contains('.old-')),
+        isEmpty,
+      );
       expect(
-          dstDir
-              .listSync()
-              .where((e) => p.basename(e.path).contains('staging')),
-          isEmpty);
+        dstDir.listSync().where((e) => p.basename(e.path).contains('staging')),
+        isEmpty,
+      );
     });
 
     test('标记写失败：返回 failed，新位置复原、不留重复副本', () async {
       final tmp = await setUpE2E(targetExists: true, markerIsFile: true);
       final dstDir = Directory(p.join(tmp.path, 'dst'));
-      final outcome = await AppDatabase.instance
-          .migrateToDirectory(dstDir.path, overwrite: true);
+      final outcome = await AppDatabase.instance.migrateToDirectory(
+        dstDir.path,
+        overwrite: true,
+      );
       expect(outcome, DbMigrationOutcome.failed);
       expect(
-          File(p.join(dstDir.path, 'quiz-master2.db'))
-              .readAsStringSync(),
-          'OLD-DB');
+        File(p.join(dstDir.path, 'quiz-master2.db')).readAsStringSync(),
+        'OLD-DB',
+      );
       expect(
-          File(p.join(dstDir.path, 'slices', 'old.png'))
-              .readAsStringSync(),
-          'OLD-SLICE');
+        File(p.join(dstDir.path, 'slices', 'old.png')).readAsStringSync(),
+        'OLD-SLICE',
+      );
       expect(
-          File(p.join(dstDir.path, 'slices', 'new.png')).existsSync(),
-          isFalse);
+        File(p.join(dstDir.path, 'slices', 'new.png')).existsSync(),
+        isFalse,
+      );
       expect(
-          dstDir
-              .listSync()
-              .where((e) => p.basename(e.path).contains('.old-')),
-          isEmpty);
+        dstDir.listSync().where((e) => p.basename(e.path).contains('.old-')),
+        isEmpty,
+      );
       expect(
-          dstDir
-              .listSync()
-              .where((e) => p.basename(e.path).contains('staging')),
-          isEmpty);
+        dstDir.listSync().where((e) => p.basename(e.path).contains('staging')),
+        isEmpty,
+      );
     });
 
     test('标记写失败且目标是本次新建的：回滚后目标目录也删掉', () async {
       final tmp = await setUpE2E(targetExists: false, markerIsFile: true);
       final dstDir = Directory(p.join(tmp.path, 'dst'));
-      final outcome = await AppDatabase.instance
-          .migrateToDirectory(dstDir.path, overwrite: false);
+      final outcome = await AppDatabase.instance.migrateToDirectory(
+        dstDir.path,
+        overwrite: false,
+      );
       expect(outcome, DbMigrationOutcome.failed);
       expect(dstDir.existsSync(), isFalse);
     });
@@ -506,33 +618,30 @@ void main() {
       // 源也要有 imports/，staging 里才有 imports 目录可搬——
       // 目标的 imports/ 已存在时 rename 才会撞上（源没有 imports/
       // 时只搬库文件，迁移反而能成功，孤儿目录原地不动）。
-      final srcImport =
-          File(p.join(src.path, 'imports', 'task1', 'original.jpg'))
-            ..createSync(recursive: true);
+      final srcImport = File(
+        p.join(src.path, 'imports', 'task1', 'original.jpg'),
+      )..createSync(recursive: true);
       srcImport.writeAsStringSync('SRC-IMG');
       final dst = Directory(p.join(tmp.path, 'dst'))
         ..createSync(recursive: true);
       final orphan = File(p.join(dst.path, 'imports', 'orphan', 'x.jpg'))
         ..createSync(recursive: true);
       orphan.writeAsStringSync('ORPHAN');
-      final outcome =
-          await AppDatabase.migrateDataFiles(src.path, dst.path);
+      final outcome = await AppDatabase.migrateDataFiles(src.path, dst.path);
       expect(outcome, DbMigrationOutcome.failed);
       expect(
-          File(p.join(dst.path, 'imports', 'orphan', 'x.jpg'))
-              .readAsStringSync(),
-          'ORPHAN');
+        File(p.join(dst.path, 'imports', 'orphan', 'x.jpg')).readAsStringSync(),
+        'ORPHAN',
+      );
+      expect(File(p.join(dst.path, 'quiz-master2.db')).existsSync(), isFalse);
       expect(
-          File(p.join(dst.path, 'quiz-master2.db')).existsSync(), isFalse);
+        File(p.join(dst.path, 'imports', 'task1', 'original.jpg')).existsSync(),
+        isFalse,
+      );
       expect(
-          File(p.join(dst.path, 'imports', 'task1', 'original.jpg'))
-              .existsSync(),
-          isFalse);
-      expect(
-          tmp
-              .listSync()
-              .where((e) => p.basename(e.path).contains('staging')),
-          isEmpty);
+        tmp.listSync().where((e) => p.basename(e.path).contains('staging')),
+        isEmpty,
+      );
     });
   });
 
@@ -548,57 +657,66 @@ void main() {
       });
       final dataDir = tmp.path;
       // 备份时刻：q1 引用 slices/q1.png。
-      await db.insert('questions', {
-        'id': 'q1',
-        'title': 't',
-        'subject_id': 'math',
-        'folder_ids': '',
-        'created_at': 1000,
-        'slice_path': 'slices/q1.png',
-      });
+      await db.customInsert(
+        'INSERT INTO questions (id, title, subject_id, folder_ids, '
+        'created_at, slice_path) VALUES (?, ?, ?, ?, ?, ?)',
+        variables: [
+          Variable.withString('q1'),
+          Variable.withString('t'),
+          Variable.withString('math'),
+          Variable.withString(''),
+          Variable.withInt(1000),
+          Variable.withString('slices/q1.png'),
+        ],
+      );
       final q1File = File(p.join(dataDir, 'slices', 'q1.png'))
         ..createSync(recursive: true);
       q1File.writeAsStringSync('Q1');
-      final zipBytes =
-          await AppDatabase.exportBackupZipFrom(db, dataDir: dataDir);
+      final zipBytes = await AppDatabase.exportBackupZipFrom(
+        db,
+        dataDir: dataDir,
+      );
       // 恢复前：多了 q2（引用 slices/q2.png）与一个旧孤儿文件。
-      await db.insert('questions', {
-        'id': 'q2',
-        'title': 't',
-        'subject_id': 'math',
-        'folder_ids': '',
-        'created_at': 1000,
-        'slice_path': 'slices/q2.png',
-      });
+      await db.customInsert(
+        'INSERT INTO questions (id, title, subject_id, folder_ids, '
+        'created_at, slice_path) VALUES (?, ?, ?, ?, ?, ?)',
+        variables: [
+          Variable.withString('q2'),
+          Variable.withString('t'),
+          Variable.withString('math'),
+          Variable.withString(''),
+          Variable.withInt(1000),
+          Variable.withString('slices/q2.png'),
+        ],
+      );
       final q2File = File(p.join(dataDir, 'slices', 'q2.png'))
         ..createSync(recursive: true);
       q2File.writeAsStringSync('Q2');
-      final oldFile =
-          File(p.join(dataDir, 'imports', 'task-old', 'x.jpg'))
-            ..createSync(recursive: true);
+      final oldFile = File(p.join(dataDir, 'imports', 'task-old', 'x.jpg'))
+        ..createSync(recursive: true);
       oldFile.writeAsStringSync('OLD');
       // 恢复备份：q2 的行没了，但 q2 的图与旧孤儿文件都还在盘上。
       await AppDatabase.importBackupZipInto(db, zipBytes, dataDir: dataDir);
-      expect((await db.query('questions')).map((r) => r['id']).toList(),
-          ['q1']);
-      expect(File(p.join(dataDir, 'slices', 'q2.png')).existsSync(),
-          isTrue);
       expect(
-          File(p.join(dataDir, 'imports', 'task-old', 'x.jpg'))
-              .existsSync(),
-          isTrue);
+        (await db.customSelect('SELECT * FROM questions').get())
+            .map((r) => r.data['id'])
+            .toList(),
+        ['q1'],
+      );
+      expect(File(p.join(dataDir, 'slices', 'q2.png')).existsSync(), isTrue);
+      expect(
+        File(p.join(dataDir, 'imports', 'task-old', 'x.jpg')).existsSync(),
+        isTrue,
+      );
       // 孤儿扫描接住它们，在用文件不在列。
-      final scan =
-          await AppDatabase.scanOrphanFilesFrom(db, dataDir: dataDir);
+      final scan = await AppDatabase.scanOrphanFilesFrom(db, dataDir: dataDir);
       final found = scan.files.map((f) => f.relativePath).toList();
       expect(found, containsAll(['slices/q2.png', 'imports/task-old/x.jpg']));
       expect(found, isNot(contains('slices/q1.png')));
       // 清理只删孤儿。
-      final res =
-          await AppDatabase.deleteOrphanFiles(found, dataDir: dataDir);
+      final res = await AppDatabase.deleteOrphanFiles(found, dataDir: dataDir);
       expect(res.deletedCount, 2);
-      expect(File(p.join(dataDir, 'slices', 'q1.png')).existsSync(),
-          isTrue);
+      expect(File(p.join(dataDir, 'slices', 'q1.png')).existsSync(), isTrue);
     });
   });
 
@@ -617,8 +735,7 @@ void main() {
       // 崩溃残留：严格匹配的 staging 目录（含文件）。
       final stale = Directory(p.join(tmp.path, '.dst.staging-1234567890'))
         ..createSync(recursive: true);
-      File(p.join(stale.path, 'quiz-master2.db'))
-          .writeAsStringSync('STALE');
+      File(p.join(stale.path, 'quiz-master2.db')).writeAsStringSync('STALE');
       // 不匹配的，一概不动：非数字后缀、别的目标名、缺前导点、普通文件。
       final keep1 = Directory(p.join(tmp.path, '.dst.staging-backup'))
         ..createSync(recursive: true);
@@ -628,8 +745,7 @@ void main() {
         ..createSync(recursive: true);
       final keepFile = File(p.join(tmp.path, '.dst.staging-999'))
         ..writeAsStringSync('x');
-      final outcome =
-          await AppDatabase.migrateDataFiles(src.path, dstPath);
+      final outcome = await AppDatabase.migrateDataFiles(src.path, dstPath);
       expect(outcome, DbMigrationOutcome.migrated);
       expect(stale.existsSync(), isFalse);
       expect(keep1.existsSync(), isTrue);
@@ -637,8 +753,9 @@ void main() {
       expect(keep3.existsSync(), isTrue);
       expect(keepFile.existsSync(), isTrue);
       expect(
-          File(p.join(dstPath, 'quiz-master2.db')).readAsStringSync(),
-          'NEW-DB');
+        File(p.join(dstPath, 'quiz-master2.db')).readAsStringSync(),
+        'NEW-DB',
+      );
     });
 
     test('同位置迁移也先清残留 staging（清理在早期返回之前）', () async {
@@ -652,8 +769,7 @@ void main() {
         ..createSync(recursive: true);
       final stale = Directory(p.join(tmp.path, '.dst.staging-123'))
         ..createSync(recursive: true);
-      final outcome =
-          await AppDatabase.migrateDataFiles(dir.path, dir.path);
+      final outcome = await AppDatabase.migrateDataFiles(dir.path, dir.path);
       expect(outcome, DbMigrationOutcome.sameLocation);
       expect(stale.existsSync(), isFalse);
     });

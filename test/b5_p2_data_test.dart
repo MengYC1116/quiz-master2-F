@@ -8,27 +8,20 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:drift/drift.dart' hide isNull, isNotNull;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path/path.dart' as p;
 import 'package:quiz_master2/data/database.dart';
+import 'package:quiz_master2/data/drift/quiz_database.dart';
 import 'package:quiz_master2/data/repository.dart';
 import 'package:quiz_master2/models/models.dart';
 import 'package:quiz_master2/services/zip_archive.dart';
-import 'package:sqflite_common_ffi/sqflite_ffi.dart';
+import 'package:sqlite3/sqlite3.dart' as sqlite3;
 
-Future<Database> openTestDb() async {
-  sqfliteFfiInit();
-  return databaseFactoryFfi.openDatabase(
-    inMemoryDatabasePath,
-    options: OpenDatabaseOptions(
-      version: 1,
-      onCreate: (db, version) async => AppDatabase.createTables(db),
-    ),
-  );
-}
+Future<QuizDatabase> openTestDb() => AppDatabase.openForTest();
 
 Future<void> insertQuestion(
-  Database db,
+  QuizDatabase db,
   String id, {
   String subjectId = 'math',
   int isDemo = 0,
@@ -38,21 +31,26 @@ Future<void> insertQuestion(
   String title = 't',
   int reviewCount = 0,
 }) async {
-  await db.insert('questions', {
-    'id': id,
-    'title': title,
-    'subject_id': subjectId,
-    'folder_ids': folderIds,
-    'created_at': 1000,
-    'is_demo': isDemo,
-    'is_organized': isOrganized,
-    'review_joined': reviewJoined,
-    'review_count': reviewCount,
-  });
+  await db.customInsert(
+    'INSERT INTO questions (id, title, subject_id, folder_ids, created_at, '
+    'is_demo, is_organized, review_joined, review_count) '
+    'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    variables: [
+      Variable.withString(id),
+      Variable.withString(title),
+      Variable.withString(subjectId),
+      Variable.withString(folderIds),
+      Variable.withInt(1000),
+      Variable.withInt(isDemo),
+      Variable.withInt(isOrganized),
+      Variable.withInt(reviewJoined),
+      Variable.withInt(reviewCount),
+    ],
+  );
 }
 
 Future<void> insertCauseRecord(
-  Database db,
+  QuizDatabase db,
   String questionId,
   String cause, {
   String subjectId = 'math',
@@ -60,15 +58,19 @@ Future<void> insertCauseRecord(
   int solvedCount = 0,
   int? recheckDate,
 }) async {
-  await db.insert('cause_records', {
-    'question_id': questionId,
-    'cause': cause,
-    'subject_id': subjectId,
-    'status': status,
-    'solved_count': solvedCount,
-    'recheck_date': recheckDate,
-    'joined_at': 1000,
-  });
+  await db.customInsert(
+    'INSERT INTO cause_records (question_id, cause, subject_id, status, '
+    'solved_count, recheck_date, joined_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    variables: [
+      Variable.withString(questionId),
+      Variable.withString(cause),
+      Variable.withString(subjectId),
+      Variable.withString(status),
+      Variable.withInt(solvedCount),
+      Variable(recheckDate),
+      Variable.withInt(1000),
+    ],
+  );
 }
 
 QuestionBox box({
@@ -94,30 +96,40 @@ QuestionBox box({
 );
 
 Future<void> insertTask(
-  Database db,
+  QuizDatabase db,
   String id, {
   String subjectId = 'math',
   String sourcePath = '',
 }) async {
-  await db.insert('collect_tasks', {
-    'id': id,
-    'name': 't-$id',
-    'file_name': 'f.png',
-    'subject_id': subjectId,
-    'status': 'needBox',
-    'source_path': sourcePath,
-  });
+  await db.customInsert(
+    'INSERT INTO collect_tasks (id, name, file_name, subject_id, status, '
+    'source_path) VALUES (?, ?, ?, ?, ?, ?)',
+    variables: [
+      Variable.withString(id),
+      Variable.withString('t-$id'),
+      Variable.withString('f.png'),
+      Variable.withString(subjectId),
+      Variable.withString('needBox'),
+      Variable.withString(sourcePath),
+    ],
+  );
 }
 
 /// 种子一个最小合法库并导出备份 JSON（各组 P2-4/5/6 的变造基线）。
 /// 可对同一库重复调（REPLACE 去重）。
-Future<Map<String, dynamic>> exportedJson(Database db) async {
-  await db.insert('subjects', {
-    'id': 'math',
-    'name': '数学',
-    'color': 0xFF2E7CF6,
-  }, conflictAlgorithm: ConflictAlgorithm.replace);
-  await db.delete('questions', where: 'id = ?', whereArgs: ['q1']);
+Future<Map<String, dynamic>> exportedJson(QuizDatabase db) async {
+  await db.customInsert(
+    'INSERT OR REPLACE INTO subjects (id, name, color) VALUES (?, ?, ?)',
+    variables: [
+      Variable.withString('math'),
+      Variable.withString('数学'),
+      Variable.withInt(0xFF2E7CF6),
+    ],
+  );
+  await db.customUpdate(
+    'DELETE FROM questions WHERE id = ?',
+    variables: [Variable.withString('q1')],
+  );
   await insertQuestion(db, 'q1', isOrganized: 1);
   return jsonDecode(await AppDatabase.exportBackupJsonFrom(db))
       as Map<String, dynamic>;
@@ -141,42 +153,45 @@ void main() {
     test('该科任务的草稿框（含 2 层子框）随学科删干净，他科不动', () async {
       final db = await openTestDb();
       addTearDown(() async => db.close());
-      await db.insert('subjects', {
-        'id': 'math',
-        'name': '数学',
-        'color': 0xFF000000,
-      });
-      await db.insert('subjects', {
-        'id': 'english',
-        'name': '英语',
-        'color': 0xFF000000,
-      });
+      await db.customInsert(
+        'INSERT INTO subjects (id, name, color) VALUES (?, ?, ?)',
+        variables: [
+          Variable.withString('math'),
+          Variable.withString('数学'),
+          Variable.withInt(0xFF000000),
+        ],
+      );
+      await db.customInsert(
+        'INSERT INTO subjects (id, name, color) VALUES (?, ?, ?)',
+        variables: [
+          Variable.withString('english'),
+          Variable.withString('英语'),
+          Variable.withInt(0xFF000000),
+        ],
+      );
       await insertTask(db, 'ct-math', subjectId: 'math');
       await insertTask(db, 'ct-eng', subjectId: 'english');
-      await db.insert(
-        'question_boxes',
-        _boxRow(box(id: 'b1', collectTaskId: 'ct-math')),
-      );
-      await db.insert(
-        'question_boxes',
-        _boxRow(
-          box(
-            id: 'b1-stem',
-            layer: 2,
-            type: 'stem',
-            parentBoxId: 'b1',
-            collectTaskId: 'ct-math',
-          ),
+      await insertBoxRow(db, box(id: 'b1', collectTaskId: 'ct-math'));
+      await insertBoxRow(
+        db,
+        box(
+          id: 'b1-stem',
+          layer: 2,
+          type: 'stem',
+          parentBoxId: 'b1',
+          collectTaskId: 'ct-math',
         ),
       );
-      await db.insert(
-        'question_boxes',
-        _boxRow(box(id: 'b2', collectTaskId: 'ct-eng')),
-      );
+      await insertBoxRow(db, box(id: 'b2', collectTaskId: 'ct-eng'));
       await AppDatabase.deleteSubjectFrom(db, 'math');
-      final left = await db.query('question_boxes');
+      final left = (await db.customSelect('SELECT * FROM question_boxes').get())
+          .map((r) => r.data)
+          .toList();
       expect(left.map((r) => r['id']).toList(), ['b2']);
-      expect(await db.query('collect_tasks'), hasLength(1));
+      expect(
+        await db.customSelect('SELECT * FROM collect_tasks').get(),
+        hasLength(1),
+      );
     });
   });
 
@@ -196,7 +211,10 @@ void main() {
           ),
         ),
       );
-      expect(await db.query('questions'), hasLength(1));
+      expect(
+        await db.customSelect('SELECT * FROM questions').get(),
+        hasLength(1),
+      );
     });
 
     test('主键 null 拒绝恢复', () async {
@@ -208,7 +226,10 @@ void main() {
         () => AppDatabase.importBackupJsonInto(db, data),
         throwsA(isA<BackupRestoreException>()),
       );
-      expect(await db.query('questions'), hasLength(1));
+      expect(
+        await db.customSelect('SELECT * FROM questions').get(),
+        hasLength(1),
+      );
     });
 
     test('必填列缺失 / 类型不对拒绝恢复', () async {
@@ -232,7 +253,10 @@ void main() {
         () => AppDatabase.importBackupJsonInto(db, badType),
         throwsA(isA<BackupRestoreException>()),
       );
-      expect(await db.query('questions'), hasLength(1));
+      expect(
+        await db.customSelect('SELECT * FROM questions').get(),
+        hasLength(1),
+      );
     });
 
     test('插库残余异常包成 BackupRestoreException（不露 sqlite 原文）', () async {
@@ -250,7 +274,10 @@ void main() {
           ),
         ),
       );
-      expect(await db.query('questions'), hasLength(1));
+      expect(
+        await db.customSelect('SELECT * FROM questions').get(),
+        hasLength(1),
+      );
     });
 
     test('空串主键 / 必填列空串拒绝恢复（SR2-16）', () async {
@@ -277,12 +304,15 @@ void main() {
         () => AppDatabase.importBackupJsonInto(db, emptyKey),
         throwsA(isA<BackupRestoreException>()),
       );
-      expect(await db.query('questions'), hasLength(1));
+      expect(
+        await db.customSelect('SELECT * FROM questions').get(),
+        hasLength(1),
+      );
     });
   });
 
   group('SR-P2-5 备份恢复 2GB 上限', () {
-    Future<List<int>> validZip(Database db) async {
+    Future<List<int>> validZip(QuizDatabase db) async {
       final json = await AppDatabase.exportBackupJsonFrom(db);
       return buildZip([ZipEntryData('backup.json', utf8.encode(json))]);
     }
@@ -308,7 +338,10 @@ void main() {
           ),
         ),
       );
-      expect(await db.query('questions'), hasLength(1));
+      expect(
+        await db.customSelect('SELECT * FROM questions').get(),
+        hasLength(1),
+      );
     });
 
     test('现有占用 1GB 时恢复放行（对照）', () async {
@@ -322,7 +355,10 @@ void main() {
       await raf.close();
       final zip = await validZip(db);
       await AppDatabase.importBackupZipInto(db, zip, dataDir: tmpDir.path);
-      expect(await db.query('questions'), hasLength(1));
+      expect(
+        await db.customSelect('SELECT * FROM questions').get(),
+        hasLength(1),
+      );
     });
 
     test('恰好 2GB 放行：两条文件条目累加 incoming，== 上限不拒（SR2-58/SR2-65）', () async {
@@ -343,7 +379,10 @@ void main() {
         ZipEntryData('slices/q2.png', List.filled(100, 2)),
       ]);
       await AppDatabase.importBackupZipInto(db, zip, dataDir: tmpDir.path);
-      expect(await db.query('questions'), hasLength(1));
+      expect(
+        await db.customSelect('SELECT * FROM questions').get(),
+        hasLength(1),
+      );
       expect(
         await File(p.join(tmpDir.path, 'slices', 'q1.png')).exists(),
         isTrue,
@@ -389,7 +428,10 @@ void main() {
       );
       // 原文件原样不动（500 字节，未被 200 字节的新文件覆盖）。
       expect(await old.length(), 500);
-      expect(await db.query('questions'), hasLength(1));
+      expect(
+        await db.customSelect('SELECT * FROM questions').get(),
+        hasLength(1),
+      );
     });
   });
 
@@ -415,11 +457,15 @@ void main() {
       final marker = File(p.join(markerDir.path, 'db_location.txt'));
       expect(await marker.exists(), isTrue);
       expect(await marker.readAsString(), target.path);
-      final rows = await db.query(
-        'settings',
-        where: 'key = ?',
-        whereArgs: ['databaseLocation'],
-      );
+      final rows =
+          (await db
+                  .customSelect(
+                    'SELECT * FROM settings WHERE key = ?',
+                    variables: [Variable.withString('databaseLocation')],
+                  )
+                  .get())
+              .map((r) => r.data)
+              .toList();
       expect(rows.single['value'], target.path);
     });
 
@@ -445,11 +491,12 @@ void main() {
         isFalse,
       );
       expect(
-        await db.query(
-          'settings',
-          where: 'key = ?',
-          whereArgs: ['databaseLocation'],
-        ),
+        await db
+            .customSelect(
+              'SELECT * FROM settings WHERE key = ?',
+              variables: [Variable.withString('databaseLocation')],
+            )
+            .get(),
         isEmpty,
       );
     });
@@ -478,11 +525,15 @@ void main() {
         () => AppDatabase.instance.setCustomDataDirectory(target.path),
         throwsA(anything),
       );
-      final rows = await db.query(
-        'settings',
-        where: 'key = ?',
-        whereArgs: ['databaseLocation'],
-      );
+      final rows =
+          (await db
+                  .customSelect(
+                    'SELECT * FROM settings WHERE key = ?',
+                    variables: [Variable.withString('databaseLocation')],
+                  )
+                  .get())
+              .map((r) => r.data)
+              .toList();
       expect(rows.single['value'], '/old/dir');
     });
   });
@@ -504,23 +555,28 @@ void main() {
       await insertQuestion(db, 'q1', isOrganized: 1);
       final ok = await AppDatabase.setReviewJoinedInto(db, joinedQ(), true);
       expect(ok, isTrue);
-      final q = (await db.query(
-        'questions',
-        where: 'id = ?',
-        whereArgs: ['q1'],
-      )).single;
+      final q =
+          (await db
+                  .customSelect(
+                    'SELECT * FROM questions WHERE id = ?',
+                    variables: [Variable.withString('q1')],
+                  )
+                  .get())
+              .map((r) => r.data)
+              .toList()
+              .single;
       expect(q['review_joined'], 1);
-      final records = await db.query('cause_records');
-      expect(records.map((r) => r['cause']).toList(), [
-        '计算错误',
-        '概念不清',
-      ]);
+      final records =
+          (await db.customSelect('SELECT * FROM cause_records').get())
+              .map((r) => r.data)
+              .toList();
+      expect(records.map((r) => r['cause']).toList(), ['计算错误', '概念不清']);
     });
 
     test('setReviewJoinedInto 中途失败：题行一起回滚', () async {
       final db = await openTestDb();
       addTearDown(() async => db.close());
-      await db.execute(
+      await db.customStatement(
         "CREATE TRIGGER trg_fail_cause BEFORE INSERT ON cause_records "
         "BEGIN SELECT RAISE(ABORT, 'boom'); END;",
       );
@@ -528,8 +584,11 @@ void main() {
         () => AppDatabase.setReviewJoinedInto(db, joinedQ(), true),
         throwsA(anything),
       );
-      expect(await db.query('questions'), isEmpty);
-      expect(await db.query('cause_records'), isEmpty);
+      expect(await db.customSelect('SELECT * FROM questions').get(), isEmpty);
+      expect(
+        await db.customSelect('SELECT * FROM cause_records').get(),
+        isEmpty,
+      );
     });
 
     test('错因是空的题加不进复习，返回 false、不写库', () async {
@@ -545,11 +604,15 @@ void main() {
       );
       expect(await AppDatabase.setReviewJoinedInto(db, q, true), isFalse);
       expect(
-        (await db.query(
-          'questions',
-          where: 'id = ?',
-          whereArgs: ['q1'],
-        )).single['review_joined'],
+        (await db
+                .customSelect(
+                  'SELECT * FROM questions WHERE id = ?',
+                  variables: [Variable.withString('q1')],
+                )
+                .get())
+            .map((r) => r.data)
+            .toList()
+            .single['review_joined'],
         0,
       );
     });
@@ -562,10 +625,14 @@ void main() {
       await insertCauseRecord(db, 'q1', '概念不清');
       final q = joinedQ().copyWith(errorTypes: ['计算错误', '审题失误']);
       await AppDatabase.syncCauseRecordsInto(db, q);
-      final records = await db.query(
-        'cause_records',
-        orderBy: 'cause ASC',
-      );
+      final records =
+          (await db
+                  .customSelect(
+                    'SELECT * FROM cause_records ORDER BY cause ASC',
+                  )
+                  .get())
+              .map((r) => r.data)
+              .toList();
       expect(records.map((r) => r['cause']).toList(), ['审题失误', '计算错误']);
     });
   });
@@ -588,11 +655,15 @@ void main() {
         result: 'solved',
       );
       expect(
-        (await db.query(
-          'questions',
-          where: 'id = ?',
-          whereArgs: ['q1'],
-        )).single['review_count'],
+        (await db
+                .customSelect(
+                  'SELECT * FROM questions WHERE id = ?',
+                  variables: [Variable.withString('q1')],
+                )
+                .get())
+            .map((r) => r.data)
+            .toList()
+            .single['review_count'],
         6,
       );
       // 持 reviewCount: 5 的旧快照调 setReviewJoinedInto。
@@ -607,11 +678,16 @@ void main() {
         createdAt: DateTime.fromMillisecondsSinceEpoch(1000),
       );
       expect(await AppDatabase.setReviewJoinedInto(db, stale, true), isTrue);
-      final q = (await db.query(
-        'questions',
-        where: 'id = ?',
-        whereArgs: ['q1'],
-      )).single;
+      final q =
+          (await db
+                  .customSelect(
+                    'SELECT * FROM questions WHERE id = ?',
+                    variables: [Variable.withString('q1')],
+                  )
+                  .get())
+              .map((r) => r.data)
+              .toList()
+              .single;
       expect(q['review_joined'], 1);
       expect(q['review_count'], 6);
     });
@@ -630,11 +706,16 @@ void main() {
         createdAt: DateTime.fromMillisecondsSinceEpoch(1000),
       );
       await AppDatabase.upsertQuestionInto(db, stale);
-      final q = (await db.query(
-        'questions',
-        where: 'id = ?',
-        whereArgs: ['q1'],
-      )).single;
+      final q =
+          (await db
+                  .customSelect(
+                    'SELECT * FROM questions WHERE id = ?',
+                    variables: [Variable.withString('q1')],
+                  )
+                  .get())
+              .map((r) => r.data)
+              .toList()
+              .single;
       expect(q['is_favorite'], 1);
       expect(q['review_count'], 6);
     });
@@ -662,14 +743,16 @@ void main() {
         joinedAt: DateTime.fromMillisecondsSinceEpoch(1000),
       );
       await AppDatabase.instance.updateCauseRemedy(stale);
-      final row = (await db.query('cause_records')).single;
+      final row = (await db.customSelect('SELECT * FROM cause_records').get())
+          .map((r) => r.data)
+          .toList()
+          .single;
       expect(row['status'], 'solved');
       expect(row['solved_count'], 2);
       expect(row['recheck_date'], recheck.millisecondsSinceEpoch);
-      expect(
-        AppDatabase.decodeRemedyList(row['remedy_history']),
-        ['2026-11-15：先列错因再算'],
-      );
+      expect(AppDatabase.decodeRemedyList(row['remedy_history']), [
+        '2026-11-15：先列错因再算',
+      ]);
     });
 
     test('SR3-4：经 saveCauseRecord 改已存在行的 status 被丢弃（按设计），新行才整行写入', () async {
@@ -698,18 +781,25 @@ void main() {
           joinedAt: DateTime.fromMillisecondsSinceEpoch(1000),
         ),
       );
-      final row = (await db.query(
-        'cause_records',
-        where: 'question_id = ? AND cause = ?',
-        whereArgs: ['q1', '计算错误'],
-      )).single;
+      final row =
+          (await db
+                  .customSelect(
+                    'SELECT * FROM cause_records WHERE question_id = ? AND cause = ?',
+                    variables: [
+                      Variable.withString('q1'),
+                      Variable.withString('计算错误'),
+                    ],
+                  )
+                  .get())
+              .map((r) => r.data)
+              .toList()
+              .single;
       expect(row['status'], 'solved');
       expect(row['solved_count'], 2);
       expect(row['recheck_date'], recheck.millisecondsSinceEpoch);
-      expect(
-        AppDatabase.decodeRemedyList(row['remedy_history']),
-        ['2026-11-15：先列错因再算'],
-      );
+      expect(AppDatabase.decodeRemedyList(row['remedy_history']), [
+        '2026-11-15：先列错因再算',
+      ]);
       // 不存在行：整行 INSERT，全列按传入值写（播种路径）。
       await repo.saveCauseRecord(
         CauseRecord(
@@ -722,11 +812,19 @@ void main() {
           joinedAt: DateTime.fromMillisecondsSinceEpoch(1000),
         ),
       );
-      final inserted = (await db.query(
-        'cause_records',
-        where: 'question_id = ? AND cause = ?',
-        whereArgs: ['q2', '概念不清'],
-      )).single;
+      final inserted =
+          (await db
+                  .customSelect(
+                    'SELECT * FROM cause_records WHERE question_id = ? AND cause = ?',
+                    variables: [
+                      Variable.withString('q2'),
+                      Variable.withString('概念不清'),
+                    ],
+                  )
+                  .get())
+              .map((r) => r.data)
+              .toList()
+              .single;
       expect(inserted['status'], 'inProgress');
       expect(inserted['solved_count'], 1);
     });
@@ -748,11 +846,9 @@ void main() {
       await insertQuestion(db, 'q2', isOrganized: 1);
       await insertQuestion(db, 'q1', isOrganized: 1);
       for (final id in ['q1', 'q2', 'q3', 'q4']) {
-        await db.update(
-          'questions',
-          {'page_image_path': pageImage},
-          where: 'id = ?',
-          whereArgs: [id],
+        await db.customUpdate(
+          'UPDATE questions SET page_image_path = ? WHERE id = ?',
+          variables: [Variable.withString(pageImage), Variable.withString(id)],
         );
       }
       // 框故意按非排序顺序插入：无 ORDER BY 时行序通常是 rowid 序
@@ -763,29 +859,30 @@ void main() {
         box(id: 'b-p2-a', page: 2, questionId: 'q3'),
         box(id: 'b-p1-a', page: 1, questionId: 'q1'),
       ]) {
-        await db.insert('question_boxes', _boxRow(b));
+        await insertBoxRow(db, b);
       }
       final all = await AppDatabase.boxesForPageImageFrom(db, pageImage);
-      expect(
-        all.map((b) => b.id).toList(),
-        ['b-p1-a', 'b-p1-b', 'b-p2-a', 'b-p2-b'],
-      );
+      expect(all.map((b) => b.id).toList(), [
+        'b-p1-a',
+        'b-p1-b',
+        'b-p2-a',
+        'b-p2-b',
+      ]);
       // 不在该页的题的框不混进来；无题的页图返回空。
       await insertQuestion(db, 'q5', isOrganized: 1);
-      await db.update(
-        'questions',
-        {'page_image_path': 'imports/t1/other.jpg'},
-        where: 'id = ?',
-        whereArgs: ['q5'],
+      await db.customUpdate(
+        'UPDATE questions SET page_image_path = ? WHERE id = ?',
+        variables: [
+          Variable.withString('imports/t1/other.jpg'),
+          Variable.withString('q5'),
+        ],
       );
-      await db.insert(
-        'question_boxes',
-        _boxRow(box(id: 'b-other', questionId: 'q5')),
-      );
+      await insertBoxRow(db, box(id: 'b-other', questionId: 'q5'));
       expect(
-        (await AppDatabase.boxesForPageImageFrom(db, pageImage))
-            .map((b) => b.id)
-            .toList(),
+        (await AppDatabase.boxesForPageImageFrom(
+          db,
+          pageImage,
+        )).map((b) => b.id).toList(),
         ['b-p1-a', 'b-p1-b', 'b-p2-a', 'b-p2-b'],
       );
       expect(
@@ -794,51 +891,56 @@ void main() {
       );
     });
 
-    test('boxesForQuestionFrom / boxesForTaskPageFrom 也按 page ASC, id ASC（SR3-3）',
-        () async {
-      final db = await openTestDb();
-      addTearDown(() async => db.close());
-      await insertQuestion(db, 'q1', isOrganized: 1);
-      // 同题多框故意按非排序顺序插入：无 ORDER BY 时行序通常是
-      // rowid 序（即插入序），与 page/id 序不同。用 layer=2 框——
-      // layer=1 框有“每题一框”的部分唯一索引，同题挂四个 1 层框
-      // 会违反约束（见 SR2-27 测试的注释）。
-      for (final b in [
-        box(id: 'b-p2-b', layer: 2, type: 'stem', page: 2, questionId: 'q1'),
-        box(id: 'b-p1-b', layer: 2, type: 'stem', page: 1, questionId: 'q1'),
-        box(id: 'b-p2-a', layer: 2, type: 'stem', page: 2, questionId: 'q1'),
-        box(id: 'b-p1-a', layer: 2, type: 'stem', page: 1, questionId: 'q1'),
-      ]) {
-        await db.insert('question_boxes', _boxRow(b));
-      }
-      expect(
-        (await AppDatabase.boxesForQuestionFrom(db, 'q1'))
-            .map((b) => b.id)
-            .toList(),
-        ['b-p1-a', 'b-p1-b', 'b-p2-a', 'b-p2-b'],
-      );
-      // 某任务某页的草稿框：同页内按 id 排；他页的框不混进来。
-      for (final b in [
-        box(id: 'd-b', page: 1, collectTaskId: 'task-1'),
-        box(id: 'd-a', page: 1, collectTaskId: 'task-1'),
-        box(id: 'd-p2', page: 2, collectTaskId: 'task-1'),
-      ]) {
-        await db.insert('question_boxes', _boxRow(b));
-      }
-      expect(
-        (await AppDatabase.boxesForTaskPageFrom(db, 'task-1', 1))
-            .map((b) => b.id)
-            .toList(),
-        ['d-a', 'd-b'],
-      );
-    });
+    test(
+      'boxesForQuestionFrom / boxesForTaskPageFrom 也按 page ASC, id ASC（SR3-3）',
+      () async {
+        final db = await openTestDb();
+        addTearDown(() async => db.close());
+        await insertQuestion(db, 'q1', isOrganized: 1);
+        // 同题多框故意按非排序顺序插入：无 ORDER BY 时行序通常是
+        // rowid 序（即插入序），与 page/id 序不同。用 layer=2 框——
+        // layer=1 框有“每题一框”的部分唯一索引，同题挂四个 1 层框
+        // 会违反约束（见 SR2-27 测试的注释）。
+        for (final b in [
+          box(id: 'b-p2-b', layer: 2, type: 'stem', page: 2, questionId: 'q1'),
+          box(id: 'b-p1-b', layer: 2, type: 'stem', page: 1, questionId: 'q1'),
+          box(id: 'b-p2-a', layer: 2, type: 'stem', page: 2, questionId: 'q1'),
+          box(id: 'b-p1-a', layer: 2, type: 'stem', page: 1, questionId: 'q1'),
+        ]) {
+          await insertBoxRow(db, b);
+        }
+        expect(
+          (await AppDatabase.boxesForQuestionFrom(
+            db,
+            'q1',
+          )).map((b) => b.id).toList(),
+          ['b-p1-a', 'b-p1-b', 'b-p2-a', 'b-p2-b'],
+        );
+        // 某任务某页的草稿框：同页内按 id 排；他页的框不混进来。
+        for (final b in [
+          box(id: 'd-b', page: 1, collectTaskId: 'task-1'),
+          box(id: 'd-a', page: 1, collectTaskId: 'task-1'),
+          box(id: 'd-p2', page: 2, collectTaskId: 'task-1'),
+        ]) {
+          await insertBoxRow(db, b);
+        }
+        expect(
+          (await AppDatabase.boxesForTaskPageFrom(
+            db,
+            'task-1',
+            1,
+          )).map((b) => b.id).toList(),
+          ['d-a', 'd-b'],
+        );
+      },
+    );
   });
 
   group('SR-P2-9 saveSettings 入事务', () {
     test('中途失败：已写的键一起回滚，不留新旧混杂', () async {
       final db = await openTestDb();
       addTearDown(() async => db.close());
-      await db.execute(
+      await db.customStatement(
         "CREATE TRIGGER trg_fail_font BEFORE INSERT ON settings "
         "WHEN NEW.key = 'fontSize' "
         "BEGIN SELECT RAISE(ABORT, 'boom'); END;",
@@ -851,7 +953,7 @@ void main() {
         () => AppDatabase.saveSettingsInto(db, s),
         throwsA(anything),
       );
-      expect(await db.query('settings'), isEmpty);
+      expect(await db.customSelect('SELECT * FROM settings').get(), isEmpty);
     });
 
     test('成功：全部键一次写进', () async {
@@ -861,17 +963,21 @@ void main() {
         db,
         AppSettings.defaults.copyWith(themeMode: 'dark'),
       );
-      final rows = await db.query(
-        'settings',
-        where: 'key = ?',
-        whereArgs: ['themeMode'],
-      );
+      final rows =
+          (await db
+                  .customSelect(
+                    'SELECT * FROM settings WHERE key = ?',
+                    variables: [Variable.withString('themeMode')],
+                  )
+                  .get())
+              .map((r) => r.data)
+              .toList();
       expect(rows.single['value'], 'dark');
     });
   });
 
   group('SR-P2-10 确认拆题防静默覆盖', () {
-    Future<CollectTask> origTask(Database db) async {
+    Future<CollectTask> origTask(QuizDatabase db) async {
       final orig = CollectTask(
         id: 'task-orig',
         name: 'orig',
@@ -918,14 +1024,22 @@ void main() {
           ),
         ),
       );
-      final q = (await db.query(
-        'questions',
-        where: 'id = ?',
-        whereArgs: ['import-1'],
-      )).single;
+      final q =
+          (await db
+                  .customSelect(
+                    'SELECT * FROM questions WHERE id = ?',
+                    variables: [Variable.withString('import-1')],
+                  )
+                  .get())
+              .map((r) => r.data)
+              .toList()
+              .single;
       expect(q['title'], '旧题');
       expect(q['is_organized'], 1);
-      expect(await db.query('collect_tasks'), hasLength(1));
+      expect(
+        await db.customSelect('SELECT * FROM collect_tasks').get(),
+        hasLength(1),
+      );
     });
 
     test('同 id 拆分任务已存在：显式失败', () async {
@@ -963,7 +1077,7 @@ void main() {
           ),
         ),
       );
-      expect(await db.query('questions'), isEmpty);
+      expect(await db.customSelect('SELECT * FROM questions').get(), isEmpty);
     });
 
     test('同一题内重复 id 的框：只保留第一个，不静默覆盖（SR2-18/SR2-70）', () async {
@@ -1069,10 +1183,7 @@ void main() {
       final first = await AppDatabase.boxesForQuestionFrom(db, 'import-1');
       expect(first, hasLength(1));
       expect(first.single.x, 0.1);
-      expect(
-        await AppDatabase.boxesForQuestionFrom(db, 'import-2'),
-        isEmpty,
-      );
+      expect(await AppDatabase.boxesForQuestionFrom(db, 'import-2'), isEmpty);
     });
 
     test('保留任务跨页重复 id 的草稿框：只保留第一页的（SR3-9）', () async {
@@ -1143,14 +1254,13 @@ void main() {
   group('SR-P2-11 删老库先清附属', () {
     Future<String> v1DbFile() async {
       final path = p.join(tmpDir.path, 'quiz-master2.db');
-      final db = await databaseFactoryFfi.openDatabase(
-        path,
-        options: OpenDatabaseOptions(
-          version: 1,
-          onCreate: (db, version) async => AppDatabase.createTables(db),
-        ),
-      );
+      final db = await AppDatabase.openForTest(path: path);
       await db.close();
+      // 旧口径夹具是“v2 DDL + user_version 1”：把版本位翻回 1，
+      // 让 deleteLegacyDatabaseIfPresent 的探针把它认作 v1 老库。
+      final raw = sqlite3.sqlite3.open(path);
+      raw.execute('PRAGMA user_version = 1');
+      raw.close();
       return path;
     }
 
@@ -1158,10 +1268,7 @@ void main() {
       final path = await v1DbFile();
       await File('$path-wal').writeAsString('wal');
       await File('$path-shm').writeAsString('shm');
-      expect(
-        await AppDatabase.deleteLegacyDatabaseIfPresent(path),
-        isTrue,
-      );
+      expect(await AppDatabase.deleteLegacyDatabaseIfPresent(path), isTrue);
       expect(await File(path).exists(), isFalse);
       expect(await File('$path-wal').exists(), isFalse);
       expect(await File('$path-shm').exists(), isFalse);
@@ -1184,18 +1291,9 @@ void main() {
 
     test('v2 库：不动，返回 false', () async {
       final path = p.join(tmpDir.path, 'quiz-master2.db');
-      final db = await databaseFactoryFfi.openDatabase(
-        path,
-        options: OpenDatabaseOptions(
-          version: 2,
-          onCreate: (db, version) async => AppDatabase.createTables(db),
-        ),
-      );
+      final db = await AppDatabase.openForTest(path: path);
       await db.close();
-      expect(
-        await AppDatabase.deleteLegacyDatabaseIfPresent(path),
-        isFalse,
-      );
+      expect(await AppDatabase.deleteLegacyDatabaseIfPresent(path), isFalse);
       expect(await File(path).exists(), isTrue);
     });
   });
@@ -1235,7 +1333,10 @@ void main() {
           ),
         ),
       );
-      expect(await db.query('question_boxes'), isEmpty);
+      expect(
+        await db.customSelect('SELECT * FROM question_boxes').get(),
+        isEmpty,
+      );
     });
 
     test('被清空的页传空列表键：旧草稿删掉；缺页键的旧草稿保留', () async {
@@ -1255,9 +1356,7 @@ void main() {
       await AppDatabase.saveDraftBoxesInto(
         db,
         taskId: 'task-1',
-        boxesByPage: {
-          1: <QuestionBox>[],
-        },
+        boxesByPage: {1: <QuestionBox>[]},
         rotations: const {},
       );
       final left = await AppDatabase.boxesForTaskFrom(db, 'task-1');
@@ -1272,20 +1371,14 @@ void main() {
       final dir = Directory(p.join(tmpDir.path, 'imports', 'orig'));
       await dir.create(recursive: true);
       await File(p.join(dir.path, 'original.pdf')).writeAsString('pdf');
-      await insertTask(
-        db,
-        'orig',
-        sourcePath: 'imports/orig/original.pdf',
-      );
-      await insertTask(
-        db,
-        'split-1',
-        sourcePath: 'imports/orig/original.pdf',
-      );
+      await insertTask(db, 'orig', sourcePath: 'imports/orig/original.pdf');
+      await insertTask(db, 'split-1', sourcePath: 'imports/orig/original.pdf');
       await AppDatabase.deleteCollectTaskFrom(db, 'orig');
       expect(await dir.exists(), isTrue);
       expect(
-        (await db.query('collect_tasks')).map((r) => r['id']).toList(),
+        (await db.customSelect('SELECT * FROM collect_tasks').get())
+            .map((r) => r.data['id'])
+            .toList(),
         ['split-1'],
       );
     });
@@ -1296,11 +1389,7 @@ void main() {
       final dir = Directory(p.join(tmpDir.path, 'imports', 'orig'));
       await dir.create(recursive: true);
       await File(p.join(dir.path, 'original.pdf')).writeAsString('pdf');
-      await insertTask(
-        db,
-        'orig',
-        sourcePath: 'imports/orig/original.pdf',
-      );
+      await insertTask(db, 'orig', sourcePath: 'imports/orig/original.pdf');
       await AppDatabase.deleteCollectTaskFrom(db, 'orig');
       expect(await dir.exists(), isFalse);
     });
@@ -1316,16 +1405,8 @@ void main() {
       final other = Directory(p.join(tmpDir.path, 'imports', 'orXig'));
       await other.create(recursive: true);
       await File(p.join(other.path, 'original.pdf')).writeAsString('pdf');
-      await insertTask(
-        db,
-        'or_ig',
-        sourcePath: 'imports/or_ig/original.pdf',
-      );
-      await insertTask(
-        db,
-        'orXig',
-        sourcePath: 'imports/orXig/original.pdf',
-      );
+      await insertTask(db, 'or_ig', sourcePath: 'imports/or_ig/original.pdf');
+      await insertTask(db, 'orXig', sourcePath: 'imports/orXig/original.pdf');
       await AppDatabase.deleteCollectTaskFrom(db, 'or_ig');
       expect(await dir.exists(), isFalse);
       expect(await other.exists(), isTrue);
@@ -1337,11 +1418,7 @@ void main() {
       final dir = Directory(p.join(tmpDir.path, 'imports', 'or%ig'));
       await dir.create(recursive: true);
       await File(p.join(dir.path, 'original.pdf')).writeAsString('pdf');
-      await insertTask(
-        db,
-        'or%ig',
-        sourcePath: 'imports/or%ig/original.pdf',
-      );
+      await insertTask(db, 'or%ig', sourcePath: 'imports/or%ig/original.pdf');
       await AppDatabase.deleteCollectTaskFrom(db, 'or%ig');
       // '%' 不在 _safeTaskIdPattern 里：_deleteTaskDirIfUnreferenced
       // 直接返回，目录保留（LIKE 里的 % 通配符到不了查询）。
@@ -1381,11 +1458,20 @@ void main() {
       );
       expect(written.solvedCount, 2);
       expect(written.status, CauseStatus.solved);
-      final row = (await db.query('cause_records')).single;
+      final row = (await db.customSelect('SELECT * FROM cause_records').get())
+          .map((r) => r.data)
+          .toList()
+          .single;
       expect(row['solved_count'], 2);
       expect(row['status'], 'solved');
-      expect(await db.query('review_history'), hasLength(2));
-      final q = (await db.query('questions')).single;
+      expect(
+        await db.customSelect('SELECT * FROM review_history').get(),
+        hasLength(2),
+      );
+      final q = (await db.customSelect('SELECT * FROM questions').get())
+          .map((r) => r.data)
+          .toList()
+          .single;
       expect(q['review_count'], 2);
     });
 
@@ -1412,10 +1498,7 @@ void main() {
       expect(written.solvedCount, 2);
       expect(written.status, CauseStatus.solved);
       expect(written.recheckDate, isNotNull);
-      expect(
-        written.recheckDate!.isAfter(DateTime.now()),
-        isTrue,
-      );
+      expect(written.recheckDate!.isAfter(DateTime.now()), isTrue);
     });
 
     test('unsure 不写库：无行时返回传入值，有行时返回库内值', () async {
@@ -1434,10 +1517,19 @@ void main() {
         result: 'unsure',
       );
       expect(noRow.solvedCount, 1);
-      expect(await db.query('cause_records'), isEmpty);
-      expect(await db.query('review_history'), isEmpty);
       expect(
-        (await db.query('questions')).single['review_count'],
+        await db.customSelect('SELECT * FROM cause_records').get(),
+        isEmpty,
+      );
+      expect(
+        await db.customSelect('SELECT * FROM review_history').get(),
+        isEmpty,
+      );
+      expect(
+        (await db.customSelect('SELECT * FROM questions').get())
+            .map((r) => r.data)
+            .toList()
+            .single['review_count'],
         0,
       );
       // 有行：返回库内值，库内行原样不动。
@@ -1456,10 +1548,16 @@ void main() {
       );
       expect(withRow.solvedCount, 1);
       expect(withRow.status, CauseStatus.inProgress);
-      final row = (await db.query('cause_records')).single;
+      final row = (await db.customSelect('SELECT * FROM cause_records').get())
+          .map((r) => r.data)
+          .toList()
+          .single;
       expect(row['solved_count'], 1);
       expect(row['status'], 'inProgress');
-      expect(await db.query('review_history'), isEmpty);
+      expect(
+        await db.customSelect('SELECT * FROM review_history').get(),
+        isEmpty,
+      );
     });
 
     test('未解决：solvedCount 清 0，状态回解决中、复查日清掉', () async {
@@ -1484,7 +1582,10 @@ void main() {
       expect(written.solvedCount, 0);
       expect(written.status, CauseStatus.inProgress);
       expect(written.recheckDate, isNull);
-      final row = (await db.query('cause_records')).single;
+      final row = (await db.customSelect('SELECT * FROM cause_records').get())
+          .map((r) => r.data)
+          .toList()
+          .single;
       expect(row['solved_count'], 0);
       expect(row['status'], 'inProgress');
       expect(row['recheck_date'], isNull);
@@ -1505,12 +1606,21 @@ void main() {
       );
       expect(written.solvedCount, 1);
       expect(written.status, CauseStatus.inProgress);
-      final row = (await db.query('cause_records')).single;
+      final row = (await db.customSelect('SELECT * FROM cause_records').get())
+          .map((r) => r.data)
+          .toList()
+          .single;
       expect(row['solved_count'], 1);
       expect(row['status'], 'inProgress');
-      expect(await db.query('review_history'), hasLength(1));
       expect(
-        (await db.query('questions')).single['review_count'],
+        await db.customSelect('SELECT * FROM review_history').get(),
+        hasLength(1),
+      );
+      expect(
+        (await db.customSelect('SELECT * FROM questions').get())
+            .map((r) => r.data)
+            .toList()
+            .single['review_count'],
         1,
       );
     });
@@ -1520,20 +1630,28 @@ void main() {
     test('含 _ 的文件夹 id 不误筛其它文件夹的题', () async {
       final db = await openTestDb();
       addTearDown(() async => db.close());
-      await db.insert('folders', {
-        'id': 'f_1',
-        'name': 'A',
-        'subject_id': 'math',
-        'parent_id': null,
-        'sort_order': 0,
-      });
-      await db.insert('folders', {
-        'id': 'fX1',
-        'name': 'B',
-        'subject_id': 'math',
-        'parent_id': null,
-        'sort_order': 1,
-      });
+      await db.customInsert(
+        'INSERT INTO folders (id, name, subject_id, parent_id, sort_order) '
+        'VALUES (?, ?, ?, ?, ?)',
+        variables: [
+          Variable.withString('f_1'),
+          Variable.withString('A'),
+          Variable.withString('math'),
+          const Variable<String>(null),
+          Variable.withInt(0),
+        ],
+      );
+      await db.customInsert(
+        'INSERT INTO folders (id, name, subject_id, parent_id, sort_order) '
+        'VALUES (?, ?, ?, ?, ?)',
+        variables: [
+          Variable.withString('fX1'),
+          Variable.withString('B'),
+          Variable.withString('math'),
+          const Variable<String>(null),
+          Variable.withInt(1),
+        ],
+      );
       await insertQuestion(db, 'q1', folderIds: '["f_1"]');
       await insertQuestion(db, 'q2', folderIds: '["fX1"]');
       await insertQuestion(db, 'q3', folderIds: '["f_1","fX1"]');
@@ -1542,7 +1660,9 @@ void main() {
         const Folder(id: 'f_1', name: 'A', subjectId: 'math'),
       );
       expect(deleted, 1);
-      final left = await db.query('questions');
+      final left = (await db.customSelect('SELECT * FROM questions').get())
+          .map((r) => r.data)
+          .toList();
       expect(left.map((r) => r['id']).toList(), ['q2', 'q3']);
       final q3 = left.firstWhere((r) => r['id'] == 'q3');
       expect(q3['folder_ids'], '["fX1"]');
@@ -1560,12 +1680,7 @@ void main() {
       // 同科另一父级下同名：拒绝。
       await expectLater(
         () => AppDatabase.instance.upsertFolder(
-          const Folder(
-            id: 'f2',
-            name: '试卷',
-            subjectId: 'math',
-            parentId: 'f1',
-          ),
+          const Folder(id: 'f2', name: '试卷', subjectId: 'math', parentId: 'f1'),
         ),
         throwsA(
           isA<StateError>().having(
@@ -1607,11 +1722,7 @@ void main() {
         isFalse,
       );
       expect(
-        await AppDatabase.folderNameExistsInSubjectFrom(
-          db,
-          'math',
-          '不存在',
-        ),
+        await AppDatabase.folderNameExistsInSubjectFrom(db, 'math', '不存在'),
         isFalse,
       );
     });
@@ -1636,21 +1747,25 @@ void main() {
       // 一路成功、一路因“已经有了”被拒（旧写法两路都通过判重，
       // 库里出现两个同名文件夹）。
       expect(results.where((r) => r == 'ok'), hasLength(1));
-      expect(
-        results.where((r) => r.contains('已经有了')),
-        hasLength(1),
-      );
-      final rows = await db.query(
-        'folders',
-        where: 'subject_id = ? AND name = ?',
-        whereArgs: ['math', '试卷'],
-      );
+      expect(results.where((r) => r.contains('已经有了')), hasLength(1));
+      final rows =
+          (await db
+                  .customSelect(
+                    'SELECT * FROM folders WHERE subject_id = ? AND name = ?',
+                    variables: [
+                      Variable.withString('math'),
+                      Variable.withString('试卷'),
+                    ],
+                  )
+                  .get())
+              .map((r) => r.data)
+              .toList();
       expect(rows, hasLength(1));
     });
   });
 
   group('SR2-66 SR-P2-6 staging 严格匹配 + zip 恢复三档文案', () {
-    Future<List<int>> validZip(Database db) async {
+    Future<List<int>> validZip(QuizDatabase db) async {
       final json = await AppDatabase.exportBackupJsonFrom(db);
       return buildZip([ZipEntryData('backup.json', utf8.encode(json))]);
     }
@@ -1660,9 +1775,7 @@ void main() {
       addTearDown(() async => db.close());
       await exportedJson(db);
       // 用户目录：.restore-staging-backup（非纯数字后缀），不动。
-      final userDir = Directory(
-        p.join(tmpDir.path, '.restore-staging-backup'),
-      );
+      final userDir = Directory(p.join(tmpDir.path, '.restore-staging-backup'));
       await userDir.create();
       await File(p.join(userDir.path, 'keep.txt')).writeAsString('keep');
       // 上次崩溃残留的真 staging：纯数字时间戳，应被顺带清掉。
@@ -1673,10 +1786,7 @@ void main() {
       await File(p.join(stale.path, 'stale.txt')).writeAsString('stale');
       final zip = await validZip(db);
       await AppDatabase.importBackupZipInto(db, zip, dataDir: tmpDir.path);
-      expect(
-        await File(p.join(userDir.path, 'keep.txt')).exists(),
-        isTrue,
-      );
+      expect(await File(p.join(userDir.path, 'keep.txt')).exists(), isTrue);
       expect(await stale.exists(), isFalse);
     });
 
@@ -1698,14 +1808,17 @@ void main() {
           ),
         ),
       );
-      expect(await db.query('questions'), hasLength(1));
+      expect(
+        await db.customSelect('SELECT * FROM questions').get(),
+        hasLength(1),
+      );
     });
 
     test('数据库失败时文案是“备份数据有问题”，不是“文件写不进去”（第二档）', () async {
       final db = await openTestDb();
       addTearDown(() async => db.close());
       final data = await exportedJson(db);
-      await db.execute(
+      await db.customStatement(
         "CREATE TRIGGER trg_fail_q BEFORE INSERT ON questions "
         "BEGIN SELECT RAISE(ABORT, 'boom'); END;",
       );
@@ -1718,14 +1831,14 @@ void main() {
           isA<BackupRestoreException>().having(
             (e) => e.message,
             'message',
-            allOf(
-              contains('备份数据有问题'),
-              isNot(contains('文件写不进去')),
-            ),
+            allOf(contains('备份数据有问题'), isNot(contains('文件写不进去'))),
           ),
         ),
       );
-      expect(await db.query('questions'), hasLength(1));
+      expect(
+        await db.customSelect('SELECT * FROM questions').get(),
+        hasLength(1),
+      );
     });
 
     test('IO 失败时文案是“文件写不进去”（第三档）', () async {
@@ -1749,7 +1862,10 @@ void main() {
         ),
       );
       expect(await File(p.join(tmpDir.path, 'slices')).exists(), isTrue);
-      expect(await db.query('questions'), hasLength(1));
+      expect(
+        await db.customSelect('SELECT * FROM questions').get(),
+        hasLength(1),
+      );
     });
   });
 
@@ -1771,11 +1887,7 @@ void main() {
       );
       // backup.json 重名不抛错（恢复取最后一个，进位循环跳过它）。
       Map<String, dynamic> minimalJson({bool withSubject = false}) => {
-        '_meta': {
-          'schemaVersion': 2,
-          'appVersion': 'test',
-          'exportedAt': 1,
-        },
+        '_meta': {'schemaVersion': 2, 'appVersion': 'test', 'exportedAt': 1},
         for (final t in AppDatabase.backupTables)
           t: withSubject && t == 'subjects'
               ? [
@@ -1815,7 +1927,10 @@ void main() {
           ),
         ),
       );
-      expect(await db.query('questions'), hasLength(1));
+      expect(
+        await db.customSelect('SELECT * FROM questions').get(),
+        hasLength(1),
+      );
     });
 
     test('SR3-1：// 与 /. 变体、反斜杠与大小写变体同样判重', () {
@@ -1881,7 +1996,10 @@ void main() {
           ),
         ),
       );
-      expect(await db.query('questions'), hasLength(1));
+      expect(
+        await db.customSelect('SELECT * FROM questions').get(),
+        hasLength(1),
+      );
     });
   });
 
@@ -1949,6 +2067,31 @@ void main() {
   });
 }
 
+Future<void> insertBoxRow(QuizDatabase db, QuestionBox b) async {
+  final row = _boxRow(b);
+  await db.customInsert(
+    'INSERT INTO question_boxes (id, collect_task_id, question_id, '
+    'parent_box_id, page, layer, type, x, y, w, h, confidence, origin, '
+    'updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    variables: [
+      Variable(row['id']),
+      Variable(row['collect_task_id']),
+      Variable(row['question_id']),
+      Variable(row['parent_box_id']),
+      Variable(row['page']),
+      Variable(row['layer']),
+      Variable(row['type']),
+      Variable(row['x']),
+      Variable(row['y']),
+      Variable(row['w']),
+      Variable(row['h']),
+      Variable(row['confidence']),
+      Variable(row['origin']),
+      Variable(row['updated_at']),
+    ],
+  );
+}
+
 Map<String, Object?> _boxRow(QuestionBox b) => {
   'id': b.id,
   'collect_task_id': b.collectTaskId,
@@ -1967,12 +2110,8 @@ Map<String, Object?> _boxRow(QuestionBox b) => {
 };
 
 void _u16(BytesBuilder b, int v) => b.add([v & 0xFF, (v >> 8) & 0xFF]);
-void _u32(BytesBuilder b, int v) => b.add([
-  v & 0xFF,
-  (v >> 8) & 0xFF,
-  (v >> 16) & 0xFF,
-  (v >> 24) & 0xFF,
-]);
+void _u32(BytesBuilder b, int v) =>
+    b.add([v & 0xFF, (v >> 8) & 0xFF, (v >> 16) & 0xFF, (v >> 24) & 0xFF]);
 
 void _writeU32(List<int> bytes, int off, int v) {
   bytes[off] = v & 0xFF;
@@ -2005,9 +2144,7 @@ List<int> _buildDescriptorZip(
   final out = BytesBuilder();
   final central = BytesBuilder();
   final nameBytes = utf8.encode(name);
-  final compressed = method == 8
-      ? ZLibCodec(raw: true).encode(data)
-      : data;
+  final compressed = method == 8 ? ZLibCodec(raw: true).encode(data) : data;
   final crc = crc32(data);
   out.add([0x50, 0x4B, 0x03, 0x04]);
   _u16(out, 20);

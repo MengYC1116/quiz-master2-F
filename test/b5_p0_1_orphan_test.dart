@@ -6,36 +6,40 @@
 // 只用合成库（内存库 + 临时数据目录），不碰真实库。
 import 'dart:io';
 
+import 'package:drift/drift.dart' hide isNull, isNotNull;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path/path.dart' as p;
 import 'package:quiz_master2/data/database.dart';
-import 'package:sqflite_common_ffi/sqflite_ffi.dart';
+import 'package:quiz_master2/data/drift/quiz_database.dart';
 
-Future<Database> openTestDb() async {
-  sqfliteFfiInit();
-  return databaseFactoryFfi.openDatabase(inMemoryDatabasePath,
-      options: OpenDatabaseOptions(
-          version: 2,
-          onCreate: (db, version) async => AppDatabase.createTables(db)));
-}
+Future<QuizDatabase> openTestDb() => AppDatabase.openForTest();
 
-Future<void> seedTask(Database db,
-    {required String id, required String sourcePath}) async {
-  await db.insert('collect_tasks', {
-    'id': id,
-    'name': '任务 $id',
-    'file_name': 'm.pdf',
-    'subject_id': 'math',
-    'status': 'needBox',
-    'progress': 100,
-    'page_count': 2,
-    'page': 1,
-    'error': null,
-    'question_id': null,
-    'created_at': 1700000000000,
-    'source_path': sourcePath,
-    'page_rotations': '{}',
-  });
+Future<void> seedTask(
+  QuizDatabase db, {
+  required String id,
+  required String sourcePath,
+}) async {
+  await db.customInsert(
+    'INSERT INTO collect_tasks (id, name, file_name, subject_id, status, '
+    'progress, page_count, page, error, question_id, created_at, '
+    'source_path, page_rotations) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '
+    '?, ?)',
+    variables: [
+      Variable.withString(id),
+      Variable.withString('任务 $id'),
+      Variable.withString('m.pdf'),
+      Variable.withString('math'),
+      Variable.withString('needBox'),
+      Variable.withInt(100),
+      Variable.withInt(2),
+      Variable.withInt(1),
+      const Variable<String>(null),
+      const Variable<String>(null),
+      Variable.withInt(1700000000000),
+      Variable.withString(sourcePath),
+      Variable.withString('{}'),
+    ],
+  );
 }
 
 File writeDataFile(Directory tmp, String rel, List<int> bytes) {
@@ -46,7 +50,7 @@ File writeDataFile(Directory tmp, String rel, List<int> bytes) {
 
 void main() {
   late Directory tmp;
-  late Database db;
+  late QuizDatabase db;
 
   setUp(() async {
     tmp = await Directory.systemTemp.createTemp('b5-p0-1-orphan-');
@@ -61,18 +65,25 @@ void main() {
         await tmp.delete(recursive: true);
       } catch (_) {}
     });
-    await db.insert('subjects', {
-      'id': 'math',
-      'name': '数学',
-      'color': 0xFF2E7CF6,
-      'cover_style': 'plain',
-      'cover_color': 'blue',
-    });
+    await db.customInsert(
+      'INSERT INTO subjects (id, name, color, cover_style, cover_color) '
+      'VALUES (?, ?, ?, ?, ?)',
+      variables: [
+        Variable.withString('math'),
+        Variable.withString('数学'),
+        Variable.withInt(0xFF2E7CF6),
+        Variable.withString('plain'),
+        Variable.withString('blue'),
+      ],
+    );
   });
 
   test('SR-P0-1：needBox 的 PDF 任务，页图不在孤儿列表里', () async {
-    await seedTask(db,
-        id: 'pdf-task', sourcePath: 'imports/pdf-task/original.pdf');
+    await seedTask(
+      db,
+      id: 'pdf-task',
+      sourcePath: 'imports/pdf-task/original.pdf',
+    );
     writeDataFile(tmp, 'imports/pdf-task/original.pdf', [1]);
     writeDataFile(tmp, 'imports/pdf-task/pages/page-001.png', [2]);
     writeDataFile(tmp, 'imports/pdf-task/pages/page-002.png', [3]);
@@ -81,8 +92,11 @@ void main() {
   });
 
   test('SR-P0-1：图片任务的 page-normalized.png 不在孤儿列表里', () async {
-    await seedTask(db,
-        id: 'img-task', sourcePath: 'imports/img-task/original.jpg');
+    await seedTask(
+      db,
+      id: 'img-task',
+      sourcePath: 'imports/img-task/original.jpg',
+    );
     writeDataFile(tmp, 'imports/img-task/original.jpg', [1]);
     writeDataFile(tmp, 'imports/img-task/page-normalized.png', [2]);
     final scan = await AppDatabase.scanOrphanFilesFrom(db, dataDir: tmp.path);
@@ -90,8 +104,11 @@ void main() {
   });
 
   test('SR2-69：旋转烘焙页图 pages/page-<p>-r<角度>.png 不在孤儿列表里', () async {
-    await seedTask(db,
-        id: 'pdf-task', sourcePath: 'imports/pdf-task/original.pdf');
+    await seedTask(
+      db,
+      id: 'pdf-task',
+      sourcePath: 'imports/pdf-task/original.pdf',
+    );
     writeDataFile(tmp, 'imports/pdf-task/original.pdf', [1]);
     writeDataFile(tmp, 'imports/pdf-task/pages/page-001.png', [2]);
     // 修框时旋转烘焙出的页图（ImportService.bakedPageRelative）：
@@ -103,8 +120,11 @@ void main() {
   });
 
   test('SR-P0-1：真孤儿仍被列出，存续任务目录里的杂文件仍是孤儿', () async {
-    await seedTask(db,
-        id: 'pdf-task', sourcePath: 'imports/pdf-task/original.pdf');
+    await seedTask(
+      db,
+      id: 'pdf-task',
+      sourcePath: 'imports/pdf-task/original.pdf',
+    );
     writeDataFile(tmp, 'imports/pdf-task/original.pdf', [1]);
     writeDataFile(tmp, 'imports/pdf-task/pages/page-001.png', [2]);
     // 任务目录里的杂文件：不在 pages/，不是 page-normalized.png。
@@ -113,12 +133,10 @@ void main() {
     writeDataFile(tmp, 'imports/gone-task/original.jpg', [4]);
     writeDataFile(tmp, 'slices/orphan.png', [5]);
     final scan = await AppDatabase.scanOrphanFilesFrom(db, dataDir: tmp.path);
-    expect(
-        scan.files.map((f) => f.relativePath).toList(),
-        [
-          'imports/gone-task/original.jpg',
-          'imports/pdf-task/extra.png',
-          'slices/orphan.png',
-        ]);
+    expect(scan.files.map((f) => f.relativePath).toList(), [
+      'imports/gone-task/original.jpg',
+      'imports/pdf-task/extra.png',
+      'slices/orphan.png',
+    ]);
   });
 }

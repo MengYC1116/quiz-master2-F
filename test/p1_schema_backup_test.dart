@@ -3,28 +3,22 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:drift/drift.dart' hide isNull, isNotNull;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path/path.dart' as p;
 import 'package:quiz_master2/data/database.dart';
+import 'package:quiz_master2/data/drift/quiz_database.dart';
 import 'package:quiz_master2/models/models.dart';
-import 'package:sqflite_common_ffi/sqflite_ffi.dart';
+import 'package:sqlite3/sqlite3.dart' as sqlite3;
 
-Future<Database> openMemoryDb() async {
-  sqfliteFfiInit();
-  final db = await databaseFactoryFfi.openDatabase(
-    inMemoryDatabasePath,
-    options: OpenDatabaseOptions(
-      version: 2,
-      onCreate: (db, version) async => AppDatabase.createTables(db),
-    ),
-  );
+Future<QuizDatabase> openMemoryDb() async {
+  final db = await AppDatabase.openForTest();
   addTearDown(() async => db.close());
   return db;
 }
 
 /// 经 AppDatabase.openAt 打开的临时文件库（走 _onCreate 全量播种）。
-Future<(Directory, Database, String)> openTempDb() async {
-  sqfliteFfiInit();
+Future<(Directory, QuizDatabase, String)> openTempDb() async {
   final tmp = await Directory.systemTemp.createTemp('p1-schema-');
   final dbPath = p.join(tmp.path, 'quiz-master2.db');
   final db = await AppDatabase.openAt(dbPath);
@@ -39,20 +33,38 @@ Future<(Directory, Database, String)> openTempDb() async {
   return (tmp, db, dbPath);
 }
 
-Future<Map<String, Object?>> tableSql(Database db, String table) async {
-  final rows = await db.rawQuery(
-    "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?",
-    [table],
-  );
+Future<Map<String, Object?>> tableSql(QuizDatabase db, String table) async {
+  final rows =
+      (await db
+              .customSelect(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?",
+                variables: [Variable.withString(table)],
+              )
+              .get())
+          .map((r) => r.data)
+          .toList();
   return rows.first;
 }
 
-Future<List<Map<String, Object?>>> indexesOf(Database db, String table) async {
-  return db.rawQuery(
-    "SELECT name, sql FROM sqlite_master WHERE type = 'index' AND tbl_name = ?",
-    [table],
-  );
+Future<List<Map<String, Object?>>> indexesOf(
+  QuizDatabase db,
+  String table,
+) async {
+  return (await db
+          .customSelect(
+            "SELECT name, sql FROM sqlite_master WHERE type = 'index' AND tbl_name = ?",
+            variables: [Variable.withString(table)],
+          )
+          .get())
+      .map((r) => r.data)
+      .toList();
 }
+
+/// 读库文件 user_version（旧 `db.getVersion()` 的等价口径）。
+Future<int> dbVersion(QuizDatabase db) async =>
+    (await db.customSelect('PRAGMA user_version').getSingle()).read<int>(
+      'user_version',
+    );
 
 Question testQuestion({
   String id = 'q1',
@@ -107,7 +119,9 @@ void main() {
   group('P1 §8.1 schema 结构：_onCreate 建出的结构与 §1.2 DDL 一致', () {
     test('questions 表含 §1.2(a) 的 7 列', () async {
       final db = await openMemoryDb();
-      final cols = await db.rawQuery('PRAGMA table_info(questions)');
+      final cols = (await db.customSelect('PRAGMA table_info(questions)').get())
+          .map((r) => r.data)
+          .toList();
       final byName = {for (final c in cols) c['name'] as String: c};
       for (final entry in {
         'source_path': 'TEXT',
@@ -146,7 +160,10 @@ void main() {
       'collect_tasks 表含 source_path / created_at / page_rotations',
       () async {
         final db = await openMemoryDb();
-        final cols = await db.rawQuery('PRAGMA table_info(collect_tasks)');
+        final cols =
+            (await db.customSelect('PRAGMA table_info(collect_tasks)').get())
+                .map((r) => r.data)
+                .toList();
         final byName = {for (final c in cols) c['name'] as String: c};
         expect(byName['source_path']!['type'], 'TEXT');
         expect(byName['source_path']!['notnull'], 1);
@@ -161,7 +178,10 @@ void main() {
 
     test('question_boxes 表：列 + CHECK + 4 个索引', () async {
       final db = await openMemoryDb();
-      final cols = await db.rawQuery('PRAGMA table_info(question_boxes)');
+      final cols =
+          (await db.customSelect('PRAGMA table_info(question_boxes)').get())
+              .map((r) => r.data)
+              .toList();
       final byName = {for (final c in cols) c['name'] as String: c};
       for (final name in [
         'id',
@@ -221,35 +241,35 @@ void main() {
       final db = await openMemoryDb();
       await expectLater(
         () => AppDatabase.insertQuestionBoxInto(db, testBox(x: 1.5)),
-        throwsA(isA<DatabaseException>()),
+        throwsA(isA<sqlite3.SqliteException>()),
       );
       await expectLater(
         () => AppDatabase.insertQuestionBoxInto(
           db,
           testBox(id: 'box-bad-layer', layer: 3),
         ),
-        throwsA(isA<DatabaseException>()),
+        throwsA(isA<sqlite3.SqliteException>()),
       );
       await expectLater(
         () => AppDatabase.insertQuestionBoxInto(
           db,
           testBox(id: 'box-bad-conf', confidence: 2.0),
         ),
-        throwsA(isA<DatabaseException>()),
+        throwsA(isA<sqlite3.SqliteException>()),
       );
       await expectLater(
         () => AppDatabase.insertQuestionBoxInto(
           db,
           testBox(id: 'box-bad-origin', origin: 'auto'),
         ),
-        throwsA(isA<DatabaseException>()),
+        throwsA(isA<sqlite3.SqliteException>()),
       );
       await expectLater(
         () => AppDatabase.insertQuestionBoxInto(
           db,
           testBox(id: 'box-bad-page', page: 0),
         ),
-        throwsA(isA<DatabaseException>()),
+        throwsA(isA<sqlite3.SqliteException>()),
       );
     });
 
@@ -262,7 +282,7 @@ void main() {
           db,
           testBox(id: 'box-second', questionId: 'q1'),
         ),
-        throwsA(isA<DatabaseException>()),
+        throwsA(isA<sqlite3.SqliteException>()),
       );
       // 修框中的框（question_id 为 NULL）不受限。
       await AppDatabase.insertQuestionBoxInto(
@@ -289,7 +309,6 @@ void main() {
 
   group('P1 §2.2 删老库建新库', () {
     test('老 v1 库文件删除（含 -wal / -shm），新库从空开始、无演示题', () async {
-      sqfliteFfiInit();
       final tmp = await Directory.systemTemp.createTemp('p1-legacy-');
       addTearDown(() async {
         try {
@@ -297,18 +316,14 @@ void main() {
         } catch (_) {}
       });
       final dbPath = p.join(tmp.path, 'quiz-master2.db');
-      // 造一个 v1 库：version 1 + 一张旧表 + 一行旧数据。
-      final legacy = await databaseFactoryFfi.openDatabase(
-        dbPath,
-        options: OpenDatabaseOptions(
-          version: 1,
-          onCreate: (db, version) async {
-            await db.execute('CREATE TABLE legacy_marker(id TEXT PRIMARY KEY)');
-            await db.insert('legacy_marker', {'id': 'old-row'});
-          },
-        ),
-      );
-      await legacy.close();
+      // 造一个 v1 库：user_version 1 + 一张旧表 + 一行旧数据。
+      // （旧写法走 sqflite openDatabase version: 1；新写法直接用
+      // sqlite3 建文件——探针只认 user_version，不认驱动。）
+      final legacy = sqlite3.sqlite3.open(dbPath);
+      legacy.execute('CREATE TABLE legacy_marker(id TEXT PRIMARY KEY)');
+      legacy.execute("INSERT INTO legacy_marker VALUES ('old-row')");
+      legacy.execute('PRAGMA user_version = 1');
+      legacy.close();
       // 残留的 -wal / -shm 也应随老库一起删。
       await File('$dbPath-wal').writeAsString('wal-bytes');
       await File('$dbPath-shm').writeAsString('shm-bytes');
@@ -320,30 +335,49 @@ void main() {
 
       final db = await AppDatabase.openAt(dbPath);
       addTearDown(() async => db.close());
-      expect(await db.getVersion(), 2);
+      expect(await dbVersion(db), 2);
       // 旧表没了，新库从空开始。
-      final tables = await db.rawQuery(
-        "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
-      );
+      final tables =
+          (await db
+                  .customSelect(
+                    "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
+                  )
+                  .get())
+              .map((r) => r.data)
+              .toList();
       expect(tables.map((r) => r['name']), isNot(contains('legacy_marker')));
-      expect(await db.query('questions'), isEmpty);
+      expect(await db.customSelect('SELECT * FROM questions').get(), isEmpty);
       expect(
-        await db.rawQuery(
-          'SELECT COUNT(*) AS n FROM questions WHERE is_demo = 1',
-        ),
+        (await db
+                .customSelect(
+                  'SELECT COUNT(*) AS n FROM questions WHERE is_demo = 1',
+                )
+                .get())
+            .map((r) => r.data)
+            .toList(),
         [
           {'n': 0},
         ],
       );
       // 产品预置项仍在（学科/文件夹/标签/知识点树，不是演示数据）。
-      expect(await db.query('subjects'), hasLength(3));
-      expect(await db.query('folders'), hasLength(9));
-      // settings.schemaVersion 写回 2。
-      final settings = await db.query(
-        'settings',
-        where: 'key = ?',
-        whereArgs: ['schemaVersion'],
+      expect(
+        await db.customSelect('SELECT * FROM subjects').get(),
+        hasLength(3),
       );
+      expect(
+        await db.customSelect('SELECT * FROM folders').get(),
+        hasLength(9),
+      );
+      // settings.schemaVersion 写回 2。
+      final settings =
+          (await db
+                  .customSelect(
+                    'SELECT * FROM settings WHERE key = ?',
+                    variables: [Variable.withString('schemaVersion')],
+                  )
+                  .get())
+              .map((r) => r.data)
+              .toList();
       expect(settings.single['value'], '2');
     });
 
@@ -355,12 +389,11 @@ void main() {
       final reopened = await AppDatabase.openAt(dbPath);
       addTearDown(() async => reopened.close());
       expect(await AppDatabase.allQuestionsFrom(reopened), hasLength(1));
-      expect(await reopened.getVersion(), 2);
+      expect(await dbVersion(reopened), 2);
       expect(tmp.existsSync(), isTrue);
     });
 
     test('不存在的库文件：直接建 v2 新库，不报错', () async {
-      sqfliteFfiInit();
       final tmp = await Directory.systemTemp.createTemp('p1-fresh-');
       addTearDown(() async {
         try {
@@ -371,8 +404,8 @@ void main() {
       expect(await AppDatabase.deleteLegacyDatabaseIfPresent(dbPath), isFalse);
       final db = await AppDatabase.openAt(dbPath);
       addTearDown(() async => db.close());
-      expect(await db.getVersion(), 2);
-      expect(await db.query('questions'), isEmpty);
+      expect(await dbVersion(db), 2);
+      expect(await db.customSelect('SELECT * FROM questions').get(), isEmpty);
     });
   });
 
@@ -427,11 +460,15 @@ void main() {
       expect(boxes, hasLength(1));
       expect(boxes.single.parentBoxId, 'box-task-1-p1-a1b2c3d4');
       expect(boxes.single.layer, 2);
-      final drafts = await db.query(
-        'question_boxes',
-        where: 'collect_task_id = ?',
-        whereArgs: ['task-1'],
-      );
+      final drafts =
+          (await db
+                  .customSelect(
+                    'SELECT * FROM question_boxes WHERE collect_task_id = ?',
+                    variables: [Variable.withString('task-1')],
+                  )
+                  .get())
+              .map((r) => r.data)
+              .toList();
       expect(drafts.single['confidence'], 0.93);
       expect(drafts.single['origin'], 'yolo');
     });
@@ -471,8 +508,11 @@ void main() {
         ),
       );
       await AppDatabase.deleteQuestionFrom(db, 'q1');
-      expect(await db.query('question_boxes'), isEmpty);
-      expect(await db.query('questions'), isEmpty);
+      expect(
+        await db.customSelect('SELECT * FROM question_boxes').get(),
+        isEmpty,
+      );
+      expect(await db.customSelect('SELECT * FROM questions').get(), isEmpty);
     });
 
     test('删任务：只删未确认的草稿框，已确认的框随题保留', () async {
@@ -496,8 +536,14 @@ void main() {
         testBox(id: 'box-confirmed', collectTaskId: 'task-1', questionId: 'q1'),
       );
       await AppDatabase.deleteCollectTaskFrom(db, 'task-1');
-      expect(await db.query('collect_tasks'), isEmpty);
-      final remaining = await db.query('question_boxes');
+      expect(
+        await db.customSelect('SELECT * FROM collect_tasks').get(),
+        isEmpty,
+      );
+      final remaining =
+          (await db.customSelect('SELECT * FROM question_boxes').get())
+              .map((r) => r.data)
+              .toList();
       expect(remaining.map((r) => r['id']), ['box-confirmed']);
     });
 
@@ -544,23 +590,47 @@ void main() {
       // 删带待整理题的任务：题、题的框、草稿框、任务行一起没；
       // 已整理题的任务与题都不动。
       await AppDatabase.deleteCollectTaskFrom(db, 'task-1');
-      expect((await db.query('questions')).map((r) => r['id']), ['q2']);
-      expect((await db.query('question_boxes')).map((r) => r['id']), [
-        'box-q2',
-      ]);
-      expect((await db.query('collect_tasks')).map((r) => r['id']), ['task-2']);
+      expect(
+        (await db.customSelect('SELECT * FROM questions').get()).map(
+          (r) => r.data['id'],
+        ),
+        ['q2'],
+      );
+      expect(
+        (await db.customSelect('SELECT * FROM question_boxes').get()).map(
+          (r) => r.data['id'],
+        ),
+        ['box-q2'],
+      );
+      expect(
+        (await db.customSelect('SELECT * FROM collect_tasks').get()).map(
+          (r) => r.data['id'],
+        ),
+        ['task-2'],
+      );
       // 删带已整理题的任务：题与框保留，只删任务行。
       await AppDatabase.deleteCollectTaskFrom(db, 'task-2');
-      expect((await db.query('questions')).map((r) => r['id']), ['q2']);
-      expect((await db.query('question_boxes')).map((r) => r['id']), [
-        'box-q2',
-      ]);
-      expect(await db.query('collect_tasks'), isEmpty);
+      expect(
+        (await db.customSelect('SELECT * FROM questions').get()).map(
+          (r) => r.data['id'],
+        ),
+        ['q2'],
+      );
+      expect(
+        (await db.customSelect('SELECT * FROM question_boxes').get()).map(
+          (r) => r.data['id'],
+        ),
+        ['box-q2'],
+      );
+      expect(
+        await db.customSelect('SELECT * FROM collect_tasks').get(),
+        isEmpty,
+      );
     });
   });
 
   group('P1 §2.3 v2 备份恢复', () {
-    Future<Map<String, dynamic>> seedAndExport(Database db) async {
+    Future<Map<String, dynamic>> seedAndExport(QuizDatabase db) async {
       await AppDatabase.upsertQuestionInto(db, testQuestion());
       await AppDatabase.insertQuestionBoxInto(
         db,
@@ -608,11 +678,11 @@ void main() {
     test('备份 → 清空 → 恢复：题/框/任务回来，schemaVersion 写回 2', () async {
       final db = await openMemoryDb();
       final decoded = await seedAndExport(db);
-      await db.delete('questions');
-      await db.delete('question_boxes');
-      await db.delete('collect_tasks');
-      await db.delete('settings');
-      expect(await db.query('questions'), isEmpty);
+      await db.customUpdate('DELETE FROM questions');
+      await db.customUpdate('DELETE FROM question_boxes');
+      await db.customUpdate('DELETE FROM collect_tasks');
+      await db.customUpdate('DELETE FROM settings');
+      expect(await db.customSelect('SELECT * FROM questions').get(), isEmpty);
       await AppDatabase.importBackupJsonInto(db, decoded);
       final qs = await AppDatabase.allQuestionsFrom(db);
       expect(qs.single.slicePath, 'slices/q1.png');
@@ -622,11 +692,15 @@ void main() {
       expect(boxes.single.confidence, 0.9);
       final tasks = await AppDatabase.allCollectTasksFrom(db);
       expect(tasks.single.pageRotations, {1: 90});
-      final settings = await db.query(
-        'settings',
-        where: 'key = ?',
-        whereArgs: ['schemaVersion'],
-      );
+      final settings =
+          (await db
+                  .customSelect(
+                    'SELECT * FROM settings WHERE key = ?',
+                    variables: [Variable.withString('schemaVersion')],
+                  )
+                  .get())
+              .map((r) => r.data)
+              .toList();
       expect(settings.single['value'], '2');
     });
 
@@ -646,7 +720,10 @@ void main() {
       );
       // 原库不动：题、框、任务都在。
       expect(await AppDatabase.allQuestionsFrom(db), hasLength(1));
-      expect(await db.query('question_boxes'), hasLength(1));
+      expect(
+        await db.customSelect('SELECT * FROM question_boxes').get(),
+        hasLength(1),
+      );
       expect(await AppDatabase.allCollectTasksFrom(db), hasLength(1));
     });
 
@@ -665,7 +742,10 @@ void main() {
         ),
       );
       expect(await AppDatabase.allQuestionsFrom(db), hasLength(1));
-      expect(await db.query('question_boxes'), hasLength(1));
+      expect(
+        await db.customSelect('SELECT * FROM question_boxes').get(),
+        hasLength(1),
+      );
     });
 
     test('schemaVersion 不是 2（=1 / 非整数）：拒绝恢复', () async {

@@ -9,7 +9,7 @@ part of 'database.dart';
 /// 含制表符或回车的笔记会导出非法 JSON、恢复不了）。
 /// §2.3：保持表名平铺在顶层，额外加 `_meta`
 /// {schemaVersion, appVersion, exportedAt}（先加后用）。
-Future<String> exportBackupJsonFromImpl(Database db) async {
+Future<String> exportBackupJsonFromImpl(QuizDatabase db) async {
   final out = <String, dynamic>{
     '_meta': {
       'schemaVersion': AppDatabase.schemaVersion,
@@ -18,7 +18,9 @@ Future<String> exportBackupJsonFromImpl(Database db) async {
     },
   };
   for (final t in AppDatabase.backupTables) {
-    out[t] = await db.query(t);
+    out[t] = (await db.customSelect('SELECT * FROM $t').get())
+        .map((r) => r.data)
+        .toList();
   }
   return jsonEncode(out);
 }
@@ -196,13 +198,36 @@ void _validateBackupRowPaths(String table, Map row) {
   }
 }
 
+/// 备份恢复插行：行来自 JSON，键是动态的（可能含表里没有的列——此时
+/// 必须让 SQLite 报错走“备份数据有问题”包装，不能静默丢列），
+/// 故按行的实际键拼 INSERT OR REPLACE。列名双引号转义，与旧
+/// sqflite `insert` 的标识符处理同口径。
+Future<int> _backupInsertRow(
+  DatabaseConnectionUser db,
+  String table,
+  Map<String, Object?> row,
+) async {
+  final cols = row.keys.toList();
+  final sql =
+      'INSERT OR REPLACE INTO $table '
+      '(${cols.map((c) => '"${c.replaceAll('"', '""')}"').join(', ')}) '
+      'VALUES (${List.filled(cols.length, '?').join(', ')})';
+  return db.customInsert(
+    sql,
+    variables: [for (final c in cols) Variable(row[c])],
+  );
+}
+
 /// B4.2：恢复（可单测版）。
 /// SR-P2-4：插库时的残余异常统一包成 [BackupRestoreException]
 /// （文案写“备份数据有问题”）：校验已拦住大多数非法行，但列名
-/// 不在表里、值超约束等仍可能在插库时才抛原生 DatabaseException，
+/// 不在表里、值超约束等仍可能在插库时才抛原生数据库异常，
 /// 旧写法会把 sqlite 原文直接展示给用户。
+/// （Drift 下原生错误是 SqliteException / DriftWrappedException，
+/// 不再是 sqflite 的 DatabaseException；try 块里只有数据库操作，
+/// 故按 [Exception] 兜底，不再按单一异常类型收。）
 Future<void> importBackupJsonIntoImpl(
-  Database db,
+  QuizDatabase db,
   Map<String, dynamic> data,
 ) async {
   AppDatabase.validateBackupData(data);
@@ -211,32 +236,31 @@ Future<void> importBackupJsonIntoImpl(
     ...AppDatabase.backupTables.reversed.where((t) => t != 'question_boxes'),
   ];
   try {
-    await db.transaction((txn) async {
+    await db.transaction(() async {
       for (final t in clearOrder) {
-        await txn.delete(t);
+        await db.customUpdate('DELETE FROM $t');
       }
       for (final t in AppDatabase.backupTables) {
         final rows = data[t];
         if (rows is! List) continue;
         for (final row in rows) {
           if (row is! Map) continue;
-          await txn.insert(
-            t,
-            Map<String, Object?>.from(row),
-            conflictAlgorithm: ConflictAlgorithm.replace,
-          );
+          await _backupInsertRow(db, t, Map<String, Object?>.from(row));
         }
       }
       // §2.3：恢复后 settings.schemaVersion 写回 2（备份里的 settings
       // 行若缺这一键，在此补写；若有，也以 2 为准）。
-      await txn.insert('settings', {
-        'key': 'schemaVersion',
-        'value': '${AppDatabase.schemaVersion}',
-      }, conflictAlgorithm: ConflictAlgorithm.replace);
+      await db.customInsert(
+        'INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)',
+        variables: [
+          Variable.withString('schemaVersion'),
+          Variable.withString('${AppDatabase.schemaVersion}'),
+        ],
+      );
     });
   } on BackupRestoreException {
     rethrow;
-  } on DatabaseException catch (e) {
+  } on Exception catch (e) {
     // 事务已回滚，原库不动；只换文案，不吞错因。
     throw BackupRestoreException('这份备份数据有问题，恢复失败：$e');
   }
@@ -248,7 +272,7 @@ Future<void> importBackupJsonIntoImpl(
 /// 无引用的孤儿文件不进备份。缺文件（路径在库里、文件不在盘上）
 /// 不进包，恢复后该题走“图片缺失”，不静默造假文件。
 Future<List<int>> exportBackupZipFromImpl(
-  Database db, {
+  QuizDatabase db, {
   String? dataDir,
 }) async {
   final dir = dataDir ?? AppDatabase.dataDirectoryPath();
@@ -374,7 +398,7 @@ bool _isRestoreStagingDir(String name) {
 /// 老 JSON 备份（`.qm2backup` 但内容是 JSON）不走这里，走
 /// [AppDatabase.importBackupJsonInto]（见设置页的魔数识别）。
 Future<void> importBackupZipIntoImpl(
-  Database db,
+  QuizDatabase db,
   List<int> bytes, {
   String? dataDir,
 }) async {
@@ -479,8 +503,10 @@ Future<void> importBackupZipIntoImpl(
     // 校验/数据问题（BackupRestoreException）原样抛；
     // 数据库错误是备份数据有问题（不是磁盘问题）；
     // 其余（IO 等）才是文件写不进去。
+    // （数据库错误到这里时已被 [importBackupJsonIntoImpl] 包成
+    // BackupRestoreException，故第二档只作防御：Drift 原生错误。）
     if (e is BackupRestoreException) rethrow;
-    if (e is DatabaseException) {
+    if (e is DriftWrappedException) {
       throw BackupRestoreException('恢复失败：备份数据有问题，原题库没动');
     }
     throw BackupRestoreException('恢复失败：文件写不进去，原题库没动');

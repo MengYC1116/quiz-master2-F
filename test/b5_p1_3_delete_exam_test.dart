@@ -3,35 +3,39 @@
 // 修后：删试卷行 + 题上 exam_id 置空包进同一事务（deleteExamFromImpl），
 // 无意义的 name='' 步骤已删。
 // 全部用内存库（createTables 建表，不播种演示数据），不碰真实库。
+import 'package:drift/drift.dart' hide isNull, isNotNull;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:quiz_master2/data/database.dart';
-import 'package:sqflite_common_ffi/sqflite_ffi.dart';
+import 'package:quiz_master2/data/drift/quiz_database.dart';
 
-Future<Database> openTestDb() async {
-  sqfliteFfiInit();
-  return databaseFactoryFfi.openDatabase(inMemoryDatabasePath,
-      options: OpenDatabaseOptions(
-          version: 1,
-          onCreate: (db, version) async =>
-              AppDatabase.createTables(db)));
+Future<QuizDatabase> openTestDb() => AppDatabase.openForTest();
+
+Future<void> insertExamRow(QuizDatabase db, String id, String name) async {
+  await db.customInsert(
+    'INSERT INTO exams (id, name) VALUES (?, ?)',
+    variables: [Variable.withString(id), Variable.withString(name)],
+  );
 }
 
-Future<void> insertExamRow(Database db, String id, String name) async {
-  await db.insert('exams', {'id': id, 'name': name});
-}
-
-Future<void> insertQuestionRow(Database db, String id,
-    {String? examId}) async {
-  await db.insert('questions', {
-    'id': id,
-    'title': 't-$id',
-    'subject_id': 'math',
-    'folder_ids': '',
-    'created_at': 1000,
-    'tags': '',
-    'knowledge_ids': '',
-    'exam_id': examId,
-  });
+Future<void> insertQuestionRow(
+  QuizDatabase db,
+  String id, {
+  String? examId,
+}) async {
+  await db.customInsert(
+    'INSERT INTO questions (id, title, subject_id, folder_ids, created_at, '
+    'tags, knowledge_ids, exam_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+    variables: [
+      Variable.withString(id),
+      Variable.withString('t-$id'),
+      Variable.withString('math'),
+      Variable.withString(''),
+      Variable.withInt(1000),
+      Variable.withString(''),
+      Variable.withString(''),
+      Variable(examId),
+    ],
+  );
 }
 
 void main() {
@@ -49,8 +53,15 @@ void main() {
       await AppDatabase.deleteExamFrom(db, 'e1');
 
       expect(
-          (await db.query('exams')).map((r) => r['id']).toList(), ['e2']);
-      final qs = await db.query('questions', orderBy: 'id');
+        (await db.customSelect('SELECT * FROM exams').get())
+            .map((r) => r.data['id'])
+            .toList(),
+        ['e2'],
+      );
+      final qs =
+          (await db.customSelect('SELECT * FROM questions ORDER BY id').get())
+              .map((r) => r.data)
+              .toList();
       expect(qs.map((r) => (r['id'], r['exam_id'])).toList(), [
         ('q1', null),
         ('q2', null),
@@ -65,16 +76,23 @@ void main() {
       await insertExamRow(db, 'e1', '期中考试');
       await insertQuestionRow(db, 'q1', examId: 'e1');
       // 让第二步（题上 exam_id 置空）必失败：试卷行已删，题还没改。
-      await db.execute(
-          "CREATE TRIGGER trg_fail_qup BEFORE UPDATE ON questions "
-          "BEGIN SELECT RAISE(ABORT, 'boom'); END;");
+      await db.customStatement(
+        "CREATE TRIGGER trg_fail_qup BEFORE UPDATE ON questions "
+        "BEGIN SELECT RAISE(ABORT, 'boom'); END;",
+      );
       await expectLater(
-          AppDatabase.deleteExamFrom(db, 'e1'), throwsA(anything));
+        AppDatabase.deleteExamFrom(db, 'e1'),
+        throwsA(anything),
+      );
       // 回滚：试卷行还在（名字未被清空成 ''），题仍指着它。
-      final exams = await db.query('exams');
+      final exams = (await db.customSelect('SELECT * FROM exams').get())
+          .map((r) => r.data)
+          .toList();
       expect(exams.single['id'], 'e1');
       expect(exams.single['name'], '期中考试');
-      final q = await db.query('questions');
+      final q = (await db.customSelect('SELECT * FROM questions').get())
+          .map((r) => r.data)
+          .toList();
       expect(q.single['exam_id'], 'e1');
     });
 
@@ -86,8 +104,20 @@ void main() {
 
       await AppDatabase.deleteExamFrom(db, 'no-such-exam');
 
-      expect((await db.query('exams')).single['id'], 'e1');
-      expect((await db.query('questions')).single['exam_id'], 'e1');
+      expect(
+        (await db.customSelect('SELECT * FROM exams').get())
+            .map((r) => r.data)
+            .toList()
+            .single['id'],
+        'e1',
+      );
+      expect(
+        (await db.customSelect('SELECT * FROM questions').get())
+            .map((r) => r.data)
+            .toList()
+            .single['exam_id'],
+        'e1',
+      );
     });
   });
 }

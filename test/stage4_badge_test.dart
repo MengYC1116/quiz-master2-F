@@ -12,8 +12,12 @@
 //
 // 整应用 `pumpAndSettle` 永不静止（见 `s8b3_startup_test.dart`
 // 文件头），用有界手动 pump（B8-1 / B9-3 同款 `_pumpUntil`）；
-// testWidgets 体跑在 fake async 里，真实 ffi 数据库的 Future
-// 须用 `tester.runAsync` 切回真实异步等它完成。
+// Drift 走同步 sqlite3 调用，仓库方法在 widget 测试里直接 await
+// 即可；`tester.runAsync` 只用于 Future.delayed 这类真实延时。
+// 注意：播种必须在测试体内做——setUp 跑在 fake async 区之外，
+// setUp 里打开的库在测试体里 await 仓库方法会挂住（B Stage 1
+// 探针 11/12/13）；同理 runAsync 里多段仓库调用也会挂住。
+// 普通 test（非 testWidgets）跑在真实异步区，setUp 播种不受影响。
 import 'dart:async';
 import 'dart:convert';
 
@@ -154,30 +158,27 @@ Future<void> _pumpApp(WidgetTester tester) async {
   await tester.pumpWidget(const ProviderScope(child: QuizMasterApp()));
 }
 
-/// 在 testWidgets 体内建内存库并做种子写入：真实 ffi Future 必须在
-/// `runAsync` 里等（见 B9-3 文件头），在 fake async 体里直接 await
-/// 会挂住（S4-1 曾因此超时）。
-Future<QuestionRepository> _seedWidgetRepo(
-  WidgetTester tester, {
+/// 在 testWidgets 体内建内存库并做种子写入：Drift 同步调用，
+/// 直接 await（见文件头）；不要包 runAsync——一个 runAsync 里
+/// 多段仓库调用会挂住（B Stage 1 探针 8/10）。
+Future<QuestionRepository> _seedWidgetRepo({
   Future<void> Function(QuestionRepository repo)? seed,
 }) async {
-  return tester.runAsync(() async {
-    final repo = await _seedMemoryRepo();
-    if (seed != null) await seed(repo);
-    return repo;
-  }).then((repo) => repo!);
+  final repo = await _seedMemoryRepo();
+  if (seed != null) await seed(repo);
+  return repo;
 }
 
 /// 把一条错因记录自查“已解决”到治愈（默认 cureChecks=2，需两次；
 /// 复查日顺延到今天 +7 天，不到复查时间，桶落 solved）。
+/// Drift 同步调用，直接 await（见文件头）。
 Future<CauseRecord> _cureCause(
-  WidgetTester tester,
   QuestionRepository repo,
   CauseRecord rec,
 ) async {
   var cur = rec;
   for (var i = 0; i < 2; i++) {
-    cur = (await tester.runAsync(() => repo.recordSelfCheck(cur, 'solved')))!;
+    cur = await repo.recordSelfCheck(cur, 'solved');
   }
   expect(cur.status, CauseStatus.solved);
   return cur;
@@ -480,14 +481,14 @@ void main() {
 
   group('C：整应用角标（写库后原页面即时刷新，不切导航）', () {
     testWidgets('S4-1 删学科：导航速览里该科消失', (tester) async {
-      final repo = await _seedWidgetRepo(tester);
+      final repo = await _seedWidgetRepo();
       await _pumpApp(tester);
       await _pumpUntil(
         tester,
         () => _navText('数学').evaluate().isNotEmpty,
         reason: '导航速览出现数学',
       );
-      await tester.runAsync(() => repo.deleteSubject('math'));
+      await repo.deleteSubject('math');
       await _pumpUntil(
         tester,
         () => _navText('数学').evaluate().isEmpty,
@@ -498,8 +499,7 @@ void main() {
 
     testWidgets('S4-2 整理完一道：整理角标 1→0', (tester) async {
       final repo = await _seedWidgetRepo(
-        tester,
-        seed: (repo) async => repo.save(_unorganized('q1')),
+                seed: (repo) async => repo.save(_unorganized('q1')),
       );
       await _pumpApp(tester);
       await _pumpUntil(
@@ -507,9 +507,7 @@ void main() {
         () => _navBadgeIs(tester, '整理工作台', '1'),
         reason: '整理角标出现 1',
       );
-      await tester.runAsync(
-        () => repo.save(_unorganized('q1').copyWith(isOrganized: true)),
-      );
+      await repo.save(_unorganized('q1').copyWith(isOrganized: true));
       await _pumpUntil(
         tester,
         () => !_navBadgeIs(tester, '整理工作台', '1'),
@@ -520,8 +518,7 @@ void main() {
 
     testWidgets('S4-3 批量整理三道：整理角标 3→0', (tester) async {
       final repo = await _seedWidgetRepo(
-        tester,
-        seed: (repo) async {
+                seed: (repo) async {
           for (final id in ['q1', 'q2', 'q3']) {
             await repo.save(_unorganized(id));
           }
@@ -533,13 +530,11 @@ void main() {
         () => _navBadgeIs(tester, '整理工作台', '3'),
         reason: '整理角标出现 3',
       );
-      await tester.runAsync(() async {
-        for (final id in ['q1', 'q2', 'q3']) {
-          await repo.save(
-            _unorganized(id).copyWith(isOrganized: true),
-          );
-        }
-      });
+      for (final id in ['q1', 'q2', 'q3']) {
+        await repo.save(
+          _unorganized(id).copyWith(isOrganized: true),
+        );
+      }
       await _pumpUntil(
         tester,
         () => !_navBadgeIs(tester, '整理工作台', '3'),
@@ -550,8 +545,7 @@ void main() {
 
     testWidgets('S4-4 加入复习：复习角标 0→1', (tester) async {
       final repo = await _seedWidgetRepo(
-        tester,
-        seed: (repo) async {
+                seed: (repo) async {
           final q = _joinedQuestion('q1', errorTypes: ['概念不清']);
           await repo.save(q);
         },
@@ -562,8 +556,8 @@ void main() {
         () => !_navBadgeIs(tester, '复习', '1'),
         reason: '初始复习角标为空',
       );
-      final q = (await tester.runAsync(() => repo.questionById('q1')))!;
-      await tester.runAsync(() => repo.setReviewJoined(q, true));
+      final q = (await repo.questionById('q1'))!;
+      await repo.setReviewJoined(q, true);
       await _pumpUntil(
         tester,
         () => _navBadgeIs(tester, '复习', '1'),
@@ -574,8 +568,7 @@ void main() {
 
     testWidgets('S4-5 取消加入复习：复习角标 1→0', (tester) async {
       final repo = await _seedWidgetRepo(
-        tester,
-        seed: (repo) => _seedDue(repo, 'q1'),
+                seed: (repo) => _seedDue(repo, 'q1'),
       );
       await _pumpApp(tester);
       await _pumpUntil(
@@ -583,8 +576,8 @@ void main() {
         () => _navBadgeIs(tester, '复习', '1'),
         reason: '复习角标出现 1',
       );
-      final q = (await tester.runAsync(() => repo.questionById('q1')))!;
-      await tester.runAsync(() => repo.setReviewJoined(q, false));
+      final q = (await repo.questionById('q1'))!;
+      await repo.setReviewJoined(q, false);
       await _pumpUntil(
         tester,
         () => !_navBadgeIs(tester, '复习', '1'),
@@ -595,8 +588,7 @@ void main() {
 
     testWidgets('S4-6 自查治愈：复习角标 1→0', (tester) async {
       final repo = await _seedWidgetRepo(
-        tester,
-        seed: (repo) => _seedDue(repo, 'q1'),
+                seed: (repo) => _seedDue(repo, 'q1'),
       );
       await _pumpApp(tester);
       await _pumpUntil(
@@ -604,9 +596,9 @@ void main() {
         () => _navBadgeIs(tester, '复习', '1'),
         reason: '复习角标出现 1',
       );
-      final recs = await tester.runAsync(() => repo.causeRecordsFor('q1'));
+      final recs = await repo.causeRecordsFor('q1');
       expect(recs, hasLength(1));
-      await _cureCause(tester, repo, recs!.first);
+      await _cureCause(repo, recs.first);
       await _pumpUntil(
         tester,
         () => !_navBadgeIs(tester, '复习', '1'),
@@ -617,8 +609,7 @@ void main() {
 
     testWidgets('S4-7 归档待复习题：复习角标 1→0', (tester) async {
       final repo = await _seedWidgetRepo(
-        tester,
-        seed: (repo) => _seedDue(repo, 'q1'),
+                seed: (repo) => _seedDue(repo, 'q1'),
       );
       await _pumpApp(tester);
       await _pumpUntil(
@@ -626,8 +617,8 @@ void main() {
         () => _navBadgeIs(tester, '复习', '1'),
         reason: '复习角标出现 1',
       );
-      final q = (await tester.runAsync(() => repo.questionById('q1')))!;
-      await tester.runAsync(() => repo.archive(q));
+      final q = (await repo.questionById('q1'))!;
+      await repo.archive(q);
       await _pumpUntil(
         tester,
         () => !_navBadgeIs(tester, '复习', '1'),
@@ -638,8 +629,7 @@ void main() {
 
     testWidgets('S4-8 恢复归档：复习角标 0→1', (tester) async {
       final repo = await _seedWidgetRepo(
-        tester,
-        seed: (repo) async {
+                seed: (repo) async {
           final q = _joinedQuestion('q1', errorTypes: ['概念不清']);
           await repo.save(q);
           await repo.setReviewJoined(q, true);
@@ -656,8 +646,8 @@ void main() {
         () => !_navBadgeIs(tester, '复习', '1'),
         reason: '归档题不计入复习角标',
       );
-      final q = (await tester.runAsync(() => repo.questionById('q1')))!;
-      await tester.runAsync(() => repo.archive(q, archived: false));
+      final q = (await repo.questionById('q1'))!;
+      await repo.archive(q, archived: false);
       await _pumpUntil(
         tester,
         () => _navBadgeIs(tester, '复习', '1'),
@@ -668,8 +658,7 @@ void main() {
 
     testWidgets('S4-9 删除待复习题：复习角标 1→0', (tester) async {
       final repo = await _seedWidgetRepo(
-        tester,
-        seed: (repo) => _seedDue(repo, 'q1'),
+                seed: (repo) => _seedDue(repo, 'q1'),
       );
       await _pumpApp(tester);
       await _pumpUntil(
@@ -677,8 +666,8 @@ void main() {
         () => _navBadgeIs(tester, '复习', '1'),
         reason: '复习角标出现 1',
       );
-      final q = (await tester.runAsync(() => repo.questionById('q1')))!;
-      await tester.runAsync(() => repo.delete(q));
+      final q = (await repo.questionById('q1'))!;
+      await repo.delete(q);
       await _pumpUntil(
         tester,
         () => !_navBadgeIs(tester, '复习', '1'),
@@ -689,28 +678,24 @@ void main() {
 
     testWidgets('S4-10 备份恢复：删题后角标 0，恢复后角标回 1', (tester) async {
       final repo = await _seedWidgetRepo(
-        tester,
-        seed: (repo) => _seedDue(repo, 'q1'),
+                seed: (repo) => _seedDue(repo, 'q1'),
       );
-      final json =
-          (await tester.runAsync(() => repo.exportBackupJson()))!;
+      final json = await repo.exportBackupJson();
       await _pumpApp(tester);
       await _pumpUntil(
         tester,
         () => _navBadgeIs(tester, '复习', '1'),
         reason: '复习角标出现 1',
       );
-      final q = (await tester.runAsync(() => repo.questionById('q1')))!;
-      await tester.runAsync(() => repo.delete(q));
+      final q = (await repo.questionById('q1'))!;
+      await repo.delete(q);
       await _pumpUntil(
         tester,
         () => !_navBadgeIs(tester, '复习', '1'),
         reason: '删除后复习角标消失',
       );
-      await tester.runAsync(
-        () => repo.importBackupJson(
-          jsonDecode(json) as Map<String, dynamic>,
-        ),
+      await repo.importBackupJson(
+        jsonDecode(json) as Map<String, dynamic>,
       );
       await _pumpUntil(
         tester,

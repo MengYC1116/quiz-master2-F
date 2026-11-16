@@ -16,36 +16,42 @@ String normalizeRecentKindImpl(String kind) => switch (kind) {
 /// SR-P2-9：一次保存全部设置（可单测版）：一个事务批量 replace，
 /// 中途失败整体回滚，不留新旧混杂的设置组合（如主题已换、字体未换）。
 /// 旧写法是循环调 [AppDatabaseSettings.saveSetting]，每次独立 insert。
-Future<void> saveSettingsIntoImpl(Database db, AppSettings s) async {
+Future<void> saveSettingsIntoImpl(QuizDatabase db, AppSettings s) async {
   final entries = s.toMap().entries.toList();
-  await db.transaction((txn) async {
+  await db.transaction(() async {
     for (final e in entries) {
-      await txn.insert('settings', {
-        'key': e.key,
-        'value': e.value,
-      }, conflictAlgorithm: ConflictAlgorithm.replace);
+      await db.customInsert(
+        'INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)',
+        variables: [
+          Variable.withString(e.key),
+          Variable.withString(e.value),
+        ],
+      );
     }
   });
 }
 
 /// 待定3：读标志（可单测版，直接对传入的库句柄读，不碰单例）。
-Future<bool> loadBackupFailedFromImpl(Database db) async {
-  final rows = await db.query(
-    'settings',
-    columns: ['value'],
-    where: 'key = ?',
-    whereArgs: [AppDatabase.backupFailedKey],
-  );
-  if (rows.isEmpty) return false;
-  return (rows.first['value'] as String?) == '1';
+Future<bool> loadBackupFailedFromImpl(QuizDatabase db) async {
+  final row = await db
+      .customSelect(
+        'SELECT value FROM settings WHERE key = ?',
+        variables: [Variable.withString(AppDatabase.backupFailedKey)],
+      )
+      .getSingleOrNull();
+  if (row == null) return false;
+  return (row.data['value'] as String?) == '1';
 }
 
 /// 待定3：写标志（可单测版）。
-Future<void> saveBackupFailedIntoImpl(Database db, bool failed) async {
-  await db.insert('settings', {
-    'key': AppDatabase.backupFailedKey,
-    'value': failed ? '1' : '0',
-  }, conflictAlgorithm: ConflictAlgorithm.replace);
+Future<void> saveBackupFailedIntoImpl(QuizDatabase db, bool failed) async {
+  await db.customInsert(
+    'INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)',
+    variables: [
+      Variable.withString(AppDatabase.backupFailedKey),
+      Variable.withString(failed ? '1' : '0'),
+    ],
+  );
 }
 
 /// B11-9 考试倒计时：读考试事件列表（可单测版，直接对传入的库句柄读，
@@ -53,15 +59,15 @@ Future<void> saveBackupFailedIntoImpl(Database db, bool failed) async {
 /// 无行 / 空串 / 坏 JSON / 坏行一律按空列表处理（坏行单独跳过，
 /// 不让一行坏数据拖垮整个列表、不弹错）。
 /// 返回的列表始终是可变的：调用方（repository）会原地排序/增删。
-Future<List<ExamEvent>> loadExamEventsFromImpl(Database db) async {
-  final rows = await db.query(
-    'settings',
-    columns: ['value'],
-    where: 'key = ?',
-    whereArgs: [AppDatabase.examEventsKey],
-  );
-  if (rows.isEmpty) return <ExamEvent>[];
-  final raw = rows.first['value'] as String?;
+Future<List<ExamEvent>> loadExamEventsFromImpl(QuizDatabase db) async {
+  final row = await db
+      .customSelect(
+        'SELECT value FROM settings WHERE key = ?',
+        variables: [Variable.withString(AppDatabase.examEventsKey)],
+      )
+      .getSingleOrNull();
+  if (row == null) return <ExamEvent>[];
+  final raw = row.data['value'] as String?;
   if (raw == null || raw.isEmpty) return <ExamEvent>[];
   try {
     final decoded = jsonDecode(raw);
@@ -79,11 +85,16 @@ Future<List<ExamEvent>> loadExamEventsFromImpl(Database db) async {
 /// 整表替换（列表很小，用户手管几场考试；增删改都在 repository 层
 /// 读-改-写回）。空列表也写一行 `[]`（与“无行”同义，读出来都是空）。
 Future<void> saveExamEventsIntoImpl(
-    Database db, List<ExamEvent> events) async {
-  await db.insert('settings', {
-    'key': AppDatabase.examEventsKey,
-    'value': jsonEncode(events.map((e) => e.toJson()).toList()),
-  }, conflictAlgorithm: ConflictAlgorithm.replace);
+    QuizDatabase db, List<ExamEvent> events) async {
+  await db.customInsert(
+    'INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)',
+    variables: [
+      Variable.withString(AppDatabase.examEventsKey),
+      Variable.withString(
+        jsonEncode(events.map((e) => e.toJson()).toList()),
+      ),
+    ],
+  );
 }
 
 /// B11-10 今日小结：今天已整理题数的 settings 表值格式与口径（纯函数，
@@ -116,42 +127,49 @@ String bumpOrganizedTodayValue(String? raw, DateTime now) {
 
 /// B11-10 今日小结：读今天已整理的题数（可单测版，直接对传入的库句柄
 /// 读，不碰单例）。
-Future<int> loadOrganizedTodayFromImpl(Database db, {DateTime? now}) async {
-  final rows = await db.query(
-    'settings',
-    columns: ['value'],
-    where: 'key = ?',
-    whereArgs: [AppDatabase.organizedTodayKey],
-  );
+Future<int> loadOrganizedTodayFromImpl(QuizDatabase db, {DateTime? now}) async {
+  final row = await db
+      .customSelect(
+        'SELECT value FROM settings WHERE key = ?',
+        variables: [Variable.withString(AppDatabase.organizedTodayKey)],
+      )
+      .getSingleOrNull();
   return organizedTodayCountFromValue(
-    rows.isEmpty ? null : rows.first['value'] as String?,
+    row == null ? null : row.data['value'] as String?,
     now ?? DateTime.now(),
   );
 }
 
 /// B11-10 今日小结：今天已整理的题数 +1（可单测版，直接对传入的库句柄
 /// 读-改-写，不碰单例；与 [AppDatabase.saveExamEventsInto] 同一写法）。
-Future<void> bumpOrganizedTodayIntoImpl(Database db, {DateTime? now}) async {
-  final rows = await db.query(
-    'settings',
-    columns: ['value'],
-    where: 'key = ?',
-    whereArgs: [AppDatabase.organizedTodayKey],
-  );
+Future<void> bumpOrganizedTodayIntoImpl(QuizDatabase db, {DateTime? now}) async {
+  final row = await db
+      .customSelect(
+        'SELECT value FROM settings WHERE key = ?',
+        variables: [Variable.withString(AppDatabase.organizedTodayKey)],
+      )
+      .getSingleOrNull();
   final next = bumpOrganizedTodayValue(
-    rows.isEmpty ? null : rows.first['value'] as String?,
+    row == null ? null : row.data['value'] as String?,
     now ?? DateTime.now(),
   );
-  await db.insert('settings', {
-    'key': AppDatabase.organizedTodayKey,
-    'value': next,
-  }, conflictAlgorithm: ConflictAlgorithm.replace);
+  await db.customInsert(
+    'INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)',
+    variables: [
+      Variable.withString(AppDatabase.organizedTodayKey),
+      Variable.withString(next),
+    ],
+  );
 }
 
 extension AppDatabaseSettings on AppDatabase {
   Future<({String kind, String subjectId, String title})?> recentTask() async {
     final d = await db;
-    final rows = await d.query('recent_tasks', where: 'id = 1', limit: 1);
+    final rows = _rows(
+      await d
+          .customSelect('SELECT * FROM recent_tasks WHERE id = 1 LIMIT 1')
+          .get(),
+    );
     if (rows.isEmpty) return null;
     final r = rows.first;
     return (
@@ -167,18 +185,22 @@ extension AppDatabaseSettings on AppDatabase {
     required String title,
   }) async {
     final d = await db;
-    await d.insert('recent_tasks', {
-      'id': 1,
-      'kind': kind,
-      'subject_id': subjectId,
-      'title': title,
-      'updated_at': DateTime.now().millisecondsSinceEpoch,
-    }, conflictAlgorithm: ConflictAlgorithm.replace);
+    await d.customInsert(
+      'INSERT OR REPLACE INTO recent_tasks '
+      '(id, kind, subject_id, title, updated_at) VALUES (?, ?, ?, ?, ?)',
+      variables: [
+        Variable.withInt(1),
+        Variable.withString(kind),
+        Variable.withString(subjectId),
+        Variable.withString(title),
+        Variable.withInt(DateTime.now().millisecondsSinceEpoch),
+      ],
+    );
   }
 
   Future<AppSettings> loadSettings() async {
     final d = await db;
-    final rows = await d.query('settings');
+    final rows = _rows(await d.customSelect('SELECT * FROM settings').get());
     final map = {
       for (final r in rows) r['key'] as String: r['value'] as String,
     };
@@ -187,10 +209,10 @@ extension AppDatabaseSettings on AppDatabase {
 
   Future<void> saveSetting(String key, String value) async {
     final d = await db;
-    await d.insert('settings', {
-      'key': key,
-      'value': value,
-    }, conflictAlgorithm: ConflictAlgorithm.replace);
+    await d.customInsert(
+      'INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)',
+      variables: [Variable.withString(key), Variable.withString(value)],
+    );
   }
 
   Future<void> saveSettings(AppSettings s) async {
@@ -203,14 +225,14 @@ extension AppDatabaseSettings on AppDatabase {
 
   Future<String?> loadLastRoute() async {
     final d = await db;
-    final rows = await d.query(
-      'settings',
-      columns: ['value'],
-      where: 'key = ?',
-      whereArgs: [AppDatabase.lastRouteKey],
-    );
-    if (rows.isEmpty) return null;
-    return rows.first['value'] as String?;
+    final row = await d
+        .customSelect(
+          'SELECT value FROM settings WHERE key = ?',
+          variables: [Variable.withString(AppDatabase.lastRouteKey)],
+        )
+        .getSingleOrNull();
+    if (row == null) return null;
+    return row.data['value'] as String?;
   }
 
   Future<void> saveLastRoute(String route) async =>
@@ -218,14 +240,14 @@ extension AppDatabaseSettings on AppDatabase {
 
   Future<String?> loadLastRecheckReminderDate() async {
     final d = await db;
-    final rows = await d.query(
-      'settings',
-      columns: ['value'],
-      where: 'key = ?',
-      whereArgs: [AppDatabase.lastRecheckReminderKey],
-    );
-    if (rows.isEmpty) return null;
-    return rows.first['value'] as String?;
+    final row = await d
+        .customSelect(
+          'SELECT value FROM settings WHERE key = ?',
+          variables: [Variable.withString(AppDatabase.lastRecheckReminderKey)],
+        )
+        .getSingleOrNull();
+    if (row == null) return null;
+    return row.data['value'] as String?;
   }
 
   Future<void> saveLastRecheckReminderDate(String date) async =>

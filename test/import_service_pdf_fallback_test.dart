@@ -7,19 +7,15 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:quiz_master2/data/database.dart';
+import 'package:quiz_master2/data/drift/quiz_database.dart';
 import 'package:quiz_master2/models/models.dart';
 import 'package:quiz_master2/services/import_service.dart';
 import 'package:quiz_master2/services/pdf_render_service.dart';
-import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 late final Directory _tmp;
 
-Future<Database> openMemoryDb() async {
-  sqfliteFfiInit();
-  final db = await databaseFactoryFfi.openDatabase(inMemoryDatabasePath,
-      options: OpenDatabaseOptions(
-          version: 2,
-          onCreate: (db, version) async => AppDatabase.createTables(db)));
+Future<QuizDatabase> openMemoryDb() async {
+  final db = await AppDatabase.openForTest();
   AppDatabase.useDatabaseForTest(db);
   addTearDown(() async => db.close());
   return db;
@@ -87,9 +83,9 @@ void main() {
       expect(t.status, CollectStatus.failed);
       expect(t.error, startsWith('导入失败：'));
       expect(
-        Directory(AppDatabase.resolveDataPath(
-                ImportService.taskDirRelative(t.id))!)
-            .existsSync(),
+        Directory(
+          AppDatabase.resolveDataPath(ImportService.taskDirRelative(t.id))!,
+        ).existsSync(),
         isFalse,
       );
     });
@@ -108,9 +104,9 @@ void main() {
       expect(t.status, CollectStatus.failed);
       expect(t.error, startsWith('导入失败：'));
       expect(
-        Directory(AppDatabase.resolveDataPath(
-                ImportService.taskDirRelative(t.id))!)
-            .existsSync(),
+        Directory(
+          AppDatabase.resolveDataPath(ImportService.taskDirRelative(t.id))!,
+        ).existsSync(),
         isFalse,
       );
     });

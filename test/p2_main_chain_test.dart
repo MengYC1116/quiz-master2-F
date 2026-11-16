@@ -3,17 +3,17 @@
 // 内存库 + 临时数据目录，不碰真实用户库；导入/裁剪是真实文件 IO，
 // 用普通 test()（真实异步可用），只有 QuestionSlice 一组是 widget 测试。
 import 'dart:io';
-import 'dart:typed_data';
 import 'dart:ui' as ui;
 
+import 'package:drift/drift.dart' hide Column, isNull, isNotNull;
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:quiz_master2/data/database.dart';
+import 'package:quiz_master2/data/drift/quiz_database.dart';
 import 'package:quiz_master2/models/models.dart';
 import 'package:quiz_master2/services/import_service.dart';
 import 'package:quiz_master2/services/page_image_pipeline.dart';
 import 'package:quiz_master2/widgets/widgets.dart';
-import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 import 'test_fixtures.dart';
 
@@ -21,12 +21,8 @@ late final Directory _tmp;
 late final String _photoPath; // B10-2：生成的照片固件
 late final String _exif6Path; // B10-2：生成的方向 6 固件
 
-Future<Database> openMemoryDb() async {
-  sqfliteFfiInit();
-  final db = await databaseFactoryFfi.openDatabase(inMemoryDatabasePath,
-      options: OpenDatabaseOptions(
-          version: 2,
-          onCreate: (db, version) async => AppDatabase.createTables(db)));
+Future<QuizDatabase> openMemoryDb() async {
+  final db = await AppDatabase.openForTest();
   AppDatabase.useDatabaseForTest(db);
   addTearDown(() async => db.close());
   return db;
@@ -44,41 +40,39 @@ QuestionBox box({
   String? collectTaskId,
   String? questionId,
   String? parentBoxId,
-}) =>
-    QuestionBox(
-      id: id,
-      layer: layer,
-      type: type,
-      x: x,
-      y: y,
-      w: w,
-      h: h,
-      page: page,
-      collectTaskId: collectTaskId,
-      questionId: questionId,
-      parentBoxId: parentBoxId,
-    );
+}) => QuestionBox(
+  id: id,
+  layer: layer,
+  type: type,
+  x: x,
+  y: y,
+  w: w,
+  h: h,
+  page: page,
+  collectTaskId: collectTaskId,
+  questionId: questionId,
+  parentBoxId: parentBoxId,
+);
 
 Question realQ({
   required String id,
   String? slicePath,
   String? sourcePath,
   bool isDemo = false,
-}) =>
-    Question(
-      id: id,
-      title: '题 $id',
-      subjectId: 'math',
-      isDemo: isDemo,
-      createdAt: DateTime(2026, 11, 14),
-      sliceText: '演示题干占位文字',
-      sourcePath: sourcePath,
-      sourceKind: sourcePath == null ? null : 'image',
-      pageImagePath: sourcePath == null ? null : 'imports/t1/original.jpg',
-      slicePath: slicePath,
-      sliceWidth: slicePath == null ? null : 200,
-      sliceHeight: slicePath == null ? null : 100,
-    );
+}) => Question(
+  id: id,
+  title: '题 $id',
+  subjectId: 'math',
+  isDemo: isDemo,
+  createdAt: DateTime(2026, 11, 14),
+  sliceText: '演示题干占位文字',
+  sourcePath: sourcePath,
+  sourceKind: sourcePath == null ? null : 'image',
+  pageImagePath: sourcePath == null ? null : 'imports/t1/original.jpg',
+  slicePath: slicePath,
+  sliceWidth: slicePath == null ? null : 200,
+  sliceHeight: slicePath == null ? null : 100,
+);
 
 Future<String> makePng(Directory dir, String name) async {
   final recorder = ui.PictureRecorder();
@@ -105,12 +99,16 @@ void main() {
       ..createSync(recursive: true);
     await makePng(slicesDir, 'q1.png');
     // B10-2：照片 / 方向 6 固件写进临时目录，不读磁盘夹具。
-    _photoPath =
-        (await writeFixtureFile(_tmp, 'photo.jpg', photoFixtureBytes()))
-            .path;
+    _photoPath = (await writeFixtureFile(
+      _tmp,
+      'photo.jpg',
+      photoFixtureBytes(),
+    )).path;
     _exif6Path = (await writeFixtureFile(
-            _tmp, 'exif-orientation-6.jpg', exifFixtureBytes(6)))
-        .path;
+      _tmp,
+      'exif-orientation-6.jpg',
+      exifFixtureBytes(6),
+    )).path;
   });
 
   tearDownAll(() async {
@@ -152,9 +150,11 @@ void main() {
       expect(tasks.first.error, startsWith('文件损坏：'));
       expect(tasks.first.sourcePath, isEmpty);
       expect(
-        Directory(AppDatabase.resolveDataPath(
-                ImportService.taskDirRelative(tasks.first.id))!)
-            .existsSync(),
+        Directory(
+          AppDatabase.resolveDataPath(
+            ImportService.taskDirRelative(tasks.first.id),
+          )!,
+        ).existsSync(),
         isFalse,
       );
     });
@@ -162,28 +162,28 @@ void main() {
     test('EXIF 方向 6：生成 page-normalized.png 副本', () async {
       await openMemoryDb();
       final service = ImportService(AppDatabase.instance);
-      final tasks = await service.enqueue(
-        [_exif6Path],
-        subjectId: 'math',
-      );
+      final tasks = await service.enqueue([_exif6Path], subjectId: 'math');
       final t = tasks.first;
       expect(t.status, CollectStatus.needBox);
-      final norm = File(AppDatabase.resolveDataPath(
-          ImportService.normalizedPageRelative(t.id))!);
+      final norm = File(
+        AppDatabase.resolveDataPath(
+          ImportService.normalizedPageRelative(t.id),
+        )!,
+      );
       expect(norm.existsSync(), isTrue);
     });
 
     test('无 EXIF 的照片：不生成归一化副本', () async {
       await openMemoryDb();
       final service = ImportService(AppDatabase.instance);
-      final tasks = await service.enqueue(
-        [_photoPath],
-        subjectId: 'math',
-      );
+      final tasks = await service.enqueue([_photoPath], subjectId: 'math');
       final t = tasks.first;
       expect(t.status, CollectStatus.needBox);
-      final norm = File(AppDatabase.resolveDataPath(
-          ImportService.normalizedPageRelative(t.id))!);
+      final norm = File(
+        AppDatabase.resolveDataPath(
+          ImportService.normalizedPageRelative(t.id),
+        )!,
+      );
       expect(norm.existsSync(), isFalse);
     });
 
@@ -206,9 +206,9 @@ void main() {
       expect(t.status, CollectStatus.failed);
       expect(t.error, contains('镜像方向（EXIF 2）'));
       expect(
-        Directory(AppDatabase.resolveDataPath(
-                ImportService.taskDirRelative(t.id))!)
-            .existsSync(),
+        Directory(
+          AppDatabase.resolveDataPath(ImportService.taskDirRelative(t.id))!,
+        ).existsSync(),
         isFalse,
       );
     });
@@ -217,12 +217,14 @@ void main() {
   group('D §1.5 三种作用域', () {
     test('草稿作用域：按任务+页替换与按页旋转往返', () async {
       final db = await openMemoryDb();
-      await AppDatabase.instance.upsertCollectTask(CollectTask(
-        id: 'task-1',
-        name: 't',
-        fileName: 't.jpg',
-        subjectId: 'math',
-      ));
+      await AppDatabase.instance.upsertCollectTask(
+        CollectTask(
+          id: 'task-1',
+          name: 't',
+          fileName: 't.jpg',
+          subjectId: 'math',
+        ),
+      );
       final first = box(id: 'b1', collectTaskId: 'task-1');
       await AppDatabase.saveDraftBoxesInto(
         db,
@@ -247,18 +249,32 @@ void main() {
       back = await AppDatabase.boxesForTaskPageFrom(db, 'task-1', 1);
       expect(back.map((b) => b.id), ['b2']);
       // 旋转角度跟着草稿一起写进 collect_tasks.page_rotations。
-      final row = (await db.query('collect_tasks',
-          where: 'id = ?', whereArgs: ['task-1'])).first;
+      final row =
+          (await db
+                  .customSelect(
+                    'SELECT * FROM collect_tasks WHERE id = ?',
+                    variables: [Variable.withString('task-1')],
+                  )
+                  .get())
+              .map((r) => r.data)
+              .toList()
+              .first;
       expect(row['page_rotations'], '{"1":0}');
     });
 
     test('多题页面重框：只换目标题，同页他题的框与切片不动', () async {
       final db = await openMemoryDb();
       const pageImage = 'imports/t1/original.jpg';
-      final q1 = realQ(id: 'q1', slicePath: 'slices/q1.png',
-          sourcePath: 'imports/t1/original.jpg');
-      final q2 = realQ(id: 'q2', slicePath: 'slices/q2.png',
-          sourcePath: 'imports/t1/original.jpg');
+      final q1 = realQ(
+        id: 'q1',
+        slicePath: 'slices/q1.png',
+        sourcePath: 'imports/t1/original.jpg',
+      );
+      final q2 = realQ(
+        id: 'q2',
+        slicePath: 'slices/q2.png',
+        sourcePath: 'imports/t1/original.jpg',
+      );
       // 两题同页：pageImagePath 相同（重框分组键）。
       final q1b = q1.copyWith(pageImagePath: pageImage);
       final q2b = q2.copyWith(pageImagePath: pageImage);
@@ -266,19 +282,32 @@ void main() {
       await AppDatabase.instance.upsertQuestion(q2b);
       await AppDatabase.replaceQuestionBoxesInto(db, 'q1', [
         box(id: 'q1-box', questionId: 'q1'),
-        box(id: 'q1-stem', layer: 2, type: 'stem', questionId: 'q1',
-            parentBoxId: 'q1-box'),
+        box(
+          id: 'q1-stem',
+          layer: 2,
+          type: 'stem',
+          questionId: 'q1',
+          parentBoxId: 'q1-box',
+        ),
       ]);
       await AppDatabase.replaceQuestionBoxesInto(db, 'q2', [
         box(id: 'q2-box', x: 0.6, questionId: 'q2'),
       ]);
       var all = await AppDatabase.boxesForPageImageFrom(db, pageImage);
-      expect(all.map((b) => b.id),
-          containsAll(['q1-box', 'q1-stem', 'q2-box']));
+      expect(
+        all.map((b) => b.id),
+        containsAll(['q1-box', 'q1-stem', 'q2-box']),
+      );
       // 重框 q1：只动 q1 的框。
       await AppDatabase.replaceQuestionBoxesInto(db, 'q1', [
-        box(id: 'q1-box-new', x: 0.05, y: 0.05, w: 0.7, h: 0.4,
-            questionId: 'q1'),
+        box(
+          id: 'q1-box-new',
+          x: 0.05,
+          y: 0.05,
+          w: 0.7,
+          h: 0.4,
+          questionId: 'q1',
+        ),
       ]);
       all = await AppDatabase.boxesForPageImageFrom(db, pageImage);
       // 行顺序不保证，只断言集合（q1 的旧框已删、q2 的框原样）。
@@ -305,8 +334,11 @@ void main() {
         rotations: const {},
       );
       final questions = [
-        realQ(id: 'import-1', slicePath: 'slices/import-1.png',
-            sourcePath: 'imports/task-orig/original.jpg'),
+        realQ(
+          id: 'import-1',
+          slicePath: 'slices/import-1.png',
+          sourcePath: 'imports/task-orig/original.jpg',
+        ),
       ];
       final splitTasks = [
         CollectTask(
@@ -331,15 +363,16 @@ void main() {
         (await AppDatabase.instance.questionById('import-1'))?.slicePath,
         'slices/import-1.png',
       );
-      final boxes =
-          await AppDatabase.boxesForPageImageFrom(db, 'imports/t1/original.jpg');
+      final boxes = await AppDatabase.boxesForPageImageFrom(
+        db,
+        'imports/t1/original.jpg',
+      );
       expect(boxes.map((b) => b.questionId), ['import-1']);
       final tasks = await AppDatabase.instance.allCollectTasks();
       expect(tasks.map((t) => t.id), ['task-split-1']);
       expect(tasks.first.status, CollectStatus.pendingOrganize);
       // 原任务的残留草稿框一起被删。
-      expect(
-        await AppDatabase.boxesForTaskFrom(db, 'task-orig'), isEmpty);
+      expect(await AppDatabase.boxesForTaskFrom(db, 'task-orig'), isEmpty);
     });
   });
 
@@ -349,8 +382,11 @@ void main() {
         MaterialApp(
           home: Scaffold(
             body: QuestionSlice(
-              question: realQ(id: 'q1', slicePath: 'slices/q1.png',
-                  sourcePath: 'imports/t1/original.jpg'),
+              question: realQ(
+                id: 'q1',
+                slicePath: 'slices/q1.png',
+                sourcePath: 'imports/t1/original.jpg',
+              ),
             ),
           ),
         ),
@@ -367,8 +403,11 @@ void main() {
         MaterialApp(
           home: Scaffold(
             body: QuestionSlice(
-              question: realQ(id: 'q1', slicePath: 'slices/gone.png',
-                  sourcePath: 'imports/t1/original.jpg'),
+              question: realQ(
+                id: 'q1',
+                slicePath: 'slices/gone.png',
+                sourcePath: 'imports/t1/original.jpg',
+              ),
             ),
           ),
         ),
@@ -383,8 +422,7 @@ void main() {
         MaterialApp(
           home: Scaffold(
             body: QuestionSlice(
-              question: realQ(id: 'q1',
-                  sourcePath: 'imports/t1/original.jpg'),
+              question: realQ(id: 'q1', sourcePath: 'imports/t1/original.jpg'),
             ),
           ),
         ),
@@ -413,12 +451,18 @@ void main() {
             body: Column(
               children: [
                 CompactSliceThumb(
-                  question: realQ(id: 'q1', slicePath: 'slices/q1.png',
-                      sourcePath: 'imports/t1/original.jpg'),
+                  question: realQ(
+                    id: 'q1',
+                    slicePath: 'slices/q1.png',
+                    sourcePath: 'imports/t1/original.jpg',
+                  ),
                 ),
                 CompactSliceThumb(
-                  question: realQ(id: 'q2', slicePath: 'slices/gone.png',
-                      sourcePath: 'imports/t1/original.jpg'),
+                  question: realQ(
+                    id: 'q2',
+                    slicePath: 'slices/gone.png',
+                    sourcePath: 'imports/t1/original.jpg',
+                  ),
                 ),
               ],
             ),

@@ -150,11 +150,13 @@ extension AppDatabasePaths on AppDatabase {
         AppDatabase.testMarkerDirectory ?? _defaultDataDirectoryPath();
     final markerFile = File(p.join(markerDir, 'db_location.txt'));
     final d = await db;
-    final oldRows = await d.query(
-      'settings',
-      columns: ['value'],
-      where: 'key = ?',
-      whereArgs: ['databaseLocation'],
+    final oldRows = _rows(
+      await d
+          .customSelect(
+            'SELECT value FROM settings WHERE key = ?',
+            variables: [Variable.withString('databaseLocation')],
+          )
+          .get(),
     );
     final oldSetting = oldRows.isEmpty
         ? null
@@ -167,10 +169,9 @@ extension AppDatabasePaths on AppDatabase {
       // 标记没写成：设置回滚到旧值（无旧值则删行），再抛原错。
       try {
         if (oldSetting == null) {
-          await d.delete(
-            'settings',
-            where: 'key = ?',
-            whereArgs: ['databaseLocation'],
+          await d.customUpdate(
+            'DELETE FROM settings WHERE key = ?',
+            variables: [Variable.withString('databaseLocation')],
           );
         } else {
           await saveSetting('databaseLocation', oldSetting);

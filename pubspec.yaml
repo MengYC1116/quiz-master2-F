@@ -12,6 +12,11 @@ dependencies:
   flutter:
     sdk: flutter
   sqflite_common_ffi: ^2.3.6
+  # ARCH-PLAN-B 第 1 阶段：Drift 2.35.4（驱动切换，见
+  # docs/ui-replication/ARCH-PLAN-B-DRIFT-DRAFT.md §四）。
+  drift: ^2.35.4
+  # deleteLegacy 只读版本探针直接用 package:sqlite3，显式声明直接依赖。
+  sqlite3: ^3.5.2
   # ARCH-PLAN-A 第 1 阶段：Riverpod 3.x 手写 Provider，不用代码生成
   #（见 docs/ui-replication/ARCH-PLAN-A-STATE-MGMT-DRAFT.md §四）。
   # ^3.4.3 可解析到 3.5.0（最低 Dart 3.12，与 Dart 3.13.7 兼容）。
@@ -39,6 +44,9 @@ dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^5.0.0
+  # ARCH-PLAN-B 第 1 阶段：Drift 代码生成。
+  drift_dev: ^2.35.3
+  build_runner: ^2.7.1
 
 flutter:
   uses-material-design: true

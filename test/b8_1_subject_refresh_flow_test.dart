@@ -9,7 +9,12 @@
 // 通过；库里空了只是辅助 sanity（最后一行）。
 // 整应用 `pumpAndSettle` 永不静止（见 `s8b3_startup_test.dart` 文件头），
 // 这里用有界手动 pump（`_pumpUntil`：pump 看条件 + `runAsync` 切回
-// 真实异步等数据库完成 + 再 pump 渲染）等界面稳定，不用 pumpAndSettle。
+// 真实异步等一轮延时 + 再 pump 渲染）等界面稳定，不用 pumpAndSettle。
+// Drift 走同步 sqlite3 调用，仓库方法在 widget 测试里直接 await
+// 即可；`tester.runAsync` 只用于 Future.delayed 这类真实延时。
+// 注意：播种必须在测试体内做——setUp 跑在 fake async 区之外，
+// setUp 里打开的库在测试体里 await 仓库方法会挂住（B Stage 1
+// 探针 11/12/13）。
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -29,9 +34,8 @@ Finder _navText(String text) =>
 /// 有界手动 pump：每轮先 pump 一帧看条件，再切回真实异步等一轮、
 /// 再 pump 渲染，直到条件成立或超限失败。
 /// 不用 pumpAndSettle（整应用永不静止）；也不只用 `pump(Duration)`——
-/// testWidgets 体跑在 fake async 里，真实 ffi 数据库的 Future 等不
-/// 到完成（仓库惯例，见 collect_page_test 文件头注释），必须用
-/// `tester.runAsync` 切回真实异步等它完成。
+/// `runAsync` 在这里只等真实延时（Future.delayed），数据库读写走
+/// Drift 同步调用、直接 await（见文件头）。
 Future<void> _pumpUntil(
   WidgetTester tester,
   bool Function() condition, {
@@ -97,23 +101,24 @@ Future<void> _deleteSubjectViaUi(WidgetTester tester, String name) async {
 }
 
 void main() {
-  late QuestionRepository repo;
-
-  setUp(() async {
+  // 播种必须在测试体内做（见文件头）：setUp 在 fake async 区之外。
+  Future<QuestionRepository> seedB() async {
     // 真实内存库：只建表不播种；种预设三科（与新库首次启动一致），
     // 其余表全空（无题、无任务、无文件夹）。
     final db = await AppDatabase.openForTest();
     AppDatabase.useDatabaseForTest(db);
-    repo = QuestionRepository(AppDatabase.instance);
+    final repo = QuestionRepository(AppDatabase.instance);
     for (final s in Subject.all) {
       await repo.saveSubject(s);
     }
     addTearDown(() async {
       await AppDatabase.resetForTest();
     });
-  });
+    return repo;
+  }
 
   testWidgets('B8-1 真实交互：删光三科后四处界面都不再出现已删学科', (tester) async {
+    final repo = await seedB();
     tester.view.physicalSize = const Size(1280, 900);
     tester.view.devicePixelRatio = 1.0;
     addTearDown(tester.view.resetPhysicalSize);
@@ -203,9 +208,8 @@ void main() {
     }
 
     // 辅助 sanity（主断言全是界面）：库里学科表确实空了。
-    // 注意：testWidgets 体跑在 fake async 里，真实 ffi 的 Future
-    // 必须包在 runAsync 里等，直接 await 会永远卡死（见 _pumpUntil）。
-    final remaining = await tester.runAsync(() => repo.subjects());
+    // Drift 同步调用，直接 await（见文件头）。
+    final remaining = await repo.subjects();
     expect(remaining, isEmpty);
     expect(tester.takeException(), isNull);
   });

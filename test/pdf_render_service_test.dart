@@ -14,22 +14,18 @@ import 'dart:ui' as ui;
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:quiz_master2/data/database.dart';
+import 'package:quiz_master2/data/drift/quiz_database.dart';
 import 'package:quiz_master2/models/models.dart';
 import 'package:quiz_master2/services/import_service.dart';
 import 'package:quiz_master2/services/pdf_render_service.dart';
-import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 import 'test_fixtures.dart';
 
 late final Directory _tmp;
 late final String _encryptedPdfPath; // B10-2：生成的加密 PDF 固件
 
-Future<Database> openMemoryDb() async {
-  sqfliteFfiInit();
-  final db = await databaseFactoryFfi.openDatabase(inMemoryDatabasePath,
-      options: OpenDatabaseOptions(
-          version: 2,
-          onCreate: (db, version) async => AppDatabase.createTables(db)));
+Future<QuizDatabase> openMemoryDb() async {
+  final db = await AppDatabase.openForTest();
   AppDatabase.useDatabaseForTest(db);
   addTearDown(() async => db.close());
   return db;
@@ -40,13 +36,13 @@ Future<Database> openMemoryDb() async {
 /// 与 Python 夹具脚本同算法；pypdf / pdfinfo 已验过同款输出合法。
 Uint8List buildTestPdf({required int pages}) {
   final objs = <(int, List<int>)>[];
-  final kids =
-      List.generate(pages, (i) => '${4 + i * 2} 0 R').join(' ');
+  final kids = List.generate(pages, (i) => '${4 + i * 2} 0 R').join(' ');
   objs.add((1, '<< /Type /Catalog /Pages 2 0 R >>'.codeUnits));
-  objs.add((2,
-      '<< /Type /Pages /Kids [$kids] /Count $pages >>'.codeUnits));
-  objs.add((3, '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>'
-      .codeUnits));
+  objs.add((2, '<< /Type /Pages /Kids [$kids] /Count $pages >>'.codeUnits));
+  objs.add((
+    3,
+    '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>'.codeUnits,
+  ));
   for (var i = 0; i < pages; i++) {
     final pageNo = i + 1;
     final content =
@@ -57,9 +53,10 @@ Uint8List buildTestPdf({required int pages}) {
       '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] '
               '/Resources << /Font << /F1 3 0 R >> >> '
               '/Contents ${4 + i * 2 + 1} 0 R >>'
-          .codeUnits
+          .codeUnits,
     ));
-    final stream = '<< /Length ${content.length} >>\nstream\n'
+    final stream =
+        '<< /Length ${content.length} >>\nstream\n'
         '$content\nendstream';
     objs.add((4 + i * 2 + 1, stream.codeUnits));
   }
@@ -77,11 +74,14 @@ Uint8List buildTestPdf({required int pages}) {
   out.addAll('0000000000 65535 f \n'.codeUnits);
   for (var n = 1; n <= maxNum; n++) {
     out.addAll(
-        '${offsets[n]!.toString().padLeft(10, '0')} 00000 n \n'.codeUnits);
+      '${offsets[n]!.toString().padLeft(10, '0')} 00000 n \n'.codeUnits,
+    );
   }
-  out.addAll('trailer\n<< /Size ${maxNum + 1} /Root 1 0 R >>\n'
-          'startxref\n$xrefPos\n%%EOF\n'
-      .codeUnits);
+  out.addAll(
+    'trailer\n<< /Size ${maxNum + 1} /Root 1 0 R >>\n'
+            'startxref\n$xrefPos\n%%EOF\n'
+        .codeUnits,
+  );
   return Uint8List.fromList(out);
 }
 
@@ -93,8 +93,7 @@ Future<bool> pngHasDarkPixels(Uint8List png) async {
   final frame = await codec.getNextFrame();
   final image = frame.image;
   try {
-    final data =
-        await image.toByteData(format: ui.ImageByteFormat.rawRgba);
+    final data = await image.toByteData(format: ui.ImageByteFormat.rawRgba);
     if (data == null) return false;
     final bytes = data.buffer.asUint8List();
     final w = image.width;
@@ -102,9 +101,7 @@ Future<bool> pngHasDarkPixels(Uint8List png) async {
     for (var y = 650; y < 900; y += 17) {
       for (var x = 350; x < 900; x += 29) {
         final off = (y * w + x) * 4;
-        if (bytes[off] < 100 &&
-            bytes[off + 1] < 100 &&
-            bytes[off + 2] < 100) {
+        if (bytes[off] < 100 && bytes[off + 1] < 100 && bytes[off + 2] < 100) {
           dark++;
         }
       }
@@ -178,8 +175,10 @@ void main() {
     AppDatabase.testDataDirectory = _tmp.path;
     // B10-2：加密 PDF 固件写进临时目录，不读磁盘夹具。
     _encryptedPdfPath = (await writeFixtureFile(
-            _tmp, 'pdf-encrypted.pdf', encryptedPdfFixtureBytes()))
-        .path;
+      _tmp,
+      'pdf-encrypted.pdf',
+      encryptedPdfFixtureBytes(),
+    )).path;
   });
 
   tearDownAll(() async {
@@ -195,16 +194,23 @@ void main() {
       expect(await service.pageCount(pdf.path), 3);
       final rendered = await service.renderPagePng(pdf.path, 1);
       // PNG 魔数
-      expect(rendered.png.sublist(0, 8),
-          [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]);
+      expect(rendered.png.sublist(0, 8), [
+        0x89,
+        0x50,
+        0x4E,
+        0x47,
+        0x0D,
+        0x0A,
+        0x1A,
+        0x0A,
+      ]);
       // 612×792 pt：长边 2500 → 1932×2500。
       expect(rendered.width, 1932);
       expect(rendered.height, 2500);
       expect(await pngHasDarkPixels(rendered.png), isTrue);
     }, timeout: const Timeout(Duration(minutes: 5)));
 
-    test('renderAllPagesToDir：写出 page-001..003.png，进度走到 (3,3)',
-        () async {
+    test('renderAllPagesToDir：写出 page-001..003.png，进度走到 (3,3)', () async {
       final pdf = File('${_tmp.path}/three2.pdf');
       await pdf.writeAsBytes(buildTestPdf(pages: 3));
       final outDir = Directory('${_tmp.path}/pages-out');
@@ -220,7 +226,8 @@ void main() {
       expect(progress.last, (3, 3));
       for (var p = 1; p <= 3; p++) {
         final f = File(
-            '${outDir.path}/page-${p.toString().padLeft(3, '0')}.png');
+          '${outDir.path}/page-${p.toString().padLeft(3, '0')}.png',
+        );
         expect(f.existsSync(), isTrue);
         expect(f.lengthSync(), greaterThan(10000));
       }
@@ -254,8 +261,7 @@ void main() {
       );
     }, timeout: const Timeout(Duration(minutes: 5)));
 
-    test('损坏 PDF：随机字节 / 空文件 / 截断都抛 PdfCorruptException',
-        () async {
+    test('损坏 PDF：随机字节 / 空文件 / 截断都抛 PdfCorruptException', () async {
       final service = PdfRenderService();
       final random = File('${_tmp.path}/random.pdf');
       await random.writeAsBytes(List.generate(2000, (i) => i % 251));
@@ -280,8 +286,7 @@ void main() {
   });
 
   group('导入：PDF 整本渲染进库', () {
-    test('3 页 PDF：needBox、pageCount 3、原文件 + 3 张页图落盘',
-        () async {
+    test('3 页 PDF：needBox、pageCount 3、原文件 + 3 张页图落盘', () async {
       await openMemoryDb();
       final service = ImportService(AppDatabase.instance);
       final pdf = File('${_tmp.path}/import-3.pdf');
@@ -303,8 +308,11 @@ void main() {
       expect(copied.existsSync(), isTrue);
       expect(copied.readAsBytesSync(), pdf.readAsBytesSync());
       for (var p = 1; p <= 3; p++) {
-        final pageFile = File(AppDatabase.resolveDataPath(
-            ImportService.renderedPageRelative(t.id, p))!);
+        final pageFile = File(
+          AppDatabase.resolveDataPath(
+            ImportService.renderedPageRelative(t.id, p),
+          )!,
+        );
         expect(pageFile.existsSync(), isTrue);
         expect(pageFile.lengthSync(), greaterThan(10000));
       }
@@ -317,8 +325,7 @@ void main() {
       expect(progress.last, 100);
     }, timeout: const Timeout(Duration(minutes: 5)));
 
-    test('21 页 PDF：失败、提示 21 页超 20 页上限、不建任务目录',
-        () async {
+    test('21 页 PDF：失败、提示 21 页超 20 页上限、不建任务目录', () async {
       await openMemoryDb();
       final service = ImportService(AppDatabase.instance);
       final pdf = File('${_tmp.path}/import-21.pdf');
@@ -331,9 +338,9 @@ void main() {
       expect(t.error, contains('分批'));
       expect(t.sourcePath, isEmpty);
       expect(
-        Directory(AppDatabase.resolveDataPath(
-                ImportService.taskDirRelative(t.id))!)
-            .existsSync(),
+        Directory(
+          AppDatabase.resolveDataPath(ImportService.taskDirRelative(t.id))!,
+        ).existsSync(),
         isFalse,
       );
     }, timeout: const Timeout(Duration(minutes: 5)));
@@ -352,29 +359,27 @@ void main() {
       expect(t.error, contains('50MB'));
       expect(t.error, contains('拆成多个小 PDF'));
       expect(
-        Directory(AppDatabase.resolveDataPath(
-                ImportService.taskDirRelative(t.id))!)
-            .existsSync(),
+        Directory(
+          AppDatabase.resolveDataPath(ImportService.taskDirRelative(t.id))!,
+        ).existsSync(),
         isFalse,
       );
     }, timeout: const Timeout(Duration(minutes: 5)));
 
-    test('加密 PDF 导入：失败、提示“这个 PDF 带密码，解开密码再导”',
-        () async {
+    test('加密 PDF 导入：失败、提示“这个 PDF 带密码，解开密码再导”', () async {
       await openMemoryDb();
       final service = ImportService(AppDatabase.instance);
-      final tasks = await service.enqueue(
-        [_encryptedPdfPath],
-        subjectId: 'math',
-      );
+      final tasks = await service.enqueue([
+        _encryptedPdfPath,
+      ], subjectId: 'math');
       final t = tasks.first;
       expect(t.status, CollectStatus.failed);
       expect(t.error, '这个 PDF 带密码，解开密码再导');
       expect(t.sourcePath, isEmpty);
       expect(
-        Directory(AppDatabase.resolveDataPath(
-                ImportService.taskDirRelative(t.id))!)
-            .existsSync(),
+        Directory(
+          AppDatabase.resolveDataPath(ImportService.taskDirRelative(t.id))!,
+        ).existsSync(),
         isFalse,
       );
     }, timeout: const Timeout(Duration(minutes: 5)));
@@ -389,9 +394,9 @@ void main() {
       expect(t.status, CollectStatus.failed);
       expect(t.error, startsWith('文件损坏：'));
       expect(
-        Directory(AppDatabase.resolveDataPath(
-                ImportService.taskDirRelative(t.id))!)
-            .existsSync(),
+        Directory(
+          AppDatabase.resolveDataPath(ImportService.taskDirRelative(t.id))!,
+        ).existsSync(),
         isFalse,
       );
     }, timeout: const Timeout(Duration(minutes: 5)));
@@ -402,8 +407,7 @@ void main() {
       await openMemoryDb();
       final service = ImportService(
         AppDatabase.instance,
-        pdfRenderService:
-            PdfRenderService(engine: FakePdfEngine(pages: 3)),
+        pdfRenderService: PdfRenderService(engine: FakePdfEngine(pages: 3)),
       );
       final pdf = File('${_tmp.path}/fake-3.pdf');
       await pdf.writeAsBytes(buildTestPdf(pages: 3));
@@ -411,24 +415,26 @@ void main() {
       final t = tasks.first;
       expect(t.status, CollectStatus.needBox);
       expect(t.pageCount, 3);
-      final page1 = File(AppDatabase.resolveDataPath(
-          ImportService.renderedPageRelative(t.id, 1))!);
+      final page1 = File(
+        AppDatabase.resolveDataPath(
+          ImportService.renderedPageRelative(t.id, 1),
+        )!,
+      );
       expect(page1.existsSync(), isTrue);
-      final codec = await ui.instantiateImageCodec(
-          await page1.readAsBytes());
+      final codec = await ui.instantiateImageCodec(await page1.readAsBytes());
       final frame = await codec.getNextFrame();
       expect(frame.image.width, 10);
       expect(frame.image.height, 10);
       frame.image.dispose();
     }, timeout: const Timeout(Duration(minutes: 5)));
 
-    test('假引擎第 2 页渲染失败：失败任务、目录已删，不建无页图任务',
-        () async {
+    test('假引擎第 2 页渲染失败：失败任务、目录已删，不建无页图任务', () async {
       await openMemoryDb();
       final service = ImportService(
         AppDatabase.instance,
-        pdfRenderService:
-            PdfRenderService(engine: FakePdfEngine(pages: 3, failOnPage: 2)),
+        pdfRenderService: PdfRenderService(
+          engine: FakePdfEngine(pages: 3, failOnPage: 2),
+        ),
       );
       final pdf = File('${_tmp.path}/fake-fail.pdf');
       await pdf.writeAsBytes(buildTestPdf(pages: 3));
@@ -438,9 +444,9 @@ void main() {
       expect(t.error, startsWith('文件损坏：'));
       expect(t.sourcePath, isEmpty);
       expect(
-        Directory(AppDatabase.resolveDataPath(
-                ImportService.taskDirRelative(t.id))!)
-            .existsSync(),
+        Directory(
+          AppDatabase.resolveDataPath(ImportService.taskDirRelative(t.id))!,
+        ).existsSync(),
         isFalse,
       );
     }, timeout: const Timeout(Duration(minutes: 5)));
@@ -450,8 +456,11 @@ void main() {
       final service = ImportService(
         AppDatabase.instance,
         pdfRenderService: PdfRenderService(
-            engine: FakePdfEngine(
-                pages: 1, failOnOpen: const PdfEncryptedException())),
+          engine: FakePdfEngine(
+            pages: 1,
+            failOnOpen: const PdfEncryptedException(),
+          ),
+        ),
       );
       final pdf = File('${_tmp.path}/fake-enc.pdf');
       await pdf.writeAsBytes(buildTestPdf(pages: 1));

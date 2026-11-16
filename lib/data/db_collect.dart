@@ -1,14 +1,19 @@
 // B4：database.dart 拆分——收集任务 / question_boxes（草稿、重框、确认拆题）/ 文件级联删除。
 // 与 database.dart 同一库（part of），共享库私有成员；纯重构，行为不变。
+// ARCH-PLAN-B 第 1 阶段：sqflite 结构化调用 → Drift custom* API，SQL 语义保留。
 
 part of 'database.dart';
 
 /// §4.3：按 created_at 稳定排序（同毫秒建的批量任务用 rowid 兜底）。
-Future<List<CollectTask>> allCollectTasksFromImpl(Database db) async {
-  final rows = await db.query(
-    'collect_tasks',
-    orderBy: 'created_at DESC, rowid DESC',
-  );
+Future<List<CollectTask>> allCollectTasksFromImpl(QuizDatabase db) async {
+  final rows =
+      (await db
+              .customSelect(
+                'SELECT * FROM collect_tasks ORDER BY created_at DESC, rowid DESC',
+              )
+              .get())
+          .map((r) => r.data)
+          .toList();
   return rows.map(_collectTaskFromRow).toList();
 }
 
@@ -17,21 +22,54 @@ Future<List<CollectTask>> allCollectTasksFromImpl(Database db) async {
 /// 自己跳序。已存在的行只 UPDATE（不碰 created_at，rowid 不变，
 /// 顺序就不动）；不存在时才 INSERT，并写 created_at（调用方没给
 /// 就写当前时间）。
-Future<void> upsertCollectTaskIntoImpl(Database db, CollectTask t) async {
+Future<void> upsertCollectTaskIntoImpl(QuizDatabase db, CollectTask t) async {
   final values = _collectTaskToRow(t);
-  final updated = await db.update(
-    'collect_tasks',
-    values,
-    where: 'id = ?',
-    whereArgs: [t.id],
+  final updated = await db.customUpdate(
+    'UPDATE collect_tasks SET id = ?, name = ?, file_name = ?, '
+    'subject_id = ?, status = ?, progress = ?, page_count = ?, page = ?, '
+    'error = ?, question_id = ?, source_path = ?, page_rotations = ? '
+    'WHERE id = ?',
+    variables: [
+      Variable(values['id']),
+      Variable(values['name']),
+      Variable(values['file_name']),
+      Variable(values['subject_id']),
+      Variable(values['status']),
+      Variable(values['progress']),
+      Variable(values['page_count']),
+      Variable(values['page']),
+      Variable(values['error']),
+      Variable(values['question_id']),
+      Variable(values['source_path']),
+      Variable(values['page_rotations']),
+      Variable.withString(t.id),
+    ],
   );
   if (updated == 0) {
-    await db.insert('collect_tasks', {
-      ...values,
-      'created_at':
+    await db.customInsert(
+      'INSERT INTO collect_tasks (id, name, file_name, subject_id, status, '
+      'progress, page_count, page, error, question_id, source_path, '
+      'page_rotations, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '
+      '?, ?, ?)',
+      variables: [
+        Variable(values['id']),
+        Variable(values['name']),
+        Variable(values['file_name']),
+        Variable(values['subject_id']),
+        Variable(values['status']),
+        Variable(values['progress']),
+        Variable(values['page_count']),
+        Variable(values['page']),
+        Variable(values['error']),
+        Variable(values['question_id']),
+        Variable(values['source_path']),
+        Variable(values['page_rotations']),
+        Variable.withInt(
           t.createdAt?.millisecondsSinceEpoch ??
-          DateTime.now().millisecondsSinceEpoch,
-    });
+              DateTime.now().millisecondsSinceEpoch,
+        ),
+      ],
+    );
   }
 }
 
@@ -46,8 +84,8 @@ Future<void> upsertCollectTaskIntoImpl(Database db, CollectTask t) async {
 /// 恢复（importBackupJsonInto）整表重插、绕过 upsertQuestion，
 /// 恢复当次不扫——备份里带来的卡住行在下次启动开库时治好，见
 /// B9-1 报告“残留口子”。
-Future<int> backfillCollectDoneIntoImpl(Database db) async {
-  return db.rawUpdate('''
+Future<int> backfillCollectDoneIntoImpl(QuizDatabase db) async {
+  return db.customUpdate('''
     UPDATE collect_tasks SET status = 'done'
     WHERE status = 'pendingOrganize'
       AND question_id IS NOT NULL
@@ -62,40 +100,48 @@ Future<int> backfillCollectDoneIntoImpl(Database db) async {
 /// 目录（`imports/<taskId>/`），删整个任务目录；已确认拆题的
 /// 任务页图还被题引用，目录保留（§4.5）。被删的待整理题若有独占
 /// 切片，事务提交后删无引用的切片文件（与 deleteQuestionFrom 同款）。
-Future<void> deleteCollectTaskFromImpl(Database db, String id) async {
+Future<void> deleteCollectTaskFromImpl(QuizDatabase db, String id) async {
   String? sliceToClean;
-  await db.transaction((txn) async {
+  await db.transaction(() async {
     // 先读任务指向的题：is_organized 在事务内读，避免读到删之间
     // 被整理工作台改掉状态。
-    final taskRows = await txn.query(
-      'collect_tasks',
-      columns: ['question_id'],
-      where: 'id = ?',
-      whereArgs: [id],
-      limit: 1,
-    );
+    final taskRows =
+        (await db
+                .customSelect(
+                  'SELECT question_id FROM collect_tasks WHERE id = ? LIMIT 1',
+                  variables: [Variable.withString(id)],
+                )
+                .get())
+            .map((r) => r.data)
+            .toList();
     final questionId = taskRows.isEmpty
         ? null
         : taskRows.first['question_id'] as String?;
     if (questionId != null) {
-      final qRows = await txn.query(
-        'questions',
-        columns: ['is_organized', 'slice_path'],
-        where: 'id = ?',
-        whereArgs: [questionId],
-        limit: 1,
-      );
+      final qRows =
+          (await db
+                  .customSelect(
+                    'SELECT is_organized, slice_path FROM questions '
+                    'WHERE id = ? LIMIT 1',
+                    variables: [Variable.withString(questionId)],
+                  )
+                  .get())
+              .map((r) => r.data)
+              .toList();
       if (qRows.isNotEmpty && (qRows.first['is_organized'] as int?) != 1) {
         sliceToClean = qRows.first['slice_path'] as String?;
-        await _deleteQuestionTxn(txn, questionId);
+        await _deleteQuestionTxn(db, questionId);
       }
     }
-    await txn.delete(
-      'question_boxes',
-      where: 'collect_task_id = ? AND question_id IS NULL',
-      whereArgs: [id],
+    await db.customUpdate(
+      'DELETE FROM question_boxes '
+      'WHERE collect_task_id = ? AND question_id IS NULL',
+      variables: [Variable.withString(id)],
     );
-    await txn.delete('collect_tasks', where: 'id = ?', whereArgs: [id]);
+    await db.customUpdate(
+      'DELETE FROM collect_tasks WHERE id = ?',
+      variables: [Variable.withString(id)],
+    );
   });
   await _deleteDataFileIfUnreferenced(db, sliceToClean);
   await _deleteTaskDirIfUnreferenced(db, id);
@@ -108,7 +154,7 @@ Future<void> deleteCollectTaskFromImpl(Database db, String id) async {
 /// - 解析失败或仍被任何题/任务引用 → 不删；
 /// - 文件删失败静默跳过（由孤儿清理兜底），不抛错、不回滚数据库。
 /// 解析统一走 [AppDatabase._resolveInsideDir]，不再经 [AppDatabase.resolveDataPath]。
-Future<void> _deleteDataFileIfUnreferenced(Database db, String? rel) async {
+Future<void> _deleteDataFileIfUnreferenced(QuizDatabase db, String? rel) async {
   if (rel == null || rel.isEmpty) return;
   final normalized = rel.replaceAll('\\', '/');
   if (!normalized.startsWith('slices/')) return;
@@ -121,24 +167,28 @@ Future<void> _deleteDataFileIfUnreferenced(Database db, String? rel) async {
   } catch (_) {}
 }
 
-Future<bool> _isFileReferenced(Database db, String rel) async {
+Future<bool> _isFileReferenced(QuizDatabase db, String rel) async {
   for (final col in ['source_path', 'page_image_path', 'slice_path']) {
-    final rows = await db.query(
-      'questions',
-      columns: ['id'],
-      where: '$col = ?',
-      whereArgs: [rel],
-      limit: 1,
-    );
+    final rows =
+        (await db
+                .customSelect(
+                  'SELECT id FROM questions WHERE $col = ? LIMIT 1',
+                  variables: [Variable.withString(rel)],
+                )
+                .get())
+            .map((r) => r.data)
+            .toList();
     if (rows.isNotEmpty) return true;
   }
-  final tasks = await db.query(
-    'collect_tasks',
-    columns: ['id'],
-    where: 'source_path = ?',
-    whereArgs: [rel],
-    limit: 1,
-  );
+  final tasks =
+      (await db
+              .customSelect(
+                'SELECT id FROM collect_tasks WHERE source_path = ? LIMIT 1',
+                variables: [Variable.withString(rel)],
+              )
+              .get())
+          .map((r) => r.data)
+          .toList();
   return tasks.isNotEmpty;
 }
 
@@ -154,28 +204,42 @@ Future<bool> _isFileReferenced(Database db, String rel) async {
 /// `../slices` 这类 id 直接拒绝——不能靠“前缀检查”蒙混，
 /// `imports/../slices` 规范化后就是数据目录下的 `slices/`，
 /// 旧写法会把整个切片目录递归删掉。
-Future<void> _deleteTaskDirIfUnreferenced(Database db, String taskId) async {
+Future<void> _deleteTaskDirIfUnreferenced(
+  QuizDatabase db,
+  String taskId,
+) async {
   if (!_safeTaskIdPattern.hasMatch(taskId)) return;
   final prefix = 'imports/$taskId/';
   final escaped = _likeEscape(prefix);
   for (final col in ['source_path', 'page_image_path']) {
-    final rows = await db.query(
-      'questions',
-      columns: ['id'],
-      where: '$col LIKE ? ESCAPE ?',
-      whereArgs: ['$escaped%', '\\'],
-      limit: 1,
-    );
+    final rows =
+        (await db
+                .customSelect(
+                  'SELECT id FROM questions WHERE $col LIKE ? ESCAPE ? LIMIT 1',
+                  variables: [
+                    Variable.withString('$escaped%'),
+                    Variable.withString('\\'),
+                  ],
+                )
+                .get())
+            .map((r) => r.data)
+            .toList();
     if (rows.isNotEmpty) return;
   }
   // SR-P2-15：拆分任务行的 source_path 也可能指向该目录。
-  final taskRefs = await db.query(
-    'collect_tasks',
-    columns: ['id'],
-    where: 'source_path LIKE ? ESCAPE ?',
-    whereArgs: ['$escaped%', '\\'],
-    limit: 1,
-  );
+  final taskRefs =
+      (await db
+              .customSelect(
+                'SELECT id FROM collect_tasks WHERE source_path LIKE ? '
+                'ESCAPE ? LIMIT 1',
+                variables: [
+                  Variable.withString('$escaped%'),
+                  Variable.withString('\\'),
+                ],
+              )
+              .get())
+          .map((r) => r.data)
+          .toList();
   if (taskRefs.isNotEmpty) return;
   final abs = _resolveInsideDir(
     AppDatabase.dataDirectoryPath(),
@@ -190,52 +254,88 @@ Future<void> _deleteTaskDirIfUnreferenced(Database db, String taskId) async {
 
 /// §8.1：写框（可单测版）：直接对传入的库句柄写，不碰单例、不 bump。
 /// id 规则见 §1.2(c)：`box-<taskId>-p<page>-<uuid8>`（调用方生成）。
-Future<void> insertQuestionBoxIntoImpl(Database db, QuestionBox b) async {
-  await db.insert('question_boxes', _questionBoxToRow(b));
+Future<void> insertQuestionBoxIntoImpl(QuizDatabase db, QuestionBox b) async {
+  final row = _questionBoxToRow(b);
+  await db.customInsert(
+    'INSERT INTO question_boxes (id, collect_task_id, question_id, '
+    'parent_box_id, page, layer, type, x, y, w, h, confidence, origin, '
+    'updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    variables: [
+      Variable(row['id']),
+      Variable(row['collect_task_id']),
+      Variable(row['question_id']),
+      Variable(row['parent_box_id']),
+      Variable(row['page']),
+      Variable(row['layer']),
+      Variable(row['type']),
+      Variable(row['x']),
+      Variable(row['y']),
+      Variable(row['w']),
+      Variable(row['h']),
+      Variable(row['confidence']),
+      Variable(row['origin']),
+      Variable(row['updated_at']),
+    ],
+  );
 }
 
 /// §8.1：读某题的全部框（可单测版）。
 Future<List<QuestionBox>> boxesForQuestionFromImpl(
-  Database db,
+  QuizDatabase db,
   String questionId,
 ) async {
-  final rows = await db.query(
-    'question_boxes',
-    where: 'question_id = ?',
-    whereArgs: [questionId],
-    // SR3-3：与 boxesForTask 同口径，按页、id 排序。
-    orderBy: 'page ASC, id ASC',
-  );
+  final rows =
+      (await db
+              .customSelect(
+                'SELECT * FROM question_boxes WHERE question_id = ? '
+                'ORDER BY page ASC, id ASC',
+                variables: [Variable.withString(questionId)],
+              )
+              .get())
+          .map((r) => r.data)
+          .toList();
   return rows.map(_questionBoxFromRow).toList();
 }
 
 /// §1.5：读某任务的全部草稿框（各页，用于“继续修框”恢复）。
 Future<List<QuestionBox>> boxesForTaskFromImpl(
-  Database db,
+  QuizDatabase db,
   String taskId,
 ) async {
-  final rows = await db.query(
-    'question_boxes',
-    where: 'collect_task_id = ? AND question_id IS NULL',
-    whereArgs: [taskId],
-    orderBy: 'page ASC, id ASC',
-  );
+  final rows =
+      (await db
+              .customSelect(
+                'SELECT * FROM question_boxes '
+                'WHERE collect_task_id = ? AND question_id IS NULL '
+                'ORDER BY page ASC, id ASC',
+                variables: [Variable.withString(taskId)],
+              )
+              .get())
+          .map((r) => r.data)
+          .toList();
   return rows.map(_questionBoxFromRow).toList();
 }
 
 /// §1.5：读某任务某页的草稿框。
 Future<List<QuestionBox>> boxesForTaskPageFromImpl(
-  Database db,
+  QuizDatabase db,
   String taskId,
   int page,
 ) async {
-  final rows = await db.query(
-    'question_boxes',
-    where: 'collect_task_id = ? AND page = ? AND question_id IS NULL',
-    whereArgs: [taskId, page],
-    // SR3-3：与 boxesForTask 同口径，按页、id 排序。
-    orderBy: 'page ASC, id ASC',
-  );
+  final rows =
+      (await db
+              .customSelect(
+                'SELECT * FROM question_boxes '
+                'WHERE collect_task_id = ? AND page = ? AND question_id IS NULL '
+                'ORDER BY page ASC, id ASC',
+                variables: [
+                  Variable.withString(taskId),
+                  Variable.withInt(page),
+                ],
+              )
+              .get())
+          .map((r) => r.data)
+          .toList();
   return rows.map(_questionBoxFromRow).toList();
 }
 
@@ -243,29 +343,34 @@ Future<List<QuestionBox>> boxesForTaskPageFromImpl(
 /// 分组键是 `questions.page_image_path`（确认后 collect_task_id
 /// 已是 NULL，不能靠任务分组）。返回该页各题的全部框。
 Future<List<QuestionBox>> boxesForPageImageFromImpl(
-  Database db,
+  QuizDatabase db,
   String pageImagePath,
 ) async {
-  final qs = await db.query(
-    'questions',
-    columns: ['id'],
-    where: 'page_image_path = ?',
-    whereArgs: [pageImagePath],
-    // SR2-27：题 id 列表也要确定顺序（questions 表没有 page 列，
-    // 这里按 id 排；框行的顺序由下面的 ORDER BY 定）。
-    orderBy: 'id ASC',
-  );
+  final qs =
+      (await db
+              .customSelect(
+                'SELECT id FROM questions WHERE page_image_path = ? '
+                'ORDER BY id ASC',
+                variables: [Variable.withString(pageImagePath)],
+              )
+              .get())
+          .map((r) => r.data)
+          .toList();
   if (qs.isEmpty) return const [];
   final ids = qs.map((r) => r['id'] as String).toList();
   final where = 'question_id IN (${List.filled(ids.length, '?').join(',')})';
   // SR2-27：与 boxesForTask 对齐，按页、id 排序——无 ORDER BY 时
   // SQLite 不保证行序（通常是 rowid 序，但不保证）。
-  final rows = await db.query(
-    'question_boxes',
-    where: where,
-    whereArgs: ids,
-    orderBy: 'page ASC, id ASC',
-  );
+  final rows =
+      (await db
+              .customSelect(
+                'SELECT * FROM question_boxes WHERE $where '
+                'ORDER BY page ASC, id ASC',
+                variables: [for (final id in ids) Variable.withString(id)],
+              )
+              .get())
+          .map((r) => r.data)
+          .toList();
   return rows.map(_questionBoxFromRow).toList();
 }
 
@@ -281,22 +386,23 @@ Future<List<QuestionBox>> boxesForPageImageFromImpl(
 /// 里出现的页才会被删旧框重插，缺页键的旧草稿会被原样保留——
 /// 调用方不要用“缺键”表示“该页已清空”。
 Future<void> saveDraftBoxesIntoImpl(
-  Database db, {
+  QuizDatabase db, {
   required String taskId,
   required Map<int, List<QuestionBox>> boxesByPage,
   required Map<int, int> rotations,
 }) async {
   final pages = <int>{...boxesByPage.keys};
-  await db.transaction((txn) async {
+  await db.transaction(() async {
     for (final page in pages) {
-      await txn.delete(
-        'question_boxes',
-        where: 'collect_task_id = ? AND page = ? AND question_id IS NULL',
-        whereArgs: [taskId, page],
+      await db.customUpdate(
+        'DELETE FROM question_boxes '
+        'WHERE collect_task_id = ? AND page = ? AND question_id IS NULL',
+        variables: [Variable.withString(taskId), Variable.withInt(page)],
       );
       final flat = <QuestionBox>[...?boxesByPage[page]];
       for (final b in flat) {
-        final row = _questionBoxToRow(
+        await _collectInsertBoxOrReplace(
+          db,
           b.copyWith(
             collectTaskId: taskId,
             page: page,
@@ -304,24 +410,18 @@ Future<void> saveDraftBoxesIntoImpl(
             updatedAt: DateTime.now(),
           ),
         );
-        await txn.insert(
-          'question_boxes',
-          row,
-          conflictAlgorithm: ConflictAlgorithm.replace,
-        );
       }
     }
     // SR-P2-14：任务行不存在时 update 影响 0 行 → 抛错回滚，
     // 不让框写进去、旋转角丢了，调用方还以为保存成功。
-    final updated = await txn.update(
-      'collect_tasks',
-      {
-        'page_rotations': jsonEncode({
-          for (final e in rotations.entries) '${e.key}': e.value,
-        }),
-      },
-      where: 'id = ?',
-      whereArgs: [taskId],
+    final updated = await db.customUpdate(
+      'UPDATE collect_tasks SET page_rotations = ? WHERE id = ?',
+      variables: [
+        Variable.withString(
+          jsonEncode({for (final e in rotations.entries) '${e.key}': e.value}),
+        ),
+        Variable.withString(taskId),
+      ],
     );
     if (updated != 1) {
       throw StateError('收集任务不存在，草稿保存失败：$taskId');
@@ -333,12 +433,12 @@ Future<void> saveDraftBoxesIntoImpl(
 /// 删该题的旧框（先删子框再删本体）后插入新框（question_id 回填、
 /// collect_task_id 置空）。同页其他题的框与切片一律不动。
 Future<void> replaceQuestionBoxesIntoImpl(
-  Database db,
+  QuizDatabase db,
   String questionId,
   List<QuestionBox> boxes,
 ) async {
-  await db.transaction((txn) async {
-    await _replaceBoxesTxn(txn, questionId, boxes);
+  await db.transaction(() async {
+    await _replaceBoxesTxn(db, questionId, boxes);
   });
 }
 
@@ -351,24 +451,24 @@ Future<void> replaceQuestionBoxesIntoImpl(
 /// 刚覆盖掉旧图的唯一一份切片）、事务失败只删临时文件；
 /// 题行不存在（update 影响 0 行）时抛错，整个事务回滚。
 Future<void> replaceQuestionBoxesAndSliceIntoImpl(
-  Database db, {
+  QuizDatabase db, {
   required String questionId,
   required List<QuestionBox> boxes,
   required String slicePath,
   required int sliceWidth,
   required int sliceHeight,
 }) async {
-  await db.transaction((txn) async {
-    await _replaceBoxesTxn(txn, questionId, boxes);
-    final updated = await txn.update(
-      'questions',
-      {
-        'slice_path': slicePath,
-        'slice_width': sliceWidth,
-        'slice_height': sliceHeight,
-      },
-      where: 'id = ?',
-      whereArgs: [questionId],
+  await db.transaction(() async {
+    await _replaceBoxesTxn(db, questionId, boxes);
+    final updated = await db.customUpdate(
+      'UPDATE questions SET slice_path = ?, slice_width = ?, '
+      'slice_height = ? WHERE id = ?',
+      variables: [
+        Variable.withString(slicePath),
+        Variable.withInt(sliceWidth),
+        Variable.withInt(sliceHeight),
+        Variable.withString(questionId),
+      ],
     );
     if (updated != 1) {
       throw StateError('题目不存在，无法保存重框切片：$questionId');
@@ -379,23 +479,43 @@ Future<void> replaceQuestionBoxesAndSliceIntoImpl(
 /// 换框的事务内步骤（不单独开事务）：删旧框 → 插新框。
 /// [AppDatabase.replaceQuestionBoxesInto] 与
 /// [AppDatabase.replaceQuestionBoxesAndSliceInto] 共用。
+/// [txn] 是事务内复用的数据库连接（Drift 里事务回调不带 txn 参数，
+/// 直接传外层 [QuizDatabase]，其调用走事务专属执行器）。
 Future<void> _replaceBoxesTxn(
-  Transaction txn,
+  DatabaseConnectionUser txn,
   String questionId,
   List<QuestionBox> boxes,
 ) async {
   await _deleteBoxesForQuestionTxn(txn, questionId);
   for (final b in boxes) {
-    await txn.insert(
-      'question_boxes',
-      _questionBoxToRow(
-        b.copyWith(
-          questionId: questionId,
-          clearCollectTaskId: true,
-          updatedAt: DateTime.now(),
-        ),
+    final row = _questionBoxToRow(
+      b.copyWith(
+        questionId: questionId,
+        clearCollectTaskId: true,
+        updatedAt: DateTime.now(),
       ),
-      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+    await txn.customInsert(
+      'INSERT OR REPLACE INTO question_boxes (id, collect_task_id, '
+      'question_id, parent_box_id, page, layer, type, x, y, w, h, '
+      'confidence, origin, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, '
+      '?, ?, ?, ?, ?, ?)',
+      variables: [
+        Variable(row['id']),
+        Variable(row['collect_task_id']),
+        Variable(row['question_id']),
+        Variable(row['parent_box_id']),
+        Variable(row['page']),
+        Variable(row['layer']),
+        Variable(row['type']),
+        Variable(row['x']),
+        Variable(row['y']),
+        Variable(row['w']),
+        Variable(row['h']),
+        Variable(row['confidence']),
+        Variable(row['origin']),
+        Variable(row['updated_at']),
+      ],
     );
   }
 }
@@ -403,26 +523,27 @@ Future<void> _replaceBoxesTxn(
 /// 删某题的全部框（事务内）：先删 parent_box_id 指向该题框的
 /// 旧行，再删该题的框。
 Future<void> _deleteBoxesForQuestionTxn(
-  Transaction txn,
+  DatabaseConnectionUser txn,
   String questionId,
 ) async {
-  final ownBoxes = await txn.query(
-    'question_boxes',
-    columns: ['id'],
-    where: 'question_id = ?',
-    whereArgs: [questionId],
-  );
+  final ownBoxes =
+      (await txn
+              .customSelect(
+                'SELECT id FROM question_boxes WHERE question_id = ?',
+                variables: [Variable.withString(questionId)],
+              )
+              .get())
+          .map((r) => r.data)
+          .toList();
   for (final row in ownBoxes) {
-    await txn.delete(
-      'question_boxes',
-      where: 'parent_box_id = ?',
-      whereArgs: [row['id'] as String],
+    await txn.customUpdate(
+      'DELETE FROM question_boxes WHERE parent_box_id = ?',
+      variables: [Variable.withString(row['id'] as String)],
     );
   }
-  await txn.delete(
-    'question_boxes',
-    where: 'question_id = ?',
-    whereArgs: [questionId],
+  await txn.customUpdate(
+    'DELETE FROM question_boxes WHERE question_id = ?',
+    variables: [Variable.withString(questionId)],
   );
 }
 
@@ -447,7 +568,7 @@ Future<void> _deleteBoxesForQuestionTxn(
 /// `collect_task_id` 指向保留任务、`question_id` 为空；
 /// `retainedTask` 为空时行为与原来完全一致（无未框页）。
 Future<void> confirmSplitIntoImpl(
-  Database db, {
+  QuizDatabase db, {
   required CollectTask originalTask,
   required List<Question> questions,
   required List<CollectTask> splitTasks,
@@ -455,7 +576,7 @@ Future<void> confirmSplitIntoImpl(
   CollectTask? retainedTask,
   Map<int, List<QuestionBox>> retainedBoxesByPage = const {},
 }) async {
-  await db.transaction((txn) async {
+  await db.transaction(() async {
     // SR-P2-10：重复确认防呆——同 id 的题 / 拆分任务已存在时显式
     // 失败，不再用 REPLACE 静默覆盖。旧写法里一道已整理（已有解决
     // 记录）的题会被覆盖回未整理的全新题，而旧 cause_records /
@@ -464,25 +585,29 @@ Future<void> confirmSplitIntoImpl(
     // 这里；数据层仍要防呆。保留任务与原任务同 id 是刻意设计
     // （先删原任务、后插保留任务），不在此列。
     for (final q in questions) {
-      final exists = await txn.query(
-        'questions',
-        columns: ['id'],
-        where: 'id = ?',
-        whereArgs: [q.id],
-        limit: 1,
-      );
+      final exists =
+          (await db
+                  .customSelect(
+                    'SELECT id FROM questions WHERE id = ? LIMIT 1',
+                    variables: [Variable.withString(q.id)],
+                  )
+                  .get())
+              .map((r) => r.data)
+              .toList();
       if (exists.isNotEmpty) {
         throw StateError('拆题失败：题目已存在，请勿重复确认：${q.id}');
       }
     }
     for (final t in splitTasks) {
-      final exists = await txn.query(
-        'collect_tasks',
-        columns: ['id'],
-        where: 'id = ?',
-        whereArgs: [t.id],
-        limit: 1,
-      );
+      final exists =
+          (await db
+                  .customSelect(
+                    'SELECT id FROM collect_tasks WHERE id = ? LIMIT 1',
+                    variables: [Variable.withString(t.id)],
+                  )
+                  .get())
+              .map((r) => r.data)
+              .toList();
       if (exists.isNotEmpty) {
         throw StateError('拆题失败：拆分任务已存在，请勿重复确认：${t.id}');
       }
@@ -494,12 +619,8 @@ Future<void> confirmSplitIntoImpl(
     // 重复也跳过，保留第一个。
     final seenBoxIds = <String>{};
     for (final q in questions) {
-      await txn.insert(
-        'questions',
-        _toRow(q),
-        conflictAlgorithm: ConflictAlgorithm.fail,
-      );
-      await _deleteBoxesForQuestionTxn(txn, q.id);
+      await _collectInsertQuestion(db, q);
+      await _deleteBoxesForQuestionTxn(db, q.id);
       // SR2-18：框回填也去重——与保留任务草稿的 seenBoxIds 同口径
       // （同一个事务级集合，见上）：同一题的入参里若有两个同 id 框，
       // 旧写法用 REPLACE 让后者静默覆盖前者，与 SR-P2-10“重复确认
@@ -507,50 +628,82 @@ Future<void> confirmSplitIntoImpl(
       // id（保留第一个），与保留任务分支一致。
       for (final b in boxesByQuestionId[q.id] ?? const <QuestionBox>[]) {
         if (!seenBoxIds.add(b.id)) continue;
-        await txn.insert(
-          'question_boxes',
-          _questionBoxToRow(
-            b.copyWith(
-              questionId: q.id,
-              clearCollectTaskId: true,
-              updatedAt: DateTime.now(),
-            ),
+        await _collectInsertBoxOrReplace(
+          db,
+          b.copyWith(
+            questionId: q.id,
+            clearCollectTaskId: true,
+            updatedAt: DateTime.now(),
           ),
-          conflictAlgorithm: ConflictAlgorithm.replace,
         );
       }
     }
     for (final t in splitTasks) {
       final values = _collectTaskToRow(t);
-      await txn.insert('collect_tasks', {
-        ...values,
-        'created_at':
+      await db.customInsert(
+        'INSERT INTO collect_tasks (id, name, file_name, subject_id, '
+        'status, progress, page_count, page, error, question_id, '
+        'source_path, page_rotations, created_at) VALUES (?, ?, ?, ?, ?, '
+        '?, ?, ?, ?, ?, ?, ?, ?)',
+        variables: [
+          Variable(values['id']),
+          Variable(values['name']),
+          Variable(values['file_name']),
+          Variable(values['subject_id']),
+          Variable(values['status']),
+          Variable(values['progress']),
+          Variable(values['page_count']),
+          Variable(values['page']),
+          Variable(values['error']),
+          Variable(values['question_id']),
+          Variable(values['source_path']),
+          Variable(values['page_rotations']),
+          Variable.withInt(
             t.createdAt?.millisecondsSinceEpoch ??
-            DateTime.now().millisecondsSinceEpoch,
-      }, conflictAlgorithm: ConflictAlgorithm.fail);
+                DateTime.now().millisecondsSinceEpoch,
+          ),
+        ],
+      );
     }
     // 删原任务：残留的草稿框（本次没确认的页/删掉的框）随任务删，
     // 已回填 question_id 的框不受影响（见 deleteCollectTaskFrom）。
-    await txn.delete(
-      'question_boxes',
-      where: 'collect_task_id = ? AND question_id IS NULL',
-      whereArgs: [originalTask.id],
+    await db.customUpdate(
+      'DELETE FROM question_boxes '
+      'WHERE collect_task_id = ? AND question_id IS NULL',
+      variables: [Variable.withString(originalTask.id)],
     );
-    await txn.delete(
-      'collect_tasks',
-      where: 'id = ?',
-      whereArgs: [originalTask.id],
+    await db.customUpdate(
+      'DELETE FROM collect_tasks WHERE id = ?',
+      variables: [Variable.withString(originalTask.id)],
     );
     // SR-P1-2：同一事务内重建保留任务 + 写回未框页草稿。
     // 保留任务与原任务同 id（先删后插）。
     if (retainedTask != null) {
       final retainedValues = _collectTaskToRow(retainedTask);
-      await txn.insert('collect_tasks', {
-        ...retainedValues,
-        'created_at':
+      await db.customInsert(
+        'INSERT OR REPLACE INTO collect_tasks (id, name, file_name, '
+        'subject_id, status, progress, page_count, page, error, '
+        'question_id, source_path, page_rotations, created_at) '
+        'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        variables: [
+          Variable(retainedValues['id']),
+          Variable(retainedValues['name']),
+          Variable(retainedValues['file_name']),
+          Variable(retainedValues['subject_id']),
+          Variable(retainedValues['status']),
+          Variable(retainedValues['progress']),
+          Variable(retainedValues['page_count']),
+          Variable(retainedValues['page']),
+          Variable(retainedValues['error']),
+          Variable(retainedValues['question_id']),
+          Variable(retainedValues['source_path']),
+          Variable(retainedValues['page_rotations']),
+          Variable.withInt(
             retainedTask.createdAt?.millisecondsSinceEpoch ??
-            DateTime.now().millisecondsSinceEpoch,
-      }, conflictAlgorithm: ConflictAlgorithm.replace);
+                DateTime.now().millisecondsSinceEpoch,
+          ),
+        ],
+      );
       final retainedPages = <int>{...retainedBoxesByPage.keys};
       for (final page in retainedPages) {
         final flat = <QuestionBox>[...?retainedBoxesByPage[page]];
@@ -558,22 +711,99 @@ Future<void> confirmSplitIntoImpl(
         // 重复 id 也跳过（保留第一个），且不与已回填的题框撞 id。
         for (final b in flat) {
           if (!seenBoxIds.add(b.id)) continue;
-          await txn.insert(
-            'question_boxes',
-            _questionBoxToRow(
-              b.copyWith(
-                collectTaskId: retainedTask.id,
-                page: page,
-                clearQuestionId: true,
-                updatedAt: DateTime.now(),
-              ),
+          await _collectInsertBoxOrReplace(
+            db,
+            b.copyWith(
+              collectTaskId: retainedTask.id,
+              page: page,
+              clearQuestionId: true,
+              updatedAt: DateTime.now(),
             ),
-            conflictAlgorithm: ConflictAlgorithm.replace,
           );
         }
       }
     }
   });
+}
+
+/// 确认拆题里建题那一步：普通 INSERT（冲突即抛，与旧
+/// `ConflictAlgorithm.fail` 同口径——不存在时才插，重复确认在
+/// 前面已显式拦截）。列顺序与 [_toRow] 的键顺序一致。
+Future<void> _collectInsertQuestion(
+  DatabaseConnectionUser db,
+  Question q,
+) async {
+  final row = _toRow(q);
+  await db.customInsert(
+    'INSERT INTO questions (id, title, subject_id, folder_ids, exam_id, '
+    'knowledge_ids, error_types, custom_error_types, tags, answer, '
+    'explanation, notes, review_count, is_organized, is_demo, '
+    'is_favorite, is_archived, review_joined, created_at, slice_kind, '
+    'slice_text, source_path, source_kind, source_page, page_image_path, '
+    'slice_path, slice_width, slice_height) VALUES (?, ?, ?, ?, ?, ?, ?, '
+    '?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    variables: [
+      Variable(row['id']),
+      Variable(row['title']),
+      Variable(row['subject_id']),
+      Variable(row['folder_ids']),
+      Variable(row['exam_id']),
+      Variable(row['knowledge_ids']),
+      Variable(row['error_types']),
+      Variable(row['custom_error_types']),
+      Variable(row['tags']),
+      Variable(row['answer']),
+      Variable(row['explanation']),
+      Variable(row['notes']),
+      Variable(row['review_count']),
+      Variable(row['is_organized']),
+      Variable(row['is_demo']),
+      Variable(row['is_favorite']),
+      Variable(row['is_archived']),
+      Variable(row['review_joined']),
+      Variable(row['created_at']),
+      Variable(row['slice_kind']),
+      Variable(row['slice_text']),
+      Variable(row['source_path']),
+      Variable(row['source_kind']),
+      Variable(row['source_page']),
+      Variable(row['page_image_path']),
+      Variable(row['slice_path']),
+      Variable(row['slice_width']),
+      Variable(row['slice_height']),
+    ],
+  );
+}
+
+/// 插一个框（INSERT OR REPLACE，与旧 `ConflictAlgorithm.replace`
+/// 同口径）。本文件三处插框共用（草稿保存、换框、确认拆题回填）。
+Future<void> _collectInsertBoxOrReplace(
+  DatabaseConnectionUser db,
+  QuestionBox b,
+) async {
+  final row = _questionBoxToRow(b);
+  await db.customInsert(
+    'INSERT OR REPLACE INTO question_boxes (id, collect_task_id, '
+    'question_id, parent_box_id, page, layer, type, x, y, w, h, '
+    'confidence, origin, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, '
+    '?, ?, ?, ?, ?, ?)',
+    variables: [
+      Variable(row['id']),
+      Variable(row['collect_task_id']),
+      Variable(row['question_id']),
+      Variable(row['parent_box_id']),
+      Variable(row['page']),
+      Variable(row['layer']),
+      Variable(row['type']),
+      Variable(row['x']),
+      Variable(row['y']),
+      Variable(row['w']),
+      Variable(row['h']),
+      Variable(row['confidence']),
+      Variable(row['origin']),
+      Variable(row['updated_at']),
+    ],
+  );
 }
 
 extension AppDatabaseCollect on AppDatabase {
@@ -585,13 +815,15 @@ extension AppDatabaseCollect on AppDatabase {
   /// 新任务、状态变化（导入中 → 待框选等）时才发含 `badges` 的事件。
   Future<void> upsertCollectTask(CollectTask t) async {
     final d = await db;
-    final old = await d.query(
-      'collect_tasks',
-      columns: ['status'],
-      where: 'id = ?',
-      whereArgs: [t.id],
-      limit: 1,
-    );
+    final old =
+        (await d
+                .customSelect(
+                  'SELECT status FROM collect_tasks WHERE id = ? LIMIT 1',
+                  variables: [Variable.withString(t.id)],
+                )
+                .get())
+            .map((r) => r.data)
+            .toList();
     await AppDatabase.upsertCollectTaskInto(d, t);
     if (old.isEmpty || old.first['status'] != t.status.name) {
       // 新任务或状态变化才发事件：进度百分比高频更新不触发角标重读。

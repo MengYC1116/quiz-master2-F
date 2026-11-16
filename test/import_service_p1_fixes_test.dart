@@ -27,10 +27,10 @@ import 'dart:ui' as ui;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path/path.dart' as p;
 import 'package:quiz_master2/data/database.dart';
+import 'package:quiz_master2/data/drift/quiz_database.dart';
 import 'package:quiz_master2/models/models.dart';
 import 'package:quiz_master2/services/import_service.dart';
 import 'package:quiz_master2/services/pdf_render_service.dart';
-import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 import 'test_fixtures.dart';
 
@@ -38,15 +38,8 @@ late final Directory _tmp;
 late final String _photoPath; // B10-2：生成的照片固件
 late final String _exif6Path; // B10-2：生成的方向 6 固件
 
-Future<Database> openMemoryDb() async {
-  sqfliteFfiInit();
-  final db = await databaseFactoryFfi.openDatabase(
-    inMemoryDatabasePath,
-    options: OpenDatabaseOptions(
-      version: 2,
-      onCreate: (db, version) async => AppDatabase.createTables(db),
-    ),
-  );
+Future<QuizDatabase> openMemoryDb() async {
+  final db = await AppDatabase.openForTest();
   AppDatabase.useDatabaseForTest(db);
   addTearDown(() async => db.close());
   return db;
@@ -106,12 +99,16 @@ void main() {
     _tmp = await Directory.systemTemp.createTemp('qm2-import-p1-fixes');
     AppDatabase.testDataDirectory = _tmp.path;
     // B10-2：照片 / 方向 6 固件写进临时目录，不读磁盘夹具。
-    _photoPath =
-        (await writeFixtureFile(_tmp, 'photo.jpg', photoFixtureBytes()))
-            .path;
+    _photoPath = (await writeFixtureFile(
+      _tmp,
+      'photo.jpg',
+      photoFixtureBytes(),
+    )).path;
     _exif6Path = (await writeFixtureFile(
-            _tmp, 'exif-orientation-6.jpg', exifFixtureBytes(6)))
-        .path;
+      _tmp,
+      'exif-orientation-6.jpg',
+      exifFixtureBytes(6),
+    )).path;
   });
 
   tearDownAll(() async {
@@ -124,7 +121,7 @@ void main() {
       final db = await openMemoryDb();
       // 只有写 needBox 的 UPDATE 会炸：初始 importing 行、进度更新、
       // _failAndClean 的 failed 写库都不受影响。
-      await db.execute('''
+      await db.customStatement('''
         CREATE TRIGGER trg_p1_4_fail_needbox_upsert
         BEFORE UPDATE ON collect_tasks
         WHEN NEW.status = 'needBox'
@@ -180,10 +177,9 @@ void main() {
       );
     });
 
-    test('图片尾部 upsert 失败（SR2-1）：enqueue 不抛、图片任务失败、整批继续',
-        () async {
+    test('图片尾部 upsert 失败（SR2-1）：enqueue 不抛、图片任务失败、整批继续', () async {
       final db = await openMemoryDb();
-      await db.execute('''
+      await db.customStatement('''
         CREATE TRIGGER trg_p1_4_fail_needbox_upsert_img
         BEFORE UPDATE ON collect_tasks
         WHEN NEW.status = 'needBox'
@@ -191,10 +187,8 @@ void main() {
           SELECT RAISE(ABORT, 'simulated write failure');
         END
       ''');
-      final tasks = await ImportService(AppDatabase.instance).enqueue([
-        _photoPath,
-        _exif6Path,
-      ], subjectId: 'math');
+      final tasks = await ImportService(AppDatabase.instance)
+          .enqueue([_photoPath, _exif6Path], subjectId: 'math');
       // 没修之前：第一张图的尾部 upsert 抛错逃出 enqueue，整个 await
       // 抛错、一个任务都拿不到。修后：两个任务都在，且第二个也被处理。
       expect(tasks.length, 2);
@@ -215,12 +209,11 @@ void main() {
       expect(stored.map((t) => t.status).toSet(), {CollectStatus.failed});
     });
 
-    test('_failAndClean 自身写库失败（SR2-2）：仍返回内存 failed 任务、不抛',
-        () async {
+    test('_failAndClean 自身写库失败（SR2-2）：仍返回内存 failed 任务、不抛', () async {
       final db = await openMemoryDb();
       // 只让写 failed 的 UPDATE 炸：初始 importing 行（INSERT）不受
       // 影响，_failAndClean 的 failed 写库必然失败。
-      await db.execute('''
+      await db.customStatement('''
         CREATE TRIGGER trg_fail_failed_upsert
         BEFORE UPDATE ON collect_tasks
         WHEN NEW.status = 'failed'
@@ -254,42 +247,44 @@ void main() {
       expect(stored.first.status, CollectStatus.importing);
     });
 
-    test('全部 collect_tasks 写操作失败（SR2-60）：enqueue 不抛、返回 2 个内存 failed 任务',
-        () async {
-      final db = await openMemoryDb();
-      // INSERT 与 UPDATE 全炸：连初始 importing 行都写不进。
-      await db.execute('''
+    test(
+      '全部 collect_tasks 写操作失败（SR2-60）：enqueue 不抛、返回 2 个内存 failed 任务',
+      () async {
+        final db = await openMemoryDb();
+        // INSERT 与 UPDATE 全炸：连初始 importing 行都写不进。
+        await db.customStatement('''
         CREATE TRIGGER trg_fail_all_insert
         BEFORE INSERT ON collect_tasks
         BEGIN
           SELECT RAISE(ABORT, 'simulated write failure');
         END
       ''');
-      await db.execute('''
+        await db.customStatement('''
         CREATE TRIGGER trg_fail_all_update
         BEFORE UPDATE ON collect_tasks
         BEGIN
           SELECT RAISE(ABORT, 'simulated write failure');
         END
       ''');
-      final pdf1 = File('${_tmp.path}/p1-4-all-fail-a.pdf');
-      final pdf2 = File('${_tmp.path}/p1-4-all-fail-b.pdf');
-      await pdf1.writeAsBytes(List.generate(2000, (i) => i % 251));
-      await pdf2.writeAsBytes(List.generate(2000, (i) => i % 251));
-      final tasks = await _service().enqueue([
-        pdf1.path,
-        pdf2.path,
-      ], subjectId: 'math');
-      // 没修之前：第一个文件的初始 upsert 就抛错逃出 enqueue，
-      // 整个 await 抛错、一个任务都拿不到。修后：两个内存 failed
-      // 任务都在（库里一行也写不进，这是触发器模拟的降级态）。
-      expect(tasks.length, 2);
-      for (final t in tasks) {
-        expect(t.status, CollectStatus.failed);
-        expect(t.error, isNotNull);
-      }
-      expect(await AppDatabase.instance.allCollectTasks(), isEmpty);
-    });
+        final pdf1 = File('${_tmp.path}/p1-4-all-fail-a.pdf');
+        final pdf2 = File('${_tmp.path}/p1-4-all-fail-b.pdf');
+        await pdf1.writeAsBytes(List.generate(2000, (i) => i % 251));
+        await pdf2.writeAsBytes(List.generate(2000, (i) => i % 251));
+        final tasks = await _service().enqueue([
+          pdf1.path,
+          pdf2.path,
+        ], subjectId: 'math');
+        // 没修之前：第一个文件的初始 upsert 就抛错逃出 enqueue，
+        // 整个 await 抛错、一个任务都拿不到。修后：两个内存 failed
+        // 任务都在（库里一行也写不进，这是触发器模拟的降级态）。
+        expect(tasks.length, 2);
+        for (final t in tasks) {
+          expect(t.status, CollectStatus.failed);
+          expect(t.error, isNotNull);
+        }
+        expect(await AppDatabase.instance.allCollectTasks(), isEmpty);
+      },
+    );
   });
 
   group('SR-P1-14 图片 20MB 硬判', () {
@@ -326,10 +321,7 @@ void main() {
       expect(hint, contains('超过 20MB 上限'));
       expect(hint, contains('导入会失败'));
       expect(hint, isNot(contains('仍可继续导入')));
-      expect(
-        ImportService.oversizeHint(File(_photoPath)),
-        isNull,
-      );
+      expect(ImportService.oversizeHint(File(_photoPath)), isNull);
     });
 
     test('恰好 20MB 图片（SR2-71，size == limit）：放行进 needBox', () async {
@@ -381,10 +373,8 @@ void main() {
 
     test('同批两个不同文件：仍建两个任务', () async {
       await openMemoryDb();
-      final tasks = await ImportService(AppDatabase.instance).enqueue([
-        _photoPath,
-        _exif6Path,
-      ], subjectId: 'math');
+      final tasks = await ImportService(AppDatabase.instance)
+          .enqueue([_photoPath, _exif6Path], subjectId: 'math');
       expect(tasks.length, 2);
       expect(tasks.map((t) => t.status).toSet(), {CollectStatus.needBox});
     });
@@ -438,15 +428,13 @@ void main() {
       // 打开同一文件，仍只建一个任务。
       // B10-2：大写拼写取生成路径整体大写（临时目录名本身含小写，
       // 大写后一定不存在）。
-      final tasks = await ImportService(AppDatabase.instance).enqueue([
-        _photoPath,
-        _photoPath.toUpperCase(),
-      ], subjectId: 'math');
+      final tasks = await ImportService(AppDatabase.instance)
+          .enqueue([_photoPath, _photoPath.toUpperCase()], subjectId: 'math');
       expect(tasks.length, 2);
-      expect(
-        tasks.map((t) => t.status).toSet(),
-        {CollectStatus.needBox, CollectStatus.failed},
-      );
+      expect(tasks.map((t) => t.status).toSet(), {
+        CollectStatus.needBox,
+        CollectStatus.failed,
+      });
       expect((await AppDatabase.instance.allCollectTasks()).length, 2);
     });
 
@@ -455,10 +443,8 @@ void main() {
       // 旧行为：不存在的大写拼写回退键折叠后与真实文件同键，先建
       // 失败任务、真实文件被当作重复跳过，只剩一个失败任务。修后：
       // 两个任务，真实文件正常进 needBox。
-      final tasks = await ImportService(AppDatabase.instance).enqueue([
-        _photoPath.toUpperCase(),
-        _photoPath,
-      ], subjectId: 'math');
+      final tasks = await ImportService(AppDatabase.instance)
+          .enqueue([_photoPath.toUpperCase(), _photoPath], subjectId: 'math');
       expect(tasks.length, 2);
       final real = tasks.firstWhere((t) => t.fileName == 'photo.jpg');
       expect(real.status, CollectStatus.needBox);

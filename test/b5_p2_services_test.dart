@@ -43,19 +43,12 @@ import 'package:quiz_master2/services/zip_archive.dart';
 import 'package:quiz_master2/theme/app_theme.dart';
 import 'package:quiz_master2/widgets/uikit.dart';
 import 'package:quiz_master2/widgets/widgets.dart';
-import 'package:sqflite_common_ffi/sqflite_ffi.dart';
+import 'package:quiz_master2/data/drift/quiz_database.dart';
 
 late final Directory _tmp;
 
-Future<Database> openMemoryDb() async {
-  sqfliteFfiInit();
-  final db = await databaseFactoryFfi.openDatabase(
-    inMemoryDatabasePath,
-    options: OpenDatabaseOptions(
-      version: 2,
-      onCreate: (db, version) async => AppDatabase.createTables(db),
-    ),
-  );
+Future<QuizDatabase> openMemoryDb() async {
+  final db = await AppDatabase.openForTest();
   AppDatabase.useDatabaseForTest(db);
   addTearDown(() async => db.close());
   return db;
@@ -214,8 +207,10 @@ void main() {
       final raf = await filler.open(mode: FileMode.write);
       await raf.truncate(ImportService.maxStorageBytes - 5 * 1024 * 1024);
       await raf.close();
-      expect(await filler.length(),
-          ImportService.maxStorageBytes - 5 * 1024 * 1024);
+      expect(
+        await filler.length(),
+        ImportService.maxStorageBytes - 5 * 1024 * 1024,
+      );
       // 2MB 的假 PDF（假引擎不读内容，页数恒为 1）。
       final pdf = File('${_tmp.path}/p2-59.pdf');
       await pdf.writeAsBytes(List.filled(2 * 1024 * 1024, 0x25));
@@ -228,8 +223,7 @@ void main() {
       await filler.delete();
     });
 
-    test('SR2-54：占用 2GB−1MB + 2MB 的 PDF：拒绝进 failed，错误含存储上限提示',
-        () async {
+    test('SR2-54：占用 2GB−1MB + 2MB 的 PDF：拒绝进 failed，错误含存储上限提示', () async {
       await openMemoryDb();
       final filler = File('${_tmp.path}/imports/filler.bin');
       await filler.parent.create(recursive: true);
@@ -251,10 +245,8 @@ void main() {
       await openMemoryDb();
       final png = File('${_tmp.path}/p2-60.jpg');
       await png.writeAsBytes(await _pngBytes());
-      final first =
-          await _service().enqueue([png.path], subjectId: 'math');
-      final second =
-          await _service().enqueue([png.path], subjectId: 'math');
+      final first = await _service().enqueue([png.path], subjectId: 'math');
+      final second = await _service().enqueue([png.path], subjectId: 'math');
       expect(first.length, 1);
       expect(second.length, 1);
       // SR2-12：只断言“两次 id 不同”钉不住随机段——旧“毫秒 + 序号”
@@ -292,8 +284,10 @@ void main() {
       await openMemoryDb();
       final png = File('${_tmp.path}/p2-60-dup.jpg');
       await png.writeAsBytes(await _pngBytes());
-      final tasks = await _service()
-          .enqueue([png.path, png.path], subjectId: 'math');
+      final tasks = await _service().enqueue([
+        png.path,
+        png.path,
+      ], subjectId: 'math');
       expect(tasks.length, 1);
     });
   });
@@ -329,10 +323,11 @@ void main() {
   group('SR-P2-62 复制进度写库节流', () {
     test('5MB 文件复制：进度 UPDATE ≤ 20 次，UI 回调仍逐次', () async {
       final db = await openMemoryDb();
-      await db.execute(
-          'CREATE TABLE _b5_p2_progress_writes (n INTEGER)');
-      await db.execute('INSERT INTO _b5_p2_progress_writes VALUES (0)');
-      await db.execute('''
+      await db.customStatement(
+        'CREATE TABLE _b5_p2_progress_writes (n INTEGER)',
+      );
+      await db.customStatement('INSERT INTO _b5_p2_progress_writes VALUES (0)');
+      await db.customStatement('''
         CREATE TRIGGER trg_b5_p2_count_progress
         AFTER UPDATE OF progress ON collect_tasks
         WHEN NEW.progress != OLD.progress
@@ -350,7 +345,9 @@ void main() {
       );
       expect(tasks.first.status, CollectStatus.needBox);
       final rows =
-          await db.query('_b5_p2_progress_writes', columns: ['n']);
+          (await db.customSelect('SELECT n FROM _b5_p2_progress_writes').get())
+              .map((r) => r.data)
+              .toList();
       final writes = rows.first['n'] as int;
       // 未节流时 0→70% 每 1% 一次约 70 次写库 + 渲染 1 次；
       // 节流后复制约 15 次（0/5/…/70）+ 渲染 1 次。
@@ -368,26 +365,27 @@ void main() {
 
   group('SR-P2-65/66 主题 token', () {
     test('SR-P2-65：主题按钮内边距与 token 的 .btn 9px 20px 同源', () {
-      final padding = AppTheme.light()
-          .filledButtonTheme
-          .style
-          ?.padding
+      final padding = AppTheme.light().filledButtonTheme.style?.padding
           ?.resolve({});
-      expect(padding,
-          const EdgeInsets.symmetric(horizontal: 20, vertical: 9));
+      expect(padding, const EdgeInsets.symmetric(horizontal: 20, vertical: 9));
       final scaled = AppTheme.light(scale: 1.15)
           .filledButtonTheme
           .style
           ?.padding
           ?.resolve({});
-      expect(scaled,
-          const EdgeInsets.symmetric(horizontal: 23, vertical: 10.35));
+      expect(
+        scaled,
+        const EdgeInsets.symmetric(horizontal: 23, vertical: 10.35),
+      );
     });
 
     test('SR-P2-66：新学科存色深色下雾化，亮色下原样，预设三科不动', () {
       const stored = Color(0xFF2E7CF6);
       final misted = DesignTokens.subjectColor(
-          'chemistry', Brightness.dark, stored);
+        'chemistry',
+        Brightness.dark,
+        stored,
+      );
       // SR2-55：期望值写算好的字面色，不再用与实现相同的
       // Color.lerp 公式算期望（实现改常量仍会失败，但期望不是
       // 独立字面量就钉不住雾化本身）。
@@ -397,33 +395,48 @@ void main() {
       // 8 位色值才是对外可见的约定，故断言 toARGB32()。
       expect(misted.toARGB32(), 0xFF7CAAF2);
       expect(misted, isNot(stored));
-      expect(DesignTokens.subjectColor('chemistry', Brightness.light, stored),
-          stored);
       expect(
-          DesignTokens.subjectInk('chemistry', Brightness.dark, stored)
-              .toARGB32(),
-          0xFF7CAAF2);
+        DesignTokens.subjectColor('chemistry', Brightness.light, stored),
+        stored,
+      );
+      expect(
+        DesignTokens.subjectInk(
+          'chemistry',
+          Brightness.dark,
+          stored,
+        ).toARGB32(),
+        0xFF7CAAF2,
+      );
       // 第二个输入色：饱和暖红 0xFFEF4444，雾化结果同样是字面值
       // (230, 140, 144) = #E68C90。
       const warm = Color(0xFFEF4444);
       expect(
-          DesignTokens.subjectColor('chemistry', Brightness.dark, warm)
-              .toARGB32(),
-          0xFFE68C90);
+        DesignTokens.subjectColor(
+          'chemistry',
+          Brightness.dark,
+          warm,
+        ).toARGB32(),
+        0xFFE68C90,
+      );
       expect(
-          DesignTokens.subjectInk('chemistry', Brightness.dark, warm)
-              .toARGB32(),
-          0xFFE68C90);
-      expect(DesignTokens.subjectColor('chemistry', Brightness.light, warm),
-          warm);
-      expect(DesignTokens.subjectColor('math', Brightness.dark, stored),
-          const Color(0xFF87A9CC));
-      expect(DesignTokens.subjectInk('math', Brightness.dark, stored),
-          const Color(0xFFACC8E2));
+        DesignTokens.subjectInk('chemistry', Brightness.dark, warm).toARGB32(),
+        0xFFE68C90,
+      );
+      expect(
+        DesignTokens.subjectColor('chemistry', Brightness.light, warm),
+        warm,
+      );
+      expect(
+        DesignTokens.subjectColor('math', Brightness.dark, stored),
+        const Color(0xFF87A9CC),
+      );
+      expect(
+        DesignTokens.subjectInk('math', Brightness.dark, stored),
+        const Color(0xFFACC8E2),
+      );
     });
 
-    testWidgets('SR2-36：subjectLabelColor 深色下雾化，不再直接返回存色',
-        (tester) async {
+    testWidgets('SR2-36：subjectLabelColor 深色下雾化，不再直接返回存色', (tester) async {
       const stored = Color(0xFF2E7CF6);
       Color? dark;
       await tester.pumpWidget(
@@ -468,10 +481,19 @@ void main() {
         '反复裁剪/旋转不因 dispose 坏掉', () async {
       final png = await _pngBytes(w: 40, h: 30);
       expect(await canDecodeImageBytes(png), isTrue);
-      expect(await canDecodeImageBytes(
-          Uint8List.fromList('not an image'.codeUnits)), isFalse);
+      expect(
+        await canDecodeImageBytes(Uint8List.fromList('not an image'.codeUnits)),
+        isFalse,
+      );
       final box = QuestionBox(
-          id: 'b', layer: 1, type: 'question', x: 0.1, y: 0.1, w: 0.5, h: 0.5);
+        id: 'b',
+        layer: 1,
+        type: 'question',
+        x: 0.1,
+        y: 0.1,
+        w: 0.5,
+        h: 0.5,
+      );
       for (var i = 0; i < 20; i++) {
         final slice = await cropBoxPng(png, box);
         expect(slice.width, 20);
@@ -483,8 +505,15 @@ void main() {
     });
 
     test('SR-P2-70：钳制扣掉溢出侧的宽高', () {
-      QuestionBox box(double x, double y, double w, double h) =>
-          QuestionBox(id: 'b', layer: 1, type: 'question', x: x, y: y, w: w, h: h);
+      QuestionBox box(double x, double y, double w, double h) => QuestionBox(
+        id: 'b',
+        layer: 1,
+        type: 'question',
+        x: x,
+        y: y,
+        w: w,
+        h: h,
+      );
       // 左溢出：x 收到 0，宽扣掉溢出的 0.1（旧实现仍为 0.5）。
       final left = rotateBoxToRotatedPage(box(-0.1, 0.2, 0.5, 0.3), 0);
       expect(left.x, 0.0);
@@ -501,22 +530,19 @@ void main() {
       expect(bottom.y, closeTo(0.8, 1e-9));
       expect(bottom.h, closeTo(0.2, 1e-9));
       // 完全在页外：宽高为 0。
-      final outside =
-          rotateBoxToRotatedPage(box(-0.5, -0.5, 0.2, 0.2), 0);
+      final outside = rotateBoxToRotatedPage(box(-0.5, -0.5, 0.2, 0.2), 0);
       expect(outside.x, 0.0);
       expect(outside.y, 0.0);
       expect(outside.w, 0.0);
       expect(outside.h, 0.0);
       // 旋转后溢出：90° 后 x = 1-0.8-0.4 = -0.2，宽扣到 0.2。
-      final rotated =
-          rotateBoxToRotatedPage(box(0.1, 0.8, 0.3, 0.4), 90);
+      final rotated = rotateBoxToRotatedPage(box(0.1, 0.8, 0.3, 0.4), 90);
       expect(rotated.x, 0.0);
       expect(rotated.y, closeTo(0.1, 1e-9));
       expect(rotated.w, closeTo(0.2, 1e-9));
       expect(rotated.h, closeTo(0.3, 1e-9));
       // 页内框原样不动。
-      final inside =
-          rotateBoxToRotatedPage(box(0.1, 0.2, 0.3, 0.4), 90);
+      final inside = rotateBoxToRotatedPage(box(0.1, 0.2, 0.3, 0.4), 90);
       expect(inside.x, closeTo(0.4, 1e-9));
       expect(inside.y, closeTo(0.1, 1e-9));
       expect(inside.w, closeTo(0.4, 1e-9));
@@ -525,8 +551,7 @@ void main() {
   });
 
   group('SR-P2-63/64 UI Kit', () {
-    testWidgets('SR-P2-63：QmSegmented 禁用态只有一层 0.45 透明度',
-        (tester) async {
+    testWidgets('SR-P2-63：QmSegmented 禁用态只有一层 0.45 透明度', (tester) async {
       await tester.pumpWidget(
         MaterialApp(
           theme: AppTheme.light(),
@@ -551,8 +576,7 @@ void main() {
       expect(opacities.map((o) => o.opacity), everyElement(0.45));
     });
 
-    testWidgets('SR-P2-64：QmChip 双区点按只触发对应回调，各一次',
-        (tester) async {
+    testWidgets('SR-P2-64：QmChip 双区点按只触发对应回调，各一次', (tester) async {
       var tapped = 0;
       var deleted = 0;
       await tester.pumpWidget(
@@ -636,17 +660,12 @@ void main() {
         devicePixelRatio: 3.0,
       );
       expect(_imageCacheWidth(tester), 384);
-      await _pumpDpr(
-        tester,
-        QuestionSlice(question: q),
-        devicePixelRatio: 3.0,
-      );
+      await _pumpDpr(tester, QuestionSlice(question: q), devicePixelRatio: 3.0);
       // maxHeight 默认 160：(160×2)×3 = 960，未到 2048 封顶。
       expect(_imageCacheWidth(tester), 960);
     });
 
-    testWidgets('SR2-63：dpr=1.0 对照，dpr 4.0+ 时 cacheWidth 封顶',
-        (tester) async {
+    testWidgets('SR2-63：dpr=1.0 对照，dpr 4.0+ 时 cacheWidth 封顶', (tester) async {
       final sliceDir = Directory('${_tmp.path}/slices');
       sliceDir.createSync(recursive: true);
       File('${sliceDir.path}/q1.png').writeAsBytesSync(_onePixelPng);
@@ -665,11 +684,7 @@ void main() {
         devicePixelRatio: 1.0,
       );
       expect(_imageCacheWidth(tester), 128);
-      await _pumpDpr(
-        tester,
-        QuestionSlice(question: q),
-        devicePixelRatio: 1.0,
-      );
+      await _pumpDpr(tester, QuestionSlice(question: q), devicePixelRatio: 1.0);
       expect(_imageCacheWidth(tester), 320);
       // dpr=4.0：Compact 128×4 = 512 → 封顶 384。
       await _pumpDpr(
@@ -753,11 +768,13 @@ void main() {
       _zipWriteU32(bytes, cd + 24, 0xFFFFFFFF); // 中央目录 rawSize
       expect(
         () => readZip(bytes),
-        throwsA(isA<ZipFormatException>().having(
-          (e) => e.message,
-          'message',
-          contains('ZIP64'),
-        )),
+        throwsA(
+          isA<ZipFormatException>().having(
+            (e) => e.message,
+            'message',
+            contains('ZIP64'),
+          ),
+        ),
       );
     });
 
@@ -768,11 +785,13 @@ void main() {
       _zipWriteU16(bytes, eocd + 4, 1); // EOCD disk number
       expect(
         () => readZip(bytes),
-        throwsA(isA<ZipFormatException>().having(
-          (e) => e.message,
-          'message',
-          contains('多盘'),
-        )),
+        throwsA(
+          isA<ZipFormatException>().having(
+            (e) => e.message,
+            'message',
+            contains('多盘'),
+          ),
+        ),
       );
     });
 
@@ -784,11 +803,13 @@ void main() {
       bytes.addAll('abc'.codeUnits); // 实际只补 3 字节
       expect(
         () => readZip(bytes),
-        throwsA(isA<ZipFormatException>().having(
-          (e) => e.message,
-          'message',
-          contains('找不到中央目录'),
-        )),
+        throwsA(
+          isA<ZipFormatException>().having(
+            (e) => e.message,
+            'message',
+            contains('找不到中央目录'),
+          ),
+        ),
       );
     });
 

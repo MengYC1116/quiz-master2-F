@@ -9,15 +9,16 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:drift/drift.dart' hide isNull, isNotNull;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path/path.dart' as p;
 import 'package:quiz_master2/data/database.dart';
+import 'package:quiz_master2/data/drift/quiz_database.dart';
 import 'package:quiz_master2/models/models.dart';
 import 'package:quiz_master2/services/zip_archive.dart';
-import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 Future<void> insertQuestion(
-  Database db,
+  QuizDatabase db,
   String id, {
   String subjectId = 'math',
   String? sourcePath,
@@ -26,18 +27,23 @@ Future<void> insertQuestion(
   int? sliceWidth,
   int? sliceHeight,
 }) async {
-  await db.insert('questions', {
-    'id': id,
-    'title': 't-$id',
-    'subject_id': subjectId,
-    'folder_ids': '',
-    'created_at': 1000,
-    'source_path': sourcePath,
-    'page_image_path': pageImagePath,
-    'slice_path': slicePath,
-    'slice_width': sliceWidth,
-    'slice_height': sliceHeight,
-  });
+  await db.customInsert(
+    'INSERT INTO questions (id, title, subject_id, folder_ids, created_at, '
+    'source_path, page_image_path, slice_path, slice_width, slice_height) '
+    'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    variables: [
+      Variable.withString(id),
+      Variable.withString('t-$id'),
+      Variable.withString(subjectId),
+      Variable.withString(''),
+      Variable.withInt(1000),
+      Variable(sourcePath),
+      Variable(pageImagePath),
+      Variable(slicePath),
+      Variable(sliceWidth),
+      Variable(sliceHeight),
+    ],
+  );
 }
 
 QuestionBox layer1Box(String id, {String? questionId}) => QuestionBox(
@@ -98,7 +104,7 @@ void main() {
   group('B3-P01 _deleteDataFileIfUnreferenced：只删 slices/ 下文件', () {
     late Directory tmp;
     late Directory dataDir;
-    late Database db;
+    late QuizDatabase db;
 
     setUp(() async {
       tmp = await Directory.systemTemp.createTemp('b3-p01-delfile-');
@@ -123,7 +129,7 @@ void main() {
       await evil.writeAsBytes([1, 2, 3]);
       await insertQuestion(db, 'q1', slicePath: evil.path);
       await AppDatabase.deleteQuestionFrom(db, 'q1');
-      expect(await db.query('questions'), isEmpty);
+      expect(await db.customSelect('SELECT * FROM questions').get(), isEmpty);
       expect(evil.existsSync(), isTrue, reason: '绝对路径绝不能删');
     });
 
@@ -158,14 +164,20 @@ void main() {
       await insertQuestion(db, 'q2', slicePath: 'slices/shared.png');
       await AppDatabase.deleteQuestionFrom(db, 'q1');
       expect(slice.existsSync(), isTrue);
-      expect((await db.query('questions')).single['id'], 'q2');
+      expect(
+        (await db.customSelect('SELECT * FROM questions').get())
+            .map((r) => r.data)
+            .toList()
+            .single['id'],
+        'q2',
+      );
     });
   });
 
   group('B3-P01 _deleteTaskDirIfUnreferenced：taskId 安全字符校验', () {
     late Directory tmp;
     late Directory dataDir;
-    late Database db;
+    late QuizDatabase db;
 
     setUp(() async {
       tmp = await Directory.systemTemp.createTemp('b3-p01-deltask-');
@@ -198,7 +210,10 @@ void main() {
       await insertTask('../slices');
       await AppDatabase.deleteCollectTaskFrom(db, '../slices');
       expect(keep.existsSync(), isTrue, reason: '恶意 taskId 必须被拦下');
-      expect(await db.query('collect_tasks'), isEmpty);
+      expect(
+        await db.customSelect('SELECT * FROM collect_tasks').get(),
+        isEmpty,
+      );
     });
 
     test('含 `/`、`%` 的 taskId 同样被拦', () async {
@@ -225,11 +240,7 @@ void main() {
       await dir.create(recursive: true);
       await File(p.join(dir.path, 'original.png')).writeAsBytes([1]);
       await insertTask('task2');
-      await insertQuestion(
-        db,
-        'q1',
-        sourcePath: 'imports/task2/original.png',
-      );
+      await insertQuestion(db, 'q1', sourcePath: 'imports/task2/original.png');
       await AppDatabase.deleteCollectTaskFrom(db, 'task2');
       expect(dir.existsSync(), isTrue);
     });
@@ -237,16 +248,19 @@ void main() {
 
   group('B3-P01 备份恢复：非法文件路径拒绝整个恢复', () {
     late Directory tmp;
-    late Database db;
+    late QuizDatabase db;
 
     setUp(() async {
       tmp = await Directory.systemTemp.createTemp('b3-p01-backup-');
       db = await AppDatabase.openForTest();
-      await db.insert('subjects', {
-        'id': 'math',
-        'name': '数学',
-        'color': 0xFF000000,
-      });
+      await db.customInsert(
+        'INSERT INTO subjects (id, name, color) VALUES (?, ?, ?)',
+        variables: [
+          Variable.withString('math'),
+          Variable.withString('数学'),
+          Variable.withInt(0xFF000000),
+        ],
+      );
       await insertQuestion(
         db,
         'q1',
@@ -288,9 +302,15 @@ void main() {
         reason: reason,
       );
       // 原库不动。
-      expect(await db.query('questions'), hasLength(1));
       expect(
-        (await db.query('questions')).single['slice_path'],
+        await db.customSelect('SELECT * FROM questions').get(),
+        hasLength(1),
+      );
+      expect(
+        (await db.customSelect('SELECT * FROM questions').get())
+            .map((r) => r.data)
+            .toList()
+            .single['slice_path'],
         'slices/q1.png',
       );
     }
@@ -323,10 +343,12 @@ void main() {
 
     test('合法相对路径：恢复成功', () async {
       final data = await exported();
-      await db.delete('questions');
-      expect(await db.query('questions'), isEmpty);
+      await db.customUpdate('DELETE FROM questions');
+      expect(await db.customSelect('SELECT * FROM questions').get(), isEmpty);
       await AppDatabase.importBackupJsonInto(db, data);
-      final rows = await db.query('questions');
+      final rows = (await db.customSelect('SELECT * FROM questions').get())
+          .map((r) => r.data)
+          .toList();
       expect(rows, hasLength(1));
       expect(rows.single['slice_path'], 'slices/q1.png');
     });
@@ -342,7 +364,10 @@ void main() {
         () => AppDatabase.importBackupZipInto(db, zip, dataDir: tmp.path),
         throwsA(isA<BackupRestoreException>()),
       );
-      expect(await db.query('questions'), hasLength(1));
+      expect(
+        await db.customSelect('SELECT * FROM questions').get(),
+        hasLength(1),
+      );
       expect(
         File(p.join(tmp.path, 'slices', 'q1.png')).existsSync(),
         isFalse,
@@ -352,7 +377,7 @@ void main() {
   });
 
   group('B3-P01 详情页重框：换框 + 保存切片一个事务', () {
-    late Database db;
+    late QuizDatabase db;
 
     setUp(() async {
       db = await AppDatabase.openForTest();
@@ -363,22 +388,27 @@ void main() {
         sliceWidth: 100,
         sliceHeight: 50,
       );
-      await db.insert('question_boxes', {
-        'id': 'box-old-p1-aaaa0001',
-        'collect_task_id': null,
-        'question_id': 'q1',
-        'parent_box_id': null,
-        'page': 1,
-        'layer': 1,
-        'type': 'question',
-        'x': 0.0,
-        'y': 0.0,
-        'w': 0.4,
-        'h': 0.2,
-        'confidence': null,
-        'origin': 'manual',
-        'updated_at': 1000,
-      });
+      await db.customInsert(
+        'INSERT INTO question_boxes (id, collect_task_id, question_id, '
+        'parent_box_id, page, layer, type, x, y, w, h, confidence, origin, '
+        'updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        variables: [
+          Variable.withString('box-old-p1-aaaa0001'),
+          const Variable<String>(null),
+          Variable.withString('q1'),
+          const Variable<String>(null),
+          Variable.withInt(1),
+          Variable.withInt(1),
+          Variable.withString('question'),
+          Variable.withReal(0.0),
+          Variable.withReal(0.0),
+          Variable.withReal(0.4),
+          Variable.withReal(0.2),
+          const Variable<double>(null),
+          Variable.withString('manual'),
+          Variable.withInt(1000),
+        ],
+      );
       addTearDown(() async {
         try {
           await db.close();
@@ -397,14 +427,17 @@ void main() {
       );
       final boxes = await AppDatabase.boxesForQuestionFrom(db, 'q1');
       expect(boxes.map((b) => b.id).toList(), ['box-new-p1-aaaa0002']);
-      final q = (await db.query('questions')).single;
+      final q = (await db.customSelect('SELECT * FROM questions').get())
+          .map((r) => r.data)
+          .toList()
+          .single;
       expect(q['slice_path'], 'slices/q1.png');
       expect(q['slice_width'], 200);
       expect(q['slice_height'], 80);
     });
 
     test('写切片中途失败：旧框与旧切片整体回滚', () async {
-      await db.execute(
+      await db.customStatement(
         "CREATE TRIGGER trg_fail_qup BEFORE UPDATE ON questions "
         "BEGIN SELECT RAISE(ABORT, 'boom'); END;",
       );
@@ -422,7 +455,10 @@ void main() {
       // 回滚：旧框还在、新框没进、切片字段没变。
       final boxes = await AppDatabase.boxesForQuestionFrom(db, 'q1');
       expect(boxes.map((b) => b.id).toList(), ['box-old-p1-aaaa0001']);
-      final q = (await db.query('questions')).single;
+      final q = (await db.customSelect('SELECT * FROM questions').get())
+          .map((r) => r.data)
+          .toList()
+          .single;
       expect(q['slice_path'], 'slices/old.png');
       expect(q['slice_width'], 100);
       expect(q['slice_height'], 50);
@@ -454,9 +490,15 @@ void main() {
           await db.close();
         } catch (_) {}
       });
-      expect(await db.query('questions'), isEmpty);
+      expect(await db.customSelect('SELECT * FROM questions').get(), isEmpty);
       await insertQuestion(db, 'q1');
-      expect((await db.query('questions')).single['id'], 'q1');
+      expect(
+        (await db.customSelect('SELECT * FROM questions').get())
+            .map((r) => r.data)
+            .toList()
+            .single['id'],
+        'q1',
+      );
     });
 
     test('文件库：写到指定路径，关闭重开数据还在', () async {
@@ -477,7 +519,13 @@ void main() {
           await reopened.close();
         } catch (_) {}
       });
-      expect((await reopened.query('questions')).single['id'], 'q1');
+      expect(
+        (await reopened.customSelect('SELECT * FROM questions').get())
+            .map((r) => r.data)
+            .toList()
+            .single['id'],
+        'q1',
+      );
     });
   });
 
@@ -501,9 +549,8 @@ void main() {
     });
 
     test('损坏的库文件：明确报错，不静默建空库', () async {
-      await File(
-        p.join(tmp.path, 'quiz-master2.db'),
-      ).writeAsBytes(utf8.encode('this is not a sqlite database'));
+      await File(p.join(tmp.path, 'quiz-master2.db'))
+          .writeAsBytes(utf8.encode('this is not a sqlite database'));
       final fallbackDir = Directory(
         p.join(p.dirname(Platform.resolvedExecutable), 'data'),
       );

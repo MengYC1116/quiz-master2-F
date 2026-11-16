@@ -2,15 +2,17 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
 
+import 'package:drift/drift.dart';
 import 'package:flutter/material.dart';
 import 'package:path/path.dart' as p;
-import 'package:sqflite_common_ffi/sqflite_ffi.dart';
+import 'package:sqlite3/sqlite3.dart' as sqlite3;
 
 import '../models/exam_event.dart';
 import '../models/models.dart';
 import '../services/zip_archive.dart';
 import 'data_change_events.dart';
 import 'demo_data.dart';
+import 'drift/quiz_database.dart';
 // B4：database.dart 拆分——AppDatabase 类与对外接口保留在此文件，
 // 实现按职责拆到以下 part 文件（同一库，共享库私有成员；纯重构，
 // 不改行为、不改签名、不改调用方与测试）。
@@ -83,6 +85,31 @@ enum DbMigrationOutcome {
   /// 新位置就是当前位置，不用动。
   sameLocation,
 }
+
+/// B1-Drift：把行 map 的值按运行时类型变成 Drift 变量。
+/// null 一律变成 NULL 变量（`'last_check': null` 这类在 map 里很常见，
+/// 集中一处分流，调用点不用逐列手写 Variable 构造、不用担心漏掉 null）。
+/// 非 null 值按类型走 withString/withInt/withReal/withBool/withDateTime；
+/// 其余类型（本项目没有）走 `Variable(value)` 的运行时分流。
+Variable _variable(Object? value) => switch (value) {
+  null => const Variable<String>(null),
+  String s => Variable.withString(s),
+  int i => Variable.withInt(i),
+  double d => Variable.withReal(d),
+  bool b => Variable.withBool(b),
+  DateTime dt => Variable.withDateTime(dt),
+  _ => Variable(value),
+};
+
+/// B1-Drift：把行 map 的全部值按顺序变成 Drift 变量列表，
+/// 与显式写的列顺序（`INSERT INTO t (c1, c2) VALUES (?, ?)`）配对用。
+List<Variable> _variables(Map<String, Object?> row) =>
+    row.values.map(_variable).toList();
+
+/// B1-Drift：把 `customSelect` 的结果转成与 sqflite 行同形的
+/// `List<Map<String, Object?>>`——行访问代码 `row['col']` 不用改。
+List<Map<String, Object?>> _rows(List<QueryRow> rows) =>
+    rows.map((r) => r.data).toList();
 
 /// v2 全新数据库（version 2，无迁移历史；§6 第 1 条：老 v1 库首次启动
 /// 直接删除，不迁移；新库从空开始，不预置演示数据）。
@@ -160,8 +187,8 @@ class AppDatabase {
   /// 才多这一行，旧备份缺行按 0 读）。
   static const String organizedTodayKey = 'organizedToday';
 
-  Database? _db;
-  Future<Database>? _dbFuture;
+  QuizDatabase? _db;
+  Future<QuizDatabase>? _dbFuture;
   String? dbPathUsed;
 
   /// 数据库位置可改：设置页改位置后，把新路径写进默认数据目录下的
@@ -182,7 +209,7 @@ class AppDatabase {
   /// 测试用：让单例直接用已打开的库（内存库 / 临时目录库），
   /// 不走 `_openDb` 的真实路径。只供测试调用。
   @visibleForTesting
-  static void useDatabaseForTest(Database db) {
+  static void useDatabaseForTest(QuizDatabase db) {
     instance._db = db;
     instance._dbFuture = Future.value(db);
     instance.dbPathUsed = 'test';
@@ -196,16 +223,24 @@ class AppDatabase {
   /// 结构一致。调用方负责 `await db.close()`。
   /// 与 [useDatabaseForTest] 的区别：这里只打开库，不把它设为
   /// 单例；需要走单例的测试再调 [useDatabaseForTest]。
+  /// B1-Drift：内存库走 `QuizDatabase.memory()`，文件库走
+  /// `QuizDatabase.file(...)`；schemaVersion 为 2（与生产一致，
+  /// 现 openForTest 的 version: 1 是旧不一致，对齐掉）。
   @visibleForTesting
-  static Future<Database> openForTest({String? path}) async {
-    sqfliteFfiInit();
-    return databaseFactoryFfi.openDatabase(
-      path ?? inMemoryDatabasePath,
-      options: OpenDatabaseOptions(
-        version: 1,
-        onCreate: (db, version) async => createTables(db),
-      ),
-    );
+  static Future<QuizDatabase> openForTest({String? path}) async {
+    final db = path == null
+        ? QuizDatabase.memory(onCreateTables: createTablesImpl)
+        : QuizDatabase.file(
+            File(path),
+            onCreateTables: createTablesImpl,
+          );
+    // B1-Drift：与 openAtImpl 同理——Drift 是懒打开，不发查询就不建
+    // 文件、不跑 onCreate；本方法的契约是“不存在则新建”（文件库须
+    // 在打开后即存在，见 SR-P2-11 v2 测试），因此发一条 SELECT 1
+    // 强制建立连接。收尾验证发现：不加这句，openForTest(path:) 后
+    // 直接 close，文件根本不存在，SR-P2-11 失败。
+    await db.customSelect('SELECT 1').get();
+    return db;
   }
 
   /// B3-P01 测试钩子：复位单例与测试目录重定向（只供测试调用）。
@@ -226,15 +261,15 @@ class AppDatabase {
     testMarkerDirectory = null;
   }
 
-  /// §4.1：缓存 `Future<Database>` 本身：启动时多处同时 `await db`
+  /// §4.1：缓存 `Future<QuizDatabase>` 本身：启动时多处同时 `await db`
   /// 只会打开一次连接（旧写法是 `if (_db != null)`，并发调用会
   /// 各自 openDatabase，旧连接泄漏、多连接同时写同一文件）。
   /// 打开失败时清掉缓存，下次重试重新打开——失败的 Future 不会
   /// 被永久缓存。`migrateToDirectory` 关库时同时清 `_dbFuture`。
-  Future<Database> get db {
+  Future<QuizDatabase> get db {
     final cached = _dbFuture;
     if (cached != null) return cached;
-    late final Future<Database> opened;
+    late final Future<QuizDatabase> opened;
     opened = _openDb().then(
       (d) => d,
       onError: (Object e) {
@@ -246,14 +281,12 @@ class AppDatabase {
     return opened;
   }
 
-  Future<Database> _openDb() async {
-    sqfliteFfiInit();
-    final factory = databaseFactoryFfi;
+  Future<QuizDatabase> _openDb() async {
     final dataDir = Directory(dataDirectoryPath());
     var dbPath = p.join(dataDir.path, 'quiz-master2.db');
     try {
       await dataDir.create(recursive: true);
-      _db = await openAt(dbPath, factory: factory);
+      _db = await openAt(dbPath);
     } on LegacyDatabaseException {
       // 删老库失败 / 库文件无法确认版本：拒绝打开，不滑入
       // fallback（否则新旧库并存）。
@@ -269,7 +302,7 @@ class AppDatabase {
       final fallbackDir = Directory(p.join(installDir, 'data'));
       await fallbackDir.create(recursive: true);
       dbPath = p.join(fallbackDir.path, 'quiz-master2.db');
-      _db = await openAt(dbPath, factory: factory);
+      _db = await openAt(dbPath);
     }
     dbPathUsed = dbPath;
     return _db!;
@@ -326,15 +359,13 @@ class AppDatabase {
   static bool shouldFallbackAfterOpenFailure(String dbPath) =>
       shouldFallbackAfterOpenFailureImpl(dbPath);
 
-  static Future<Database> openAt(String dbPath, {DatabaseFactory? factory}) =>
-      openAtImpl(dbPath, factory: factory);
+  static Future<QuizDatabase> openAt(String dbPath) =>
+      openAtImpl(dbPath);
 
-  static Future<bool> deleteLegacyDatabaseIfPresent(
-    String dbPath, {
-    DatabaseFactory? factory,
-  }) => deleteLegacyDatabaseIfPresentImpl(dbPath, factory: factory);
+  static Future<bool> deleteLegacyDatabaseIfPresent(String dbPath) =>
+      deleteLegacyDatabaseIfPresentImpl(dbPath);
 
-  static Future<void> createTables(Database db) => createTablesImpl(db);
+  static Future<void> createTables(QuizDatabase db) => createTablesImpl(db);
   // -- db_codec.dart --
 
   static String encodeStringList(List<String> values) =>
@@ -356,11 +387,11 @@ class AppDatabase {
       decodeQueueImpl(value);
   // -- db_questions.dart --
 
-  static Future<List<Question>> allQuestionsFrom(Database db) =>
+  static Future<List<Question>> allQuestionsFrom(QuizDatabase db) =>
       allQuestionsFromImpl(db);
 
   static Future<CauseRecord> recordSelfCheckInto(
-    Database db, {
+    QuizDatabase db, {
     required CauseRecord updated,
     required String questionId,
     required String result,
@@ -378,20 +409,20 @@ class AppDatabase {
   );
 
   static Future<bool> setReviewJoinedInto(
-    Database db,
+    QuizDatabase db,
     Question q,
     bool joined,
   ) => setReviewJoinedIntoImpl(db, q, joined);
 
-  static Future<void> syncCauseRecordsInto(Database db, Question q) =>
+  static Future<void> syncCauseRecordsInto(QuizDatabase db, Question q) =>
       syncCauseRecordsIntoImpl(db, q);
   // -- db_catalog.dart --
 
-  static Future<void> deleteSubjectFrom(Database db, String id) =>
+  static Future<void> deleteSubjectFrom(QuizDatabase db, String id) =>
       deleteSubjectFromImpl(db, id);
 
   static Future<bool> folderNameExistsInSubjectFrom(
-    Database db,
+    QuizDatabase db,
     String subjectId,
     String name, {
     String? excludeId,
@@ -402,78 +433,78 @@ class AppDatabase {
     excludeId: excludeId,
   );
 
-  static Future<int> deleteFolderFrom(Database db, Folder f) =>
+  static Future<int> deleteFolderFrom(QuizDatabase db, Folder f) =>
       deleteFolderFromImpl(db, f);
 
-  static Future<List<String>> allTagsFrom(Database db) => allTagsFromImpl(db);
+  static Future<List<String>> allTagsFrom(QuizDatabase db) => allTagsFromImpl(db);
 
   static Future<void> renameTagFrom(
-    Database db,
+    QuizDatabase db,
     String oldName,
     String newName,
   ) => renameTagFromImpl(db, oldName, newName);
 
-  static Future<void> deleteTagFrom(Database db, String name) =>
+  static Future<void> deleteTagFrom(QuizDatabase db, String name) =>
       deleteTagFromImpl(db, name);
 
-  static Future<List<Exam>> allExamsFrom(Database db) => allExamsFromImpl(db);
+  static Future<List<Exam>> allExamsFrom(QuizDatabase db) => allExamsFromImpl(db);
 
-  static Future<void> insertExamInto(Database db, Exam e) =>
+  static Future<void> insertExamInto(QuizDatabase db, Exam e) =>
       insertExamIntoImpl(db, e);
 
-  static Future<void> deleteExamFrom(Database db, String id) =>
+  static Future<void> deleteExamFrom(QuizDatabase db, String id) =>
       deleteExamFromImpl(db, id);
 
-  static Future<List<KnowledgePoint>> allKnowledgePointsFrom(Database db) =>
+  static Future<List<KnowledgePoint>> allKnowledgePointsFrom(QuizDatabase db) =>
       allKnowledgePointsFromImpl(db);
 
   static Future<void> insertKnowledgePointInto(
-    Database db,
+    QuizDatabase db,
     KnowledgePoint kp,
   ) => insertKnowledgePointIntoImpl(db, kp);
 
-  static Future<void> deleteKnowledgePointFrom(Database db, String id) =>
+  static Future<void> deleteKnowledgePointFrom(QuizDatabase db, String id) =>
       deleteKnowledgePointFromImpl(db, id);
 
   static Future<void> deleteChapterFrom(
-    Database db,
+    QuizDatabase db,
     String subjectId,
     String chapter,
   ) => deleteChapterFromImpl(db, subjectId, chapter);
   // -- db_questions.dart --
 
-  static Future<void> upsertQuestionInto(Database db, Question q) =>
+  static Future<void> upsertQuestionInto(QuizDatabase db, Question q) =>
       upsertQuestionIntoImpl(db, q);
 
-  static Future<void> deleteQuestionFrom(Database db, String id) =>
+  static Future<void> deleteQuestionFrom(QuizDatabase db, String id) =>
       deleteQuestionFromImpl(db, id);
   // -- db_settings.dart --
 
   static String normalizeRecentKind(String kind) =>
       normalizeRecentKindImpl(kind);
 
-  static Future<void> saveSettingsInto(Database db, AppSettings s) =>
+  static Future<void> saveSettingsInto(QuizDatabase db, AppSettings s) =>
       saveSettingsIntoImpl(db, s);
   // -- db_collect.dart --
 
-  static Future<List<CollectTask>> allCollectTasksFrom(Database db) =>
+  static Future<List<CollectTask>> allCollectTasksFrom(QuizDatabase db) =>
       allCollectTasksFromImpl(db);
 
-  static Future<void> upsertCollectTaskInto(Database db, CollectTask t) =>
+  static Future<void> upsertCollectTaskInto(QuizDatabase db, CollectTask t) =>
       upsertCollectTaskIntoImpl(db, t);
 
   /// B9-1 回填（可单测版）：题已整理但任务仍 pendingOrganize 的
   /// 卡住行持久化置 done，返回治好的行数。见
   /// [backfillCollectDoneIntoImpl]。
-  static Future<int> backfillCollectDoneFrom(Database db) =>
+  static Future<int> backfillCollectDoneFrom(QuizDatabase db) =>
       backfillCollectDoneIntoImpl(db);
 
-  static Future<void> deleteCollectTaskFrom(Database db, String id) =>
+  static Future<void> deleteCollectTaskFrom(QuizDatabase db, String id) =>
       deleteCollectTaskFromImpl(db, id);
   // -- db_orphans.dart --
 
   static Future<OrphanScan> scanOrphanFilesFrom(
-    Database db, {
+    QuizDatabase db, {
     String? dataDir,
   }) => scanOrphanFilesFromImpl(db, dataDir: dataDir);
 
@@ -483,32 +514,32 @@ class AppDatabase {
   }) => deleteOrphanFilesImpl(relativePaths, dataDir: dataDir);
   // -- db_collect.dart --
 
-  static Future<void> insertQuestionBoxInto(Database db, QuestionBox b) =>
+  static Future<void> insertQuestionBoxInto(QuizDatabase db, QuestionBox b) =>
       insertQuestionBoxIntoImpl(db, b);
 
   static Future<List<QuestionBox>> boxesForQuestionFrom(
-    Database db,
+    QuizDatabase db,
     String questionId,
   ) => boxesForQuestionFromImpl(db, questionId);
 
   static Future<List<QuestionBox>> boxesForTaskFrom(
-    Database db,
+    QuizDatabase db,
     String taskId,
   ) => boxesForTaskFromImpl(db, taskId);
 
   static Future<List<QuestionBox>> boxesForTaskPageFrom(
-    Database db,
+    QuizDatabase db,
     String taskId,
     int page,
   ) => boxesForTaskPageFromImpl(db, taskId, page);
 
   static Future<List<QuestionBox>> boxesForPageImageFrom(
-    Database db,
+    QuizDatabase db,
     String pageImagePath,
   ) => boxesForPageImageFromImpl(db, pageImagePath);
 
   static Future<void> saveDraftBoxesInto(
-    Database db, {
+    QuizDatabase db, {
     required String taskId,
     required Map<int, List<QuestionBox>> boxesByPage,
     required Map<int, int> rotations,
@@ -520,13 +551,13 @@ class AppDatabase {
   );
 
   static Future<void> replaceQuestionBoxesInto(
-    Database db,
+    QuizDatabase db,
     String questionId,
     List<QuestionBox> boxes,
   ) => replaceQuestionBoxesIntoImpl(db, questionId, boxes);
 
   static Future<void> replaceQuestionBoxesAndSliceInto(
-    Database db, {
+    QuizDatabase db, {
     required String questionId,
     required List<QuestionBox> boxes,
     required String slicePath,
@@ -542,7 +573,7 @@ class AppDatabase {
   );
 
   static Future<void> confirmSplitInto(
-    Database db, {
+    QuizDatabase db, {
     required CollectTask originalTask,
     required List<Question> questions,
     required List<CollectTask> splitTasks,
@@ -560,42 +591,42 @@ class AppDatabase {
   );
   // -- db_settings.dart --
 
-  static Future<bool> loadBackupFailedFrom(Database db) =>
+  static Future<bool> loadBackupFailedFrom(QuizDatabase db) =>
       loadBackupFailedFromImpl(db);
 
-  static Future<void> saveBackupFailedInto(Database db, bool failed) =>
+  static Future<void> saveBackupFailedInto(QuizDatabase db, bool failed) =>
       saveBackupFailedIntoImpl(db, failed);
 
-  static Future<List<ExamEvent>> loadExamEventsFrom(Database db) =>
+  static Future<List<ExamEvent>> loadExamEventsFrom(QuizDatabase db) =>
       loadExamEventsFromImpl(db);
 
   static Future<void> saveExamEventsInto(
-    Database db,
+    QuizDatabase db,
     List<ExamEvent> events,
   ) => saveExamEventsIntoImpl(db, events);
 
   /// B11-10 今日小结：读今天已整理题数（settings 表 `organizedToday` 键）。
-  static Future<int> loadOrganizedTodayFrom(Database db, {DateTime? now}) =>
+  static Future<int> loadOrganizedTodayFrom(QuizDatabase db, {DateTime? now}) =>
       loadOrganizedTodayFromImpl(db, now: now);
 
   /// B11-10 今日小结：今天已整理题数 +1（跃迁时调，见 db_questions.dart）。
-  static Future<void> bumpOrganizedTodayInto(Database db, {DateTime? now}) =>
+  static Future<void> bumpOrganizedTodayInto(QuizDatabase db, {DateTime? now}) =>
       bumpOrganizedTodayIntoImpl(db, now: now);
   // -- db_backup.dart --
 
-  static Future<String> exportBackupJsonFrom(Database db) =>
+  static Future<String> exportBackupJsonFrom(QuizDatabase db) =>
       exportBackupJsonFromImpl(db);
 
   static void validateBackupData(Map<String, dynamic> data) =>
       validateBackupDataImpl(data);
 
   static Future<void> importBackupJsonInto(
-    Database db,
+    QuizDatabase db,
     Map<String, dynamic> data,
   ) => importBackupJsonIntoImpl(db, data);
 
   static Future<List<int>> exportBackupZipFrom(
-    Database db, {
+    QuizDatabase db, {
     String? dataDir,
   }) => exportBackupZipFromImpl(db, dataDir: dataDir);
 
@@ -603,7 +634,7 @@ class AppDatabase {
       readBackupJsonFromZipImpl(bytes);
 
   static Future<void> importBackupZipInto(
-    Database db,
+    QuizDatabase db,
     List<int> bytes, {
     String? dataDir,
   }) => importBackupZipIntoImpl(db, bytes, dataDir: dataDir);

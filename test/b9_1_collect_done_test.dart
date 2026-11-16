@@ -17,14 +17,19 @@
 // 用例口径：数据层用真实内存库（`AppDatabase.openForTest()`，只建
 // 表不播种、不碰真实库）；全流程用真实内存库 + 整应用
 // `QuizMasterApp` 真点按（参照 B8-1 的写法：有界手动 pump，
-// 不用 pumpAndSettle——整应用永不静止；testWidgets 体跑在 fake
-// async 里，真实 ffi 数据库的 Future 须用 `tester.runAsync`
-// 切回真实异步等它完成）。
+// 不用 pumpAndSettle——整应用永不静止）。
+// Drift 走同步 sqlite3 调用，仓库方法在 widget 测试里直接 await
+// 即可；`tester.runAsync` 只用于 Future.delayed 这类真实延时。
+// 注意：播种必须在测试体内做——setUp 跑在 fake async 区之外，
+// setUp 里打开的库在测试体里 await 仓库方法会挂住（B Stage 1
+// 探针 11/12/13）；普通 test（非 testWidgets）跑在真实异步区，
+// setUp 播种不受影响。
 // 种子库验证：回填的 open  wiring 用真实文件库（openAt 打开、
 // 原始 SQL 插卡住行模拟旧版库、关闭、再 openAt）验证；演示库
 // 是标准 v1（9 道题、0 行 pendingOrganize），不在本文件里动。
 import 'dart:io';
 
+import 'package:drift/drift.dart' hide isNull, isNotNull;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -155,11 +160,9 @@ void main() {
       // 模拟旧版卡住态：题已整理、任务仍待整理（原始 SQL 插，
       // 绕过 upsertQuestion 的流转），再任意保存一次已整理题。
       final db = await AppDatabase.instance.db;
-      await db.update(
-        'questions',
-        {'is_organized': 1},
-        where: 'id = ?',
-        whereArgs: ['q1'],
+      await db.customUpdate(
+        'UPDATE questions SET is_organized = ? WHERE id = ?',
+        variables: [Variable.withInt(1), Variable.withString('q1')],
       );
       final healed = (await repo.questionById('q1'))!;
       await repo.save(healed);
@@ -201,43 +204,59 @@ void main() {
         ('q2', 0, 'task-q2', 'pendingOrganize'),
         ('q3', 1, 'task-q3', 'done'),
       ]) {
-        await db.insert('questions', {
-          'id': entry.$1,
-          'title': '题 ${entry.$1}',
-          'subject_id': 'math',
-          'folder_ids': '',
-          'knowledge_ids': '',
-          'error_types': '',
-          'custom_error_types': '',
-          'tags': '',
-          'created_at': 1700000000000,
-          'slice_kind': 'material',
-          'slice_text': '',
-          'is_organized': entry.$2,
-        });
-        await db.insert('collect_tasks', {
-          'id': entry.$3,
-          'name': '试卷 · 第1页 · 第${entry.$1}题',
-          'file_name': '试卷.pdf',
-          'subject_id': 'math',
-          'status': entry.$4,
-          'progress': 100,
-          'page_count': 1,
-          'page': 1,
-          'question_id': entry.$1,
-        });
+        await db.customInsert(
+          'INSERT INTO questions (id, title, subject_id, folder_ids, '
+          'knowledge_ids, error_types, custom_error_types, tags, created_at, '
+          'slice_kind, slice_text, is_organized) '
+          'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+          variables: [
+            Variable.withString(entry.$1),
+            Variable.withString('题 ${entry.$1}'),
+            Variable.withString('math'),
+            Variable.withString(''),
+            Variable.withString(''),
+            Variable.withString(''),
+            Variable.withString(''),
+            Variable.withString(''),
+            Variable.withInt(1700000000000),
+            Variable.withString('material'),
+            Variable.withString(''),
+            Variable.withInt(entry.$2),
+          ],
+        );
+        await db.customInsert(
+          'INSERT INTO collect_tasks (id, name, file_name, subject_id, '
+          'status, progress, page_count, page, question_id) '
+          'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+          variables: [
+            Variable.withString(entry.$3),
+            Variable.withString('试卷 · 第1页 · 第${entry.$1}题'),
+            Variable.withString('试卷.pdf'),
+            Variable.withString('math'),
+            Variable.withString(entry.$4),
+            Variable.withInt(100),
+            Variable.withInt(1),
+            Variable.withInt(1),
+            Variable.withString(entry.$1),
+          ],
+        );
       }
-      await db.insert('collect_tasks', {
-        'id': 'task-orphan',
-        'name': '孤儿任务',
-        'file_name': '试卷.pdf',
-        'subject_id': 'math',
-        'status': 'pendingOrganize',
-        'progress': 100,
-        'page_count': 1,
-        'page': 1,
-        'question_id': null,
-      });
+      await db.customInsert(
+        'INSERT INTO collect_tasks (id, name, file_name, subject_id, '
+        'status, progress, page_count, page, question_id) '
+        'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        variables: [
+          Variable.withString('task-orphan'),
+          Variable.withString('孤儿任务'),
+          Variable.withString('试卷.pdf'),
+          Variable.withString('math'),
+          Variable.withString('pendingOrganize'),
+          Variable.withInt(100),
+          Variable.withInt(1),
+          Variable.withInt(1),
+          const Variable<String>(null),
+        ],
+      );
     }
 
     test('回填只治卡住行：返回 1，余者不动', () async {
@@ -276,31 +295,42 @@ void main() {
       final dbPath = '${dir.path}${Platform.pathSeparator}quiz-master2.db';
       // 第一次打开：建表播种；原始 SQL 插卡住行（绕过流转）。
       var db = await AppDatabase.openAt(dbPath);
-      await db.insert('questions', {
-        'id': 'q1',
-        'title': '题 q1',
-        'subject_id': 'math',
-        'folder_ids': '',
-        'knowledge_ids': '',
-        'error_types': '',
-        'custom_error_types': '',
-        'tags': '',
-        'created_at': 1700000000000,
-        'slice_kind': 'material',
-        'slice_text': '',
-        'is_organized': 1,
-      });
-      await db.insert('collect_tasks', {
-        'id': 'task-q1',
-        'name': '试卷 · 第1页 · 第q1题',
-        'file_name': '试卷.pdf',
-        'subject_id': 'math',
-        'status': 'pendingOrganize',
-        'progress': 100,
-        'page_count': 1,
-        'page': 1,
-        'question_id': 'q1',
-      });
+      await db.customInsert(
+        'INSERT INTO questions (id, title, subject_id, folder_ids, '
+        'knowledge_ids, error_types, custom_error_types, tags, created_at, '
+        'slice_kind, slice_text, is_organized) '
+        'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        variables: [
+          Variable.withString('q1'),
+          Variable.withString('题 q1'),
+          Variable.withString('math'),
+          Variable.withString(''),
+          Variable.withString(''),
+          Variable.withString(''),
+          Variable.withString(''),
+          Variable.withString(''),
+          Variable.withInt(1700000000000),
+          Variable.withString('material'),
+          Variable.withString(''),
+          Variable.withInt(1),
+        ],
+      );
+      await db.customInsert(
+        'INSERT INTO collect_tasks (id, name, file_name, subject_id, '
+        'status, progress, page_count, page, question_id) '
+        'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        variables: [
+          Variable.withString('task-q1'),
+          Variable.withString('试卷 · 第1页 · 第q1题'),
+          Variable.withString('试卷.pdf'),
+          Variable.withString('math'),
+          Variable.withString('pendingOrganize'),
+          Variable.withInt(100),
+          Variable.withInt(1),
+          Variable.withInt(1),
+          Variable.withString('q1'),
+        ],
+      );
       await db.close();
       // 第二次打开（生产开库路径，onOpen 回填）：不经任何用户操作。
       db = await AppDatabase.openAt(dbPath);
@@ -315,14 +345,14 @@ void main() {
   });
 
   group('B9-1 真实交互：整理完回收集中心', () {
-    late QuestionRepository repo;
-
-    setUp(() async {
-      repo = await _seedMemoryRepo();
+    // 播种必须在测试体内做（见文件头）：setUp 在 fake async 区之外。
+    Future<QuestionRepository> seedB() async {
+      final repo = await _seedMemoryRepo();
       addTearDown(() async {
         await AppDatabase.resetForTest();
       });
-    });
+      return repo;
+    }
 
     Future<void> pumpApp(WidgetTester tester) async {
       tester.view.physicalSize = const Size(1280, 900);
@@ -370,9 +400,9 @@ void main() {
     }
 
     testWidgets('单题确认：逐题整理完，收集中心待整理归零、行变已整理', (tester) async {
-      // testWidgets 体跑在 fake async 里，真实 ffi 的 Future 必须
-      // 包在 runAsync 里等，直接 await 会永远卡死（B8-1 同款）。
-      await tester.runAsync(() => _seedTwoPending(repo));
+      final repo = await seedB();
+      // Drift 同步调用，直接 await（见文件头）。
+      await _seedTwoPending(repo);
       await pumpApp(tester);
       await _goNav(tester, '整理工作台');
       await _pumpUntil(
@@ -403,30 +433,28 @@ void main() {
       await expectCollectDone(tester);
       await settle(tester);
       // 库里状态也已持久化（不只是界面派生）。
-      final tasks = (await tester.runAsync(() => _tasks(repo)))!;
+      final tasks = await _tasks(repo);
       expect(tasks.map((t) => t.status), everyElement(CollectStatus.done));
       expect(tester.takeException(), isNull);
     });
 
     testWidgets('批量确认：队列里全选后批量确认，任务同样变 done', (tester) async {
+      final repo = await seedB();
       // 批量确认只认已有文件夹的题：种子题直接带文件夹。
-      // 同样包在 runAsync 里（见上一个用例注释）。
-      await tester.runAsync(() async {
-        await repo.save(
-          _splitQuestion(
-            'q1',
-            createdAt: DateTime(2026, 11, 14, 10),
-          ).copyWith(folderIds: ['folder-math-试卷']),
-        );
-        await repo.save(
-          _splitQuestion(
-            'q2',
-            createdAt: DateTime(2026, 11, 14, 9),
-          ).copyWith(folderIds: ['folder-math-试卷']),
-        );
-        await repo.saveCollectTask(_splitTask('q1', 'q1'));
-        await repo.saveCollectTask(_splitTask('q2', 'q2'));
-      });
+      await repo.save(
+        _splitQuestion(
+          'q1',
+          createdAt: DateTime(2026, 11, 14, 10),
+        ).copyWith(folderIds: ['folder-math-试卷']),
+      );
+      await repo.save(
+        _splitQuestion(
+          'q2',
+          createdAt: DateTime(2026, 11, 14, 9),
+        ).copyWith(folderIds: ['folder-math-试卷']),
+      );
+      await repo.saveCollectTask(_splitTask('q1', 'q1'));
+      await repo.saveCollectTask(_splitTask('q2', 'q2'));
       await pumpApp(tester);
       await _goNav(tester, '整理工作台');
       await _pumpUntil(
@@ -457,7 +485,7 @@ void main() {
       );
       await expectCollectDone(tester);
       await settle(tester);
-      final tasks = (await tester.runAsync(() => _tasks(repo)))!;
+      final tasks = await _tasks(repo);
       expect(tasks.map((t) => t.status), everyElement(CollectStatus.done));
       expect(tester.takeException(), isNull);
     });

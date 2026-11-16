@@ -17,7 +17,7 @@ part of 'database.dart';
 /// 附带：同一口径也被 zip 备份共用（db_backup.dart），修后未拆分
 /// 任务的页图也会进备份，恢复后任务不再丢页图。
 Future<Set<String>> _referencedRelativePaths(
-  Database db,
+  QuizDatabase db,
   String dataDir,
 ) async {
   final refs = <String>{};
@@ -27,18 +27,22 @@ Future<Set<String>> _referencedRelativePaths(
     if (rel != null) refs.add(rel);
   }
 
-  for (final row in await db.query(
-    'questions',
-    columns: ['source_path', 'page_image_path', 'slice_path'],
-  )) {
+  for (final row
+      in (await db
+              .customSelect(
+                'SELECT source_path, page_image_path, slice_path FROM questions',
+              )
+              .get())
+          .map((r) => r.data)) {
     add(row['source_path']);
     add(row['page_image_path']);
     add(row['slice_path']);
   }
-  for (final row in await db.query(
-    'collect_tasks',
-    columns: ['id', 'source_path'],
-  )) {
+  for (final row
+      in (await db
+              .customSelect('SELECT id, source_path FROM collect_tasks')
+              .get())
+          .map((r) => r.data)) {
     add(row['source_path']);
     final taskId = row['id'];
     // 任务 id 是应用生成的目录名；含分隔符即不合法，跳过派生口径，
@@ -66,7 +70,7 @@ Future<Set<String>> _referencedRelativePaths(
 /// 空目录随文件删完后顺带清理）。清理前由调用方（设置页）向
 /// 用户预览将删文件与大小、确认后执行。
 Future<OrphanScan> scanOrphanFilesFromImpl(
-  Database db, {
+  QuizDatabase db, {
   String? dataDir,
 }) async {
   final dir = dataDir ?? AppDatabase.dataDirectoryPath();

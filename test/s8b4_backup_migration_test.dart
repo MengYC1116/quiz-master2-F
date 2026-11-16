@@ -9,37 +9,36 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:drift/drift.dart' hide isNull, isNotNull;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path/path.dart' as p;
 import 'package:quiz_master2/data/database.dart';
-import 'package:sqflite_common_ffi/sqflite_ffi.dart';
+import 'package:quiz_master2/data/drift/quiz_database.dart';
 
 void main() {
   group('B4.2 backupTables', () {
     test('含补齐的 4 张表 + question_boxes，共 13 张', () {
-      expect(AppDatabase.backupTables, containsAll([
-        'collect_tasks',
-        'review_state',
-        'review_history',
-        'recent_tasks',
-        'question_boxes',
-      ]));
+      expect(
+        AppDatabase.backupTables,
+        containsAll([
+          'collect_tasks',
+          'review_state',
+          'review_history',
+          'recent_tasks',
+          'question_boxes',
+        ]),
+      );
       expect(AppDatabase.backupTables.length, 13);
     });
   });
 
   group('B4.2 备份导出 + 恢复往返（合成库）', () {
     late Directory tmp;
-    late Database db;
+    late QuizDatabase db;
 
     setUp(() async {
-      sqfliteFfiInit();
       tmp = await Directory.systemTemp.createTemp('s8b4-backup-');
-      db = await databaseFactoryFfi.openDatabase(inMemoryDatabasePath,
-          options: OpenDatabaseOptions(
-              version: 2,
-              onCreate: (db, version) async =>
-                  AppDatabase.createTables(db)));
+      db = await AppDatabase.openForTest();
       addTearDown(() async {
         try {
           await db.close();
@@ -49,75 +48,104 @@ void main() {
         } catch (_) {}
       });
       // 合成数据：1 学科、2 道题、4 张表里各一行标记数据。
-      await db.insert('subjects', {
-        'id': 'math',
-        'name': '数学',
-        'color': 0xFF2E7CF6,
-        'cover_style': 'plain',
-        'cover_color': 'blue',
-      });
+      await db.customInsert(
+        'INSERT INTO subjects (id, name, color, cover_style, cover_color) '
+        'VALUES (?, ?, ?, ?, ?)',
+        variables: [
+          Variable.withString('math'),
+          Variable.withString('数学'),
+          Variable.withInt(0xFF2E7CF6),
+          Variable.withString('plain'),
+          Variable.withString('blue'),
+        ],
+      );
       for (final id in ['q-math-1', 'q-math-2']) {
-        await db.insert('questions', {
-          'id': id,
-          'title': '题 $id',
-          'subject_id': 'math',
-          'folder_ids': '',
-          'knowledge_ids': '',
-          'error_types': '',
-          'custom_error_types': '',
-          'tags': '',
-          'created_at': 1700000000000,
-          'slice_kind': 'material',
-          'slice_text': '',
-        });
+        await db.customInsert(
+          'INSERT INTO questions (id, title, subject_id, folder_ids, '
+          'knowledge_ids, error_types, custom_error_types, tags, created_at, '
+          'slice_kind, slice_text) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+          variables: [
+            Variable.withString(id),
+            Variable.withString('题 $id'),
+            Variable.withString('math'),
+            Variable.withString(''),
+            Variable.withString(''),
+            Variable.withString(''),
+            Variable.withString(''),
+            Variable.withString(''),
+            Variable.withInt(1700000000000),
+            Variable.withString('material'),
+            Variable.withString(''),
+          ],
+        );
       }
-      await db.insert('collect_tasks', {
-        'id': 'ct-marker',
-        'name': 'marker',
-        'file_name': 'm.png',
-        'subject_id': 'math',
-        'status': 'done',
-        'progress': 100,
-        'page_count': 1,
-        'page': 1,
-        'error': null,
-        'question_id': null,
-      });
-      await db.insert('review_state', {
-        'id': 1,
-        'queue': '["q-math-1"]',
-        'position': 0,
-        'updated_at': 1,
-      });
-      await db.insert('review_history', {
-        'question_id': 'q-math-1',
-        'result': 'solved',
-        'reviewed_at': 1,
-      });
-      await db.insert('recent_tasks', {
-        'id': 1,
-        'kind': '整理',
-        'subject_id': 'math',
-        'title': 'marker-task',
-        'updated_at': 1,
-      });
+      await db.customInsert(
+        'INSERT INTO collect_tasks (id, name, file_name, subject_id, '
+        'status, progress, page_count, page, error, question_id) '
+        'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        variables: [
+          Variable.withString('ct-marker'),
+          Variable.withString('marker'),
+          Variable.withString('m.png'),
+          Variable.withString('math'),
+          Variable.withString('done'),
+          Variable.withInt(100),
+          Variable.withInt(1),
+          Variable.withInt(1),
+          const Variable<String>(null),
+          const Variable<String>(null),
+        ],
+      );
+      await db.customInsert(
+        'INSERT INTO review_state (id, queue, position, updated_at) '
+        'VALUES (?, ?, ?, ?)',
+        variables: [
+          Variable.withInt(1),
+          Variable.withString('["q-math-1"]'),
+          Variable.withInt(0),
+          Variable.withInt(1),
+        ],
+      );
+      await db.customInsert(
+        'INSERT INTO review_history (question_id, result, reviewed_at) '
+        'VALUES (?, ?, ?)',
+        variables: [
+          Variable.withString('q-math-1'),
+          Variable.withString('solved'),
+          Variable.withInt(1),
+        ],
+      );
+      await db.customInsert(
+        'INSERT INTO recent_tasks (id, kind, subject_id, title, updated_at) '
+        'VALUES (?, ?, ?, ?, ?)',
+        variables: [
+          Variable.withInt(1),
+          Variable.withString('整理'),
+          Variable.withString('math'),
+          Variable.withString('marker-task'),
+          Variable.withInt(1),
+        ],
+      );
     });
 
     test('导出的 JSON 含 4 张表的数据 + _meta', () async {
-      final decoded = jsonDecode(await AppDatabase.exportBackupJsonFrom(db))
-          as Map<String, dynamic>;
-      expect(decoded.keys, containsAll([
-        'collect_tasks',
-        'review_state',
-        'review_history',
-        'recent_tasks',
-      ]));
+      final decoded = jsonDecode(
+        await AppDatabase.exportBackupJsonFrom(db),
+      ) as Map<String, dynamic>;
+      expect(
+        decoded.keys,
+        containsAll([
+          'collect_tasks',
+          'review_state',
+          'review_history',
+          'recent_tasks',
+        ]),
+      );
       final tasks = decoded['collect_tasks'] as List;
       expect(tasks.any((r) => (r as Map)['id'] == 'ct-marker'), isTrue);
       expect((decoded['review_state'] as List).length, 1);
       expect((decoded['review_history'] as List).length, 1);
-      expect((decoded['recent_tasks'] as List).first['title'],
-          'marker-task');
+      expect((decoded['recent_tasks'] as List).first['title'], 'marker-task');
       // §2.3：_meta 在顶层，表名仍平铺。
       final meta = decoded['_meta'] as Map<String, dynamic>;
       expect(meta['schemaVersion'], 2);
@@ -127,28 +155,53 @@ void main() {
     });
 
     test('备份 → 改动/清空 → 恢复 → 4 张表数据回来', () async {
-      final exported = jsonDecode(await AppDatabase.exportBackupJsonFrom(db))
-          as Map<String, dynamic>;
+      final exported = jsonDecode(
+        await AppDatabase.exportBackupJsonFrom(db),
+      ) as Map<String, dynamic>;
       // 改动：清掉 4 张表的标记行。
-      await db.delete('collect_tasks');
-      await db.delete('review_state');
-      await db.delete('review_history');
-      await db.update('recent_tasks', {'title': 'changed'});
-      expect(await db.query('collect_tasks'), isEmpty);
+      await db.customUpdate('DELETE FROM collect_tasks');
+      await db.customUpdate('DELETE FROM review_state');
+      await db.customUpdate('DELETE FROM review_history');
+      await db.customUpdate(
+        'UPDATE recent_tasks SET title = ?',
+        variables: [Variable.withString('changed')],
+      );
+      expect(
+        await db.customSelect('SELECT * FROM collect_tasks').get(),
+        isEmpty,
+      );
       // 恢复。
       await AppDatabase.importBackupJsonInto(db, exported);
-      final tasks = await db.query('collect_tasks');
+      final tasks = (await db.customSelect('SELECT * FROM collect_tasks').get())
+          .map((r) => r.data)
+          .toList();
       expect(tasks.any((r) => r['id'] == 'ct-marker'), isTrue);
-      expect(await db.query('review_state'), hasLength(1));
-      expect(await db.query('review_history'), hasLength(1));
-      expect((await db.query('recent_tasks')).first['title'], 'marker-task');
+      expect(
+        await db.customSelect('SELECT * FROM review_state').get(),
+        hasLength(1),
+      );
+      expect(
+        await db.customSelect('SELECT * FROM review_history').get(),
+        hasLength(1),
+      );
+      expect(
+        (await db.customSelect('SELECT * FROM recent_tasks').get())
+            .map((r) => r.data)
+            .toList()
+            .first['title'],
+        'marker-task',
+      );
       // 其余表也不受影响：合成库仍是 2 道题。
-      expect(await db.query('questions'), hasLength(2));
+      expect(
+        await db.customSelect('SELECT * FROM questions').get(),
+        hasLength(2),
+      );
     });
 
     test('SR-P2-4：旧备份（没有 4 张表键）拒绝恢复，原库不动', () async {
-      final legacy = jsonDecode(await AppDatabase.exportBackupJsonFrom(db))
-          as Map<String, dynamic>;
+      final legacy = jsonDecode(
+        await AppDatabase.exportBackupJsonFrom(db),
+      ) as Map<String, dynamic>;
       for (final t in [
         'collect_tasks',
         'review_state',
@@ -162,28 +215,48 @@ void main() {
         throwsA(isA<BackupRestoreException>()),
       );
       expect(
-        (await db.query('collect_tasks'))
-            .any((r) => r['id'] == 'ct-marker'),
+        (await db.customSelect('SELECT * FROM collect_tasks').get()).any(
+          (r) => r.data['id'] == 'ct-marker',
+        ),
         isTrue,
       );
-      expect(await db.query('review_state'), hasLength(1));
-      expect(await db.query('review_history'), hasLength(1));
-      expect(await db.query('recent_tasks'), hasLength(1));
-      expect(await db.query('questions'), hasLength(2));
+      expect(
+        await db.customSelect('SELECT * FROM review_state').get(),
+        hasLength(1),
+      );
+      expect(
+        await db.customSelect('SELECT * FROM review_history').get(),
+        hasLength(1),
+      );
+      expect(
+        await db.customSelect('SELECT * FROM recent_tasks').get(),
+        hasLength(1),
+      );
+      expect(
+        await db.customSelect('SELECT * FROM questions').get(),
+        hasLength(2),
+      );
     });
 
     test('没有 _meta 的 v1 备份：拒绝恢复，原库不动', () async {
-      final legacy = jsonDecode(await AppDatabase.exportBackupJsonFrom(db))
-          as Map<String, dynamic>;
+      final legacy = jsonDecode(
+        await AppDatabase.exportBackupJsonFrom(db),
+      ) as Map<String, dynamic>;
       legacy.remove('_meta');
       await expectLater(
-          () => AppDatabase.importBackupJsonInto(db, legacy),
-          throwsA(isA<BackupRestoreException>()));
-      expect(await db.query('questions'), hasLength(2));
+        () => AppDatabase.importBackupJsonInto(db, legacy),
+        throwsA(isA<BackupRestoreException>()),
+      );
       expect(
-          (await db.query('collect_tasks'))
-              .any((r) => r['id'] == 'ct-marker'),
-          isTrue);
+        await db.customSelect('SELECT * FROM questions').get(),
+        hasLength(2),
+      );
+      expect(
+        (await db.customSelect('SELECT * FROM collect_tasks').get()).any(
+          (r) => r.data['id'] == 'ct-marker',
+        ),
+        isTrue,
+      );
     });
   });
 
