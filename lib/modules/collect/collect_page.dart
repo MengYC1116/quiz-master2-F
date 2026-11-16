@@ -2,12 +2,14 @@ import 'dart:async';
 import 'dart:io';
 import 'dart:math' as math;
 
+import 'package:desktop_drop/desktop_drop.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../../data/database.dart';
 import '../../data/repository.dart';
 import '../../models/models.dart';
+import '../../services/import_guess.dart';
 import '../../services/import_service.dart';
 import '../../services/page_image_pipeline.dart';
 import '../../services/pdf_render_service.dart';
@@ -16,6 +18,8 @@ import '../../theme/design_tokens.dart';
 import '../../widgets/uikit.dart';
 import '../../widgets/widgets.dart';
 
+import 'batch_import.dart';
+import 'batch_import_card.dart';
 import 'box_editor.dart';
 import 'collect_widgets.dart';
 
@@ -32,7 +36,10 @@ export 'box_editor.dart';
 ///   局域网，无单独拍照入口）。
 /// - 任务列表只按导入时间排（新的在上，`collect_tasks` 表 `rowid DESC`），
 ///   永不按状态重排；>3 个任务时列表变内部滚动区（高 408px）。
-/// - 系统拖拽导入未实现，拖放区只写占位文案，不谎称已接通。
+/// - 拖放导入（B11-1）：只接收集中心落点（`desktop_drop` 的
+///   `DropTarget`），拖进来走与文件选择导入相同的流程（先选学科、
+///   大小限制、重复提示“已经导入过”）；不接全窗口落点、不接微信 /
+///   QQ 窗口拖入；拖放手感只在 Win11 真机上验。
 /// - 左导航收集角标沿用现有口径（`CollectPage.countPendingBox` +
 ///   未整理题数），不改 repository。
 /// - 页内无边距：外壳已给内容区 padding 26/30，本页不再叠加。
@@ -107,6 +114,16 @@ class _CollectPageState extends State<CollectPage> {
   bool _hideErrorBanner = false;
   CollectStatus? _filter; // null = 全部；筛选不改变时间顺序
   _PendingImport? _pendingImport;
+  // B11-1：有文件正悬在拖放区上（只改落点文案与边框，不改布局）。
+  bool _dragOver = false;
+  // B11-2：批量导入队列（>1 个文件时建，单文件不建；重试失败项时复用）。
+  BatchImportState? _batch;
+  // B11-2：没选学科时选好的文件先暂存，等用户选好学科点“开始导入”
+  // 再走同一套检查；选了学科的文件不经过这里，直接导入。
+  List<String>? _stagedPaths;
+  // B11-2：按文件名猜学科后的提示（“按文件名猜是「数学」，不对可以改”），
+  // 用户手动改下拉后清除；猜不出时为 null。
+  String? _subjectGuessHint;
 
   @override
   void initState() {
@@ -201,10 +218,9 @@ class _CollectPageState extends State<CollectPage> {
   }
 
   Future<void> _pickFiles() async {
-    if (_selectedSubjectId == null) {
-      setState(() => _noSubjectWarning = true);
-      return;
-    }
+    // B11-2：没选学科也能先选文件——选完按文件名猜一个学科建议预填
+    // 下拉框（只建议、不静默指定），仍没学科时文件暂存，等用户选好
+    // 学科点“开始导入”再导；没选学科不能导入的口径不变。
     if (_picking) return;
     setState(() {
       _picking = true;
@@ -215,38 +231,188 @@ class _CollectPageState extends State<CollectPage> {
         widget.repo.db,
         pdfRenderService: widget.pdfRenderService,
       );
-      final paths = await service.pickFiles();
-      if (paths.isEmpty) return;
-      final duplicateNames = <String>[];
-      final oversizeHints = <String>[];
-      for (final path in paths) {
-        final file = File(path);
-        final name = file.uri.pathSegments.last;
-        if (_tasks.any((t) => t.fileName == name) &&
-            !duplicateNames.contains(name)) {
-          duplicateNames.add(name);
-        }
-        try {
-          final hint = ImportService.oversizeHint(file);
-          if (hint != null) oversizeHints.add(hint);
-        } catch (_) {}
-      }
-      // 重复文件 / 超限均为黄色横幅：用户选“仍然再导一份”才继续，
-      // 选“不导了”则整批取消。重复只是警告；超限文件导入时会记为
-      // 失败任务（SR-P1-14：PDF 50MB / 图片 20MB 均为硬判）。
-      if (duplicateNames.isNotEmpty || oversizeHints.isNotEmpty) {
-        if (!mounted) return;
-        setState(
-          () => _pendingImport = _PendingImport(
-            paths: paths,
-            subjectId: _selectedSubjectId!,
-            duplicateNames: duplicateNames,
-            oversizeHints: oversizeHints,
-          ),
-        );
+      List<String> paths;
+      try {
+        paths = await service.pickFiles();
+      } catch (_) {
+        if (mounted) _snack('打不开文件选择器，请重试');
         return;
       }
-      await _importFiles(paths, _selectedSubjectId!);
+      if (paths.isEmpty) return;
+      await _handleIncomingPaths(paths);
+    } finally {
+      if (mounted) setState(() => _picking = false);
+    }
+  }
+
+  /// B11-1：拖放落点（`DropTarget.onDragDone`）。文件夹与空路径跳过
+  /// 并提示，其余与文件选择导入走同一条 [_handleIncomingPaths]。
+  Future<void> _onFilesDropped(DropDoneDetails details) async {
+    if (_picking) return;
+    final paths = <String>[];
+    var skippedDirs = 0;
+    for (final item in details.files) {
+      if (item is DropItemDirectory) {
+        skippedDirs++;
+        continue;
+      }
+      if (item.path.isEmpty) continue;
+      paths.add(item.path);
+    }
+    if (skippedDirs > 0) {
+      _snack('文件夹不能直接拖：打开文件夹，把里面的文件拖进来');
+    }
+    if (paths.isEmpty) return;
+    setState(() {
+      _picking = true;
+      _noSubjectWarning = false;
+    });
+    try {
+      await _handleIncomingPaths(paths);
+    } finally {
+      if (mounted) setState(() => _picking = false);
+    }
+  }
+
+  /// B11-1 + B11-2：文件选择与拖放的统一入口。
+  /// 只收 PDF / JPG / PNG；同批内容重复只留第一份；文件名重复与
+  /// 内容重复（SHA-256）都走既有“已经导入过”横幅；超限走既有超限
+  /// 横幅；没选学科时按文件名猜一个建议预填，仍没学科就暂存文件。
+  Future<void> _handleIncomingPaths(List<String> paths) async {
+    final kept = <String>[];
+    var skippedDirs = 0;
+    var skippedTypes = 0;
+    for (final path in paths) {
+      // Win11 上拖文件夹进来也是一条路径，先按目录拦掉。
+      if (Directory(path).existsSync()) {
+        skippedDirs++;
+        continue;
+      }
+      final ext = path.split('.').last.toLowerCase();
+      if (!ImportService.allowedExtensions.contains(ext)) {
+        skippedTypes++;
+        continue;
+      }
+      kept.add(path);
+    }
+    if (skippedDirs > 0 || skippedTypes > 0) {
+      _snack('只收 PDF / JPG / PNG：跳过了 $skippedDirs 个文件夹、$skippedTypes 个不支持的文件');
+    }
+    if (kept.isEmpty) return;
+    final service = ImportService(
+      widget.repo.db,
+      pdfRenderService: widget.pdfRenderService,
+    );
+    // 同批内容重复：只留第一份导入（第二份起直接丢掉，不建任务）。
+    final dedup = await service.checkContentDuplicates(kept, _tasks);
+    var effective = kept;
+    if (dedup.withinBatchDropped.isNotEmpty) {
+      effective = kept
+          .where((p) => !dedup.withinBatchDropped.contains(p))
+          .toList();
+      _snack('其中 ${dedup.withinBatchDropped.length} 个文件与本批另一文件内容相同，已只导一份');
+    }
+    if (effective.isEmpty) return;
+    // 重复文件：文件名命中（既有口径）或内容哈希命中（B11-2），
+    // 都进同一条“已经导入过”横幅，等用户点“仍然再导一份”才继续。
+    final duplicateNames = <String>[];
+    for (final path in effective) {
+      final name = File(path).uri.pathSegments.last;
+      if (_tasks.any((t) => t.fileName == name) &&
+          !duplicateNames.contains(name)) {
+        duplicateNames.add(name);
+      }
+    }
+    for (final name in dedup.libraryDuplicates) {
+      if (!duplicateNames.contains(name)) duplicateNames.add(name);
+    }
+    final oversizeHints = <String>[];
+    for (final path in effective) {
+      final file = File(path);
+      try {
+        final hint = ImportService.oversizeHint(file);
+        if (hint != null) oversizeHints.add(hint);
+      } catch (_) {}
+    }
+    // 没选学科时按文件名猜一个建议预填（B11-2）：猜不出、或本批
+    // 猜得不一致时留空，等用户自己选；绝不静默自动指定。
+    if (_selectedSubjectId == null) {
+      final guessed = guessCommonSubjectId(
+        effective.map((p) => File(p).uri.pathSegments.last).toList(),
+        _subjects,
+      );
+      if (guessed != null) {
+        setState(() {
+          _selectedSubjectId = guessed;
+          _subjectGuessHint = '按文件名猜是「${_subjectOf(guessed).name}」，不对可以改';
+        });
+      }
+    }
+    if (_selectedSubjectId == null) {
+      // 仍没学科：文件暂存，等用户选好学科点“开始导入”再走同一套
+      // 重复 / 超限检查；不直接导入（没选学科不能导入）。
+      setState(() {
+        _stagedPaths = [...?_stagedPaths, ...effective];
+      });
+      return;
+    }
+    if (duplicateNames.isNotEmpty || oversizeHints.isNotEmpty) {
+      if (!mounted) return;
+      setState(
+        () => _pendingImport = _PendingImport(
+          paths: effective,
+          subjectId: _selectedSubjectId!,
+          duplicateNames: duplicateNames,
+          oversizeHints: oversizeHints,
+        ),
+      );
+      return;
+    }
+    await _importFiles(effective, _selectedSubjectId!);
+  }
+
+  /// B11-2：暂存文件的“开始导入”——学科仍没选时出“先选学科”提示；
+  /// 选好了就把暂存文件重走 [_handleIncomingPaths]（重复 / 超限 /
+  /// 内容去重同一套检查再算一遍）。
+  Future<void> _startStagedImport() async {
+    final staged = _stagedPaths;
+    if (staged == null || staged.isEmpty) return;
+    if (_selectedSubjectId == null) {
+      setState(() => _noSubjectWarning = true);
+      return;
+    }
+    setState(() => _stagedPaths = null);
+    await _handleIncomingPaths(staged);
+  }
+
+  void _discardStagedImport() {
+    setState(() => _stagedPaths = null);
+  }
+
+  /// B11-2：重试本批全部失败项（只重导失败的，成功的、已在队列里
+  /// 的不动；沿用本批的学科，不重新猜）。
+  Future<void> _retryBatchFailures() async {
+    final batch = _batch;
+    if (batch == null || !batch.hasFailures || _picking) return;
+    setState(() => _picking = true);
+    try {
+      await _importFiles(
+        batch.failedPaths,
+        batch.subjectId,
+        resumeBatch: batch,
+      );
+    } finally {
+      if (mounted) setState(() => _picking = false);
+    }
+  }
+
+  /// B11-2：重试队列里失败的一行。
+  Future<void> _retryBatchPath(String path) async {
+    final batch = _batch;
+    if (batch == null || _picking) return;
+    setState(() => _picking = true);
+    try {
+      await _importFiles([path], batch.subjectId, resumeBatch: batch);
     } finally {
       if (mounted) setState(() => _picking = false);
     }
@@ -270,16 +436,51 @@ class _CollectPageState extends State<CollectPage> {
     setState(() => _pendingImport = null);
   }
 
-  Future<void> _importFiles(List<String> paths, String subjectId) async {
+  Future<void> _importFiles(
+    List<String> paths,
+    String subjectId, {
+    BatchImportState? resumeBatch,
+  }) async {
     final service = ImportService(
       widget.repo.db,
       pdfRenderService: widget.pdfRenderService,
     );
+    // B11-2：>1 个文件建批量队列（单文件不建，行为不变）；重试失败项
+    // 时复用原队列，只把失败行打回排队中。
+    if (resumeBatch != null) {
+      _batch = resumeBatch;
+      for (final path in paths) {
+        final i = _batch!.indexOfPath(path);
+        if (i >= 0) _batch!.resetForRetry(i);
+      }
+    } else if (paths.length > 1) {
+      _batch = BatchImportState(
+        subjectId: subjectId,
+        files: [
+          for (final p in paths)
+            BatchImportFile(
+              path: p,
+              name: File(p).uri.pathSegments.last,
+              guessedExam: guessExamName(File(p).uri.pathSegments.last),
+            ),
+        ],
+      );
+    } else {
+      _batch = null;
+    }
+    if (mounted) setState(() {});
     for (final path in paths) {
       final file = File(path);
       final name = file.uri.pathSegments.last;
+      final batchIndex = _batch?.indexOfPath(path) ?? -1;
+      if (batchIndex >= 0) _batch!.markImporting(batchIndex);
+      if (mounted) setState(() {});
       if (!file.existsSync()) {
+        if (batchIndex >= 0) {
+          _batch!.markFailed(batchIndex, '文件损坏：找不到这个文件');
+        }
         await _failTask(name, subjectId, '文件损坏：找不到这个文件');
+        if (mounted) setState(() {});
         continue;
       }
       String? failure;
@@ -294,17 +495,29 @@ class _CollectPageState extends State<CollectPage> {
         failure = '文件损坏：无法读取';
       }
       if (failure != null) {
+        if (batchIndex >= 0) _batch!.markFailed(batchIndex, failure);
         await _failTask(name, subjectId, failure);
+        if (mounted) setState(() {});
         continue;
       }
       // §1.4：真实导入（复制进库 + PDF 整本渲染 / 图片 EXIF 归一化
       // + 真实进度）。PDF 加密 / 损坏 / 超 50MB / 超 20 页 /
       // 渲染失败都进失败任务（enqueue 内判），不建无页图任务；
       // 复制失败 / 镜像方向同样进失败任务，不建空任务。
+      // B11-2：逐个处理，单张失败只记本行失败，不中断整批。
       final created = await service.enqueue(
         [path],
         subjectId: subjectId,
         onProgress: (taskId, progress) {
+          if (batchIndex >= 0) {
+            // 任务行要等 enqueue 返回才进 _tasks，批量进度不能等它：
+            // 进度变了就直接刷新（与任务行同一“只在变化时刷新”口径）。
+            final file = _batch!.files[batchIndex];
+            if (file.progress != progress) {
+              _batch!.markProgress(batchIndex, progress);
+              if (mounted) setState(() {});
+            }
+          }
           final i = _tasks.indexWhere((t) => t.id == taskId);
           if (i < 0 || !mounted) return;
           final t = _tasks[i];
@@ -330,6 +543,16 @@ class _CollectPageState extends State<CollectPage> {
       );
       for (final task in created) {
         if (!_tasks.any((t) => t.id == task.id)) _tasks.add(task);
+      }
+      if (batchIndex >= 0) {
+        final failed = created
+            .where((t) => t.status == CollectStatus.failed)
+            .toList();
+        if (failed.isNotEmpty) {
+          _batch!.markFailed(batchIndex, failed.first.error ?? '导入失败');
+        } else {
+          _batch!.markDone(batchIndex);
+        }
       }
       if (mounted) setState(() {});
     }
@@ -492,9 +715,7 @@ class _CollectPageState extends State<CollectPage> {
     final alreadySplit = _splitPagesFor(_tasks, task);
     final boxedPages = <int>{
       for (final p in pages)
-        if (!alreadySplit.contains(p) &&
-            result.boxesByPage[p]!.isNotEmpty)
-          p,
+        if (!alreadySplit.contains(p) && result.boxesByPage[p]!.isNotEmpty) p,
     };
     var total = 0;
     for (final p in boxedPages) {
@@ -502,9 +723,7 @@ class _CollectPageState extends State<CollectPage> {
     }
     if (total == 0) {
       final hadSkippedBoxes = pages.any(
-        (p) =>
-            alreadySplit.contains(p) &&
-            result.boxesByPage[p]!.isNotEmpty,
+        (p) => alreadySplit.contains(p) && result.boxesByPage[p]!.isNotEmpty,
       );
       await _load();
       if (hadSkippedBoxes && mounted) _snack('这些页已经拆成题了，不用再拆');
@@ -889,6 +1108,19 @@ class _CollectPageState extends State<CollectPage> {
                 height: 1.55,
               ),
             ),
+            if (_stagedPaths != null) ...[
+              SizedBox(height: 10 * scale),
+              _stagedCard(scale, palette),
+            ],
+            if (_batch != null) ...[
+              SizedBox(height: 10 * scale),
+              BatchImportCard(
+                batch: _batch!,
+                onRetryFailed: _retryBatchFailures,
+                onRetryPath: _retryBatchPath,
+                onDismiss: () => setState(() => _batch = null),
+              ),
+            ],
             SizedBox(height: 22 * scale),
             Text(
               '收集任务',
@@ -1040,7 +1272,11 @@ class _CollectPageState extends State<CollectPage> {
                       .toList(),
                   onChanged: _subjects.isEmpty
                       ? null
-                      : (v) => setState(() => _selectedSubjectId = v),
+                      : (v) => setState(() {
+                          _selectedSubjectId = v;
+                          // 用户手动改了学科，猜测提示清除。
+                          _subjectGuessHint = null;
+                        }),
                 ),
               ),
             ),
@@ -1058,6 +1294,18 @@ class _CollectPageState extends State<CollectPage> {
             height: 1.4,
           ),
         ),
+        // B11-2：按文件名猜学科的建议提示（只建议，用户随时可改下拉）。
+        if (_subjectGuessHint != null) ...[
+          SizedBox(height: 4 * scale),
+          Text(
+            _subjectGuessHint!,
+            style: TextStyle(
+              fontSize: DesignTokens.captionFontSize,
+              color: palette.accentText,
+              height: 1.4,
+            ),
+          ),
+        ],
         if (_subjects.isEmpty && widget.onGoSubjects != null) ...[
           SizedBox(height: 8 * scale),
           QmButton(
@@ -1072,72 +1320,145 @@ class _CollectPageState extends State<CollectPage> {
   }
 
   Widget _dropZone(double scale, AppPalette palette) {
-    return GestureDetector(
-      key: const Key('collect-drop'),
-      onTap: _pickFiles,
-      child: CustomPaint(
-        painter: DashedDropPainter(
-          color: palette.accent,
-          radius: DesignTokens.scaled(scale).radiusLg,
-        ),
-        child: Container(
-          width: double.infinity,
-          padding: EdgeInsets.all(DesignTokens.collectDropPadding * scale),
-          decoration: BoxDecoration(
-            color: palette.accentSoft,
-            borderRadius: BorderRadius.circular(
-              DesignTokens.scaled(scale).radiusLg,
+    // B11-1：只接收集中心落点（不接全窗口、不接微信 / QQ 窗口拖入）。
+    // 拖进来走与文件选择导入相同的流程（先选学科、大小限制、重复
+    // 提示“已经导入过”）；悬停时标题变“松开就导入”并加粗边框。
+    return DropTarget(
+      onDragEntered: (_) {
+        if (mounted) setState(() => _dragOver = true);
+      },
+      onDragExited: (_) {
+        if (mounted) setState(() => _dragOver = false);
+      },
+      onDragDone: _onFilesDropped,
+      child: GestureDetector(
+        key: const Key('collect-drop'),
+        onTap: _pickFiles,
+        child: CustomPaint(
+          painter: DashedDropPainter(
+            color: palette.accent,
+            radius: DesignTokens.scaled(scale).radiusLg,
+          ),
+          child: Container(
+            width: double.infinity,
+            padding: EdgeInsets.all(DesignTokens.collectDropPadding * scale),
+            decoration: BoxDecoration(
+              color: palette.accentSoft,
+              borderRadius: BorderRadius.circular(
+                DesignTokens.scaled(scale).radiusLg,
+              ),
+              border: _dragOver
+                  ? Border.all(color: palette.accent, width: 2 * scale)
+                  : null,
+            ),
+            child: Column(
+              children: [
+                Text(
+                  _dragOver ? '松开就导入' : '把文件拖到这里，或点击选择',
+                  style: TextStyle(
+                    fontSize: DesignTokens.collectDropTitleFontSize,
+                    fontWeight: FontWeight.w800,
+                    color: palette.ink,
+                    height: 1.2,
+                  ),
+                ),
+                SizedBox(height: 4 * scale),
+                Text(
+                  'PDF 与 JPG / PNG 照片都能导（Word 先导出成 PDF 再导入）',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    fontSize: DesignTokens.bodySmallFontSize,
+                    color: palette.muted,
+                    height: 1.4,
+                  ),
+                ),
+                SizedBox(height: 4 * scale),
+                Text(
+                  '单个 PDF 不超过 50MB、20 页，超了进失败任务并提示分批导入 · 图片不超过 20MB · 一份卷子会按页逐页框题 · 一次拖进来多个文件会排队逐个导入，进度在下面可见，失败的可以重试',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    fontSize: DesignTokens.bodySmallFontSize,
+                    color: palette.muted,
+                    height: 1.4,
+                  ),
+                ),
+                SizedBox(height: 16 * scale),
+                QmButton(
+                  label: _picking ? '选择中…' : '选择文件',
+                  onPressed: _picking ? null : _pickFiles,
+                ),
+              ],
             ),
           ),
-          child: Column(
+        ),
+      ),
+    );
+  }
+
+  /// B11-2：没选学科时暂存的文件卡片——列出文件名，等用户在上方选
+  /// 好学科后点“开始导入”；也可以“取消”丢掉这批暂存。
+  Widget _stagedCard(double scale, AppPalette palette) {
+    final staged = _stagedPaths ?? const <String>[];
+    return Container(
+      key: const Key('staged-import-card'),
+      decoration: BoxDecoration(
+        color: palette.surface,
+        border: Border.all(color: palette.line),
+        borderRadius: BorderRadius.circular(
+          DesignTokens.scaled(scale).radiusLg,
+        ),
+      ),
+      padding: EdgeInsets.all(14 * scale),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            '已选 ${staged.length} 个文件，等选学科',
+            style: TextStyle(
+              fontSize: DesignTokens.bodyFontSize,
+              fontWeight: FontWeight.w700,
+              color: palette.ink,
+              height: 1.3,
+            ),
+          ),
+          SizedBox(height: 4 * scale),
+          Text(
+            staged.map((p) => File(p).uri.pathSegments.last).join('、'),
+            style: TextStyle(
+              fontSize: DesignTokens.bodySmallFontSize,
+              color: palette.muted,
+              height: 1.4,
+            ),
+          ),
+          SizedBox(height: 4 * scale),
+          Text(
+            '先在上面选好学科，再点“开始导入”。',
+            style: TextStyle(
+              fontSize: DesignTokens.bodySmallFontSize,
+              color: palette.muted,
+              height: 1.4,
+            ),
+          ),
+          SizedBox(height: 10 * scale),
+          Row(
             children: [
-              Text(
-                '把文件拖到这里，或点击选择',
-                style: TextStyle(
-                  fontSize: DesignTokens.collectDropTitleFontSize,
-                  fontWeight: FontWeight.w800,
-                  color: palette.ink,
-                  height: 1.2,
-                ),
-              ),
-              SizedBox(height: 4 * scale),
-              Text(
-                'PDF 与 JPG / PNG 照片都能导（Word 先导出成 PDF 再导入）',
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                  fontSize: DesignTokens.bodySmallFontSize,
-                  color: palette.muted,
-                  height: 1.4,
-                ),
-              ),
-              SizedBox(height: 4 * scale),
-              Text(
-                '单个 PDF 不超过 50MB、20 页，超了进失败任务并提示分批导入 · 图片不超过 20MB · 一份卷子会按页逐页框题 · 一次拖进来多个文件会生成多个任务排队导入，一个一个检测',
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                  fontSize: DesignTokens.bodySmallFontSize,
-                  color: palette.muted,
-                  height: 1.4,
-                ),
-              ),
-              SizedBox(height: 4 * scale),
-              Text(
-                '拖放导入还没接好，先点「选择文件」导入',
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                  fontSize: DesignTokens.captionFontSize,
-                  color: palette.muted,
-                  height: 1.4,
-                ),
-              ),
-              SizedBox(height: 16 * scale),
               QmButton(
-                label: _picking ? '选择中…' : '选择文件',
-                onPressed: _picking ? null : _pickFiles,
+                key: const Key('staged-import-start'),
+                label: '开始导入',
+                variant: QmButtonVariant.primary,
+                size: QmButtonSize.small,
+                onPressed: _picking ? null : _startStagedImport,
+              ),
+              SizedBox(width: 8 * scale),
+              QmButton(
+                label: '取消',
+                variant: QmButtonVariant.plain,
+                size: QmButtonSize.small,
+                onPressed: _picking ? null : _discardStagedImport,
               ),
             ],
           ),
-        ),
+        ],
       ),
     );
   }

@@ -1570,6 +1570,12 @@ class _BannerButton extends StatelessWidget {
 /// 复用 [CompanionWidget]（不重画小伙伴）。与 `widgets.dart` 的
 /// `EmptyState`（无边框简化版）不同，本组件是 HTML 忠实形态，
 /// 供 R2 各页替换使用。
+///
+/// 第二动作（D-32）：错题本列表范围为空时，“去收集 / 去整理”两个
+/// 入口并排——主按钮实心亮蓝（primary）、次按钮白底蓝字细蓝边
+///（secondary），短文案、10px 圆角，与项目按钮风格一致。只在
+/// [secondaryActionLabel] 与 [onSecondaryAction] 都给时才画第二
+/// 个按钮；单动作的老调用处渲染不变。
 class QmEmptyState extends StatelessWidget {
   const QmEmptyState({
     super.key,
@@ -1577,8 +1583,11 @@ class QmEmptyState extends StatelessWidget {
     this.description,
     this.actionLabel,
     this.onAction,
+    this.secondaryActionLabel,
+    this.onSecondaryAction,
     this.companionSize = 72,
     this.actionVariant = QmButtonVariant.primary,
+    this.secondaryActionVariant = QmButtonVariant.secondary,
   });
 
   final String title;
@@ -1586,9 +1595,14 @@ class QmEmptyState extends StatelessWidget {
   final String? actionLabel;
   final VoidCallback? onAction;
 
+  /// 第二动作（与主动作并排；都给时才画）。
+  final String? secondaryActionLabel;
+  final VoidCallback? onSecondaryAction;
+
   /// 小伙伴尺寸（基准值，按缩放换算）。
   final double companionSize;
   final QmButtonVariant actionVariant;
+  final QmButtonVariant secondaryActionVariant;
 
   @override
   Widget build(BuildContext context) {
@@ -1634,12 +1648,34 @@ class QmEmptyState extends StatelessWidget {
             ],
             if (actionLabel != null) ...[
               SizedBox(height: 18 * scale),
-              QmButton(
-                label: actionLabel!,
-                onPressed: onAction,
-                variant: actionVariant,
-                size: QmButtonSize.regular,
-              ),
+              if (secondaryActionLabel != null &&
+                  onSecondaryAction != null)
+                Wrap(
+                  alignment: WrapAlignment.center,
+                  spacing: 10 * scale,
+                  runSpacing: 8 * scale,
+                  children: [
+                    QmButton(
+                      label: actionLabel!,
+                      onPressed: onAction,
+                      variant: actionVariant,
+                      size: QmButtonSize.regular,
+                    ),
+                    QmButton(
+                      label: secondaryActionLabel!,
+                      onPressed: onSecondaryAction,
+                      variant: secondaryActionVariant,
+                      size: QmButtonSize.regular,
+                    ),
+                  ],
+                )
+              else
+                QmButton(
+                  label: actionLabel!,
+                  onPressed: onAction,
+                  variant: actionVariant,
+                  size: QmButtonSize.regular,
+                ),
             ],
           ],
         ),

@@ -10,6 +10,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:quiz_master2/data/database.dart';
 import 'package:quiz_master2/data/repository.dart';
+import 'package:quiz_master2/models/exam_event.dart';
 import 'package:quiz_master2/models/models.dart';
 import 'package:quiz_master2/modules/collect/collect_page.dart';
 import 'package:quiz_master2/modules/home/home_page.dart';
@@ -75,6 +76,11 @@ class _B8FakeRepo extends QuestionRepository {
   @override
   Future<List<Question>> dueToday({bool includeArchived = false}) async =>
       const [];
+
+  /// B11-9：考试事件列表（默认空，首页不显示倒计时条；不覆盖会走到
+  /// 真实库——旧 Fake 必须补这一行，见 B11-9 报告 §6）。
+  @override
+  Future<List<ExamEvent>> examEvents() async => const [];
 }
 
 Future<void> _pumpNav(

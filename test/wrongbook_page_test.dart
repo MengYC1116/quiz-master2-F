@@ -360,6 +360,8 @@ Future<void> pumpWrongbook(
   Key? pageKey,
   Future<void> Function(Question q, List<String> orderIds)? onOpenDetail,
   void Function({String? subjectId})? onGoReview,
+  VoidCallback? onGoCollect,
+  VoidCallback? onGoOrganize,
 }) async {
   tester.view.physicalSize = const Size(1280, 720);
   tester.view.devicePixelRatio = 1.0;
@@ -383,6 +385,8 @@ Future<void> pumpWrongbook(
                 initialSubjectId: initialSubjectId,
                 filterCause: filterCause,
                 onOpenHome: () {},
+                onGoCollect: onGoCollect,
+                onGoOrganize: onGoOrganize,
                 onOpenDetail: onOpenDetail ?? (_, __) async {},
                 onGoReview: onGoReview ?? ({String? subjectId}) {},
               ),
@@ -1296,6 +1300,44 @@ void main() {
       await tester.tap(find.text('返回目录'));
       await tester.pumpAndSettle();
       expect(find.text('数学 · 错题本'), findsOneWidget);
+    });
+
+    testWidgets('D-32：文件夹为空且双入口接通：显示“去收集 / 去整理”双按钮，点后走对应回调',
+        (tester) async {
+      var wentCollect = false;
+      var wentOrganize = false;
+      final repo = FakeWrongbookRepo(
+        questions: [
+          wbq('q1', '函数极限',
+              folderIds: const ['f1'], errorTypes: const ['概念不清']),
+        ],
+        folderList: const [
+          Folder(id: 'f1', name: '试卷', subjectId: 'math', sortOrder: 0),
+          Folder(id: 'fEmpty', name: '空文件夹', subjectId: 'math', sortOrder: 10),
+        ],
+        counts: const {'math': (0, 0, 0)},
+      );
+      await pumpWrongbook(
+        tester,
+        repo: repo,
+        initialSubjectId: 'math',
+        onGoCollect: () => wentCollect = true,
+        onGoOrganize: () => wentOrganize = true,
+      );
+      await tester.tap(find.text('空文件夹'));
+      await tester.pumpAndSettle();
+      expect(find.text('这个文件夹还是空的'), findsOneWidget);
+      expect(find.textContaining('去收集中心拍一道题'), findsOneWidget);
+      expect(find.text('去收集'), findsOneWidget);
+      expect(find.text('去整理'), findsOneWidget);
+      expect(find.text('返回目录'), findsNothing);
+      await tester.tap(find.text('去收集'));
+      await tester.pump();
+      expect(wentCollect, isTrue);
+      expect(wentOrganize, isFalse);
+      await tester.tap(find.text('去整理'));
+      await tester.pump();
+      expect(wentOrganize, isTrue);
     });
 
     testWidgets('搜索确实无结果：仍显示搜索无结果文案，不显示文件夹为空文案',

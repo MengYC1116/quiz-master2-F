@@ -65,6 +65,11 @@ class _OrganizePageState extends State<OrganizePage> {
   bool _loading = true;
   bool _hasAnyQuestion = false;
 
+  // B11-10 今日小结：队列已空时空状态显示的两个数（_refresh 里只在
+  // 队列已空且库里有题时读；队列非空时不读，省一次全表 + 记录查询）。
+  int _organizedToday = 0;
+  int _toReviewCount = 0;
+
   List<Folder> _folders = [];
   List<Exam> _exams = [];
   List<KnowledgePoint> _kps = [];
@@ -198,6 +203,17 @@ class _OrganizePageState extends State<OrganizePage> {
     for (final q in all) {
       customs.addAll(q.customErrorTypes);
     }
+    // B11-10 今日小结：队列已空且库里有题时（空状态要显示小结行）才读
+    // 两个数；队列非空时空状态不显示，不读。N1 = 今天已整理的题数
+    // （settings 键 organizedToday，当天内整理确认的跃迁计数）；
+    // N2 = 待复习题数，与首页焦点卡 / 复习角标同一口径
+    // （repo.dueToday：手动加入、已整理、未治愈或到复查时间，数题）。
+    var organizedToday = 0;
+    var toReview = 0;
+    if (pending.isEmpty && all.isNotEmpty) {
+      organizedToday = await widget.repo.organizedTodayCount();
+      toReview = (await widget.repo.dueToday()).length;
+    }
     if (!mounted) return;
     setState(() {
       _hasAnyQuestion = all.isNotEmpty;
@@ -211,6 +227,8 @@ class _OrganizePageState extends State<OrganizePage> {
       _allTags = tags;
       _subjects = subjects;
       _customTypesAll = customs.toList();
+      _organizedToday = organizedToday;
+      _toReviewCount = toReview;
       _loading = false;
     });
     await _loadFolders();
@@ -665,8 +683,11 @@ class _OrganizePageState extends State<OrganizePage> {
   }
 
   /// 空状态分两种：从未有题（库里一道题也没有）/ 队列已空（题都在，
-  /// 但都已整理完）。
+  /// 但都已整理完）。今日小结行只在后一种显示（前一种是首次使用的
+  /// 引导态，没有“今天整理了”的语境）；只这一行，不加本周累计与
+  /// 连续天数（B11-10 最小版）。
   Widget _emptyPage() {
+    final palette = DesignTokens.of(Theme.of(context).brightness);
     if (_hasAnyQuestion) {
       return SingleChildScrollView(
         padding: EdgeInsets.zero,
@@ -680,6 +701,17 @@ class _OrganizePageState extends State<OrganizePage> {
               description: '这一批题都确认整理并归档到错题本了。收集中心有新题进来时，这里会重新出现队列。',
               actionLabel: '去复习',
               onAction: widget.onGoReview,
+            ),
+            const SizedBox(height: 12),
+            Center(
+              child: Text(
+                '今天整理了 $_organizedToday 道、待复习 $_toReviewCount 道',
+                style: TextStyle(
+                  fontSize: 13.5,
+                  color: palette.muted,
+                  height: 1.6,
+                ),
+              ),
             ),
           ],
         ),

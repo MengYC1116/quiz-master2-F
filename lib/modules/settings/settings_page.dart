@@ -7,13 +7,14 @@ import 'package:flutter/material.dart';
 import '../../data/badge_notifier.dart';
 import '../../data/database.dart';
 import '../../data/repository.dart';
+import '../../models/exam_event.dart';
 import '../../models/models.dart';
 import '../../services/import_service.dart';
 import '../../services/zip_archive.dart';
 import '../../theme/design_tokens.dart';
 import '../../widgets/uikit.dart';
 
-/// 设置：分段折叠式五组（外观 / 复习 / 错题本 / 数据 / 启动与关于），
+/// 设置：分段折叠式六组（外观 / 复习 / 错题本 / 考试 / 数据 / 启动与关于），
 /// 默认全折起，一次只展开一个。每项标题 + 一句短说明 + 选项，简洁直接。
 /// 改设置后调 onSettingsChanged 保存并刷新主题 / 字体。
 ///
@@ -36,6 +37,7 @@ class SettingsPage extends StatefulWidget {
     required this.onSettingsChanged,
     this.loadFailed = false,
     this.onBackupFailed,
+    this.initialOpenGroup,
   });
 
   final QuestionRepository repo;
@@ -47,6 +49,12 @@ class SettingsPage extends StatefulWidget {
 
   /// 待定3：手动备份失败时调用（应用层点亮首页红色横幅）。
   final VoidCallback? onBackupFailed;
+
+  /// B11-9：从首页倒计时点进来时直接展开的组（'exams'）；平时为空，
+  /// 各组默认全折。组键与 [_SettingsPageState._openGroup] 同一套：
+  /// 'appearance' / 'review' / 'wrongbook' / 'exams' / 'data' /
+  /// 'startup'。
+  final String? initialOpenGroup;
 
   @override
   State<SettingsPage> createState() => _SettingsPageState();
@@ -105,12 +113,33 @@ class _SettingsPageState extends State<SettingsPage> {
   bool _cacheScanned = false;
   String? _cacheCleanedMb;
 
+  // B11-9 考试倒计时：考试事件列表（独立数据，与试卷无任何关联）。
+  List<ExamEvent> _examEvents = const [];
+  final _examNameController = TextEditingController();
+  DateTime? _newExamDate;
+
   @override
   void initState() {
     super.initState();
     _s = widget.settings;
     _greetingController.text = _s.greeting;
+    // B11-9：从首页倒计时点进来时直接展开考试组（平时为 null，全折）。
+    _openGroup = widget.initialOpenGroup;
     _loadQuestionCount();
+    // B11-9：考试列表平时不读——只在考试组打开时才读（见 _toggleGroup），
+    // 这样不打开考试组的用例（包括只 pump 设置页的旧测试）完全不受影响。
+    // 从首页倒计时点进来时组已展开，这里直接读一次。
+    if (_openGroup == 'exams') _loadExamEvents();
+  }
+
+  Future<void> _loadExamEvents() async {
+    try {
+      final list = await widget.repo.examEvents();
+      if (!mounted) return;
+      setState(() => _examEvents = list);
+    } catch (_) {
+      // 考试列表读不到不影响设置页本身；只显示空态。
+    }
   }
 
   Future<void> _loadQuestionCount() async {
@@ -130,11 +159,18 @@ class _SettingsPageState extends State<SettingsPage> {
       _s = widget.settings;
       _greetingController.text = _s.greeting;
     }
+    // B11-9：应用层换了 initialOpenGroup（如从首页倒计时点进来）
+    // 时跟进展开对应组；用户自己在页内折叠/展开后不再干预。
+    if (widget.initialOpenGroup != oldWidget.initialOpenGroup &&
+        widget.initialOpenGroup != null) {
+      _openGroup = widget.initialOpenGroup;
+    }
   }
 
   @override
   void dispose() {
     _greetingController.dispose();
+    _examNameController.dispose();
     super.dispose();
   }
 
@@ -148,6 +184,8 @@ class _SettingsPageState extends State<SettingsPage> {
       _openGroup = _openGroup == key ? null : key;
       if (_openGroup == 'data' && !_cacheScanned) _scanCache();
       if (_openGroup == 'data') _scanStorageAndOrphans();
+      // B11-9：考试组打开时才读考试列表（平时不读，见 initState 注释）。
+      if (_openGroup == 'exams') _loadExamEvents();
     });
   }
 
@@ -653,6 +691,134 @@ class _SettingsPageState extends State<SettingsPage> {
     await _apply(_s.copyWith(notifyTime: text));
   }
 
+  // ---------- 考试倒计时（B11-9） ----------
+
+  /// 新增一场考试：只填自定义名称 + 考试日期，不选试卷、不关联试卷。
+  Future<void> _addExamEvent() async {
+    final name = _examNameController.text.trim();
+    if (name.isEmpty) {
+      _snack('先填一个考试名称');
+      return;
+    }
+    final date = _newExamDate;
+    if (date == null) {
+      _snack('先选一个考试日期');
+      return;
+    }
+    if (_examEvents.any((e) => e.name == name)) {
+      _snack('已经有了这场考试');
+      return;
+    }
+    try {
+      await widget.repo.saveExamEvent(
+        ExamEvent(
+          id: 'exam-event-${DateTime.now().millisecondsSinceEpoch}',
+          name: name,
+          date: date,
+        ),
+      );
+    } catch (_) {
+      _snack('没加上，稍后再试');
+      return;
+    }
+    _examNameController.clear();
+    setState(() => _newExamDate = null);
+    await _loadExamEvents();
+  }
+
+  Future<void> _pickNewExamDate() async {
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: _newExamDate ?? DateTime.now(),
+      firstDate: DateTime(2000),
+      lastDate: DateTime(2100),
+    );
+    if (picked == null) return;
+    setState(() => _newExamDate = dateOnly(picked));
+  }
+
+  /// 改名：弹窗里改，保存后原地更新（顺序仍按日期排）。
+  /// 用 TextFormField(initialValue + onChanged)，不用
+  /// TextEditingController：弹窗关闭动画期间字段仍挂在树上，
+  /// 这时 dispose 控制器会触发“used after being disposed”。
+  Future<void> _renameExamEvent(ExamEvent e) async {
+    var name = e.name;
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (dctx) => AlertDialog(
+        title: const Text('改考试名称'),
+        content: TextFormField(
+          key: const Key('exam-rename-field'),
+          initialValue: e.name,
+          maxLength: 40,
+          autofocus: true,
+          decoration: const InputDecoration(hintText: '考试名称'),
+          onChanged: (v) => name = v,
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dctx).pop(false),
+            child: const Text('取消'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(dctx).pop(true),
+            child: const Text('保存'),
+          ),
+        ],
+      ),
+    );
+    name = name.trim();
+    if (ok != true || name.isEmpty || name == e.name) return;
+    if (_examEvents.any((x) => x.id != e.id && x.name == name)) {
+      _snack('已经有了这场考试');
+      return;
+    }
+    try {
+      await widget.repo.saveExamEvent(e.copyWith(name: name));
+    } catch (_) {
+      _snack('没改成，稍后再试');
+      return;
+    }
+    await _loadExamEvents();
+  }
+
+  /// 改日期：弹窗选日期，保存后原地更新。
+  Future<void> _pickExamEventDate(ExamEvent e) async {
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: e.date,
+      firstDate: DateTime(2000),
+      lastDate: DateTime(2100),
+    );
+    if (picked == null) return;
+    final date = dateOnly(picked);
+    if (date == e.date) return;
+    try {
+      await widget.repo.saveExamEvent(e.copyWith(date: date));
+    } catch (_) {
+      _snack('没改成，稍后再试');
+      return;
+    }
+    await _loadExamEvents();
+  }
+
+  /// 删除一场考试：只删事件本身，不动任何题目/试卷。
+  Future<void> _deleteExamEvent(ExamEvent e) async {
+    final ok = await _showConfirmDialog(
+      title: '删除这场考试，确定吗？',
+      detail: '「${e.name}」删了就没了，确定吗？',
+      confirmLabel: '删除',
+    );
+    if (!ok) return;
+    try {
+      await widget.repo.deleteExamEvent(e.id);
+    } catch (_) {
+      _snack('没删掉，稍后再试');
+      return;
+    }
+    await _loadExamEvents();
+  }
+
   // ---------- 构建 ----------
 
   @override
@@ -690,6 +856,13 @@ class _SettingsPageState extends State<SettingsPage> {
             expanded: _openGroup == 'wrongbook',
             onToggle: () => _toggleGroup('wrongbook'),
             child: _buildWrongbook(),
+          ),
+          SizedBox(height: R10Tokens.settingsGroupGap * scale),
+          QmFoldSection(
+            title: '考试',
+            expanded: _openGroup == 'exams',
+            onToggle: () => _toggleGroup('exams'),
+            child: _buildExams(),
           ),
           SizedBox(height: R10Tokens.settingsGroupGap * scale),
           QmFoldSection(
@@ -1027,6 +1200,114 @@ class _SettingsPageState extends State<SettingsPage> {
             onChanged: (v) => _apply(_s.copyWith(pageSize: v)),
           ),
         ),
+      ],
+    );
+  }
+
+  /// B11-9 考试倒计时：考试管理。只填自定义名称 + 考试日期，
+  /// 不选试卷、不关联试卷；首页只显示最近一场考试的倒计时。
+  Widget _buildExams() {
+    final scale = qmScaleOf(context);
+    final palette = DesignTokens.of(Theme.of(context).brightness);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _noteText('这里的考试只用来在首页倒计时，不关联任何试卷。'),
+        SizedBox(height: 8 * scale),
+        _row(
+          '加一场考试',
+          '填个名字、选个日期，首页就会显示倒计时。',
+          SizedBox(
+            width: 460 * scale,
+            child: Row(
+              children: [
+                Expanded(
+                  child: QmTextField(
+                    key: const Key('exam-name-field'),
+                    controller: _examNameController,
+                    hintText: '考试名称，如期末考试',
+                    maxLength: 40,
+                    onSubmitted: (_) => _addExamEvent(),
+                  ),
+                ),
+                SizedBox(width: 8 * scale),
+                QmButton(
+                  key: const Key('exam-date-button'),
+                  label: _newExamDate == null
+                      ? '选日期'
+                      : formatExamEventDate(_newExamDate!),
+                  variant: QmButtonVariant.secondary,
+                  size: QmButtonSize.small,
+                  onPressed: _pickNewExamDate,
+                ),
+                SizedBox(width: 8 * scale),
+                QmButton(
+                  key: const Key('exam-add-button'),
+                  label: '添加考试',
+                  size: QmButtonSize.small,
+                  onPressed: _addExamEvent,
+                ),
+              ],
+            ),
+          ),
+        ),
+        if (_examEvents.isEmpty)
+          _noteText('还没有考试，加一场吧。')
+        else
+          for (final e in _examEvents)
+            Padding(
+              key: Key('exam-event-row-${e.id}'),
+              padding: EdgeInsets.symmetric(vertical: 8 * scale),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(e.name,
+                            style: const TextStyle(
+                                fontSize:
+                                    R10Tokens.settingsRowTitleFontSize,
+                                fontWeight: FontWeight.w700)),
+                        SizedBox(height: 2 * scale),
+                        Text(
+                          '${formatExamEventDate(e.date)} · '
+                          '${examCountdownText(e)}',
+                          style: TextStyle(
+                              fontSize: R10Tokens.settingsRowDescFontSize,
+                              color: palette.muted),
+                        ),
+                      ],
+                    ),
+                  ),
+                  SizedBox(width: 16 * scale),
+                  QmButton(
+                    key: Key('exam-rename-${e.id}'),
+                    label: '改名',
+                    variant: QmButtonVariant.plain,
+                    size: QmButtonSize.small,
+                    onPressed: () => _renameExamEvent(e),
+                  ),
+                  SizedBox(width: 8 * scale),
+                  QmButton(
+                    key: Key('exam-change-date-${e.id}'),
+                    label: '改日期',
+                    variant: QmButtonVariant.plain,
+                    size: QmButtonSize.small,
+                    onPressed: () => _pickExamEventDate(e),
+                  ),
+                  SizedBox(width: 8 * scale),
+                  QmButton(
+                    key: Key('exam-delete-${e.id}'),
+                    label: '删除',
+                    variant: QmButtonVariant.plain,
+                    size: QmButtonSize.small,
+                    onPressed: () => _deleteExamEvent(e),
+                  ),
+                ],
+              ),
+            ),
       ],
     );
   }

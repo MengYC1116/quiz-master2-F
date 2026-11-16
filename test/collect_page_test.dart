@@ -14,6 +14,7 @@ import 'dart:io';
 import 'dart:math' as math;
 import 'dart:ui' as ui;
 
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -27,6 +28,7 @@ import 'package:quiz_master2/theme/app_theme.dart';
 
 late final Directory _testTmp;
 late final String _pagePngPath;
+
 /// B3-P01：页图放进 testDataDirectory，任务默认 sourcePath 用相对路径
 ///（resolveDataPath 已拒绝绝对路径）；_pagePngPath 只留给
 /// _seedPdfPageImages 的 File 复制用，不再进 sourcePath。
@@ -67,6 +69,36 @@ class _StubYolo extends YoloOnnxService {
       ],
       usedFallback: false,
     );
+  }
+}
+
+/// B11-2：假文件选择器——返回调用方给定的路径，不碰系统选择器。
+/// `FilePicker.platform` 在测试里默认未初始化（插件注册不跑），
+/// 直接调 pickFiles 会抛 LateInitializationError。
+class _FakeFilePicker extends FilePicker {
+  _FakeFilePicker(this.paths);
+
+  final List<String> paths;
+
+  @override
+  Future<FilePickerResult?> pickFiles({
+    String? dialogTitle,
+    String? initialDirectory,
+    FileType type = FileType.any,
+    List<String>? allowedExtensions,
+    Function(FilePickerStatus)? onFileLoading,
+    bool allowCompression = true,
+    int compressionQuality = 30,
+    bool allowMultiple = false,
+    bool withData = false,
+    bool withReadStream = false,
+    bool lockParentWindow = false,
+    bool readSequential = false,
+  }) async {
+    return FilePickerResult([
+      for (final p in paths)
+        PlatformFile(name: p.split('/').last, path: p, size: 3),
+    ]);
   }
 }
 
@@ -200,9 +232,7 @@ class FakeRepo extends QuestionRepository {
     required Map<int, List<QuestionBox>> boxesByPage,
     required Map<int, int> rotations,
   }) async {
-    draftBoxes[taskId] = [
-      for (final e in boxesByPage.entries) ...e.value,
-    ];
+    draftBoxes[taskId] = [for (final e in boxesByPage.entries) ...e.value];
   }
 
   /// SR-P1-2：同一次 confirmSplit 调用里传进来的保留任务与未框页草稿
@@ -589,13 +619,26 @@ void main() {
       expect(find.byType(ListView), findsNothing);
     });
 
-    testWidgets('没选学科不能导入：点选择文件出黄色提示', (tester) async {
+    testWidgets('没选学科也能选文件：选完暂存，等选好学科再导', (tester) async {
+      // B11-2：没选学科也能先选文件（猜学科要先拿到文件名）；文件
+      // 暂存，不直接导入。“先选学科”只在点暂存卡片的“开始导入”
+      // 时才出。文件选择器用假实现（返回不存在的路径：暂存路径上
+      // 只算哈希与超限，不读文件），不碰系统选择器与数据库。
+      FilePicker.platform = _FakeFilePicker(['/tmp/b11-no-such-photo123.jpg']);
       await pumpCollect(tester, repo: FakeRepo([]));
       await tester.ensureVisible(find.text('选择文件导入'));
       await tester.pumpAndSettle();
-      await tester.tap(find.text('选择文件导入'));
+      // 点按在 runAsync 内：它触发的 _handleIncomingPaths 要算文件
+      // 内容哈希（流式读），订阅必须发生在真实异步区里，否则在
+      // fake 区等不到完成（见 b11_dragdrop_test 的 probe3 注释）。
+      await tester.runAsync(() async {
+        await tester.tap(find.text('选择文件导入'));
+        await Future.delayed(const Duration(milliseconds: 500));
+      });
       await tester.pumpAndSettle();
-      expect(find.textContaining('先选学科'), findsOneWidget);
+      expect(find.byKey(const Key('staged-import-card')), findsOneWidget);
+      expect(find.textContaining('已选 1 个文件，等选学科'), findsOneWidget);
+      expect(find.textContaining('先选学科'), findsNothing);
     });
 
     testWidgets('取消导入直接删任务，无二次确认', (tester) async {
@@ -1026,8 +1069,7 @@ void main() {
       return repo;
     }
 
-    testWidgets('确认前报未框页数，确认后只拆有框页、未框页留任务可继续修框',
-        (tester) async {
+    testWidgets('确认前报未框页数，确认后只拆有框页、未框页留任务可继续修框', (tester) async {
       final repo = await pumpPdf3(tester);
       await openEditor(tester, '修框');
       // 第 1 页有检测框；切到第 2、3 页（桩检测返回空框）。
@@ -1039,10 +1081,7 @@ void main() {
       await tapConfirmAndWait(tester, '确认修框，去整理');
       // 确认前提示：明确写出未框页数与页码。
       expect(find.text('还有 2 页没有框'), findsOneWidget);
-      expect(
-        find.textContaining('第 2、3 页还没有框'),
-        findsOneWidget,
-      );
+      expect(find.textContaining('第 2、3 页还没有框'), findsOneWidget);
       await tapDialogConfirmAndWait(tester);
       expect(find.textContaining('修框 ·'), findsNothing);
       // 只拆了第 1 页的 1 道题。
@@ -1107,8 +1146,7 @@ void main() {
       expect(find.textContaining('修框 ·'), findsNothing);
       expect(repo.savedQuestions, isEmpty);
       expect(
-        repo.tasks
-            .where((t) => t.status == CollectStatus.pendingOrganize),
+        repo.tasks.where((t) => t.status == CollectStatus.pendingOrganize),
         isEmpty,
       );
       expect(repo.tasks.any((t) => t.id == 't-pdf'), isTrue);
@@ -1119,14 +1157,9 @@ void main() {
     // SR-P2-25（Meng 已定）：红色无框警告只对“打开过修框或已有任意
     // 草稿框”的任务显示。单张图任务从未打开、没有草稿框，不再警告；
     // 多页卷第 1 页有草稿框，仍警告未框的第 2、3 页；全框了的不警告。
-    testWidgets('无框警告：有草稿的任务出警告，从未打开的单张图不出，全框了不出',
-        (tester) async {
+    testWidgets('无框警告：有草稿的任务出警告，从未打开的单张图不出，全框了不出', (tester) async {
       final repo = FakeRepo([
-        task(
-          't-img',
-          '单张图.pdf · 第1页 · 第1题',
-          status: CollectStatus.needBox,
-        ),
+        task('t-img', '单张图.pdf · 第1页 · 第1题', status: CollectStatus.needBox),
         task(
           't-pdf',
           '多页卷.pdf · 第1页 · 第1题',
@@ -1157,8 +1190,7 @@ void main() {
       expect(find.text('这张图还没有框'), findsNothing);
       expect(find.text('还有 2 页没有框：第 2、3 页'), findsOneWidget);
       // 警告是红色（errInk），不是普通 muted 文案。
-      final warning =
-          tester.widget<Text>(find.text('还有 2 页没有框：第 2、3 页'));
+      final warning = tester.widget<Text>(find.text('还有 2 页没有框：第 2、3 页'));
       expect(warning.style?.color, DesignTokens.light.errInk);
     });
   });
@@ -1573,7 +1605,6 @@ void main() {
       expect(find.text('这个框是？'), findsNothing);
     });
   });
-
 
   group('亮/深与三档缩放', () {
     testWidgets('亮/深 × 三档缩放无溢出、无异常', (tester) async {

@@ -14,6 +14,8 @@
 //   （B2，入库顺序），超过一行按列数分行。
 // - 空状态：无要复习时卡片变中性样式，文案“今天没有要复习的，明天再来吧”。
 // - 错误态：顶部红色横幅（手动备份失败，见 [showBackupError]）。
+// - B11-9 考试倒计时：焦点卡上方一条倒计时（最近一场考试），临近
+//   7 天内标红，点按进设置页的考试管理；无考试时不显示、不占位。
 //
 // 业务口径（repository 现有口径，本页不改 repository）：
 // - 要复习数与导航速览同一口径（`homeRevCounts` / `dueToday`：手动加入
@@ -41,6 +43,7 @@
 import 'package:flutter/material.dart';
 
 import '../../data/repository.dart';
+import '../../models/exam_event.dart';
 import '../../models/models.dart';
 import '../../theme/app_theme.dart';
 import '../../widgets/uikit.dart';
@@ -58,6 +61,7 @@ class HomePage extends StatefulWidget {
     required this.onGoReview,
     this.showBackupError = false,
     this.onBackupErrorDismissed,
+    this.onGoSettings,
   });
 
   final QuestionRepository repo;
@@ -66,6 +70,10 @@ class HomePage extends StatefulWidget {
   final VoidCallback onGoOrganize;
   final void Function(String subjectId) onGoWrongbook;
   final VoidCallback onGoReview;
+
+  /// B11-9：点首页考试倒计时时调用——应用层进设置页并展开考试组。
+  /// 为空时倒计时条仍显示、点按无动作（老调用方不传也不影响显示）。
+  final VoidCallback? onGoSettings;
 
   /// 手动备份失败时显示顶部红色横幅（HTML 首页错误态文案）。
   /// 待定3 已接线：设置页 `_backup` 失败时把标志写进库（settings 表
@@ -103,6 +111,8 @@ class _HomePageState extends State<HomePage> {
   int _duePending = 0;
   int _dueRecheck = 0;
   ({String kind, String subjectId, String title})? _recent;
+  // B11-9：最近一场考试（无考试时为 null，不显示倒计时条）。
+  ExamEvent? _nearestExam;
   bool _loading = true;
   bool _errorDismissed = false;
   // _load() 读库失败态（SR-P2-48）：报告 / 学科页同款——失败不一直
@@ -128,6 +138,8 @@ class _HomePageState extends State<HomePage> {
         // B2：学科格按库里的 subjects 表显示全部学科（入库顺序），
         // 不再写死 Subject.all 三科。
         widget.repo.subjects(),
+        // B11-9：考试事件列表（首页只取最近一场做倒计时）。
+        widget.repo.examEvents(),
       ]);
       if (!mounted) return;
       final due = results[3] as List<Question>;
@@ -162,6 +174,8 @@ class _HomePageState extends State<HomePage> {
         _recent = results[2] as ({String kind, String subjectId, String title})?;
         final subjects = results[5] as List<Subject>;
         _subjects = subjects;
+        _nearestExam =
+            nearestExamEvent(results[6] as List<ExamEvent>);
         _duePending = pending;
         _dueRecheck = recheck;
         _loading = false;
@@ -262,6 +276,17 @@ class _HomePageState extends State<HomePage> {
               ],
               onDismiss: () => setState(() => _loadErrorDismissed = true),
             ),
+          // B11-9 考试倒计时：最近一场考试，点按进设置页的考试管理。
+          // 无考试时不显示，不占位置、不破坏布局 C。
+          if (_nearestExam != null && !_loading) ...[
+            _ExamCountdownStrip(
+              scale: scale,
+              palette: palette,
+              event: _nearestExam!,
+              onTap: widget.onGoSettings,
+            ),
+            SizedBox(height: DesignTokens.focusCardMarginBottom * scale),
+          ],
           // 焦点大卡片 layout C。
           if (_loading)
             _FocusCardLoading(scale: scale)
@@ -306,6 +331,71 @@ class _HomePageState extends State<HomePage> {
               onGoReview: widget.onGoReview,
             ),
         ],
+      ),
+    );
+  }
+}
+
+/// B11-9 考试倒计时条：最近一场考试的倒计时，整条可点进设置页考试管理。
+/// 文案见 [examCountdownText]（“距离 X 还有 N 天” / “今天 X” /
+/// “X 已考完”）；临近 7 天内（0 <= N <= 7）文字标红（[DesignTokens]
+/// 的 errInk，不新增颜色），过期与 8 天以上用常规墨色。
+class _ExamCountdownStrip extends StatelessWidget {
+  const _ExamCountdownStrip({
+    required this.scale,
+    required this.palette,
+    required this.event,
+    required this.onTap,
+  });
+
+  final double scale;
+  final AppPalette palette;
+  final ExamEvent event;
+  final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final days = daysUntilExam(event.date);
+    final near = isExamCountdownNear(days);
+    return InkWell(
+      key: const Key('home-exam-countdown'),
+      onTap: onTap,
+      borderRadius:
+          BorderRadius.circular(DesignTokens.scaled(scale).radius),
+      child: Container(
+        width: double.infinity,
+        padding: EdgeInsets.symmetric(
+          vertical: 10 * scale,
+          horizontal: 14 * scale,
+        ),
+        decoration: BoxDecoration(
+          color: palette.surface2,
+          border: Border.all(color: palette.line),
+          borderRadius:
+              BorderRadius.circular(DesignTokens.scaled(scale).radius),
+        ),
+        child: Row(
+          children: [
+            Expanded(
+              child: Text(
+                examCountdownText(event),
+                style: TextStyle(
+                  fontSize: DesignTokens.bodyFontSize,
+                  fontWeight: FontWeight.w700,
+                  color: near ? palette.errInk : palette.ink,
+                ),
+              ),
+            ),
+            SizedBox(width: 8 * scale),
+            Text(
+              '设置 ›',
+              style: TextStyle(
+                fontSize: DesignTokens.captionFontSize,
+                color: palette.muted,
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }

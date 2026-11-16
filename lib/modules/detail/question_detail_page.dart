@@ -10,8 +10,9 @@
 // - 答案解析默认藏在「看答案」后，空显示可点「待补充 · 点这里补」；
 // - 编辑模式保存才生效，取消有改动时内联问是否保存；学科不可改；
 //   答案/解析在「题目信息」的编辑表单里改；
-// - 底部操作：返回 / 收藏 / 归档（已归档时变「恢复」）/ 上一题 / 下一题 /
-//   删除；删除用模态弹窗确认（B3：`删了就没了，确定吗？`），删后自动进下一题；
+// - 底部操作：返回 / 收藏 / 归档（已归档时变「恢复」）/ 复制图片 /
+//   保存图片 / 导出带答案版（B11-8，与收藏/归档/删除并列）/ 上一题 /
+//   下一题 / 删除；删除用模态弹窗确认（B3：`删了就没了，确定吗？`），
 // - 本页没有任何「开始复习」按钮；复习记录区只留「加入复习 /
 //   取消加入复习」（未整理题没有）、各错因状态、解决次数与全部解决记录；
 //   旧的复习状态下拉与下次复习日期输入已删，不复活翻卡模型。
@@ -29,8 +30,10 @@ import '../../data/repository.dart';
 import '../../models/models.dart';
 import '../../services/import_service.dart';
 import '../../services/page_image_pipeline.dart';
+import '../../services/question_export_service.dart';
 import '../../services/yolo_onnx_service.dart';
 import '../../theme/design_tokens.dart';
+import '../../widgets/question_share_card.dart';
 import '../../widgets/uikit.dart';
 import '../../widgets/widgets.dart';
 import '../collect/collect_page.dart';
@@ -63,6 +66,8 @@ class QuestionDetailPage extends StatefulWidget {
     required this.onChanged,
     this.sourceLabel = '错题本',
     this.imageFailed = false,
+    this.exportService,
+    this.onGoReview,
   });
 
   final QuestionRepository repo;
@@ -78,6 +83,15 @@ class QuestionDetailPage extends StatefulWidget {
   /// 图加载失败占位开关：应用内暂无真实图片通道，默认 false；
   /// 只供 widget 测试与截图对照验证失败占位（与 R5/R6 同款做法）。
   final bool imageFailed;
+
+  /// B11-8：导出服务（复制 / 保存 / 带答案版共用）。生产默认 new
+  /// 一个真实服务；测试注入假实现（不弹系统对话框、不碰真实剪贴板）。
+  final QuestionExportService? exportService;
+
+  /// B11-11 顺手活：复习记录空状态的“去复习”按钮回调（app.dart 接
+  /// _goReview，与首页/整理/报告页同款 onGoReview）。可选：不传时
+  /// 不显示按钮（旧测试构造不传，保持兼容）。
+  final VoidCallback? onGoReview;
 
   @override
   State<QuestionDetailPage> createState() => _QuestionDetailPageState();
@@ -113,6 +127,10 @@ class _QuestionDetailPageState extends State<QuestionDetailPage> {
   bool _dirty = false;
   bool _answerVisible = false;
 
+  /// B11-8：导出服务（构造注入的优先）与分享卡片的 RepaintBoundary key。
+  late final QuestionExportService _exportService;
+  final _shareCardKey = GlobalKey();
+
   /// 取消编辑时的内联确认框（HTML `.confirmbox`）是否显示；
   /// [_cancelAskPop] 表示它是由返回触发的（选“保存并退出 / 不保存”
   /// 后要离开本页），否则只是退出编辑模式。
@@ -142,6 +160,7 @@ class _QuestionDetailPageState extends State<QuestionDetailPage> {
   @override
   void initState() {
     super.initState();
+    _exportService = widget.exportService ?? QuestionExportService();
     _orderIds = List.of(widget.orderIds);
     _currentId = widget.questionId;
     _load();
@@ -664,6 +683,89 @@ class _QuestionDetailPageState extends State<QuestionDetailPage> {
     }
     widget.onChanged();
     await _load();
+  }
+
+  // ---------- B11-8 导出图片 ----------
+
+  /// (a) 复制图片到剪贴板：读切片 PNG 字节，走 super_clipboard 写
+  /// PNG（Windows 上按需转 DIB/DIBv5，原生应用可直接粘贴）。
+  /// 无图（v1 演示题、切片文件缺失）给提示，不弹对话框。
+  Future<void> _copyImage() async {
+    final q = _q;
+    if (q == null) return;
+    final bytes = await _exportService.sliceBytes(q);
+    if (bytes == null) {
+      _snack('这道题没有图片可导出');
+      return;
+    }
+    final ok = await _exportService.copyImageToClipboard(bytes);
+    if (mounted) {
+      _snack(ok ? '图片已复制到剪贴板' : '复制失败：当前环境不支持复制图片');
+    }
+  }
+
+  /// (b) 保存图片为文件：file_picker 另存为对话框（PNG），取消不做
+  /// 任何事；写盘失败给提示（桌面端 file_picker 只返回路径，文件
+  /// 由服务自己写，与设置页备份同款做法）。
+  Future<void> _saveImage() async {
+    final q = _q;
+    if (q == null) return;
+    final bytes = await _exportService.sliceBytes(q);
+    if (bytes == null) {
+      _snack('这道题没有图片可导出');
+      return;
+    }
+    final path = await _exportService.pickSavePath(
+      dialogTitle: '保存题目图片',
+      fileName: '${QuestionExportService.safeFileName(q.title)}.png',
+    );
+    if (path == null) return;
+    final ok = await _exportService.saveBytesTo(path, bytes);
+    if (mounted) _snack(ok ? '题目图片已保存' : '图片没存上，换个位置再试一次');
+  }
+
+  /// (c) 导出带答案版：先读切片字节，再弹预览框（题目图在上、
+  /// 答案/解析在下，带学科/文件夹/错因小字）；用户在框里点“保存”，
+  /// 卡片经 RepaintBoundary 转 PNG 后走同一套另存为（PNG）。
+  /// 答案/解析为空时卡片显示“待补充”，不编造内容。
+  Future<void> _exportShareCard() async {
+    final q = _q;
+    if (q == null) return;
+    final bytes = await _exportService.sliceBytes(q);
+    if (bytes == null) {
+      _snack('这道题没有图片可导出');
+      return;
+    }
+    if (!mounted) return;
+    final subject = _subjectOf(q.subjectId);
+    final folders = _folders
+        .where((f) => q.folderIds.contains(f.id))
+        .map((f) => f.name)
+        .toList();
+    final png = await showDialog<Uint8List>(
+      context: context,
+      builder: (ctx) => _ShareCardExportDialog(
+        service: _exportService,
+        boundaryKey: _shareCardKey,
+        sliceBytes: bytes,
+        title: q.title,
+        subjectName: subject.name,
+        folderNames: folders,
+        errorTypes: q.allCauses,
+        answer: q.answer,
+        explanation: q.explanation,
+      ),
+    );
+    if (png == null || !mounted) return;
+    final path = await _exportService.pickSavePath(
+      dialogTitle: '保存带答案版图片',
+      fileName: '${QuestionExportService.safeFileName(q.title)}-带答案.png',
+    );
+    if (path == null) return;
+    final ok = await _exportService.saveBytesTo(path, png);
+    if (mounted) {
+      _snack(ok ? '带答案版已保存' : '带答案版没存上，换个位置再试一次');
+    }
   }
 
   // ---------- inline 新建 ----------
@@ -2011,16 +2113,7 @@ class _QuestionDetailPageState extends State<QuestionDetailPage> {
       ),
       _Field(
         '解决记录（全部）',
-        _history.isEmpty
-            ? Text(
-                '暂无复习记录，去复习页练一次会出现在这里',
-                style: TextStyle(
-                  fontSize: DesignTokens.detailRevLogFontSize,
-                  color: palette.muted,
-                  height: DesignTokens.bodyLineHeight,
-                ),
-              )
-            : Column(
+        _history.isEmpty ? _buildEmptyHistory() : Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   for (final h in _history)
@@ -2039,6 +2132,34 @@ class _QuestionDetailPageState extends State<QuestionDetailPage> {
               ),
       ),
     ]);
+  }
+
+  /// B11-11 顺手活：复习记录空状态——文字说明不变，有 onGoReview
+  /// 回调时下面再给一个“去复习”按钮（去 /review）；没回调时只有文字。
+  Widget _buildEmptyHistory() {
+    final palette = DesignTokens.of(Theme.of(context).brightness);
+    final scale = qmScaleOf(context);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          '暂无复习记录，去复习页练一次会出现在这里',
+          style: TextStyle(
+            fontSize: DesignTokens.detailRevLogFontSize,
+            color: palette.muted,
+            height: DesignTokens.bodyLineHeight,
+          ),
+        ),
+        if (widget.onGoReview != null) ...[
+          SizedBox(height: 8 * scale),
+          QmButton(
+            label: '去复习',
+            size: QmButtonSize.small,
+            onPressed: widget.onGoReview,
+          ),
+        ],
+      ],
+    );
   }
 
   String _historyLabel(String r) => switch (r) {
@@ -2097,8 +2218,9 @@ class _QuestionDetailPageState extends State<QuestionDetailPage> {
     );
   }
 
-  /// 底部操作行（HTML `.work-acts`）：返回 / 收藏 / 归档 / 上一题 /
-  /// 下一题 /（编辑态：保存 / 取消）/ 删除。本页无「开始复习」按钮。
+  /// 底部操作行（HTML `.work-acts`）：返回 / 收藏 / 归档 / 复制图片 /
+  /// 保存图片 / 导出带答案版（B11-8）/ 上一题 / 下一题 /
+  ///（编辑态：保存 / 取消）/ 删除。本页无「开始复习」按钮。
   /// B8-7：收进一张卡片（中性底），不再是白底上一条分隔线 + 漂浮按钮，
   /// 页面收尾有落点；按钮与文案原样。
   Widget _buildWorkActs(
@@ -2143,6 +2265,22 @@ class _QuestionDetailPageState extends State<QuestionDetailPage> {
               label: q.isArchived ? '恢复（取消归档）' : '归档',
               variant: QmButtonVariant.plain,
               onPressed: _toggleArchive,
+            ),
+            // B11-8：导出图片三动作，与收藏/归档/删除并列。
+            QmButton(
+              label: '复制图片',
+              variant: QmButtonVariant.plain,
+              onPressed: _copyImage,
+            ),
+            QmButton(
+              label: '保存图片',
+              variant: QmButtonVariant.plain,
+              onPressed: _saveImage,
+            ),
+            QmButton(
+              label: '导出带答案版',
+              variant: QmButtonVariant.plain,
+              onPressed: _exportShareCard,
             ),
             SizedBox(width: 24 * scale),
             QmButton(
@@ -2231,6 +2369,96 @@ class _QuestionDetailPageState extends State<QuestionDetailPage> {
           Wrap(spacing: 8 * scale, runSpacing: 8 * scale, children: actions),
         ],
       ),
+    );
+  }
+}
+
+/// B11-8：带答案版分享卡片的预览弹窗。
+///
+/// 卡片包在 RepaintBoundary 里（key 由详情页持有）；点“保存图片”时
+/// 先把 boundary 转 PNG 再 pop 回字节，详情页接着走另存为对话框。
+/// 生成失败时留在弹窗里给提示，不关弹窗、不丢预览。
+class _ShareCardExportDialog extends StatefulWidget {
+  const _ShareCardExportDialog({
+    required this.service,
+    required this.boundaryKey,
+    required this.sliceBytes,
+    required this.title,
+    required this.subjectName,
+    required this.folderNames,
+    required this.errorTypes,
+    required this.answer,
+    required this.explanation,
+  });
+
+  final QuestionExportService service;
+  final GlobalKey boundaryKey;
+  final Uint8List sliceBytes;
+  final String title;
+  final String subjectName;
+  final List<String> folderNames;
+  final List<String> errorTypes;
+  final String? answer;
+  final String? explanation;
+
+  @override
+  State<_ShareCardExportDialog> createState() => _ShareCardExportDialogState();
+}
+
+class _ShareCardExportDialogState extends State<_ShareCardExportDialog> {
+  bool _saving = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final scale = qmScaleOf(context);
+    return AlertDialog(
+      title: const Text('导出带答案版'),
+      content: SizedBox(
+        width: 720 * scale,
+        child: SingleChildScrollView(
+          child: RepaintBoundary(
+            key: widget.boundaryKey,
+            child: QuestionShareCard(
+              sliceBytes: widget.sliceBytes,
+              title: widget.title,
+              subjectName: widget.subjectName,
+              folderNames: widget.folderNames,
+              errorTypes: widget.errorTypes,
+              answer: widget.answer,
+              explanation: widget.explanation,
+            ),
+          ),
+        ),
+      ),
+      actions: [
+        QmButton(
+          label: '关闭',
+          variant: QmButtonVariant.plain,
+          size: QmButtonSize.small,
+          onPressed: _saving ? null : () => Navigator.of(context).pop(),
+        ),
+        QmButton(
+          label: _saving ? '正在生成…' : '保存图片',
+          size: QmButtonSize.small,
+          onPressed: _saving
+              ? null
+              : () async {
+                  setState(() => _saving = true);
+                  try {
+                    final png = await widget.service.captureBoundary(
+                      widget.boundaryKey,
+                    );
+                    if (context.mounted) Navigator.of(context).pop(png);
+                  } catch (_) {
+                    if (!context.mounted) return;
+                    setState(() => _saving = false);
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text('分享卡片生成失败，请重试')),
+                    );
+                  }
+                },
+        ),
+      ],
     );
   }
 }

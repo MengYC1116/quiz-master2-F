@@ -674,6 +674,45 @@ void main() {
       await tester.pump();
       expect(tapped, isTrue);
     });
+
+    testWidgets('D-32：双动作并排：主按钮 + 次按钮都可点', (tester) async {
+      var primaryTapped = false;
+      var secondaryTapped = false;
+      await pumpUi(
+        tester,
+        QmEmptyState(
+          title: '这个文件夹还是空的',
+          description: '去收集中心拍一道题，或去整理工作台。',
+          actionLabel: '去收集',
+          onAction: () => primaryTapped = true,
+          secondaryActionLabel: '去整理',
+          onSecondaryAction: () => secondaryTapped = true,
+        ),
+      );
+      expect(find.text('去收集'), findsOneWidget);
+      expect(find.text('去整理'), findsOneWidget);
+      await tester.tap(find.text('去收集'));
+      await tester.pump();
+      expect(primaryTapped, isTrue);
+      expect(secondaryTapped, isFalse);
+      await tester.tap(find.text('去整理'));
+      await tester.pump();
+      expect(secondaryTapped, isTrue);
+    });
+
+    testWidgets('D-32：只给主动作时不画第二按钮（单动作渲染不变）',
+        (tester) async {
+      await pumpUi(
+        tester,
+        const QmEmptyState(
+          title: '空',
+          actionLabel: '返回目录',
+          onAction: null,
+        ),
+      );
+      expect(find.text('返回目录'), findsOneWidget);
+      expect(find.byType(QmButton), findsOneWidget);
+    });
   });
 
   group('QmRowLine', () {

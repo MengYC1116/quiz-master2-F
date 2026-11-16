@@ -138,7 +138,21 @@ extension _WrongbookListBuild on _WrongbookPageState {
   /// - 范围有题、但无搜索无筛选还为空 → 只剩“全部已解决被默认隐藏”这
   ///   一种可能，给看已解决的入口；
   /// - 其余（搜不到 / 筛不到）→ 搜索无结果文案（旧文案不动）。
-  ({String title, String desc, String action, VoidCallback onAction})
+  ///
+  /// D-32（Meng 2026-11-16 定：改按钮不改文案）：范围为空时，
+  /// `onGoCollect` / `onGoOrganize` 都接通时动作位是“去收集”
+  ///（主按钮，进 /collect）+“去整理”（次按钮，进 /organize）；
+  /// 任一回调未接通（如测试里没传）时回落到旧的单按钮
+  /// “返回目录 / 返回书架”。页头已有“← 目录 / 合上 ✕”，
+  /// 返回入口不丢。
+  ({
+    String title,
+    String desc,
+    String action,
+    VoidCallback onAction,
+    String? secondaryAction,
+    VoidCallback? onSecondaryAction,
+  })
   _emptyCopy() {
     if (_inBookArchived) {
       return (
@@ -146,6 +160,8 @@ extension _WrongbookListBuild on _WrongbookPageState {
         desc: '归档的题会放在这里，随时能恢复回错题本。',
         action: '返回题目列表',
         onAction: () => _update(() => _inBookArchived = false),
+        secondaryAction: null,
+        onSecondaryAction: null,
       );
     }
     if (_scopeQuestionCount() == 0) {
@@ -161,27 +177,43 @@ extension _WrongbookListBuild on _WrongbookPageState {
               },
             )
           : (label: '返回书架', go: _openShelf);
+      // D-32：双入口齐全时用“去收集 / 去整理”替代返回按钮。
+      final collectGo = widget.onGoCollect != null &&
+          widget.onGoOrganize != null
+          ? (
+              action: '去收集',
+              onAction: widget.onGoCollect!,
+              secondaryAction: '去整理',
+              onSecondaryAction: widget.onGoOrganize!,
+            )
+          : null;
       if (_folderId != null) {
         return (
           title: '这个文件夹还是空的',
           desc: '这里还没有整理进来的题。去收集中心拍一道题，或去整理工作台把待整理的题归到这个文件夹。',
-          action: back.label,
-          onAction: back.go,
+          action: collectGo?.action ?? back.label,
+          onAction: collectGo?.onAction ?? back.go,
+          secondaryAction: collectGo?.secondaryAction,
+          onSecondaryAction: collectGo?.onSecondaryAction,
         );
       }
       if (_subjectId != null) {
         return (
           title: '这科里还没有错题',
           desc: '这科里还没有整理进来的题。去收集中心拍一道题，或去整理工作台把待整理的题归进来。',
-          action: back.label,
-          onAction: back.go,
+          action: collectGo?.action ?? back.label,
+          onAction: collectGo?.onAction ?? back.go,
+          secondaryAction: collectGo?.secondaryAction,
+          onSecondaryAction: collectGo?.onSecondaryAction,
         );
       }
       return (
         title: '错题本里还没有题',
         desc: '去收集中心拍第一道题吧。',
-        action: back.label,
-        onAction: back.go,
+        action: collectGo?.action ?? back.label,
+        onAction: collectGo?.onAction ?? back.go,
+        secondaryAction: collectGo?.secondaryAction,
+        onSecondaryAction: collectGo?.onSecondaryAction,
       );
     }
     if (!_hasSearchOrFilter()) {
@@ -193,6 +225,8 @@ extension _WrongbookListBuild on _WrongbookPageState {
           _filterCauseStatus = 'solved';
           _page = 0;
         }),
+        secondaryAction: null,
+        onSecondaryAction: null,
       );
     }
     return (
@@ -200,6 +234,8 @@ extension _WrongbookListBuild on _WrongbookPageState {
       desc: '这一科里没有符合当前搜索与筛选的题。',
       action: '清除全部筛选',
       onAction: _resetFilters,
+      secondaryAction: null,
+      onSecondaryAction: null,
     );
   }
 
@@ -211,6 +247,8 @@ extension _WrongbookListBuild on _WrongbookPageState {
       description: copy.desc,
       actionLabel: copy.action,
       onAction: copy.onAction,
+      secondaryActionLabel: copy.secondaryAction,
+      onSecondaryAction: copy.onSecondaryAction,
     );
   }
 
@@ -758,6 +796,29 @@ extension _WrongbookListBuild on _WrongbookPageState {
             variant: QmButtonVariant.plain,
             size: QmButtonSize.small,
             onPressed: hasSelection ? _batchArchive : null,
+          ),
+          // B11-6：批量加入 / 取消加入复习。加入复习只加未解决的错因，
+          // 已治愈的不重复加入（判定在 repository.joinReviewBatch）；
+          // “全部加入复习”作用域 = 当前筛选出的全部题（all 是
+          // _filteredAll() 的结果，与“全选当前结果”同口径），不是
+          // 全库、也不限当前页，不用先勾选。
+          QmButton(
+            label: '加入复习',
+            variant: QmButtonVariant.plain,
+            size: QmButtonSize.small,
+            onPressed: hasSelection ? _batchJoinReviewSelected : null,
+          ),
+          QmButton(
+            label: '全部加入复习',
+            variant: QmButtonVariant.plain,
+            size: QmButtonSize.small,
+            onPressed: all.isNotEmpty ? () => _batchJoinReviewAll(all) : null,
+          ),
+          QmButton(
+            label: '取消加入复习',
+            variant: QmButtonVariant.plain,
+            size: QmButtonSize.small,
+            onPressed: hasSelection ? _batchCancelReviewSelected : null,
           ),
           QmButton(
             label: '批量删除',

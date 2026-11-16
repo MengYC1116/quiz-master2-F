@@ -149,6 +149,19 @@ class FakeOrganizeRepo extends QuestionRepository {
   }) async {
     lastRecentKind = kind;
   }
+
+  /// B11-10：今日小结用（默认 0 / 空；用例可改；OrganizePage 只在
+  /// 队列已空且库里有题时读这两个数）。
+  int organizedTodayValue = 0;
+  List<Question> dueTodayValue = const [];
+
+  @override
+  Future<int> organizedTodayCount({DateTime? now}) async =>
+      organizedTodayValue;
+
+  @override
+  Future<List<Question>> dueToday({bool includeArchived = false}) async =>
+      List.of(dueTodayValue);
 }
 
 FakeOrganizeRepo threeQuestionRepo() => FakeOrganizeRepo(

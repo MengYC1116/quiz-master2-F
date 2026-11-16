@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:quiz_master2/data/database.dart';
 import 'package:quiz_master2/data/repository.dart';
+import 'package:quiz_master2/models/exam_event.dart';
 import 'package:quiz_master2/models/models.dart';
 import 'package:quiz_master2/modules/home/home_page.dart';
 import 'package:quiz_master2/theme/app_theme.dart';
@@ -100,6 +101,12 @@ class FakeRepo extends QuestionRepository {
 
   @override
   Future<List<CauseRecord>> causeRecords() async => records;
+
+  /// B11-9：考试事件列表（默认空，首页不显示倒计时条）。
+  List<ExamEvent> examEventsList = const [];
+
+  @override
+  Future<List<ExamEvent>> examEvents() async => examEventsList;
 }
 
 /// SR2-61：repo 参数放宽为 QuestionRepository（FakeRepo 是其子类，

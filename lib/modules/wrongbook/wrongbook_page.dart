@@ -28,6 +28,8 @@ class WrongbookPage extends StatefulWidget {
     this.filterKnowledgePointId,
     required this.onOpenHome,
     this.onGoSubjects,
+    this.onGoCollect,
+    this.onGoOrganize,
     required this.onOpenDetail,
     required this.onGoReview,
   });
@@ -41,6 +43,11 @@ class WrongbookPage extends StatefulWidget {
   /// B8-1：学科删空时书架空状态给出去学科管理的入口（可空；
   /// 测试里不传时只显示提示文字，不画按钮）。
   final VoidCallback? onGoSubjects;
+
+  /// D-32：列表范围为空时空状态的“去收集 / 去整理”入口（可空；
+  /// 测试里不传时回落到旧的单按钮“返回目录 / 返回书架”）。
+  final VoidCallback? onGoCollect;
+  final VoidCallback? onGoOrganize;
   final Future<void> Function(Question q, List<String> orderIds) onOpenDetail;
   final void Function({String? subjectId}) onGoReview;
 
@@ -785,8 +792,18 @@ class _WrongbookPageState extends State<WrongbookPage> {
     });
   }
 
-  void _snack(String msg) {
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+  void _snack(String msg, {String? actionLabel, VoidCallback? onAction}) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(msg),
+        action: actionLabel == null
+            ? null
+            : SnackBarAction(
+                label: actionLabel,
+                onPressed: onAction ?? () {},
+              ),
+      ),
+    );
   }
 
   // ---------- 文件夹操作 ----------
@@ -1390,6 +1407,107 @@ class _WrongbookPageState extends State<WrongbookPage> {
     setState(() => _selected.clear());
     await _load();
     if (mounted) _snackBatchResult('归档', okN, missing, failed);
+  }
+
+  /// 批量加入复习（B11-6，勾选版）：只加未解决的错因——判定与计数
+  /// 在 [QuestionRepository.joinReviewBatch] 里（无未解决错因的题
+  /// 跳过）；加完给“开始复习”入口，点它跳复习页 /review。
+  Future<void> _batchJoinReviewSelected() async {
+    final qs = <Question>[];
+    var missing = 0;
+    for (final id in _selected.toList()) {
+      final q = _questionById(id);
+      if (q == null) {
+        missing++;
+      } else {
+        qs.add(q);
+      }
+    }
+    final result = await widget.repo.joinReviewBatch(qs);
+    setState(() => _selected.clear());
+    await _load();
+    if (mounted) {
+      _snackJoinReviewResult(
+        result.joined,
+        result.skipped,
+        missing,
+        result.failed,
+      );
+    }
+  }
+
+  /// 全部加入（B11-6）：作用域 = 当前筛选出的全部题（`all` 是
+  /// [_filteredAll] 的结果，与“全选当前结果”同口径），不是全库，
+  /// 也不限当前页；不用先勾选。
+  Future<void> _batchJoinReviewAll(List<Question> all) async {
+    final result = await widget.repo.joinReviewBatch(all);
+    setState(() => _selected.clear());
+    await _load();
+    if (mounted) {
+      _snackJoinReviewResult(result.joined, result.skipped, 0, result.failed);
+    }
+  }
+
+  /// 批量取消加入复习（B11-6，勾选版）：与详情页单个取消同语义——
+  /// 只把 review_joined 置回 false，错因记录保留，重加入可恢复；
+  /// 本来就没加入的题计入跳过。
+  Future<void> _batchCancelReviewSelected() async {
+    final qs = <Question>[];
+    var missing = 0;
+    for (final id in _selected.toList()) {
+      final q = _questionById(id);
+      if (q == null) {
+        missing++;
+      } else {
+        qs.add(q);
+      }
+    }
+    final result = await widget.repo.cancelReviewBatch(qs);
+    setState(() => _selected.clear());
+    await _load();
+    if (mounted) {
+      _snackCancelReviewResult(
+        result.cancelled,
+        result.skipped,
+        missing,
+        result.failed,
+      );
+    }
+  }
+
+  /// 加入复习的结果反馈（B11-6）：加入 N 道、跳过 M 道；M > 0 时
+  /// 写明原因是一题已无未解决错因。加入成功时给“开始复习”入口。
+  void _snackJoinReviewResult(
+    int joined,
+    int skipped,
+    int missing,
+    int failed,
+  ) {
+    final parts = <String>[];
+    if (joined > 0) parts.add('已加入复习 $joined 道');
+    if (skipped > 0) parts.add('$skipped 道已无未解决错因，跳过');
+    if (missing > 0) parts.add('$missing 道已不在列表里，跳过');
+    if (failed > 0) parts.add('$failed 道保存失败，请重试');
+    _snack(
+      parts.isEmpty ? '没有题被加入复习' : parts.join('；'),
+      actionLabel: joined > 0 ? '开始复习' : null,
+      onAction: joined > 0 ? () => widget.onGoReview() : null,
+    );
+  }
+
+  /// 取消加入复习的结果反馈（B11-6）：取消 N 道、未加入的跳过 M 道。
+  void _snackCancelReviewResult(
+    int cancelled,
+    int skipped,
+    int missing,
+    int failed,
+  ) {
+    final parts = <String>[];
+    if (cancelled > 0) parts.add('已取消加入复习 $cancelled 道');
+    if (skipped > 0) parts.add('$skipped 道未加入复习，跳过');
+    if (missing > 0) parts.add('$missing 道已不在列表里，跳过');
+    if (failed > 0) parts.add('$failed 道保存失败，请重试');
+    _snack(parts.isEmpty ? '没有题被取消加入复习' : parts.join('；'));
   }
 
   Future<void> _batchDeleteConfirmed() async {

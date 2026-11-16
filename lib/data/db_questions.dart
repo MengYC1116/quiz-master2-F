@@ -181,6 +181,22 @@ Future<CauseRecord> recordSelfCheckIntoImpl(
 /// 已存在的行只 UPDATE 其它列（标题、文件夹、标签、收藏/归档等编辑
 /// 内容照常写回）；不存在时才整行 INSERT（快照值即新题初始值）。
 Future<void> upsertQuestionIntoImpl(Database db, Question q) async {
+  // B11-10 今日小结计数：先读旧行，判断是不是未整理→已整理的跃迁
+  // （读在写之前；写成功后才 +1，写失败不计）。只在旧行存在且未整理
+  // 时才计：新行直接以已整理入库（种子/恢复路径）不是一次整理动作，
+  // 不计；已整理题的重复保存也不计（旧行已是已整理）。
+  var countOrganizedToday = false;
+  if (q.isOrganized) {
+    final old = await db.query(
+      'questions',
+      columns: ['is_organized'],
+      where: 'id = ?',
+      whereArgs: [q.id],
+      limit: 1,
+    );
+    countOrganizedToday =
+        old.isNotEmpty && (old.first['is_organized'] as int?) != 1;
+  }
   final values = _toRow(q)
     ..remove('review_count')
     ..remove('id');
@@ -214,6 +230,10 @@ Future<void> upsertQuestionIntoImpl(Database db, Question q) async {
       where: 'question_id = ? AND status = ?',
       whereArgs: [q.id, CollectStatus.pendingOrganize.name],
     );
+  }
+  // B11-10：跃迁才 +1（见函数开头；settings 键 organizedToday）。
+  if (countOrganizedToday) {
+    await bumpOrganizedTodayIntoImpl(db);
   }
 }
 

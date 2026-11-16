@@ -14,6 +14,13 @@ dependencies:
   sqflite_common_ffi: ^2.3.6
   path: ^1.9.1
   file_picker: ^8.0.0
+  # B11-8：super_clipboard ^0.9.1（Min Dart SDK 3.0，与 Dart 3.13.7 /
+  # Flutter 3.47.9 兼容）：Flutter 自带 Clipboard 只支持文本，图片
+  # 复制须走插件。super_clipboard 支持 Windows + Linux，写 PNG 时在
+  # Windows 上按需转 DIB/DIBv5（原生应用可直接粘贴）；Rust 内核，
+  # 未装 Rust 时构建自动下载对应平台的预编译二进制。Win11 真机仍须
+  # 实测粘贴（见 docs/ui-replication/B11-8-EXPORT-IMAGE.md）。
+  super_clipboard: ^0.9.1
   # onnxruntime 1.4.1（D-23，2026-11-13）：pub.dev 上唯一的 Dart 版
   # ONNX Runtime 插件，最新稳定版；自带各平台原生库（Linux 用
   # libonnxruntime.so.1.15.1，即 ORT 1.15.1）。Dart 3.13.7 /
@@ -21,6 +28,8 @@ dependencies:
   # 除此之外不升级任何依赖。
   onnxruntime: ^1.4.1
   pdfrx_engine: ^0.9.2
+  desktop_drop: ^0.8.4
+  crypto: ^3.0.8
 
 dev_dependencies:
   flutter_test:

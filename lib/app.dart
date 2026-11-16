@@ -62,6 +62,9 @@ class _QuizMasterAppState extends State<QuizMasterApp> {
   String _route = '/home';
   String? _subjectArg; // 带学科 ID 进错题本时直接打开对应那一本
   String? _reviewSubjectArg; // 带学科 ID 进复习时预置学科筛选
+  // B11-9：进设置页时直接展开的组（首页倒计时点进来时为 'exams'，
+  // 其余入口为 null，各组默认全折）。
+  String? _settingsGroupArg;
   String? _reportCauseArg; // 学习报告点弱点进错题本时的错因筛选
   String? _reportKpArg; // 学习报告点弱点进错题本时的知识点筛选
   final _navigatorKey = GlobalKey<NavigatorState>();
@@ -349,10 +352,22 @@ class _QuizMasterAppState extends State<QuizMasterApp> {
         _reportCauseArg = null;
         _reportKpArg = null;
       }
+      // B11-9：普通入口进设置页时不预展开任何组。
+      if (route != '/settings') _settingsGroupArg = null;
     });
     // B3：记下最后停留的路由（startupPage='last' 时下次启动恢复用）。
     // 详情页是 Navigator 压栈，不经过这里，退出时最后路由仍是底层页。
     unawaited(repo.saveLastRoute(route));
+    _refreshBadges();
+  }
+
+  /// B11-9：进设置页并直接展开指定组（首页倒计时点进来时 group='exams'）。
+  void _goSettings({String? group}) {
+    setState(() {
+      _route = '/settings';
+      _settingsGroupArg = group;
+    });
+    unawaited(repo.saveLastRoute('/settings'));
     _refreshBadges();
   }
 
@@ -390,6 +405,8 @@ class _QuizMasterAppState extends State<QuizMasterApp> {
           orderIds: orderIds,
           sourceLabel: sourceLabel,
           onChanged: _refreshBadges,
+          // B11-11：复习记录空状态的“去复习”按钮去 /review。
+          onGoReview: () => _goReview(),
         ),
       ),
     );
@@ -420,6 +437,8 @@ class _QuizMasterAppState extends State<QuizMasterApp> {
           filterKnowledgePointId: _reportKpArg,
           onOpenHome: () => _go('/home'),
           onGoSubjects: () => _go('/subjects'),
+          onGoCollect: () => _go('/collect'),
+          onGoOrganize: () => _go('/organize'),
           onOpenDetail: (q, ids) => _openDetail(q, ids, sourceLabel: '错题本'),
           onGoReview: ({String? subjectId}) =>
               _goReview(subjectId: subjectId),
@@ -448,6 +467,7 @@ class _QuizMasterAppState extends State<QuizMasterApp> {
           onBackupFailed: () {
             if (mounted) setState(() => _showBackupError = true);
           },
+          initialOpenGroup: _settingsGroupArg,
         );
       case '/home':
       default:
@@ -461,6 +481,7 @@ class _QuizMasterAppState extends State<QuizMasterApp> {
           onGoReview: () => _goReview(),
           showBackupError: _showBackupError,
           onBackupErrorDismissed: _clearBackupError,
+          onGoSettings: () => _goSettings(group: 'exams'),
         );
     }
   }

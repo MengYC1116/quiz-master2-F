@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:path/path.dart' as p;
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
+import '../models/exam_event.dart';
 import '../models/models.dart';
 import '../services/zip_archive.dart';
 import 'badge_notifier.dart';
@@ -142,6 +143,22 @@ class AppDatabase {
   /// 置标志：设置页 `_backup` 失败时；清标志：首页横幅点“知道了”，
   /// 或下一次备份成功时。
   static const String backupFailedKey = 'backupFailed';
+
+  /// B11-9 考试倒计时：考试事件列表的 settings 表键（JSON 数组，
+  /// 见 db_settings.dart 的 load/saveExamEvents*）。
+  /// 与 lastRoute / backupFailed 同一做法：复用 settings 表 key/value，
+  /// 不新开表、不改 Schema、不碰备份表清单——settings 表整表备份，
+  /// 考试事件随备份走、随恢复回来；旧备份恢复也不受影响（新备份
+  /// 才多这一行，旧备份缺行按空列表读，不拒绝恢复）。
+  static const String examEventsKey = 'examEvents';
+
+  /// B11-10 今日小结：今天已整理题数的 settings 表键（值 `yyyy-MM-dd|N`，
+  /// 见 db_settings.dart 的 load/bumpOrganizedToday*）。
+  /// 与 lastRoute / backupFailed / examEvents 同一做法：复用 settings 表
+  /// key/value，不新开表、不改 Schema、不碰备份表清单——settings 表整表
+  /// 备份，计数随备份走、随恢复回来；旧备份恢复也不受影响（新备份
+  /// 才多这一行，旧备份缺行按 0 读）。
+  static const String organizedTodayKey = 'organizedToday';
 
   Database? _db;
   Future<Database>? _dbFuture;
@@ -548,6 +565,22 @@ class AppDatabase {
 
   static Future<void> saveBackupFailedInto(Database db, bool failed) =>
       saveBackupFailedIntoImpl(db, failed);
+
+  static Future<List<ExamEvent>> loadExamEventsFrom(Database db) =>
+      loadExamEventsFromImpl(db);
+
+  static Future<void> saveExamEventsInto(
+    Database db,
+    List<ExamEvent> events,
+  ) => saveExamEventsIntoImpl(db, events);
+
+  /// B11-10 今日小结：读今天已整理题数（settings 表 `organizedToday` 键）。
+  static Future<int> loadOrganizedTodayFrom(Database db, {DateTime? now}) =>
+      loadOrganizedTodayFromImpl(db, now: now);
+
+  /// B11-10 今日小结：今天已整理题数 +1（跃迁时调，见 db_questions.dart）。
+  static Future<void> bumpOrganizedTodayInto(Database db, {DateTime? now}) =>
+      bumpOrganizedTodayIntoImpl(db, now: now);
   // -- db_backup.dart --
 
   static Future<String> exportBackupJsonFrom(Database db) =>

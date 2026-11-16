@@ -1,4 +1,5 @@
 import '../data/database.dart';
+import '../models/exam_event.dart';
 import '../models/models.dart';
 import '../services/import_service.dart';
 
@@ -75,6 +76,86 @@ class QuestionRepository {
   /// 不再两步写——中间失败不留“已标加入、却无记录”的题。
   Future<bool> setReviewJoined(Question q, bool joined) =>
       _db.setReviewJoined(q, joined);
+
+  /// 批量加入复习时这道题还有没有可加的错因（B11-6 判定口径）：
+  /// - 错因是空的 → 没有（[setReviewJoined] 也会返回 false）；
+  /// - 某个错因还没有解决记录 → 它还没治过，可加；
+  /// - 某条记录未解决（待解决 / 解决中）→ 可加；
+  /// - 某条记录已解决但到了复查时间 → 仍要复查，可加；
+  /// - 全部错因已解决且未到复查时间 → 已无未解决错因，不可加（跳过）。
+  /// 只看传入的 `records`（该题的错因记录），不读库，便于单测覆盖。
+  static bool hasJoinableCause(Question q, List<CauseRecord> records) {
+    if (q.allCauses.isEmpty) return false;
+    final byCause = {for (final r in records) r.cause: r};
+    for (final cause in q.allCauses) {
+      final r = byCause[cause];
+      if (r == null) return true;
+      if (r.status != CauseStatus.solved) return true;
+      if (r.isRecheckDue) return true;
+    }
+    return false;
+  }
+
+  /// 批量加入复习（B11-6）：逐题按 [hasJoinableCause] 判定，只加
+  /// 未解决的错因——已治愈错因的记录已在库里，[setReviewJoined] 的
+  /// 播种用 ConflictAlgorithm.ignore，不动它（状态 / 计数 / 复查日
+  /// 都保留）；一道题没有任何未解决错因时跳过，计入 `skipped`。
+  /// 作用域由调用方定（错题本里是勾选题或当前筛选结果），本方法
+  /// 不做筛选；单题保存失败计入 `failed`，不中断整批。
+  Future<({int joined, int skipped, int failed})> joinReviewBatch(
+    List<Question> questions,
+  ) async {
+    final records = await causeRecords();
+    final byQ = <String, List<CauseRecord>>{};
+    for (final r in records) {
+      (byQ[r.questionId] ??= []).add(r);
+    }
+    var joined = 0;
+    var skipped = 0;
+    var failed = 0;
+    for (final q in questions) {
+      if (!hasJoinableCause(q, byQ[q.id] ?? const [])) {
+        skipped++;
+        continue;
+      }
+      try {
+        final ok = await setReviewJoined(q, true);
+        if (ok) {
+          joined++;
+        } else {
+          skipped++;
+        }
+      } catch (_) {
+        failed++;
+      }
+    }
+    return (joined: joined, skipped: skipped, failed: failed);
+  }
+
+  /// 批量取消加入复习（B11-6）：与详情页单个取消同语义——只把
+  /// review_joined 置回 false，错因记录保留，重加入可恢复
+  /// （[setReviewJoined] 取消时不删记录）。本来就没加入的题计入
+  /// `skipped`；单题保存失败计入 `failed`，不中断整批。
+  Future<({int cancelled, int skipped, int failed})> cancelReviewBatch(
+    List<Question> questions,
+  ) async {
+    var cancelled = 0;
+    var skipped = 0;
+    var failed = 0;
+    for (final q in questions) {
+      if (!q.reviewJoined) {
+        skipped++;
+        continue;
+      }
+      try {
+        await setReviewJoined(q, false);
+        cancelled++;
+      } catch (_) {
+        failed++;
+      }
+    }
+    return (cancelled: cancelled, skipped: skipped, failed: failed);
+  }
 
   /// 同步某题的解决记录与它当前的错因：删掉已不在错因里的记录，
   /// 给新加的错因补一条待解决记录（仅已加入复习的题）。
@@ -339,6 +420,36 @@ class QuestionRepository {
 
   Future<void> deleteExam(String id) => _db.deleteExam(id);
 
+  /// B11-9 考试倒计时：考试事件（独立数据，与试卷实体无任何关联，
+  /// 存 settings 表 `examEvents` 键，见 database.dart）。
+  /// 列表很小（用户手管几场考试），增删改走读-改-整表写回；
+  /// 读出来按日期升序（最近的在前，设置页与首页都直接用这个顺序）。
+  Future<List<ExamEvent>> examEvents() async {
+    final list = await _db.loadExamEvents();
+    list.sort((a, b) => a.date.compareTo(b.date));
+    return list;
+  }
+
+  /// 新增或改名/改日期：同 id 覆盖（原地更新，顺序由 [examEvents] 的
+  /// 日期排序定），新 id 追加。
+  Future<void> saveExamEvent(ExamEvent e) async {
+    final list = await _db.loadExamEvents();
+    final i = list.indexWhere((x) => x.id == e.id);
+    if (i >= 0) {
+      list[i] = e;
+    } else {
+      list.add(e);
+    }
+    await _db.saveExamEvents(list);
+  }
+
+  /// 删除一场考试（只删事件本身，不动任何题目/试卷）。
+  Future<void> deleteExamEvent(String id) async {
+    final list = await _db.loadExamEvents();
+    list.removeWhere((x) => x.id == id);
+    await _db.saveExamEvents(list);
+  }
+
   Future<List<KnowledgePoint>> knowledgePoints() =>
       _db.allKnowledgePoints();
 
@@ -496,6 +607,12 @@ class QuestionRepository {
 
   Future<void> setBackupFailed(bool failed) =>
       _db.saveBackupFailed(failed);
+
+  /// B11-10：今天已整理的题数（整理工作台空状态“今日小结”用；口径见
+  /// db_settings.dart 的 organizedToday*：当天内经整理确认由未整理
+  /// 变为已整理的题数，本地日期）。
+  Future<int> organizedTodayCount({DateTime? now}) =>
+      _db.organizedTodayCount(now: now);
 
   /// B4.3：切换数据库位置并迁移旧库与文件目录（见 database.dart）。
   /// 目标已有库时先问用户，`overwrite` 按用户选择传（覆盖 / 保留 /
