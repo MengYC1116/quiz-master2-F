@@ -2,8 +2,8 @@
 //
 // 一批文件逐个处理：每行一个文件，状态 排队中 → 导入中 → 已完成 /
 // 失败；单张失败只影响本行，不中断整批；失败行可单独重试，也可
-// “重试全部失败项”。队列本身不跑导入，只记状态——导入循环仍在
-// CollectPage._importFiles 里按现有 enqueue 逐个调。
+// “重试全部失败项”。队列本身不跑导入，只记状态——导入循环在
+// CollectNotifier.importFiles 里按现有 enqueue 逐个调。
 enum BatchFileStatus { queued, importing, done, failed }
 
 /// 队列里的一行。

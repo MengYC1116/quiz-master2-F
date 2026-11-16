@@ -425,13 +425,28 @@ extension AppDatabaseCatalog on AppDatabase {
     if (updated == 0) {
       await d.insert('subjects', values);
     }
-    bumpBadgeVersion();
+    DataChangeBus.instance.emit(
+      const DataChangeEvent(
+        kinds: {DataChangeKind.badges, DataChangeKind.subjects},
+      ),
+    );
   }
 
   Future<void> deleteSubject(String id) async {
     final d = await db;
     await AppDatabase.deleteSubjectFrom(d, id);
-    bumpBadgeVersion();
+    // 删学科同事务删掉该科全部题（含其解决记录）、任务、文件夹与知识点
+    //（见 deleteSubjectFromImpl），四类都变了。
+    DataChangeBus.instance.emit(
+      const DataChangeEvent(
+        kinds: {
+          DataChangeKind.badges,
+          DataChangeKind.subjects,
+          DataChangeKind.questions,
+          DataChangeKind.reviewRecords,
+        },
+      ),
+    );
   }
 
   Future<List<Folder>> allFolders({String? subjectId}) async {
@@ -488,7 +503,11 @@ extension AppDatabaseCatalog on AppDatabase {
         'sort_order': f.sortOrder,
       }, conflictAlgorithm: ConflictAlgorithm.replace);
     });
-    bumpBadgeVersion();
+    // 文件夹本身只影响学科/目录显示，不进角标查询——旧 bump 是防御性的，
+    // 本阶段按实际影响只发 subjects。
+    DataChangeBus.instance.emit(
+      const DataChangeEvent(kinds: {DataChangeKind.subjects}),
+    );
   }
 
   /// SR-P2-36：整科同名预检（实例版）：同一学科下是否存在与
@@ -510,7 +529,18 @@ extension AppDatabaseCatalog on AppDatabase {
   Future<int> deleteFolder(Folder f) async {
     final d = await db;
     final deleted = await AppDatabase.deleteFolderFrom(d, f);
-    bumpBadgeVersion();
+    // 只在该文件夹里的题随文件夹删（其解决记录同事务清掉，见
+    // _deleteFolderTxn），其余题只移走关联——按条件影响的全集发。
+    DataChangeBus.instance.emit(
+      const DataChangeEvent(
+        kinds: {
+          DataChangeKind.badges,
+          DataChangeKind.subjects,
+          DataChangeKind.questions,
+          DataChangeKind.reviewRecords,
+        },
+      ),
+    );
     return deleted;
   }
 
@@ -522,16 +552,31 @@ extension AppDatabaseCatalog on AppDatabase {
       'id': 'tag-$name',
       'name': name,
     }, conflictAlgorithm: ConflictAlgorithm.ignore);
+    DataChangeBus.instance.emit(
+      const DataChangeEvent(kinds: {DataChangeKind.subjects}),
+    );
   }
 
   Future<void> renameTag(String oldName, String newName) async {
     final d = await db;
     await AppDatabase.renameTagFrom(d, oldName, newName);
+    // 改标签名同事务改掉所有挂了旧标签的题（见 renameTagFromImpl）。
+    DataChangeBus.instance.emit(
+      const DataChangeEvent(
+        kinds: {DataChangeKind.subjects, DataChangeKind.questions},
+      ),
+    );
   }
 
   Future<void> deleteTag(String name) async {
     final d = await db;
     await AppDatabase.deleteTagFrom(d, name);
+    // 删标签同事务去掉所有题上的该标签（见 deleteTagFromImpl）。
+    DataChangeBus.instance.emit(
+      const DataChangeEvent(
+        kinds: {DataChangeKind.subjects, DataChangeKind.questions},
+      ),
+    );
   }
 
   Future<List<Exam>> allExams() async => AppDatabase.allExamsFrom(await db);
@@ -539,6 +584,9 @@ extension AppDatabaseCatalog on AppDatabase {
   Future<void> insertExam(Exam e) async {
     final d = await db;
     await AppDatabase.insertExamInto(d, e);
+    DataChangeBus.instance.emit(
+      const DataChangeEvent(kinds: {DataChangeKind.subjects}),
+    );
   }
 
   Future<void> renameExam(String id, String newName) async {
@@ -549,11 +597,20 @@ extension AppDatabaseCatalog on AppDatabase {
       where: 'id = ?',
       whereArgs: [id],
     );
+    DataChangeBus.instance.emit(
+      const DataChangeEvent(kinds: {DataChangeKind.subjects}),
+    );
   }
 
   Future<void> deleteExam(String id) async {
     final d = await db;
     await AppDatabase.deleteExamFrom(d, id);
+    // 删试卷同事务把所有题上的该试卷引用置空（见 deleteExamFromImpl）。
+    DataChangeBus.instance.emit(
+      const DataChangeEvent(
+        kinds: {DataChangeKind.subjects, DataChangeKind.questions},
+      ),
+    );
   }
 
   Future<List<KnowledgePoint>> allKnowledgePoints() async =>
@@ -562,6 +619,9 @@ extension AppDatabaseCatalog on AppDatabase {
   Future<void> insertKnowledgePoint(KnowledgePoint kp) async {
     final d = await db;
     await AppDatabase.insertKnowledgePointInto(d, kp);
+    DataChangeBus.instance.emit(
+      const DataChangeEvent(kinds: {DataChangeKind.subjects}),
+    );
   }
 
   Future<void> renameKnowledgePoint(String id, String newName) async {
@@ -572,11 +632,20 @@ extension AppDatabaseCatalog on AppDatabase {
       where: 'id = ?',
       whereArgs: [id],
     );
+    DataChangeBus.instance.emit(
+      const DataChangeEvent(kinds: {DataChangeKind.subjects}),
+    );
   }
 
   Future<void> deleteKnowledgePoint(String id) async {
     final d = await db;
     await AppDatabase.deleteKnowledgePointFrom(d, id);
+    // 删知识点同事务去掉所有题上的该知识点（见 deleteKnowledgePointFromImpl）。
+    DataChangeBus.instance.emit(
+      const DataChangeEvent(
+        kinds: {DataChangeKind.subjects, DataChangeKind.questions},
+      ),
+    );
   }
 
   /// 章节改名：只改 `knowledge_points.chapter` 的名字，题上挂的知识点
@@ -594,6 +663,9 @@ extension AppDatabaseCatalog on AppDatabase {
       where: 'subject_id = ? AND chapter = ?',
       whereArgs: [subjectId, oldChapter],
     );
+    DataChangeBus.instance.emit(
+      const DataChangeEvent(kinds: {DataChangeKind.subjects}),
+    );
   }
 
   /// 删除章节：删掉该章节下全部知识点；题还在，只是这些知识点变空、
@@ -601,5 +673,11 @@ extension AppDatabaseCatalog on AppDatabase {
   Future<void> deleteChapter(String subjectId, String chapter) async {
     final d = await db;
     await AppDatabase.deleteChapterFrom(d, subjectId, chapter);
+    // 删章节同事务去掉所有题上的这些知识点（见 deleteChapterFromImpl）。
+    DataChangeBus.instance.emit(
+      const DataChangeEvent(
+        kinds: {DataChangeKind.subjects, DataChangeKind.questions},
+      ),
+    );
   }
 }

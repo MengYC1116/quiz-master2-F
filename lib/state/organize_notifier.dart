@@ -1,0 +1,784 @@
+// ARCH-PLAN-A 第 3 阶段：整理页的状态层。
+//
+// 状态是 [OrganizeState]（队列 + 表单 + 元数据），唯一真源仍是 SQLite；
+// 本 Provider 只做“响应式读取 + 写回”，不另存一份。
+// 读：`ref.watch(organizeProvider)`；
+// 写：`ref.read(organizeProvider.notifier).confirmCurrent(...)` 等。
+//
+// 队列 + 批量条的操作（批量确认 / 打标签 / 加文件夹 / 删除）也收进
+// 本 Notifier——队列弹出层是 OverlayEntry，它的 build 上下文不在页面
+// 嵌套 ProviderScope 之内，拿不到 ref；弹出层经构造器接 Notifier 实例
+// 与打开时的元数据快照（folders / exams / subjects / allTags），
+// 只留纯界面状态在本地（勾选、搜索、排序、内联菜单、确认框）。
+// 弹出层自己的 `_questions` 快照同步（SR2-5 / SR3-15）仍在弹出层里，
+// Notifier 的批量方法只返回“哪些保存成功 / 拦下几道”，不同步快照。
+//
+// 表单文本框（答案 / 解析 / 笔记）的控制器是页面本地 UI 状态，
+// 留在页面里；切题 / 刷新时 Notifier 把 `formResetKey` 加一，
+// 页面按它变化、下一帧把控制器文本按当前题重建
+// （原 `_loadForm` 里设控制器文本 + 收起内联新建框的部分，
+// 见 `organize_page.dart` 的 `_syncFormFromState`）。
+// 手风琴开合、知识点章节展开、内联新建框的展开态是纯界面状态，
+// 留页面本地 setState，不进 Provider。
+//
+// Provider 是 autoDispose（D-36 结论）：页面独占、随页生死，
+// 回页重建并重读库。`build()` 里 `Future.microtask(refresh)` 首查
+// + `_disposed` 守门（沿用 Stage 2/3 模式）。
+//
+// 整理页没有初始入参（构造器只有 repo 与四个回调），所以没有
+// `organizeInitialProvider`——需要初始参数时才按
+// `wrongbookInitialProvider` 模式加（D-35），本次不需要。
+//
+// 构造器接进来的 `repo` 怎么进依赖图：`OrganizePage` 在 build 里包
+// 一层 `ProviderScope(overrides: [repositoryProvider
+// .overrideWithValue(widget.repo)])`——`app.dart` 仍按老样子传，
+// 不用改；测试里构造器传 FakeRepo 同样经这一层注入，不用再包
+// 一层 ProviderScope。本文件不认识任何 widget，不碰 `BuildContext`、
+// 不弹 Dialog、不调导航。角标走 `badgeCountsProvider`（第 4 阶段：
+// 订阅 `DataChangeBus`，见 `badge_counts_provider.dart`）。
+import 'dart:async';
+
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+
+import '../data/data_change_events.dart';
+import '../data/repository.dart';
+import '../models/models.dart';
+import 'repository_provider.dart';
+
+/// 整理页业务状态的 Provider：页面出现即读库（见 [OrganizeNotifier.build]）。
+final organizeProvider =
+    NotifierProvider.autoDispose<OrganizeNotifier, OrganizeState>(
+      OrganizeNotifier.new,
+    );
+
+/// 学科首字母：数学 S / 英语 Y / 政治 Z。
+/// 整理页排序（本文件 `_sorted`）与队列弹窗（`organize_page.dart`
+/// 的 `_filtered`）共用（SR-P2-35：原来两处各一份，一字相同）。
+String subjectInitial(String subjectId) => switch (subjectId) {
+  'english' => 'Y',
+  'politics' => 'Z',
+  _ => 'S',
+};
+
+/// `copyWith` 里“显式置 null”与“不改”的区分标记。
+const _unset = Object();
+
+/// 整理页的全部业务数据 + 队列 / 表单状态（原 `_OrganizePageState`
+/// 里调 `repo` 的字段与表单值原样搬移；手风琴开合、知识点章节展开、
+/// 内联新建展开态、文本控制器仍在页面本地，不在这里）。
+class OrganizeState {
+  const OrganizeState({
+    this.queue = const [],
+    this.index = 0,
+    this.sort = 'timeDesc',
+    this.loading = true,
+    this.hasAnyQuestion = false,
+    this.organizedToday = 0,
+    this.toReviewCount = 0,
+    this.folders = const [],
+    this.exams = const [],
+    this.kps = const [],
+    this.allTags = const [],
+    this.customTypesAll = const [],
+    this.subjects = const [],
+    this.folderIds = const [],
+    this.examId,
+    this.kpIds = const [],
+    this.errorTypes = const [],
+    this.customTypes = const [],
+    this.tags = const [],
+    this.formResetKey = 0,
+  });
+
+  /// 待整理队列（未整理、未归档）。
+  final List<Question> queue;
+
+  /// 当前题下标。
+  final int index;
+
+  /// 队列排序：timeDesc / timeAsc / subjectAsc / subjectDesc。
+  final String sort;
+
+  /// 首查进行中（原 `_loading`；初始 true，首帧先出加载圈）。
+  final bool loading;
+
+  /// 库里是否已有题（空状态分两种用：从未有题 / 队列已空）。
+  final bool hasAnyQuestion;
+
+  // B11-10 今日小结：队列已空时空状态显示的两个数。
+  final int organizedToday;
+  final int toReviewCount;
+
+  /// 当前题所属学科的文件夹（`_loadFolders` 读的）。
+  final List<Folder> folders;
+  final List<Exam> exams;
+  final List<KnowledgePoint> kps;
+  final List<String> allTags;
+
+  /// 全库自定义错因（去重后，供分类区芯片用）。
+  final List<String> customTypesAll;
+
+  /// 学科表：读库 subjects（P0B1 扫尾；以前直接 Subject.byId，
+  /// 新学科显示成“数学”）。B8-1 扫尾：空表是删光学科后的合法状态，
+  /// 不再回退预设三科；首帧与读库后都以真实列表为准，空就是空。
+  final List<Subject> subjects;
+
+  // ---- 表单值（当前题；文本框内容在页面控制器里，不在这里） ----
+
+  final List<String> folderIds;
+  final String? examId;
+  final List<String> kpIds;
+  final List<String> errorTypes;
+  final List<String> customTypes;
+  final List<String> tags;
+
+  /// 表单重置代次：每次 `_loadForm` 加一，页面按它变化、下一帧把
+  /// 控制器文本按当前题重建并收起内联新建框（原 `_loadForm` 里
+  /// 设控制器文本 + 收框的部分）。
+  final int formResetKey;
+
+  Question? get current =>
+      queue.isEmpty ? null : queue[index.clamp(0, queue.length - 1)];
+
+  List<String> get orderIds => queue.map((q) => q.id).toList();
+
+  /// 库里找学科：新学科用库里的名与色；找不到才回退 Subject.byId
+  ///（数学兜底，只发生在数据不一致时）。
+  Subject subjectOf(String id) =>
+      subjects.firstWhere((s) => s.id == id, orElse: () => Subject.byId(id));
+
+  /// 文件夹显示名：子文件夹显示“父名 / 子名”。
+  String folderDisplayName(Folder folder) {
+    if (folder.parentId == null) return folder.name;
+    final parent = folders.firstWhere(
+      (f) => f.id == folder.parentId,
+      orElse: () => folder,
+    );
+    return parent.id == folder.id
+        ? folder.name
+        : '${parent.name} / ${folder.name}';
+  }
+
+  /// 按当前表单值 + 文本框内容拼出要保存的题（原 `_formQuestion`）。
+  Question formQuestion(
+    Question q, {
+    required String answer,
+    required String explanation,
+    required String notes,
+    bool organized = false,
+  }) {
+    final a = answer.trim();
+    final e = explanation.trim();
+    final n = notes.trim();
+    // SR-P2-27：保存兜底——表单里万一还有与固定枚举同名的自定义项
+    //（如别处入口带进来的旧数据），合并进固定项再写库，不丢、不重复。
+    final fixedTypes = {
+      ...errorTypes,
+      ...customTypes.where((t) => ErrorTypes.fixed.contains(t)),
+    }.toList();
+    final customOnly = customTypes
+        .where((t) => !ErrorTypes.fixed.contains(t))
+        .toList();
+    return q.copyWith(
+      folderIds: folderIds,
+      examId: examId,
+      knowledgePointIds: kpIds,
+      errorTypes: fixedTypes,
+      customErrorTypes: customOnly,
+      tags: tags,
+      answer: a.isEmpty ? null : a,
+      explanation: e.isEmpty ? null : e,
+      notes: n.isEmpty ? null : n,
+      // 选了「未归属试卷」且原题有试卷时才真正清空（基线 copyWith
+      // 里 examId 传 null 表示“保持原值”，不处理就清不掉）。
+      clearExamId: examId == null && q.examId != null,
+      clearAnswer: a.isEmpty,
+      clearExplanation: e.isEmpty,
+      clearNotes: n.isEmpty,
+      isOrganized: organized ? true : q.isOrganized,
+    );
+  }
+
+  OrganizeState copyWith({
+    List<Question>? queue,
+    int? index,
+    String? sort,
+    bool? loading,
+    bool? hasAnyQuestion,
+    int? organizedToday,
+    int? toReviewCount,
+    List<Folder>? folders,
+    List<Exam>? exams,
+    List<KnowledgePoint>? kps,
+    List<String>? allTags,
+    List<String>? customTypesAll,
+    List<Subject>? subjects,
+    List<String>? folderIds,
+    Object? examId = _unset,
+    List<String>? kpIds,
+    List<String>? errorTypes,
+    List<String>? customTypes,
+    List<String>? tags,
+    int? formResetKey,
+  }) {
+    return OrganizeState(
+      queue: queue ?? this.queue,
+      index: index ?? this.index,
+      sort: sort ?? this.sort,
+      loading: loading ?? this.loading,
+      hasAnyQuestion: hasAnyQuestion ?? this.hasAnyQuestion,
+      organizedToday: organizedToday ?? this.organizedToday,
+      toReviewCount: toReviewCount ?? this.toReviewCount,
+      folders: folders ?? this.folders,
+      exams: exams ?? this.exams,
+      kps: kps ?? this.kps,
+      allTags: allTags ?? this.allTags,
+      customTypesAll: customTypesAll ?? this.customTypesAll,
+      subjects: subjects ?? this.subjects,
+      folderIds: folderIds ?? this.folderIds,
+      examId: examId == _unset ? this.examId : examId as String?,
+      kpIds: kpIds ?? this.kpIds,
+      errorTypes: errorTypes ?? this.errorTypes,
+      customTypes: customTypes ?? this.customTypes,
+      tags: tags ?? this.tags,
+      formResetKey: formResetKey ?? this.formResetKey,
+    );
+  }
+}
+
+/// 按排序键排队列（原 `_sortQueue` 的比较器原样搬移）。
+List<Question> _sorted(List<Question> list, String sort) {
+  final sorted = [...list];
+  switch (sort) {
+    case 'timeAsc':
+      sorted.sort((a, b) => a.createdAt.compareTo(b.createdAt));
+    case 'subjectAsc':
+      sorted.sort((a, b) {
+        final c = subjectInitial(
+          a.subjectId,
+        ).compareTo(subjectInitial(b.subjectId));
+        return c != 0 ? c : b.createdAt.compareTo(a.createdAt);
+      });
+    case 'subjectDesc':
+      sorted.sort((a, b) {
+        final c = subjectInitial(
+          b.subjectId,
+        ).compareTo(subjectInitial(a.subjectId));
+        return c != 0 ? c : b.createdAt.compareTo(a.createdAt);
+      });
+    case 'timeDesc':
+    default:
+      sorted.sort((a, b) => b.createdAt.compareTo(a.createdAt));
+  }
+  return sorted;
+}
+
+/// 整理页业务逻辑（ARCH-PLAN-A 第 3 阶段：原 `organize_page.dart`
+/// 的 `_OrganizePageState` 里调 `repo` 的部分原样迁入；
+/// 页面只留 widget 与本地交互状态——文本控制器、手风琴开合、
+/// 知识点章节展开、内联新建展开态、队列弹出层）。
+///
+/// 拿库的方式与 `ReviewNotifier` 一致：经
+/// `ref.read(repositoryProvider)` 拿——测试注入见
+/// `docs/ui-replication/A-READING-GUIDE.md`（`ProviderContainer.test`
+/// + `repositoryProvider.overrideWithValue`）。
+class OrganizeNotifier extends Notifier<OrganizeState> {
+  QuestionRepository get _repo => ref.read(repositoryProvider);
+
+  bool _disposed = false;
+
+  @override
+  OrganizeState build() {
+    ref.onDispose(() => _disposed = true);
+    // 页面出现即读库（原 `initState` 的 `_refresh`）：不 await，
+    // 读完后 state 一次性赋值，首帧先出加载圈。
+    Future.microtask(refresh);
+    return const OrganizeState();
+  }
+
+  /// 首读与每次写库后重读（与原来页面的 `_refresh` 同口径）：
+  /// 读全部题 → 待整理队列（未整理、未归档）→ 试卷 / 知识点 /
+  /// 标签 / 学科表 → 全库自定义错因；队列已空且库里有题时才读
+  /// 今日小结两个数（B11-10）。读完先写队列与元数据，再读当前题
+  /// 的文件夹、再按当前题重建表单（原 `_refresh` 末尾的
+  /// `_loadFolders()` + `_loadForm()`，顺序不变）。
+  Future<void> refresh() async {
+    // D-42：build() 的 microtask 首查可能在页面已离开、Provider 已销毁后
+    // 才跑——先判 _disposed 再碰 ref；repo 入口处捕获一次，之后不再 ref.read。
+    if (_disposed) return;
+    final repo = _repo;
+    final all = await repo.all();
+    final pending = all.where((q) => !q.isOrganized && !q.isArchived).toList();
+    final exams = await repo.exams();
+    final kps = await repo.knowledgePoints();
+    final tags = await repo.tags();
+    final subjects = await repo.subjects();
+    final customs = <String>{};
+    for (final q in all) {
+      customs.addAll(q.customErrorTypes);
+    }
+    // B11-10 今日小结：队列已空且库里有题时（空状态要显示小结行）才读
+    // 两个数；队列非空时空状态不显示，不读。N1 = 今天已整理的题数
+    // （settings 键 organizedToday，当天内整理确认的跃迁计数）；
+    // N2 = 待复习题数，与首页焦点卡 / 复习角标同一口径
+    // （repo.dueToday：手动加入、已整理、未治愈或到复查时间，数题）。
+    var organizedToday = 0;
+    var toReview = 0;
+    if (pending.isEmpty && all.isNotEmpty) {
+      organizedToday = await repo.organizedTodayCount();
+      toReview = (await repo.dueToday()).length;
+    }
+    if (_disposed) return;
+    var index = state.index;
+    if (index >= pending.length) {
+      index = pending.isEmpty ? 0 : pending.length - 1;
+    }
+    state = state.copyWith(
+      hasAnyQuestion: all.isNotEmpty,
+      queue: _sorted(pending, state.sort),
+      index: index,
+      exams: exams,
+      kps: kps,
+      allTags: tags,
+      subjects: subjects,
+      customTypesAll: customs.toList(),
+      organizedToday: organizedToday,
+      toReviewCount: toReview,
+      loading: false,
+    );
+    await loadFolders();
+    loadForm();
+  }
+
+  /// 读当前题所属学科的文件夹（原 `_loadFolders`）：无当前题时直接返回。
+  Future<void> loadFolders() async {
+    final current = state.current;
+    if (current == null) return;
+    final folders = await _repo.folders(subjectId: current.subjectId);
+    if (_disposed) return;
+    state = state.copyWith(folders: folders);
+  }
+
+  /// 按当前题重建表单值（原 `_loadForm` 里表单值的部分）：
+  /// SR-P2-27：旧数据里与固定枚举同名的自定义错因，在读表单时就
+  /// 合并进固定项（不丢错因、不在界面上重复出现）；下次保存即写回。
+  /// 无当前题时直接返回。`formResetKey` 加一，页面按它变化、
+  /// 下一帧把控制器文本按当前题重建并收起内联新建框
+  /// （原 `_loadForm` 里设控制器文本 + 收框的部分）。
+  void loadForm() {
+    final q = state.current;
+    if (q == null) return;
+    state = state.copyWith(
+      folderIds: List.of(q.folderIds),
+      examId: q.examId,
+      kpIds: List.of(q.knowledgePointIds),
+      errorTypes: {
+        ...q.errorTypes,
+        ...q.customErrorTypes.where((t) => ErrorTypes.fixed.contains(t)),
+      }.toList(),
+      customTypes: q.customErrorTypes
+          .where((t) => !ErrorTypes.fixed.contains(t))
+          .toList(),
+      tags: List.of(q.tags),
+      formResetKey: state.formResetKey + 1,
+    );
+  }
+
+  // ---------- 表单值：具名改动口（D-35：优先用命名方法，少用泛型 update） ----------
+
+  void toggleFolder(String id) {
+    final ids = [...state.folderIds];
+    if (ids.contains(id)) {
+      ids.remove(id);
+    } else {
+      ids.add(id);
+    }
+    state = state.copyWith(folderIds: ids);
+  }
+
+  void setExamId(String? id) {
+    state = state.copyWith(examId: id);
+  }
+
+  void toggleKp(String id) {
+    final ids = [...state.kpIds];
+    if (ids.contains(id)) {
+      ids.remove(id);
+    } else {
+      ids.add(id);
+    }
+    state = state.copyWith(kpIds: ids);
+  }
+
+  void toggleErrorType(String t) {
+    final list = [...state.errorTypes];
+    if (list.contains(t)) {
+      list.remove(t);
+    } else {
+      list.add(t);
+    }
+    state = state.copyWith(errorTypes: list);
+  }
+
+  void removeErrorType(String t) {
+    state = state.copyWith(
+      errorTypes: state.errorTypes.where((x) => x != t).toList(),
+    );
+  }
+
+  void toggleCustomType(String t) {
+    final list = [...state.customTypes];
+    if (list.contains(t)) {
+      list.remove(t);
+    } else {
+      list.add(t);
+    }
+    state = state.copyWith(customTypes: list);
+  }
+
+  void removeCustomType(String t) {
+    state = state.copyWith(
+      customTypes: state.customTypes.where((x) => x != t).toList(),
+    );
+  }
+
+  void toggleTag(String t) {
+    final list = [...state.tags];
+    if (list.contains(t)) {
+      list.remove(t);
+    } else {
+      list.add(t);
+    }
+    state = state.copyWith(tags: list);
+  }
+
+  // ---------- 保存 / 切题 / 确认（原 `_saveCurrent` / `_goTo` /
+  // `_confirmCurrent` / `_jumpToQuestion` / `_applyQueueSort`） ----------
+
+  /// 切题自动保存（原 `_saveCurrent` + `_trySaveCurrent` 的落盘部分）：
+  /// 文本框内容由页面从控制器读了传进来。保存失败返回 false
+  /// （页面弹“保存失败，请重试”并拦下本次动作）；无当前题时
+  /// 返回 true（原 `_saveCurrent` 无题直接返回，视为成功）。
+  /// SR2-6 根治：保存成功后把新行写回内存队列——只写库不同步
+  /// 内存时，切题往返后仍读旧对象，再保存会把已落盘的改动整行
+  /// 覆盖回旧值。只在保存成功后写回；失败时队列保持旧行。
+  Future<bool> saveCurrent({
+    required String answer,
+    required String explanation,
+    required String notes,
+  }) async {
+    final q = state.current;
+    if (q == null) return true;
+    // D-42：repo 入口处捕获一次（保存 + 同步错因记录跨两次 await）。
+    final repo = _repo;
+    try {
+      final updated = state.formQuestion(
+        q,
+        answer: answer,
+        explanation: explanation,
+        notes: notes,
+      );
+      await repo.save(updated);
+      await repo.syncCauseRecords(updated);
+      final i = state.queue.indexWhere((x) => x.id == q.id);
+      if (i >= 0) {
+        final queue = [...state.queue];
+        queue[i] = updated;
+        state = state.copyWith(queue: queue);
+      }
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// 切到第 [next] 道（原 `_goTo` 里保存之后的部分）：
+  /// 越界或原地不动时直接返回；否则改下标、重读文件夹、重建表单。
+  /// 保存由页面先做（失败时拦下、不进这里）。
+  Future<void> goTo(int next) async {
+    if (next < 0 || next >= state.queue.length || next == state.index) {
+      return;
+    }
+    state = state.copyWith(index: next);
+    await loadFolders();
+    loadForm();
+  }
+
+  /// 确认整理当前题（原 `_confirmCurrent`）：文件夹必填由页面先校验
+  /// （缺了弹“先选文件夹”并只开文件夹区，不进这里）。保存 + 同步
+  /// 错因记录 + 记最近任务（kind '整理'），再整页重读——队列推进
+  /// 到下一道（确认后这道题已不在待整理队列里）。
+  Future<void> confirmCurrent({
+    required String answer,
+    required String explanation,
+    required String notes,
+  }) async {
+    final q = state.current;
+    if (q == null) return;
+    final updated = state.formQuestion(
+      q,
+      answer: answer,
+      explanation: explanation,
+      notes: notes,
+      organized: true,
+    );
+    // D-42：repo 入口处捕获一次（保存 + 同步错因记录 + 记最近任务跨多次 await）。
+    final repo = _repo;
+    await repo.save(updated);
+    await repo.syncCauseRecords(updated);
+    await repo.saveRecentTask(
+      kind: '整理',
+      subjectId: q.subjectId,
+      title: q.title,
+    );
+    await refresh();
+  }
+
+  /// 队列里点中一道题（原 `_jumpToQuestion` 里关层 + 保存之后的部分）：
+  /// 找不到时重读一遍（与原代码一致）；否则改下标、重读文件夹、重建表单。
+  Future<void> jumpTo(String id) async {
+    final idx = state.queue.indexWhere((q) => q.id == id);
+    if (idx < 0) {
+      await refresh();
+      return;
+    }
+    state = state.copyWith(index: idx);
+    await loadFolders();
+    loadForm();
+  }
+
+  /// 队列里改排序（原 `_applyQueueSort` 里保存之后的部分）：
+  /// 按新排序重排并回到第 1 道（与顶栏排序下拉的行为一致），
+  /// 再重建表单；不重读文件夹（原代码同款——与 `_goTo` 不同，
+  /// 这里不调 `_loadFolders`）。弹出层重绘由页面 `markNeedsBuild`。
+  void applyQueueSort(String sort) {
+    state = state.copyWith(
+      sort: sort,
+      queue: _sorted(state.queue, sort),
+      index: 0,
+    );
+    loadForm();
+  }
+
+  // ---------- 内联新建（原 `_submitNewFolder` / `_submitNewExam` /
+  // `_submitNewTag` / `_addCustomType`） ----------
+
+  /// 新建文件夹（原 `_submitNewFolder`）：返回新建的文件夹；
+  /// 整科同名（预检命中，或写入时 StateError 兜底）返回 null，
+  /// 页面弹“已经有了”。成功后重读文件夹并把新建的选上这道题。
+  Future<Folder?> submitNewFolder(String name, String subjectId) async {
+    // D-42：repo 入口处捕获一次（预检与保存跨多次 await，`on StateError`
+    // 接不住 UnmountedRefException）。
+    final repo = _repo;
+    // SR-P2-36：整科同名预检（新建不传 excludeId）——旧代码只查顶层
+    // 同名，跨层同名会一路写到 upsertFolder 才被 StateError 拦下。
+    // 预检命中即返回 null；仍留 StateError 捕获作兜底
+    //（竞态：预检与写入之间别人建了同名）。
+    if (await repo.folderNameExistsInSubject(subjectId, name)) {
+      return null;
+    }
+    final folder = Folder(
+      // SR-P2-28：id 用 newEntityId（毫秒 + 随机后缀）；纯毫秒在同一
+      // 毫秒内连点两次会撞主键、后一次覆盖前一次。
+      id: newEntityId('folder'),
+      name: name,
+      subjectId: subjectId,
+      sortOrder: state.folders.length,
+    );
+    try {
+      await repo.saveFolder(folder);
+    } on StateError {
+      return null;
+    }
+    await loadFolders();
+    if (_disposed) return folder;
+    state = state.copyWith(
+      folderIds: state.folderIds.contains(folder.id)
+          ? state.folderIds
+          : [...state.folderIds, folder.id],
+    );
+    return folder;
+  }
+
+  /// 新建试卷（原 `_submitNewExam`）：写库后追加进试卷表、
+  /// 并把新建的归属到这道题。
+  Future<void> submitNewExam(String name, DateTime? date) async {
+    final exam = Exam(
+      // SR-P2-28：id 用 newEntityId（毫秒 + 随机后缀），防同毫秒连点撞主键。
+      id: newEntityId('exam'),
+      name: name,
+      date: date,
+    );
+    await _repo.addExam(exam);
+    if (_disposed) return;
+    state = state.copyWith(
+      exams: [...state.exams, exam],
+      examId: exam.id,
+    );
+  }
+
+  /// 新建标签（原 `_submitNewTag`）：写库后追加进标签表并选上这道题。
+  /// 标签名禁逗号与竖线（§6 第 4 条）由页面先校验，不进这里。
+  Future<void> submitNewTag(String name) async {
+    await _repo.addTag(name);
+    if (_disposed) return;
+    state = state.copyWith(
+      tags: state.tags.contains(name) ? state.tags : [...state.tags, name],
+      allTags: state.allTags.contains(name)
+          ? state.allTags
+          : [...state.allTags, name],
+    );
+  }
+
+  /// 自定义错误类型（原 `_addCustomType` 里写库之外的部分）：
+  /// 与固定枚举同名时不进自定义集合，直接选中对应固定项，
+  /// 返回 true（页面提示“是固定错误类型，已帮你选中”）；
+  /// 否则进自定义集合（本题 + 全库），返回 false。
+  /// 空名与禁逗号竖线由页面先校验，不进这里。
+  bool addCustomType(String name) {
+    // SR-P2-27：与固定枚举同名时不进自定义集合，直接选中对应固定项
+    //（否则 allCauses 里出现两次“其他”，详情页副标题与复习记录的
+    // 错因行都会重复；详情页保存还会把它静默滤掉、错因直接消失）。
+    if (ErrorTypes.fixed.contains(name)) {
+      state = state.copyWith(
+        errorTypes: state.errorTypes.contains(name)
+            ? state.errorTypes
+            : [...state.errorTypes, name],
+      );
+      return true;
+    }
+    state = state.copyWith(
+      customTypes: state.customTypes.contains(name)
+          ? state.customTypes
+          : [...state.customTypes, name],
+      customTypesAll: state.customTypesAll.contains(name)
+          ? state.customTypesAll
+          : [...state.customTypesAll, name],
+    );
+    return false;
+  }
+
+  // ---------- 队列弹出层的批量操作（原 `_QueuePopupState` 里调 `repo`
+  // 的部分；弹出层只留纯界面状态在本地，操作结果由返回值交回去，
+  // 弹出层自己的 `_questions` 快照同步仍在弹出层里） ----------
+
+  /// 单删一道题（原 `_deleteOne`）：写库；弹出层随后把该题
+  /// 从自己的 `_questions` 快照与勾选里去掉。
+  Future<void> deleteQuestion(Question q) => _repo.delete(q);
+
+  /// 批量打标签（原 `_applyBatchTag` 里写库的部分）：
+  /// 返回已保存的题 id 与选中总数。循环中途某题写库失败时停下，
+  /// 已保存的仍返回（SR3-15：弹出层按返回的 id 同步快照，
+  /// 否则后续批量操作拿旧行覆盖，会把刚落盘的标签抹掉）；
+  /// 失败不抛到按钮回调，由弹出层按“部分保存失败”提示。
+  Future<({Set<String> savedIds, int total})> batchTagQuestions(
+    List<Question> selected,
+    String tag,
+  ) async {
+    // D-42 + Stage 4：repo 入口处捕获一次；批量提交只发一个事件
+    //（scope 把逐题保存的事件合并成一个）。
+    final repo = _repo;
+    final savedIds = <String>{};
+    await DataChangeBus.instance.scope(() async {
+      try {
+        for (final q in selected) {
+          final tags = {...q.tags, tag}.toList();
+          await repo.save(q.copyWith(tags: tags));
+          savedIds.add(q.id);
+        }
+      } catch (_) {
+        // 落到返回：已保存子集照常同步，调用方按 savedIds 与 total
+        // 的差值报“部分保存失败”。
+      }
+    });
+    return (savedIds: savedIds, total: selected.length);
+  }
+
+  /// 批量加入文件夹（原 `_batchAddFolder`）：返回已加入数与
+  /// “不是本科”跳过数。已在文件夹里的题不重复写库，但仍计入
+  /// 已加入（原代码同款）。
+  Future<({int applied, int skipped})> batchAddFolders(
+    List<Question> selected,
+    Folder folder,
+  ) async {
+    // D-42 + Stage 4：repo 入口处捕获一次；批量提交只发一个事件。
+    final repo = _repo;
+    var applied = 0;
+    var skipped = 0;
+    await DataChangeBus.instance.scope(() async {
+      for (final q in selected) {
+        if (q.subjectId != folder.subjectId) {
+          skipped++;
+          continue;
+        }
+        if (!q.folderIds.contains(folder.id)) {
+          await repo.save(
+            q.copyWith(folderIds: [...q.folderIds, folder.id]),
+          );
+        }
+        applied++;
+      }
+    });
+    return (applied: applied, skipped: skipped);
+  }
+
+  /// 批量条里新建文件夹（原 `_submitBatchFolder`）：
+  /// 返回新建的文件夹；整科同名返回 null（弹出层提示“已经有了”）。
+  Future<Folder?> submitBatchFolder(
+    String name,
+    String subjectId,
+    int sortOrder,
+  ) async {
+    // D-42：repo 入口处捕获一次（见 submitNewFolder）。
+    final repo = _repo;
+    // SR-P2-36：整科同名预检 + StateError 兜底（见 `submitNewFolder`）。
+    if (await repo.folderNameExistsInSubject(subjectId, name)) {
+      return null;
+    }
+    final folder = Folder(
+      // SR-P2-28：id 用 newEntityId（毫秒 + 随机后缀），防同毫秒连点撞主键。
+      id: newEntityId('folder'),
+      name: name,
+      subjectId: subjectId,
+      sortOrder: sortOrder,
+    );
+    try {
+      await repo.saveFolder(folder);
+    } on StateError {
+      return null;
+    }
+    return folder;
+  }
+
+  /// 批量确认（原 `_batchConfirm`）：只确认已选文件夹的题，
+  /// 缺文件夹的题拦下；返回拦下的题数，弹出层提示后关层，
+  /// 父页重读并按当前排序进下一道。注意：批量确认只 save
+  /// `isOrganized: true`，不同步错因记录、不记最近任务
+  ///（原代码同款，与单题 `_confirmCurrent` 不同）。
+  Future<int> batchConfirmQuestions(List<Question> selected) async {
+    final blocked =
+        selected.where((q) => q.folderIds.isEmpty).toList();
+    final ok =
+        selected.where((q) => q.folderIds.isNotEmpty).toList();
+    // D-42 + Stage 4：repo 入口处捕获一次；批量提交只发一个事件。
+    final repo = _repo;
+    await DataChangeBus.instance.scope(() async {
+      for (final q in ok) {
+        await repo.save(q.copyWith(isOrganized: true));
+      }
+    });
+    return blocked.length;
+  }
+
+  /// 批量删除（原 `_batchDelete`）：逐题写库；弹出层随后把
+  /// 这些题从自己的 `_questions` 快照里去掉并清空勾选。
+  Future<void> batchDeleteQuestions(List<Question> selected) async {
+    // D-42 + Stage 4：repo 入口处捕获一次；批量提交只发一个事件。
+    final repo = _repo;
+    await DataChangeBus.instance.scope(() async {
+      for (final q in selected) {
+        await repo.delete(q);
+      }
+    });
+  }
+}

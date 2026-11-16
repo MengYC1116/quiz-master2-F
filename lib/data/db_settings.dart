@@ -196,6 +196,9 @@ extension AppDatabaseSettings on AppDatabase {
   Future<void> saveSettings(AppSettings s) async {
     final d = await db;
     await AppDatabase.saveSettingsInto(d, s);
+    DataChangeBus.instance.emit(
+      const DataChangeEvent(kinds: {DataChangeKind.settings}),
+    );
   }
 
   Future<String?> loadLastRoute() async {
@@ -231,16 +234,26 @@ extension AppDatabaseSettings on AppDatabase {
   Future<bool> loadBackupFailed() async =>
       AppDatabase.loadBackupFailedFrom(await db);
 
-  Future<void> saveBackupFailed(bool failed) async =>
-      AppDatabase.saveBackupFailedInto(await db, failed);
+  Future<void> saveBackupFailed(bool failed) async {
+    await AppDatabase.saveBackupFailedInto(await db, failed);
+    // 备份失败标志是 settings 表里的键，首页横幅在启动时读它。
+    DataChangeBus.instance.emit(
+      const DataChangeEvent(kinds: {DataChangeKind.settings}),
+    );
+  }
 
   /// B11-9 考试倒计时：读考试事件列表（settings 表 `examEvents` 键）。
   Future<List<ExamEvent>> loadExamEvents() async =>
       AppDatabase.loadExamEventsFrom(await db);
 
   /// B11-9 考试倒计时：写考试事件列表（整表替换）。
-  Future<void> saveExamEvents(List<ExamEvent> events) async =>
-      AppDatabase.saveExamEventsInto(await db, events);
+  Future<void> saveExamEvents(List<ExamEvent> events) async {
+    await AppDatabase.saveExamEventsInto(await db, events);
+    // 考试事件存在 settings 表里；首页倒计时与设置页考试组读同一份。
+    DataChangeBus.instance.emit(
+      const DataChangeEvent(kinds: {DataChangeKind.settings}),
+    );
+  }
 
   /// B11-10 今日小结：读今天已整理的题数（settings 表 `organizedToday`
   /// 键；口径见本文件顶部的 organizedToday* 注释）。

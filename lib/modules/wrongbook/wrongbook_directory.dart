@@ -2,25 +2,25 @@ part of 'wrongbook_page.dart';
 
 // 目录页视图：文件夹树、目录工具条、移动选择条、文件夹行与拖拽落点。
 
-extension _WrongbookDirectoryBuild on _WrongbookPageState {
+extension _WrongbookDirectoryBuild on _WrongbookViewState {
   Widget _buildDirectory() {
-    final subjectId = _subjectId!;
-    final subject = _subjectOf(subjectId);
-    final tops = _topFolders(subjectId);
-    final kw = _folderSearch.trim().toLowerCase();
+    final subjectId = _s.subjectId!;
+    final subject = _s.subjectOf(subjectId);
+    final tops = _s.topFolders(subjectId);
+    final kw = _s.folderSearch.trim().toLowerCase();
     final visibleTops = kw.isEmpty
         ? tops
         : tops.where((f) {
             if (f.name.toLowerCase().contains(kw)) return true;
-            return _subFolders(f.id)
+            return _s.subFolders(f.id)
                 .any((s) => s.name.toLowerCase().contains(kw));
           }).toList();
-    // 搜到子文件夹时，它的父文件夹自动展开（不写回 _expandedFolders，
+    // 搜到子文件夹时，它的父文件夹自动展开（不写回 _s.expandedFolders，
     // 展开状态不记住）。
-    final effectiveExpanded = {..._expandedFolders};
+    final effectiveExpanded = {..._s.expandedFolders};
     if (kw.isNotEmpty) {
       for (final f in visibleTops) {
-        if (_subFolders(f.id).any((s) => s.name.toLowerCase().contains(kw))) {
+        if (_s.subFolders(f.id).any((s) => s.name.toLowerCase().contains(kw))) {
           effectiveExpanded.add(f.id);
         }
       }
@@ -58,7 +58,7 @@ extension _WrongbookDirectoryBuild on _WrongbookPageState {
                 ),
               ),
             ),
-          if (_selectingMove) _buildMoveSelBar(),
+          if (_s.selectingMove) _buildMoveSelBar(),
           SizedBox(height: 12 * scale),
           _openBookFrame(
             subjectId: subjectId,
@@ -120,7 +120,7 @@ extension _WrongbookDirectoryBuild on _WrongbookPageState {
                   vertical: 9 * scale,
                 ),
               ),
-              onChanged: (v) => _update(() => _folderSearch = v),
+              onChanged: (v) => _n.setFolderSearch(v),
             ),
           ),
         ),
@@ -150,13 +150,16 @@ extension _WrongbookDirectoryBuild on _WrongbookPageState {
         ),
         SizedBox(width: 8 * scale),
         QmButton(
-          label: _selectingMove ? '退出选择' : '选择文件夹',
+          label: _s.selectingMove ? '退出选择' : '选择文件夹',
           variant: QmButtonVariant.plain,
           size: QmButtonSize.small,
-          onPressed: () => _update(() {
-            _selectingMove = !_selectingMove;
-            if (!_selectingMove) _moveSelection.clear();
-          }),
+          onPressed: () => _n.update(
+            (st) => st.copyWith(
+              selectingMove: !st.selectingMove,
+              moveSelection:
+                  st.selectingMove ? const <String>{} : st.moveSelection,
+            ),
+          ),
         ),
       ],
     );
@@ -165,17 +168,17 @@ extension _WrongbookDirectoryBuild on _WrongbookPageState {
   Widget _buildMoveSelBar() {
     final scale = qmScaleOf(context);
     final palette = DesignTokens.of(Theme.of(context).brightness);
-    final subjectId = _subjectId!;
-    final tops = _topFolders(subjectId);
-    final selN = _moveSelection.length;
+    final subjectId = _s.subjectId!;
+    final tops = _s.topFolders(subjectId);
+    final selN = _s.moveSelection.length;
     // SR2-7：下拉当前值必须在选项里——与批量条同款防线
     //（wrongbook_list.dart _buildBatchBar），不在 build 里写回状态。
-    // _moveTargetId 可能陈旧：换科后仍是上一科文件夹的 id、目标被删
+    // _s.moveTargetId 可能陈旧：换科后仍是上一科文件夹的 id、目标被删
     // 或被拖成子文件夹后不在当前科顶层里，直接喂给 DropdownButton
     // 会在 debug 下断言；无效时回落到“移到顶层”。
     final effectiveTargetId =
-        _moveTargetId == '__top__' || tops.any((f) => f.id == _moveTargetId)
-            ? _moveTargetId
+        _s.moveTargetId == '__top__' || tops.any((f) => f.id == _s.moveTargetId)
+            ? _s.moveTargetId
             : '__top__';
     return Container(
       margin: EdgeInsets.only(top: 12 * scale),
@@ -206,9 +209,11 @@ extension _WrongbookDirectoryBuild on _WrongbookPageState {
                 for (final f in tops)
                   DropdownMenuItem(value: f.id, child: Text('移到「${f.name}」下面')),
               ],
-              onChanged: (v) => _update(() {
-                if (v != null) _moveTargetId = v;
-              }),
+              onChanged: (v) {
+                if (v != null) {
+                  _n.update((st) => st.copyWith(moveTargetId: v));
+                }
+              },
             ),
           ),
           QmButton(
@@ -220,10 +225,12 @@ extension _WrongbookDirectoryBuild on _WrongbookPageState {
             label: '退出选择',
             variant: QmButtonVariant.plain,
             size: QmButtonSize.small,
-            onPressed: () => _update(() {
-              _selectingMove = false;
-              _moveSelection.clear();
-            }),
+            onPressed: () => _n.update(
+              (st) => st.copyWith(
+                selectingMove: false,
+                moveSelection: const <String>{},
+              ),
+            ),
           ),
           Text(
             '移动时里面的题跟着一起走；不能移到自己下面；带子文件夹的一级文件夹不能再放进别的文件夹（只留一层）',
@@ -236,29 +243,29 @@ extension _WrongbookDirectoryBuild on _WrongbookPageState {
 
   /// 「全部题目」行（目录最上面一行；拖到它上面 = 移回顶层）。
   Widget _buildAllRow() {
-    final subjectId = _subjectId!;
+    final subjectId = _s.subjectId!;
     // 与列表默认视图同口径（SR-P2-38 决定 (a)）：已掌握的题不计入。
-    final total = _questions
+    final total = _s.questions
         .where(
           (q) =>
               q.subjectId == subjectId &&
               q.isOrganized &&
               !q.isArchived &&
-              !_isMastered(q),
+              !_s.isMastered(q),
         )
         .length;
     return DragTarget<Folder>(
       onWillAcceptWithDetails: (_) {
-        _update(() => _dragOverKey = 'promote');
+        _n.update((st) => st.copyWith(dragOverKey: 'promote'));
         return true;
       },
-      onLeave: (_) => _update(() => _dragOverKey = null),
+      onLeave: (_) => _n.update((st) => st.copyWith(dragOverKey: null)),
       onAcceptWithDetails: (d) {
-        _update(() => _dragOverKey = null);
-        _applyDrop(d.data, null, _DropKind.promote);
+        _n.update((st) => st.copyWith(dragOverKey: null));
+        _applyDrop(d.data, null, FolderDropKind.promote);
       },
       builder: (context, candidate, rejected) {
-        final highlight = _dragOverKey == 'promote';
+        final highlight = _s.dragOverKey == 'promote';
         return Container(
           decoration: highlight
               ? BoxDecoration(
@@ -292,19 +299,19 @@ extension _WrongbookDirectoryBuild on _WrongbookPageState {
     final key = 'gap:${parentId ?? 'top'}:$index';
     return DragTarget<Folder>(
       onWillAcceptWithDetails: (d) {
-        if (_folderSearch.trim().isNotEmpty) return false;
+        if (_sr.folderSearch.trim().isNotEmpty) return false;
         final dragged = d.data;
         if (dragged.parentId != parentId) return false;
-        _update(() => _dragOverKey = key);
+        _n.update((st) => st.copyWith(dragOverKey: key));
         return true;
       },
-      onLeave: (_) => _update(() => _dragOverKey = null),
+      onLeave: (_) => _n.update((st) => st.copyWith(dragOverKey: null)),
       onAcceptWithDetails: (d) {
-        _update(() => _dragOverKey = null);
+        _n.update((st) => st.copyWith(dragOverKey: null));
         _reorderFolder(d.data, parentId, index);
       },
       builder: (context, candidate, rejected) {
-        final highlight = _dragOverKey == key;
+        final highlight = _s.dragOverKey == key;
         return Container(
           height: 10 * scale,
           decoration: BoxDecoration(
@@ -320,7 +327,7 @@ extension _WrongbookDirectoryBuild on _WrongbookPageState {
   Widget _buildKids(Folder parent, String kw, Set<String> effectiveExpanded) {
     final scale = qmScaleOf(context);
     final palette = DesignTokens.of(Theme.of(context).brightness);
-    final kids = _subFolders(parent.id)
+    final kids = _s.subFolders(parent.id)
         .where((s) => kw.isEmpty || s.name.toLowerCase().contains(kw))
         .toList();
     return Container(
@@ -358,13 +365,13 @@ extension _WrongbookDirectoryBuild on _WrongbookPageState {
   Widget _buildFolderRow(Folder f, int depth, Set<String> effectiveExpanded) {
     final isTop = depth == 0;
     final expanded = effectiveExpanded.contains(f.id);
-    final kids = isTop ? _subFolders(f.id) : const <Folder>[];
+    final kids = isTop ? _s.subFolders(f.id) : const <Folder>[];
     final scale = qmScaleOf(context);
     final palette = DesignTokens.of(Theme.of(context).brightness);
     final rowKey = 'row:${f.id}';
 
     Widget rowContent;
-    if (_renamingId == f.id) {
+    if (_s.renamingId == f.id) {
       rowContent = Row(
         children: [
           Expanded(
@@ -383,7 +390,8 @@ extension _WrongbookDirectoryBuild on _WrongbookPageState {
           SizedBox(width: 6 * scale),
           _paperActionButton(
             label: '取消',
-            onPressed: () => _update(() => _renamingId = null),
+            onPressed: () =>
+                _n.update((st) => st.copyWith(renamingId: null)),
           ),
         ],
       );
@@ -396,12 +404,14 @@ extension _WrongbookDirectoryBuild on _WrongbookPageState {
               child: kids.isEmpty
                   ? const SizedBox.shrink()
                   : InkWell(
-                      onTap: () => _update(() {
-                        if (_expandedFolders.contains(f.id)) {
-                          _expandedFolders.remove(f.id);
+                      onTap: () => _n.update((st) {
+                        final next = {...st.expandedFolders};
+                        if (next.contains(f.id)) {
+                          next.remove(f.id);
                         } else {
-                          _expandedFolders.add(f.id);
+                          next.add(f.id);
                         }
+                        return st.copyWith(expandedFolders: next);
                       }),
                       borderRadius: BorderRadius.circular(6 * scale),
                       child: Container(
@@ -419,32 +429,36 @@ extension _WrongbookDirectoryBuild on _WrongbookPageState {
                       ),
                     ),
             ),
-          if (_selectingMove)
+          if (_s.selectingMove)
             Checkbox(
-              value: _moveSelection.contains(f.id),
-              onChanged: (v) => _update(() {
+              value: _s.moveSelection.contains(f.id),
+              onChanged: (v) => _n.update((st) {
+                final next = {...st.moveSelection};
                 if (v == true) {
-                  _moveSelection.add(f.id);
+                  next.add(f.id);
                 } else {
-                  _moveSelection.remove(f.id);
+                  next.remove(f.id);
                 }
+                return st.copyWith(moveSelection: next);
               }),
             ),
           Expanded(
             child: _tocRowContent(
               name: f.name,
-              count: _folderCount(f.id),
+              count: _s.folderCount(f.id),
               sub: kids.isNotEmpty ? '${kids.length} 个子文件夹' : null,
               leftPadding: isTop ? 22 : 12,
               onTap: () {
                 // 选择模式下点行 = 勾选 / 取消勾选（HTML bind）。
-                if (_selectingMove) {
-                  _update(() {
-                    if (_moveSelection.contains(f.id)) {
-                      _moveSelection.remove(f.id);
+                if (_sr.selectingMove) {
+                  _n.update((st) {
+                    final next = {...st.moveSelection};
+                    if (next.contains(f.id)) {
+                      next.remove(f.id);
                     } else {
-                      _moveSelection.add(f.id);
+                      next.add(f.id);
                     }
+                    return st.copyWith(moveSelection: next);
                   });
                 } else {
                   _openList(folderId: f.id);
@@ -454,11 +468,11 @@ extension _WrongbookDirectoryBuild on _WrongbookPageState {
           ),
           Draggable<Folder>(
             data: f,
-            onDragStarted: () => _update(() => _draggingId = f.id),
-            onDragEnd: (_) => _update(() {
-              _draggingId = null;
-              _dragOverKey = null;
-            }),
+            onDragStarted: () =>
+                _n.update((st) => st.copyWith(draggingId: f.id)),
+            onDragEnd: (_) => _n.update(
+              (st) => st.copyWith(draggingId: null, dragOverKey: null),
+            ),
             feedback: Material(
               elevation: 4,
               borderRadius: BorderRadius.circular(8 * scale),
@@ -502,7 +516,7 @@ extension _WrongbookDirectoryBuild on _WrongbookPageState {
             label: '改名',
             onPressed: () {
               _renameCtrl.text = f.name;
-              _update(() => _renamingId = f.id);
+              _n.update((st) => st.copyWith(renamingId: f.id));
             },
           ),
           SizedBox(width: 6 * scale),
@@ -534,17 +548,17 @@ extension _WrongbookDirectoryBuild on _WrongbookPageState {
     return DragTarget<Folder>(
       onWillAcceptWithDetails: (d) {
         if (d.data.id == f.id) return false;
-        _update(() => _dragOverKey = rowKey);
+        _n.update((st) => st.copyWith(dragOverKey: rowKey));
         return true;
       },
-      onLeave: (_) => _update(() => _dragOverKey = null),
+      onLeave: (_) => _n.update((st) => st.copyWith(dragOverKey: null)),
       onAcceptWithDetails: (d) {
-        _update(() => _dragOverKey = null);
-        _applyDrop(d.data, f, _DropKind.into);
+        _n.update((st) => st.copyWith(dragOverKey: null));
+        _applyDrop(d.data, f, FolderDropKind.into);
       },
       builder: (context, candidate, rejected) {
-        final highlight = _dragOverKey == rowKey;
-        final dragging = _draggingId == f.id;
+        final highlight = _s.dragOverKey == rowKey;
+        final dragging = _s.draggingId == f.id;
         return Opacity(
           opacity: dragging ? 0.45 : 1,
           child: Container(

@@ -26,6 +26,7 @@
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:quiz_master2/app.dart';
 import 'package:quiz_master2/data/database.dart';
@@ -69,25 +70,25 @@ Future<void> _goNav(WidgetTester tester, String label) async {
 /// 拆分后的题 + 任务（确认切分刚完成时的状态）：题未整理，任务
 /// pendingOrganize 且 question_id 指向题。
 Question _splitQuestion(String id, {DateTime? createdAt}) => Question(
-      id: id,
-      title: '试卷 · 第1页 · 第$id题',
-      subjectId: 'math',
-      createdAt: createdAt ?? DateTime(2026, 11, 14),
-      sliceText: '题干占位文字',
-    );
+  id: id,
+  title: '试卷 · 第1页 · 第$id题',
+  subjectId: 'math',
+  createdAt: createdAt ?? DateTime(2026, 11, 14),
+  sliceText: '题干占位文字',
+);
 
 CollectTask _splitTask(String id, String questionId) => CollectTask(
-      id: 'task-$id',
-      name: '试卷 · 第1页 · 第$id题',
-      fileName: '试卷.pdf',
-      subjectId: 'math',
-      status: CollectStatus.pendingOrganize,
-      progress: 100,
-      pageCount: 1,
-      page: 1,
-      questionId: questionId,
-      createdAt: DateTime(2026, 11, 14),
-    );
+  id: 'task-$id',
+  name: '试卷 · 第1页 · 第$id题',
+  fileName: '试卷.pdf',
+  subjectId: 'math',
+  status: CollectStatus.pendingOrganize,
+  progress: 100,
+  pageCount: 1,
+  page: 1,
+  questionId: questionId,
+  createdAt: DateTime(2026, 11, 14),
+);
 
 /// 内存库 + 三科 + 数学预置文件夹（整理页文件夹区要显示“试卷”）。
 Future<QuestionRepository> _seedMemoryRepo() async {
@@ -105,12 +106,8 @@ Future<QuestionRepository> _seedMemoryRepo() async {
 
 /// 种子两道待整理题 + 两条待整理任务（q1 更新、q2 更旧）。
 Future<void> _seedTwoPending(QuestionRepository repo) async {
-  await repo.save(
-    _splitQuestion('q1', createdAt: DateTime(2026, 11, 14, 10)),
-  );
-  await repo.save(
-    _splitQuestion('q2', createdAt: DateTime(2026, 11, 14, 9)),
-  );
+  await repo.save(_splitQuestion('q1', createdAt: DateTime(2026, 11, 14, 10)));
+  await repo.save(_splitQuestion('q2', createdAt: DateTime(2026, 11, 14, 9)));
   await repo.saveCollectTask(_splitTask('q1', 'q1'));
   await repo.saveCollectTask(_splitTask('q2', 'q2'));
 }
@@ -152,9 +149,7 @@ void main() {
       // 改动与本用例无关，直接原样保存即可）。
       await repo.save(q1);
       expect(
-        (await _tasks(repo))
-            .firstWhere((t) => t.id == 'task-q1')
-            .status,
+        (await _tasks(repo)).firstWhere((t) => t.id == 'task-q1').status,
         CollectStatus.pendingOrganize,
       );
       // 模拟旧版卡住态：题已整理、任务仍待整理（原始 SQL 插，
@@ -169,9 +164,7 @@ void main() {
       final healed = (await repo.questionById('q1'))!;
       await repo.save(healed);
       expect(
-        (await _tasks(repo))
-            .firstWhere((t) => t.id == 'task-q1')
-            .status,
+        (await _tasks(repo)).firstWhere((t) => t.id == 'task-q1').status,
         CollectStatus.done,
       );
     });
@@ -183,10 +176,7 @@ void main() {
         await repo.save(q.copyWith(isOrganized: true));
       }
       final tasks = await _tasks(repo);
-      expect(
-        tasks.map((t) => t.status),
-        everyElement(CollectStatus.done),
-      );
+      expect(tasks.map((t) => t.status), everyElement(CollectStatus.done));
     });
   });
 
@@ -283,8 +273,7 @@ void main() {
           await dir.delete(recursive: true);
         } catch (_) {}
       });
-      final dbPath =
-          '${dir.path}${Platform.pathSeparator}quiz-master2.db';
+      final dbPath = '${dir.path}${Platform.pathSeparator}quiz-master2.db';
       // 第一次打开：建表播种；原始 SQL 插卡住行（绕过流转）。
       var db = await AppDatabase.openAt(dbPath);
       await db.insert('questions', {
@@ -340,7 +329,7 @@ void main() {
       tester.view.devicePixelRatio = 1.0;
       addTearDown(tester.view.resetPhysicalSize);
       addTearDown(tester.view.resetDevicePixelRatio);
-      await tester.pumpWidget(const QuizMasterApp());
+      await tester.pumpWidget(const ProviderScope(child: QuizMasterApp()));
       // B8-1 同款：等导航速览出现数学（启动基线）。
       await _pumpUntil(
         tester,
@@ -349,7 +338,7 @@ void main() {
       );
     }
 
-    /// 收尾沉降（B8-1 同款）：等在途的 _refreshBadges / saveLastRoute
+    /// 收尾沉降（B8-1 同款）：等在途的角标重读 / saveLastRoute
     /// 落定再结束——它们是未 await 的异步写读，若测试体结束、
     /// tearDown 关库时仍在途，查询会报 database closed。
     /// 本用例在途工作比 B8-1 多（整理确认 + 跳页 + 收集 _load），
@@ -380,8 +369,7 @@ void main() {
       expect(find.text('待整理'), findsNothing);
     }
 
-    testWidgets('单题确认：逐题整理完，收集中心待整理归零、行变已整理',
-        (tester) async {
+    testWidgets('单题确认：逐题整理完，收集中心待整理归零、行变已整理', (tester) async {
       // testWidgets 体跑在 fake async 里，真实 ffi 的 Future 必须
       // 包在 runAsync 里等，直接 await 会永远卡死（B8-1 同款）。
       await tester.runAsync(() => _seedTwoPending(repo));
@@ -416,25 +404,25 @@ void main() {
       await settle(tester);
       // 库里状态也已持久化（不只是界面派生）。
       final tasks = (await tester.runAsync(() => _tasks(repo)))!;
-      expect(
-        tasks.map((t) => t.status),
-        everyElement(CollectStatus.done),
-      );
+      expect(tasks.map((t) => t.status), everyElement(CollectStatus.done));
       expect(tester.takeException(), isNull);
     });
 
-    testWidgets('批量确认：队列里全选后批量确认，任务同样变 done',
-        (tester) async {
+    testWidgets('批量确认：队列里全选后批量确认，任务同样变 done', (tester) async {
       // 批量确认只认已有文件夹的题：种子题直接带文件夹。
       // 同样包在 runAsync 里（见上一个用例注释）。
       await tester.runAsync(() async {
         await repo.save(
-          _splitQuestion('q1', createdAt: DateTime(2026, 11, 14, 10))
-              .copyWith(folderIds: ['folder-math-试卷']),
+          _splitQuestion(
+            'q1',
+            createdAt: DateTime(2026, 11, 14, 10),
+          ).copyWith(folderIds: ['folder-math-试卷']),
         );
         await repo.save(
-          _splitQuestion('q2', createdAt: DateTime(2026, 11, 14, 9))
-              .copyWith(folderIds: ['folder-math-试卷']),
+          _splitQuestion(
+            'q2',
+            createdAt: DateTime(2026, 11, 14, 9),
+          ).copyWith(folderIds: ['folder-math-试卷']),
         );
         await repo.saveCollectTask(_splitTask('q1', 'q1'));
         await repo.saveCollectTask(_splitTask('q2', 'q2'));
@@ -449,8 +437,7 @@ void main() {
       await tester.tap(find.text('队列'));
       await _pumpUntil(
         tester,
-        () =>
-            find.text('待整理队列 · 2 道').evaluate().isNotEmpty,
+        () => find.text('待整理队列 · 2 道').evaluate().isNotEmpty,
         reason: '队列弹窗未打开',
       );
       final checkboxes = find.descendant(
@@ -471,10 +458,7 @@ void main() {
       await expectCollectDone(tester);
       await settle(tester);
       final tasks = (await tester.runAsync(() => _tasks(repo)))!;
-      expect(
-        tasks.map((t) => t.status),
-        everyElement(CollectStatus.done),
-      );
+      expect(tasks.map((t) => t.status), everyElement(CollectStatus.done));
       expect(tester.takeException(), isNull);
     });
   });

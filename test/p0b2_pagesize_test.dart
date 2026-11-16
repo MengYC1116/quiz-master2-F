@@ -5,6 +5,7 @@
 // 默认值。设置页 #17 仍是改默认值的唯一入口，两页首次打开跟新默认值。
 // 用 FakeRepo 覆盖三页的 repository 调用，不碰真实数据库。
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:quiz_master2/data/database.dart';
 import 'package:quiz_master2/data/repository.dart';
@@ -12,6 +13,7 @@ import 'package:quiz_master2/models/models.dart';
 import 'package:quiz_master2/modules/review/review_page.dart';
 import 'package:quiz_master2/modules/settings/settings_page.dart';
 import 'package:quiz_master2/modules/wrongbook/wrongbook_page.dart';
+import 'package:quiz_master2/state/repository_provider.dart';
 import 'package:quiz_master2/theme/app_theme.dart';
 
 /// 15 道数学题：每题一个唯一自定义错因 → 复习列表 15 组；
@@ -19,8 +21,8 @@ import 'package:quiz_master2/theme/app_theme.dart';
 /// 两页都是 2 页，改 20 后都是 1 页，刚好区分初值与本地改动。
 class FakeP0B2Repo extends QuestionRepository {
   FakeP0B2Repo({int pageSize = 10})
-      : settingsValue = AppSettings.defaults.copyWith(pageSize: pageSize),
-        super(AppDatabase.instance);
+    : settingsValue = AppSettings.defaults.copyWith(pageSize: pageSize),
+      super(AppDatabase.instance);
 
   AppSettings settingsValue;
   int saveSettingsCalls = 0;
@@ -70,8 +72,8 @@ class FakeP0B2Repo extends QuestionRepository {
 
   @override
   Future<List<Folder>> folders({String? subjectId}) async => const [
-        Folder(id: 'f1', name: '试卷', subjectId: 'math', sortOrder: 0),
-      ];
+    Folder(id: 'f1', name: '试卷', subjectId: 'math', sortOrder: 0),
+  ];
 
   @override
   Future<List<Exam>> exams() async => const [];
@@ -83,9 +85,9 @@ class FakeP0B2Repo extends QuestionRepository {
   Future<List<KnowledgePoint>> knowledgePoints() async => const [];
 
   @override
-  Future<Map<String, (int, int, int)>> subjectCounts(
-          {bool includeArchived = false}) async =>
-      const {'math': (0, 0, 0)};
+  Future<Map<String, (int, int, int)>> subjectCounts({
+    bool includeArchived = false,
+  }) async => const {'math': (0, 0, 0)};
 
   @override
   Future<List<CauseRecord>> causeRecords() async => List.of(records);
@@ -94,10 +96,7 @@ class FakeP0B2Repo extends QuestionRepository {
   Future<ReviewSessionState?> reviewState() async => null;
 }
 
-Future<void> _pump(
-  WidgetTester tester,
-  Widget page,
-) async {
+Future<void> _pump(WidgetTester tester, Widget page) async {
   tester.view.physicalSize = const Size(1280, 720);
   tester.view.devicePixelRatio = 1.0;
   addTearDown(tester.view.resetPhysicalSize);
@@ -152,7 +151,8 @@ Future<void> pickPageSize(WidgetTester tester, int size) async {
   await tester.tap(dropdown);
   await tester.pumpAndSettle();
   final item = find.byWidgetPredicate(
-      (w) => w is DropdownMenuItem<int> && w.value == size);
+    (w) => w is DropdownMenuItem<int> && w.value == size,
+  );
   await tester.ensureVisible(item);
   await tester.pumpAndSettle();
   await tester.tap(item);
@@ -161,8 +161,7 @@ Future<void> pickPageSize(WidgetTester tester, int size) async {
 
 void main() {
   group('P0B2 每页下拉本地化', () {
-    testWidgets('复习页改 10→20：设置默认值不变，错题本首次打开仍是 10 条/页',
-        (tester) async {
+    testWidgets('复习页改 10→20：设置默认值不变，错题本首次打开仍是 10 条/页', (tester) async {
       final repo = FakeP0B2Repo();
       await pumpReviewP0B2(tester, repo: repo);
       expect(find.text('共 15 条 · 第 1 / 2 页'), findsOneWidget);
@@ -178,7 +177,8 @@ void main() {
       expect(find.text('共 15 道 · 第 1 / 2 页'), findsOneWidget);
       expect(
         find.byWidgetPredicate(
-            (w) => w is DropdownButton<int> && w.value == 10),
+          (w) => w is DropdownButton<int> && w.value == 10,
+        ),
         findsOneWidget,
       );
 
@@ -189,17 +189,16 @@ void main() {
       expect(repo.saveSettingsCalls, 0);
     });
 
-    testWidgets('设置页 #17 改默认 10→20：两页首次打开跟新默认值',
-        (tester) async {
+    testWidgets('设置页 #17 改默认 10→20：两页首次打开跟新默认值', (tester) async {
       final repo = FakeP0B2Repo();
-      // 模拟 app：设置页改动经 _updateSettings 写库。
+      // Stage 1：设置页经 settingsProvider 读写设置，Fake 用
+      // ProviderScope override 注入（原 settings / onSettingsChanged
+      // 构造参数已删除，保存直接走 Fake 的 saveSettings，断言不变）。
       await _pump(
         tester,
-        SettingsPage(
-          key: UniqueKey(),
-          repo: repo,
-          settings: repo.settingsValue,
-          onSettingsChanged: (s) async => repo.saveSettings(s),
+        ProviderScope(
+          overrides: [repositoryProvider.overrideWithValue(repo)],
+          child: SettingsPage(key: UniqueKey()),
         ),
       );
       await tester.tap(find.text('错题本').first);
@@ -214,7 +213,8 @@ void main() {
       expect(find.text('共 15 条 · 第 1 / 1 页'), findsOneWidget);
       expect(
         find.byWidgetPredicate(
-            (w) => w is DropdownButton<int> && w.value == 20),
+          (w) => w is DropdownButton<int> && w.value == 20,
+        ),
         findsOneWidget,
       );
 
@@ -223,7 +223,8 @@ void main() {
       expect(find.text('共 15 道 · 第 1 / 1 页'), findsOneWidget);
       expect(
         find.byWidgetPredicate(
-            (w) => w is DropdownButton<int> && w.value == 20),
+          (w) => w is DropdownButton<int> && w.value == 20,
+        ),
         findsOneWidget,
       );
     });

@@ -1,7 +1,10 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../data/repository.dart';
 import '../../models/models.dart';
+import '../../state/report_provider.dart';
+import '../../state/repository_provider.dart';
 import '../../theme/design_tokens.dart';
 import '../../widgets/uikit.dart';
 
@@ -36,7 +39,15 @@ import '../../widgets/uikit.dart';
 ///   不按当前错因逐因查记录——退出复习后改错因会留下陈旧记录（已删错因
 ///   的记录残留、新错因无记录），逐因查会与错题本双向偏离 1 道（SR3-2）。
 /// - 本周 = 本周一到今天（基线口径；HTML 是今天往前 7 天，见报告）。
-class ReportPage extends StatefulWidget {
+///
+/// ARCH-PLAN-A 第 2 阶段 A 路：时间范围、三个核心数、弱点 Top 5、按学科
+/// 分布、“接下来练什么”一句的读库逻辑收进 [reportProvider]
+///（`lib/state/report_provider.dart`，口径见该文件）；本页只留 widget
+/// 与纯界面临时状态（见 `_ReportPageState`）。`repo` 构造参数保留——
+/// `app.dart` 仍按老样子传，本页在 build 里用一层 `ProviderScope` 把它
+/// 以 `repositoryProvider.overrideWithValue(widget.repo)` 交进依赖图，
+/// 不再直接调 `repo` 的方法。
+class ReportPage extends ConsumerStatefulWidget {
   const ReportPage({
     super.key,
     required this.repo,
@@ -55,238 +66,43 @@ class ReportPage extends StatefulWidget {
   }) onOpenWrongbookFiltered;
 
   @override
-  State<ReportPage> createState() => _ReportPageState();
+  ConsumerState<ReportPage> createState() => _ReportPageState();
 }
 
-/// 一组弱点（学科 × 错因，或学科 × 知识点）。
-class _WeakGroup {
-  _WeakGroup({
-    required this.subjectId,
-    required this.key,
-    required this.titles,
-  });
-
-  final String subjectId;
-
-  /// 错因文本，或知识点 id。
-  final String key;
-  final List<String> titles;
-
-  /// 计数的题 id 集合：题名不唯一，同名不同题各算 1 道（SR-P1-10）；
-  /// `titles` 只作展示行拼接。
-  final Set<String> questionIds = {};
-
-  int get count => questionIds.length;
-}
-
-class _ReportPageState extends State<ReportPage> {
-  String _range = 'week'; // week / month / all
-  bool _loading = true;
-  bool _loadError = false;
+class _ReportPageState extends ConsumerState<ReportPage> {
+  // 纯界面临时状态，留页面本地（不进 Provider）：读库失败横幅的“已关闭”
+  // 标志、两组弱点“看更多”的展开/收起（切范围时由分段器 onChanged 重置）。
   bool _errorDismissed = false;
   bool _expandCauses = false;
   bool _expandKps = false;
 
-  List<CauseRecord> _records = [];
-  List<Question> _questions = [];
-  List<KnowledgePoint> _knowledgePoints = [];
-  // 学科表：读库 subjects（B2 补充；以前写死 Subject.all，新学科
-  // 弱点定位不到、分布里不出现、弱点行颜色落到数学色）。
-  // B8-1 扫尾：空表是删光学科后的合法状态，不再回退预设三科；
-  // 首帧与读库后都以真实列表为准，空就是空。
-  List<Subject> _subjects = const [];
-  // 库里找学科：新学科用库里的名与色；找不到才回退 Subject.byId
-  //（数学兜底，只发生在数据不一致时）。
-  Subject _subjectOf(String id) => _subjects.firstWhere(
-        (s) => s.id == id,
-        orElse: () => Subject.byId(id),
-      );
-  List<({String result, DateTime reviewedAt})> _history = [];
-  AppSettings _settings = AppSettings.defaults;
-
-  @override
-  void initState() {
-    super.initState();
-    _load();
-  }
-
-  DateTime? get _rangeStart {
-    final now = DateTime.now();
-    final today = DateTime(now.year, now.month, now.day);
-    return switch (_range) {
-      'month' => DateTime(now.year, now.month, 1),
-      'week' => today.subtract(Duration(days: today.weekday - 1)),
-      _ => null,
-    };
-  }
-
-  bool _inRange(DateTime d) {
-    final start = _rangeStart;
-    return start == null || !d.isBefore(start);
-  }
-
-  String _md(DateTime d) => '${d.month}-${d.day}';
-
-  /// 范围说明（HTML `rptRange().label` + ` · 数字按这个时间段算`）。
-  String get _rangeNote {
-    final now = DateTime.now();
-    final today = DateTime(now.year, now.month, now.day);
-    final label = switch (_range) {
-      'month' => '本月 · ${_md(_rangeStart!)} ~ ${_md(today)}',
-      'week' => '本周 · ${_md(_rangeStart!)} ~ ${_md(today)}',
-      _ => '全部时间',
-    };
-    return '$label · 数字按这个时间段算';
-  }
-
-  Future<void> _load() async {
-    try {
-      final records = await widget.repo.causeRecords();
-      final questions = await widget.repo.all(includeArchived: true);
-      final kps = await widget.repo.knowledgePoints();
-      final subjects = await widget.repo.subjects();
-      final settings = await widget.repo.settings();
-      final history = <({String result, DateTime reviewedAt})>[];
-      for (final q in questions) {
-        history.addAll(await widget.repo.reviewHistory(q.id));
-      }
-      if (!mounted) return;
-      setState(() {
-        _records = records;
-        _questions = questions;
-        _knowledgePoints = kps;
-        _subjects = subjects;
-        _settings = settings;
-        _history = history;
-        _loading = false;
-        _loadError = false;
-      });
-    } catch (_) {
-      // 加载失败：留住上次成功加载的内容（HTML 错误横幅口径），只出横幅。
-      if (!mounted) return;
-      setState(() {
-        _loading = false;
-        _loadError = true;
-        _errorDismissed = false;
-      });
-    }
-  }
-
-  /// （题 id|错因）→ 解决记录；无记录的错因默认待解决（HTML `causeRec`
-  /// 未建记录时默认 `待解决`）。
-  Map<String, CauseRecord> get _recordByKey => {
-    for (final r in _records) '${r.questionId}|${r.cause}': r,
-  };
-
-  /// 所选范围内收集的题目（HTML `qsIn`，以 `createdAt` 为收集日期）。
-  /// 只收已整理未归档的题，与错题本列表默认收录口径一致（SR-P1-11）：
-  /// 未整理题（还在整理工作台排队）与已归档题不进弱点 Top5 与学科分布。
-  /// 已掌握的题（该题现存错因记录全部已解决且无一到复查）也不进分布
-  /// （SR2-29，Meng 2026-11-15 决定：与封面/目录/列表同口径，分布数 = 该科
-  /// 封面总数；已掌握的科显示 0 道）。
-  List<Question> get _questionsInRange {
-    final inScope = _questions.where(
-      (q) => q.isOrganized && !q.isArchived && !_isMastered(q),
-    );
-    if (_range == 'all') return inScope.toList();
-    return inScope.where((q) => _inRange(q.createdAt)).toList();
-  }
-
-  /// 与错题本 / 首页同一口径（SR3-2）：按该题现存的全部错因记录算
-  /// `QuestionRepository.reviewBucketOf(records) == ReviewBucket.solved`，
-  /// 不再按 `allCauses` 逐因查记录。退出复习后改错因会留下陈旧记录
-  /// （已删错因的记录残留、新错因无记录），逐因查会与错题本双向偏离
-  /// 1 道，打破“分布数 = 该科封面总数”；无记录的题不是已掌握。
-  bool _isMastered(Question q) {
-    final rs = _records.where((r) => r.questionId == q.id).toList();
-    return QuestionRepository.reviewBucketOf(rs) == ReviewBucket.solved;
-  }
-
-  int _subjectOrder(String subjectId) {
-    final i = _subjects.indexWhere((s) => s.id == subjectId);
-    return i < 0 ? 99 : i;
-  }
-
-  List<_WeakGroup> _causeGroups(List<Question> qsIn) {
-    final byKey = _recordByKey;
-    final groups = <String, _WeakGroup>{};
-    final order = <String>[];
-    for (final q in qsIn) {
-      for (final cause in q.allCauses) {
-        final record = byKey['${q.id}|$cause'];
-        if (record?.status == CauseStatus.solved) continue;
-        final key = '${q.subjectId}|$cause';
-        var g = groups[key];
-        if (g == null) {
-          g = _WeakGroup(subjectId: q.subjectId, key: cause, titles: []);
-          groups[key] = g;
-          order.add(key);
-        }
-        if (g.questionIds.add(q.id)) g.titles.add(q.title);
-      }
-    }
-    final list = order.map((k) => groups[k]!).toList();
-    list.sort((a, b) {
-      final c = b.count.compareTo(a.count);
-      if (c != 0) return c;
-      final s = _subjectOrder(a.subjectId) - _subjectOrder(b.subjectId);
-      return s != 0 ? s : a.key.compareTo(b.key);
-    });
-    return list;
-  }
-
-  List<_WeakGroup> _kpGroups(List<Question> qsIn) {
-    final byKey = _recordByKey;
-    final groups = <String, _WeakGroup>{};
-    final order = <String>[];
-    for (final q in qsIn) {
-      if (q.allCauses.isEmpty) continue;
-      final allSolved = q.allCauses.every(
-        (c) => byKey['${q.id}|$c']?.status == CauseStatus.solved,
-      );
-      if (allSolved) continue;
-      for (final kpId in q.knowledgePointIds) {
-        if (_kpOf(kpId) == null) continue;
-        final key = '${q.subjectId}|$kpId';
-        var g = groups[key];
-        if (g == null) {
-          g = _WeakGroup(subjectId: q.subjectId, key: kpId, titles: []);
-          groups[key] = g;
-          order.add(key);
-        }
-        if (g.questionIds.add(q.id)) g.titles.add(q.title);
-      }
-    }
-    final list = order.map((k) => groups[k]!).toList();
-    list.sort((a, b) {
-      final c = b.count.compareTo(a.count);
-      if (c != 0) return c;
-      final s = _subjectOrder(a.subjectId) - _subjectOrder(b.subjectId);
-      if (s != 0) return s;
-      return _kpName(a.key).compareTo(_kpName(b.key));
-    });
-    return list;
-  }
-
-  KnowledgePoint? _kpOf(String id) {
-    for (final kp in _knowledgePoints) {
-      if (kp.id == id) return kp;
-    }
-    return null;
-  }
-
-  String _kpName(String id) => _kpOf(id)?.name ?? '待补充';
-
   @override
   Widget build(BuildContext context) {
-    if (_loading) {
+    // 构造器接进来的 repo（应用层传的单例库 / 测试传的 FakeRepo）只在
+    // 这里交进 Riverpod 依赖图：`reportProvider` 的 Notifier 经
+    // `repositoryProvider` 拿库；本页不再直接调 `repo` 的方法。
+    // 内层 Consumer 的 ref 才属于这层 scope（外层 `ref` 拿不到 override
+    // 后的库），读状态与调 `setRange()` 都用内层 ref。
+    return ProviderScope(
+      overrides: [repositoryProvider.overrideWithValue(widget.repo)],
+      child: Consumer(
+        builder: (context, ref, _) {
+          final report = ref.watch(reportProvider);
+          return _buildBody(context, ref, report);
+        },
+      ),
+    );
+  }
+
+  Widget _buildBody(BuildContext context, WidgetRef ref, ReportState report) {
+    if (report.loading) {
       return const Center(child: CircularProgressIndicator());
     }
     final scale = qmScaleOf(context);
     final palette = DesignTokens.of(Theme.of(context).brightness);
 
     // 空态：没有任何复习记录（HTML `state==='empty'` 的形态）。
-    if (_records.isEmpty && !_loadError) {
+    if (report.records.isEmpty && !report.loadError) {
       return SingleChildScrollView(
         padding: EdgeInsets.zero,
         child: Column(
@@ -306,37 +122,13 @@ class _ReportPageState extends State<ReportPage> {
       );
     }
 
-    // 三个核心数：同一范围、同一字段口径（S8 B1）。
-    // 已解决 / 待解决都按错因记录的 lastCheck 过滤（为空视为在范围内）；
-    // 复查通过率按自查记录的 reviewedAt 过滤。
-    final solvedCount = _records
-        .where(
-          (r) =>
-              r.status == CauseStatus.solved &&
-              (r.lastCheck == null || _inRange(r.lastCheck!)),
-        )
-        .length;
-    final pendingCount = _records
-        .where(
-          (r) =>
-              r.status != CauseStatus.solved &&
-              (r.lastCheck == null || _inRange(r.lastCheck!)),
-        )
-        .length;
-    final rangedHistory =
-        _history.where((h) => _inRange(h.reviewedAt)).toList();
-    final judged =
-        rangedHistory.where((h) => h.result != 'unsure').toList();
-    final passed = judged.where((h) => h.result == 'solved').length;
-    final passRate =
-        judged.isEmpty ? null : (passed * 100 / judged.length).round();
-
-    final qsIn = _questionsInRange;
-    final causeTop = _causeGroups(qsIn);
-    final kpTop = _kpGroups(qsIn);
-    final nextSentence = causeTop.isEmpty
-        ? '这段时间没有待解决的错因，先去复习页把到期的复查做完。'
-        : '先解决${_subjectOf(causeTop.first.subjectId).name}的${causeTop.first.key}。';
+    // 三个核心数、弱点 Top 5、按学科分布、“接下来练什么”一句都在
+    // ReportState 里派生（`lib/state/report_provider.dart`，S8 B1 口径）；
+    // 本页只取数渲染，不再自己算。
+    final qsIn = report.questionsInRange;
+    final causeTop = report.causeGroups;
+    final kpTop = report.kpGroups;
+    final nextSentence = report.nextSentence;
 
     final wide = MediaQuery.sizeOf(context).width >
         DesignTokens.organizeGridBreakpoint;
@@ -349,7 +141,7 @@ class _ReportPageState extends State<ReportPage> {
         children: [
           Text('学习报告', style: Theme.of(context).textTheme.titleLarge),
           SizedBox(height: 14 * scale),
-          if (_loadError && !_errorDismissed)
+          if (report.loadError && !_errorDismissed)
             QmBanner(
               tone: QmBannerTone.error,
               message: '报告数据读取失败，已显示上次成功加载的内容。可重启应用后重试。',
@@ -366,15 +158,17 @@ class _ReportPageState extends State<ReportPage> {
                   QmSegmentOption(value: 'month', label: '本月'),
                   QmSegmentOption(value: 'all', label: '全部'),
                 ],
-                value: _range,
-                onChanged: (v) => setState(() {
-                  _range = v;
-                  _expandCauses = false;
-                  _expandKps = false;
-                }),
+                value: report.range,
+                onChanged: (v) {
+                  ref.read(reportProvider.notifier).setRange(v);
+                  setState(() {
+                    _expandCauses = false;
+                    _expandKps = false;
+                  });
+                },
               ),
               Text(
-                _rangeNote,
+                report.rangeNote,
                 style: TextStyle(
                   fontSize: DesignTokens.reportRangeNoteFontSize,
                   color: palette.muted,
@@ -396,11 +190,12 @@ class _ReportPageState extends State<ReportPage> {
           _coreStrip(
             palette,
             scale,
-            solvedCount: solvedCount,
-            pendingCount: pendingCount,
-            passRate: passRate,
-            judgedTotal: judged.length,
-            judgedPassed: passed,
+            settings: report.settings,
+            solvedCount: report.solvedCount,
+            pendingCount: report.pendingCount,
+            passRate: report.passRate,
+            judgedTotal: report.judgedHistory.length,
+            judgedPassed: report.judgedPassed,
           ),
           SizedBox(height: DesignTokens.reportSuggestMarginTop * scale),
           _suggestion(palette, scale, nextSentence),
@@ -411,6 +206,7 @@ class _ReportPageState extends State<ReportPage> {
               children: [
                 Expanded(
                   child: _weakList(
+                    report: report,
                     palette: palette,
                     brightness: brightness,
                     scale: scale,
@@ -428,6 +224,7 @@ class _ReportPageState extends State<ReportPage> {
                 SizedBox(width: DesignTokens.reportTwoColGap * scale),
                 Expanded(
                   child: _weakList(
+                    report: report,
                     palette: palette,
                     brightness: brightness,
                     scale: scale,
@@ -450,6 +247,7 @@ class _ReportPageState extends State<ReportPage> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 _weakList(
+                  report: report,
                   palette: palette,
                   brightness: brightness,
                   scale: scale,
@@ -465,6 +263,7 @@ class _ReportPageState extends State<ReportPage> {
                 ),
                 SizedBox(height: DesignTokens.reportSectionMarginTop * scale),
                 _weakList(
+                  report: report,
                   palette: palette,
                   brightness: brightness,
                   scale: scale,
@@ -484,13 +283,13 @@ class _ReportPageState extends State<ReportPage> {
           SizedBox(height: DesignTokens.reportSectionMarginTop * scale),
           _sectionTitle('错在哪个学科（只按学科看）', palette),
           SizedBox(height: DesignTokens.reportSectionMarginBottom * scale),
-          for (var i = 0; i < _subjects.length; i++)
+          for (var i = 0; i < report.subjects.length; i++)
             _distRow(
               palette,
               scale,
-              subject: _subjects[i],
-              count: qsIn.where((q) => q.subjectId == _subjects[i].id).length,
-              last: i == _subjects.length - 1,
+              subject: report.subjects[i],
+              count: qsIn.where((q) => q.subjectId == report.subjects[i].id).length,
+              last: i == report.subjects.length - 1,
             ),
         ],
       ),
@@ -513,6 +312,7 @@ class _ReportPageState extends State<ReportPage> {
   Widget _coreStrip(
     AppPalette palette,
     double scale, {
+    required AppSettings settings,
     required int solvedCount,
     required int pendingCount,
     required int? passRate,
@@ -522,13 +322,13 @@ class _ReportPageState extends State<ReportPage> {
     final rateSmall = judgedTotal == 0
         ? '这段时间还没有复查记录'
         : '复查 $judgedTotal 次，通过 $judgedPassed 次'
-            '（已解决满 ${_settings.recheckIntervalDays} 天回来复查）';
+            '（已解决满 ${settings.recheckIntervalDays} 天回来复查）';
     final cells = [
       _CoreCell(
         valueKey: const ValueKey('report-core-solved'),
         value: '$solvedCount',
         label: '已解决错因',
-        small: '同一错因 ${_settings.cureChecks} 次自查「已解决」才算解决',
+        small: '同一错因 ${settings.cureChecks} 次自查「已解决」才算解决',
       ),
       _CoreCell(
         valueKey: const ValueKey('report-core-pending'),
@@ -601,14 +401,15 @@ class _ReportPageState extends State<ReportPage> {
   }
 
   Widget _weakList({
+    required ReportState report,
     required AppPalette palette,
     required Brightness brightness,
     required double scale,
     required String title,
-    required List<_WeakGroup> groups,
+    required List<WeakGroup> groups,
     required bool expanded,
     required VoidCallback onToggleExpand,
-    required void Function(_WeakGroup) onTap,
+    required void Function(WeakGroup) onTap,
     bool isKp = false,
   }) {
     final shown = expanded ? groups : groups.take(5).toList();
@@ -634,6 +435,7 @@ class _ReportPageState extends State<ReportPage> {
               rank: i + 1,
               group: shown[i],
               onTap: () => onTap(shown[i]),
+              report: report,
               isKp: isKp,
             ),
           if (groups.length > 5) ...[
@@ -656,23 +458,21 @@ class _ReportPageState extends State<ReportPage> {
     AppPalette palette,
     Brightness brightness,
     double scale, {
+    required ReportState report,
     required int rank,
-    required _WeakGroup group,
+    required WeakGroup group,
     required VoidCallback onTap,
     required bool isKp,
   }) {
     // 弱点行学科名与颜色取库里的学科（B2 补充）：新学科以前走
     // Subject.byId 回退到数学名 + subjectInk 不传存色落到数学色。
-    final subject = _subjects.firstWhere(
-      (s) => s.id == group.subjectId,
-      orElse: () => Subject.byId(group.subjectId),
-    );
+    final subject = report.subjectOf(group.subjectId);
     final subjectName = subject.name;
     final subjectColor =
         DesignTokens.subjectInk(group.subjectId, brightness, subject.color);
-    final title = isKp ? _kpName(group.key) : group.key;
+    final title = isKp ? report.kpName(group.key) : group.key;
     final detail = isKp
-        ? '$subjectName${(_kpOf(group.key)?.chapter.isNotEmpty ?? false) ? ' › ${_kpOf(group.key)!.chapter}' : ''} · ${group.titles.join('、')}'
+        ? '$subjectName${(report.kpOf(group.key)?.chapter.isNotEmpty ?? false) ? ' › ${report.kpOf(group.key)!.chapter}' : ''} · ${group.titles.join('、')}'
         : group.titles.join('、');
     final countText = isKp ? '还没解决 ${group.count} 道' : '${group.count} 道题';
     return Container(

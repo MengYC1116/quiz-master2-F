@@ -2,13 +2,13 @@ part of 'wrongbook_page.dart';
 
 // 书架视图：书架页、书架顶栏、分页器、封面书本与封面统计。
 
-extension _WrongbookShelfBuild on _WrongbookPageState {
+extension _WrongbookShelfBuild on _WrongbookViewState {
   Widget _buildShelf() {
     const perPage = 6;
-    final pages = (_subjects.length / perPage).ceil().clamp(1, 99);
-    final page = _shelfPage.clamp(0, pages - 1);
-    final books = _subjects.skip(page * perPage).take(perPage).toList();
-    final archivedCount = _questions.where((q) => q.isArchived).length;
+    final pages = (_s.subjects.length / perPage).ceil().clamp(1, 99);
+    final page = _s.shelfPage.clamp(0, pages - 1);
+    final books = _s.subjects.skip(page * perPage).take(perPage).toList();
+    final archivedCount = _s.questions.where((q) => q.isArchived).length;
     final scale = qmScaleOf(context);
     return SingleChildScrollView(
       padding: EdgeInsets.zero,
@@ -21,7 +21,7 @@ extension _WrongbookShelfBuild on _WrongbookPageState {
           // B8-1：学科删空时书架不再摆三本 0 道题的幽灵书，
           // 给空状态（文案与学科管理页“还没有学科，先添加一个吧。”
           // 同款）；有去学科管理的回调时才画按钮。
-          if (_subjects.isEmpty)
+          if (_s.subjects.isEmpty)
             QmEmptyState(
               title: '还没有学科',
               description: '先去学科管理添加一个吧。',
@@ -68,10 +68,9 @@ extension _WrongbookShelfBuild on _WrongbookPageState {
         children: [
           QmChip(
             label: '已归档（$archivedCount）',
-            onTap: () => _update(() {
-              _view = _View.archived;
-              _page = 0;
-            }),
+            onTap: () => _n.update(
+              (st) => st.copyWith(view: WrongbookView.archived, page: 0),
+            ),
           ),
           SizedBox(width: 10 * scale),
           Expanded(
@@ -96,7 +95,7 @@ extension _WrongbookShelfBuild on _WrongbookPageState {
           variant: QmButtonVariant.plain,
           size: QmButtonSize.small,
           onPressed: page > 0
-              ? () => _update(() => _shelfPage = page - 1)
+              ? () => _n.update((st) => st.copyWith(shelfPage: page - 1))
               : null,
         ),
         SizedBox(width: 6 * scale),
@@ -106,7 +105,7 @@ extension _WrongbookShelfBuild on _WrongbookPageState {
             i + 1,
             selected: i == page,
             onTap: () {
-              _update(() => _shelfPage = i);
+              _n.update((st) => st.copyWith(shelfPage: i));
             },
           ),
         ],
@@ -116,12 +115,12 @@ extension _WrongbookShelfBuild on _WrongbookPageState {
           variant: QmButtonVariant.plain,
           size: QmButtonSize.small,
           onPressed: page < pages - 1
-              ? () => _update(() => _shelfPage = page + 1)
+              ? () => _n.update((st) => st.copyWith(shelfPage: page + 1))
               : null,
         ),
         SizedBox(width: 12 * scale),
         Text(
-          '第 ${page + 1} / $pages 页 · 共 ${_subjects.length} 本（每页最多 6 本）',
+          '第 ${page + 1} / $pages 页 · 共 ${_s.subjects.length} 本（每页最多 6 本）',
           style: TextStyle(
             fontSize: DesignTokens.pagerFontSize,
             color: palette.muted,
@@ -174,27 +173,27 @@ extension _WrongbookShelfBuild on _WrongbookPageState {
   // 单本也不拉满全宽，窗口变化只改变 Wrap 每行本数。
   Widget _buildBook(Subject s, {required double width}) {
     final scale = qmScaleOf(context);
-    final counts = _counts[s.id] ?? (0, 0, 0);
+    final counts = _s.counts[s.id] ?? (0, 0, 0);
     // 封面“道题”与列表默认视图同口径（SR-P2-38 决定 (a)）：
     // 已掌握的题默认不显示在列表里，封面也不计入。
-    final total = _questions
+    final total = _s.questions
         .where(
           (q) =>
               q.subjectId == s.id &&
               q.isOrganized &&
               !q.isArchived &&
-              !_isMastered(q),
+              !_s.isMastered(q),
         )
         .length;
     final coverColor = CoverTokens.of(s.coverColor);
     // 悬停（HTML `.nb-book:hover`）：上移 4px，阴影 0 16px 30px / .24；
     // 未悬停：阴影 0 10px 22px / .20。150ms 与 HTML transition 一致。
-    final hovered = _hoverBookId == s.id;
+    final hovered = _s.hoverBookId == s.id;
     return MouseRegion(
-      onEnter: (_) => _update(() => _hoverBookId = s.id),
-      onExit: (_) => _update(() {
-        if (_hoverBookId == s.id) _hoverBookId = null;
-      }),
+      onEnter: (_) => _n.update((st) => st.copyWith(hoverBookId: s.id)),
+      onExit: (_) => _n.update(
+        (st) => st.hoverBookId == s.id ? st.copyWith(hoverBookId: null) : st,
+      ),
       child: InkWell(
         onTap: () => _openDirectory(s.id),
         borderRadius: BorderRadius.only(

@@ -1,12 +1,14 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../data/badge_notifier.dart';
 import '../data/database.dart';
 import '../data/repository.dart';
 import '../models/models.dart';
 import '../services/recheck_reminder.dart';
+import '../state/badge_counts_provider.dart';
+import '../state/settings_notifier.dart';
 import '../theme/app_theme.dart';
 import '../widgets/app_shell.dart';
 import 'modules/collect/collect_page.dart';
@@ -47,17 +49,32 @@ String resolveStartupRoute(String startupPage, String? lastRoute) {
 /// 应用外壳：左导航 216px，可折叠为仅图标；一页一模块，只靠 ID 跳转。
 /// 路由：/home /collect /organize /wrongbook /question/:id /review
 /// /report /subjects /settings（9 页）。
-class QuizMasterApp extends StatefulWidget {
+///
+/// ARCH-PLAN-A 第 1 阶段：根组件是 `ConsumerStatefulWidget`，
+/// 主题 / 深浅色 / 字号全部来自 `settingsProvider`（与设置页同一份），
+/// 不再自己持有一份 `_settings` 快照（见 D-34）。
+/// 第 4 阶段：左导航角标同样来自 Provider——`badgeCountsProvider`
+///（订阅 `DataChangeBus`，见 `lib/state/badge_counts_provider.dart`），
+/// 旧 `_refreshBadges` + `badgeVersion` 手动链已删除。
+/// 路由、Navigator、提醒弹窗等应用级临时状态仍留根组件 State。
+class QuizMasterApp extends ConsumerStatefulWidget {
   const QuizMasterApp({super.key});
 
   @override
-  State<QuizMasterApp> createState() => _QuizMasterAppState();
+  ConsumerState<QuizMasterApp> createState() => _QuizMasterAppState();
 }
 
-class _QuizMasterAppState extends State<QuizMasterApp> {
-  AppSettings _settings = AppSettings.defaults;
-  bool _settingsLoaded = false;
-  bool _settingsLoadFailed = false;
+class _QuizMasterAppState extends ConsumerState<QuizMasterApp> {
+  /// 启动路由只解析一次（设置首次读到时）：之后用户在设置页改
+  /// startupPage 不应把当前路由拽走（与原来 _loadSettings 只跑
+  /// 一次的行为一致）。
+  bool _startupResolved = false;
+
+  /// 用户是否已主动导航（点左导航 / 去复习 / 去设置等）。
+  /// _onSettingsReady 跑在首帧后的回调里——若用户在它执行前
+  /// 已经点了导航，启动路由不得再把路由拽回初始页（旧代码在
+  /// initState 里解析，没有这个竞态；见 b8_1 / b9_1 回归）。
+  bool _userNavigated = false;
   bool _collapsed = false;
   String _route = '/home';
   String? _subjectArg; // 带学科 ID 进错题本时直接打开对应那一本
@@ -69,16 +86,7 @@ class _QuizMasterAppState extends State<QuizMasterApp> {
   String? _reportKpArg; // 学习报告点弱点进错题本时的知识点筛选
   final _navigatorKey = GlobalKey<NavigatorState>();
 
-  late final QuestionRepository repo =
-      QuestionRepository(AppDatabase.instance);
-
-  int _collectBadge = 0;
-  int _organizeBadge = 0;
-  // B9-3：复习角标（要复习题数，共享口径 = homeRevCounts 各科之和
-  // = dueToday().length = 首页焦点卡“要复习的数量”，数题不数错因）。
-  int _reviewBadge = 0;
-  Map<String, int> _navRev = {};
-  Map<String, int> _navPending = {};
+  late final QuestionRepository repo = QuestionRepository(AppDatabase.instance);
 
   /// B4.1：复查提醒一轮应用只判断一次（启动时；切页不重复弹）。
   bool _reminderChecked = false;
@@ -88,31 +96,13 @@ class _QuizMasterAppState extends State<QuizMasterApp> {
   /// 备份成功时清掉。
   bool _showBackupError = false;
 
-  /// 导航学科速览的学科列表：库里的 subjects 表（入库顺序，B2）。
-  /// B8-1：空表是合法状态（用户删光学科后表就是空的），不再回退
-  /// 预设三科——`_refreshBadges` 直接用库里的结果，空就是空；
-  /// 初始值同样是空（首帧不先摆三科幽灵行，等 `_refreshBadges`
-  /// 读库后填）。`_refreshBadges` 由 badgeVersion 监听驱动，
-  /// 删学科会 bump badgeVersion（`deleteSubject`），导航即时同步。
-  List<Subject> _navSubjects = const [];
-
-  @override
-  void initState() {
-    super.initState();
-    badgeVersion.addListener(_refreshBadges);
-    _loadSettings();
-    _refreshBadges();
-  }
-
-  @override
-  void dispose() {
-    badgeVersion.removeListener(_refreshBadges);
-    super.dispose();
-  }
-
-  Future<void> _loadSettings() async {
+  /// 设置首次读到（启动时）才跑一次：解析启动路由、读备份失败标志、
+  /// 安排一次复查提醒、自愈 lastRoute。设置读失败时不跑——
+  /// 路由 stays '/home'，设置页出错误横幅（与原来 _loadSettings
+  /// 的 catch 分支一致）。之后设置再变（用户在设置页改项）不再
+  /// 重解析路由（`_startupResolved` 守门）。
+  Future<void> _onSettingsReady(AppSettings s) async {
     try {
-      final s = await repo.settings();
       final last = await repo.lastRoute();
       // 待定3：启动时读备份失败标志（读失败按无标志处理，不影响启动）。
       var backupFailed = false;
@@ -122,16 +112,16 @@ class _QuizMasterAppState extends State<QuizMasterApp> {
       if (!mounted) return;
       // B3：启动页设置生效——'last' 时恢复上次退出的顶级路由，
       // 否则（'home' / 存值非法 / 无存值）回落首页。
+      // 只在用户尚未导航时应用：见 _userNavigated 注释。
       final initial = resolveStartupRoute(s.startupPage, last);
       setState(() {
-        _settings = s;
-        _route = initial;
-        _settingsLoaded = true;
+        if (!_userNavigated) _route = initial;
         _showBackupError = backupFailed;
       });
       // B4.1：设置读到后、首帧后判断一次复查提醒（只在启动时弹一次）。
-      WidgetsBinding.instance
-          .addPostFrameCallback((_) => _maybeShowRecheckReminder());
+      WidgetsBinding.instance.addPostFrameCallback(
+        (_) => _maybeShowRecheckReminder(),
+      );
       // 自愈：回落后的路由与存值不一致时写回去（存值非法/为空、
       // 或 startupPage 是 'home' 时上次停留页被首页覆盖），
       // 下次启动不再重复回落；合法恢复时 initial == last，不写。
@@ -139,19 +129,10 @@ class _QuizMasterAppState extends State<QuizMasterApp> {
         unawaited(repo.saveLastRoute(initial));
       }
     } catch (_) {
-      // 设置读失败：用默认设置继续跑，设置页出错误横幅（HTML 错误态）。
-      if (!mounted) return;
-      setState(() {
-        _settingsLoadFailed = true;
-        _settingsLoaded = true;
-      });
+      // lastRoute / 备份标志读失败：不影响启动，路由 stays '/home'，
+      // 提醒也不弹（_maybeShowRecheckReminder 本身也有 try/catch，
+      // 但这里直接不安排，与原来 _loadSettings 的 catch 口径一致）。
     }
-  }
-
-  Future<void> _updateSettings(AppSettings s) async {
-    await repo.saveSettings(s);
-    if (!mounted) return;
-    setState(() => _settings = s);
   }
 
   /// B4.1：复查提醒（应用内、进入应用时一次）。
@@ -164,13 +145,16 @@ class _QuizMasterAppState extends State<QuizMasterApp> {
   Future<void> _maybeShowRecheckReminder() async {
     if (_reminderChecked) return;
     _reminderChecked = true;
+    // 提醒条件里的开关与提醒时间来自 settingsProvider（根组件
+    // 不再持有一份 _settings 快照）。
+    final settings = ref.read(settingsProvider).value ?? AppSettings.defaults;
     try {
       final due = await repo.recheckDueCauseCount();
       final last = await repo.lastRecheckReminderDate();
       final now = DateTime.now();
       if (!shouldShowRecheckReminder(
-        notifyEnabled: _settings.notifyEnabled,
-        notifyTime: _settings.notifyTime,
+        notifyEnabled: settings.notifyEnabled,
+        notifyTime: settings.notifyTime,
         dueRecheckCount: due,
         now: now,
         lastRemindedDate: last,
@@ -226,57 +210,53 @@ class _QuizMasterAppState extends State<QuizMasterApp> {
     setState(() => _showBackupError = false);
   }
 
-  ThemeMode get _themeMode => switch (_settings.themeMode) {
-        'light' => ThemeMode.light,
-        'dark' => ThemeMode.dark,
-        _ => ThemeMode.system,
-      };
-
-  Future<void> _refreshBadges() async {
-    final tasks = await repo.collectTasks();
-    final pendingOrganize = await repo.pendingOrganizeCount();
-    final rev = await repo.homeRevCounts();
-    final pending = await repo.pendingOrganizeBySubject();
-    final subjects = await repo.subjects();
-    if (!mounted) return;
-    setState(() {
-      _collectBadge = CollectPage.countPendingBox(tasks) + pendingOrganize;
-      _organizeBadge = pendingOrganize;
-      // B9-3：复习角标取 homeRevCounts 各科之和——每科已是
-      // dueToday() 的题数（数题不数错因），和 = 要复习总数，
-      // 与首页焦点卡“要复习的数量”同一数字（见 repository
-      // homeRevCounts / dueToday 的口径注释）。
-      _reviewBadge = rev.values.fold(0, (a, b) => a + b);
-      _navRev = rev;
-      _navPending = pending;
-      // B8-1：空表不回退 Subject.all——新库建表时已预置三科
-      //（db_schema `_seed`），表空只发生在用户删光学科后，
-      // 此时速览必须为空，摆预设三科就是截图里的幽灵行。
-      _navSubjects = subjects;
-    });
-  }
+  ThemeMode _themeModeFor(AppSettings settings) => switch (settings.themeMode) {
+    'light' => ThemeMode.light,
+    'dark' => ThemeMode.dark,
+    _ => ThemeMode.system,
+  };
 
   @override
   Widget build(BuildContext context) {
-    if (!_settingsLoaded) {
+    // 主题 / 字号只从 settingsProvider 读（与设置页同一份）。
+    // 首次加载且无旧值时显示启动屏；读失败时用默认设置继续跑，
+    // 设置页出错误横幅（loadFailed 由 provider 的 error 态导出）。
+    // 重读期间（恢复备份后 reloadSettings）旧值仍在，不闪启动屏。
+    final settingsAsync = ref.watch(settingsProvider);
+    final settings = settingsAsync.value ?? AppSettings.defaults;
+    if (settingsAsync.isLoading && settingsAsync.value == null) {
       return const MaterialApp(
         debugShowCheckedModeBanner: false,
         home: Scaffold(body: Center(child: CircularProgressIndicator())),
       );
     }
+    if (settingsAsync.hasValue && !_startupResolved) {
+      // 只解析一次：build 里不能直接 setState，约到下一帧再做
+      // （lastRoute 读库 + 路由切换 + 提醒安排）。
+      _startupResolved = true;
+      WidgetsBinding.instance.addPostFrameCallback(
+        (_) => _onSettingsReady(settings),
+      );
+    }
+    final loadFailed = settingsAsync.hasError;
+    // 角标（Stage 4）：只从 badgeCountsProvider 读——首查与刷新都由
+    // Provider 自己负责（订阅 DataChangeBus）；首查未完成或重读失败时
+    // 用零值，导航不摆幽灵数字（B8-1：空表是合法状态，不回退预设三科）。
+    // 重读期间旧值仍在（AsyncValue.copyWithPrevious），不闪回零。
+    final badges = ref.watch(badgeCountsProvider).value ?? BadgeCounts.zero;
     // 字号缩放（D4）：唯一来源是 AppSettings.fontScale（标准 1.00 /
     // 大 1.15 / 特大 1.30，见 models.dart / FontScale）。
     // 字号只在这里由 MediaQuery TextScaler 全局乘一次；ThemeData 的
     // TextTheme 取基准值、不再乘，否则同一段文字会被缩放两次。
     // 布局类尺寸（圆角 / 按钮内边距）由 AppTheme 按同一因子缩放。
-    final scale = _settings.fontScale;
+    final scale = settings.fontScale;
     return MaterialApp(
       title: 'quiz-master2',
       debugShowCheckedModeBanner: false,
       navigatorKey: _navigatorKey,
       theme: AppTheme.light(scale: scale),
       darkTheme: AppTheme.dark(scale: scale),
-      themeMode: _themeMode,
+      themeMode: _themeModeFor(settings),
       builder: (context, child) {
         final media = MediaQuery.of(context);
         return MediaQuery(
@@ -304,7 +284,7 @@ class _QuizMasterAppState extends State<QuizMasterApp> {
                     // stretch 让容器恒满高、顶对齐，与 HTML `.main` 一致。
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
-                      _buildNav(context),
+                      _buildNav(context, badges),
                       // 内容区：HTML `.main` 底色 `--surface` + 内边距
                       // `26px 30px`（`ScaledTokens.contentPadding`，按三档
                       // 缩放 token 缩放）。九页主体仍带各自的旧内边距
@@ -314,7 +294,7 @@ class _QuizMasterAppState extends State<QuizMasterApp> {
                         child: Container(
                           color: palette.surface,
                           padding: scaled.contentPadding,
-                          child: _buildPage(),
+                          child: _buildPage(settings, loadFailed),
                         ),
                       ),
                     ],
@@ -328,22 +308,23 @@ class _QuizMasterAppState extends State<QuizMasterApp> {
     );
   }
 
-  Widget _buildNav(BuildContext context) {
+  Widget _buildNav(BuildContext context, BadgeCounts badges) {
     return AppNavBar(
       route: _route,
       collapsed: _collapsed,
       onNavigate: _go,
       onToggleCollapsed: () => setState(() => _collapsed = !_collapsed),
-      collectBadge: _collectBadge,
-      organizeBadge: _organizeBadge,
-      reviewBadge: _reviewBadge,
-      navRev: _navRev,
-      navPending: _navPending,
-      subjects: _navSubjects,
+      collectBadge: badges.collectBadge,
+      organizeBadge: badges.organizeBadge,
+      reviewBadge: badges.reviewBadge,
+      navRev: badges.navRev,
+      navPending: badges.navPending,
+      subjects: badges.subjects,
     );
   }
 
   void _go(String route, {String? subjectId}) {
+    _userNavigated = true;
     setState(() {
       _route = route;
       _subjectArg = subjectId;
@@ -357,27 +338,29 @@ class _QuizMasterAppState extends State<QuizMasterApp> {
     });
     // B3：记下最后停留的路由（startupPage='last' 时下次启动恢复用）。
     // 详情页是 Navigator 压栈，不经过这里，退出时最后路由仍是底层页。
+    // Stage 4：切页不再手动刷角标——角标只由 badgeCountsProvider
+    // 按数据变更事件刷新（写驱动）；时间驱动的复查到期（无写入）
+    // 在下次写入事件或启动时刷新（B9-3 的残余滞后，见 D-43）。
     unawaited(repo.saveLastRoute(route));
-    _refreshBadges();
   }
 
   /// B11-9：进设置页并直接展开指定组（首页倒计时点进来时 group='exams'）。
   void _goSettings({String? group}) {
+    _userNavigated = true;
     setState(() {
       _route = '/settings';
       _settingsGroupArg = group;
     });
     unawaited(repo.saveLastRoute('/settings'));
-    _refreshBadges();
   }
 
   void _goReview({String? subjectId}) {
+    _userNavigated = true;
     setState(() {
       _route = '/review';
       _reviewSubjectArg = subjectId;
     });
     unawaited(repo.saveLastRoute('/review'));
-    _refreshBadges();
   }
 
   void _goWrongbookFiltered({
@@ -385,6 +368,7 @@ class _QuizMasterAppState extends State<QuizMasterApp> {
     String? cause,
     String? knowledgePointId,
   }) {
+    _userNavigated = true;
     setState(() {
       _route = '/wrongbook';
       _subjectArg = subjectId;
@@ -392,11 +376,13 @@ class _QuizMasterAppState extends State<QuizMasterApp> {
       _reportKpArg = knowledgePointId;
     });
     unawaited(repo.saveLastRoute('/wrongbook'));
-    _refreshBadges();
   }
 
-  Future<void> _openDetail(Question q, List<String> orderIds,
-      {String sourceLabel = '错题本'}) async {
+  Future<void> _openDetail(
+    Question q,
+    List<String> orderIds, {
+    String sourceLabel = '错题本',
+  }) async {
     await _navigatorKey.currentState?.push(
       MaterialPageRoute(
         builder: (_) => QuestionDetailPage(
@@ -404,16 +390,14 @@ class _QuizMasterAppState extends State<QuizMasterApp> {
           questionId: q.id,
           orderIds: orderIds,
           sourceLabel: sourceLabel,
-          onChanged: _refreshBadges,
           // B11-11：复习记录空状态的“去复习”按钮去 /review。
           onGoReview: () => _goReview(),
         ),
       ),
     );
-    _refreshBadges();
   }
 
-  Widget _buildPage() {
+  Widget _buildPage(AppSettings settings, bool loadFailed) {
     switch (_route) {
       case '/collect':
         return CollectPage(
@@ -424,8 +408,7 @@ class _QuizMasterAppState extends State<QuizMasterApp> {
       case '/organize':
         return OrganizePage(
           repo: repo,
-          onOpenDetail: (q, ids) =>
-              _openDetail(q, ids, sourceLabel: '整理工作台'),
+          onOpenDetail: (q, ids) => _openDetail(q, ids, sourceLabel: '整理工作台'),
           onGoReview: () => _goReview(),
           onGoCollect: () => _go('/collect'),
         );
@@ -440,8 +423,7 @@ class _QuizMasterAppState extends State<QuizMasterApp> {
           onGoCollect: () => _go('/collect'),
           onGoOrganize: () => _go('/organize'),
           onOpenDetail: (q, ids) => _openDetail(q, ids, sourceLabel: '错题本'),
-          onGoReview: ({String? subjectId}) =>
-              _goReview(subjectId: subjectId),
+          onGoReview: ({String? subjectId}) => _goReview(subjectId: subjectId),
         );
       case '/review':
         return ReviewPage(
@@ -460,10 +442,7 @@ class _QuizMasterAppState extends State<QuizMasterApp> {
         return SubjectsPage(repo: repo);
       case '/settings':
         return SettingsPage(
-          repo: repo,
-          settings: _settings,
-          onSettingsChanged: _updateSettings,
-          loadFailed: _settingsLoadFailed,
+          loadFailed: loadFailed,
           onBackupFailed: () {
             if (mounted) setState(() => _showBackupError = true);
           },
@@ -473,11 +452,10 @@ class _QuizMasterAppState extends State<QuizMasterApp> {
       default:
         return HomePage(
           repo: repo,
-          settings: _settings,
+          settings: settings,
           onGoCollect: () => _go('/collect'),
           onGoOrganize: () => _go('/organize'),
-          onGoWrongbook: (subjectId) =>
-              _go('/wrongbook', subjectId: subjectId),
+          onGoWrongbook: (subjectId) => _go('/wrongbook', subjectId: subjectId),
           onGoReview: () => _goReview(),
           showBackupError: _showBackupError,
           onBackupErrorDismissed: _clearBackupError,

@@ -10,22 +10,28 @@
 // 以下两测按本地口径重写。
 // 用 FakeRepo + 模拟的 app 快照复现完整场景，不碰真实数据库。
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:quiz_master2/data/database.dart';
 import 'package:quiz_master2/data/repository.dart';
 import 'package:quiz_master2/models/models.dart';
 import 'package:quiz_master2/modules/review/review_page.dart';
 import 'package:quiz_master2/modules/settings/settings_page.dart';
+import 'package:quiz_master2/state/repository_provider.dart';
 import 'package:quiz_master2/theme/app_theme.dart';
 import 'package:quiz_master2/widgets/uikit.dart';
 
 class FakeOwnerRepo extends QuestionRepository {
   FakeOwnerRepo({AppSettings? settings})
-      : settingsValue = settings ?? AppSettings.defaults,
-        super(AppDatabase.instance);
+    : settingsValue = settings ?? AppSettings.defaults,
+      super(AppDatabase.instance);
 
   AppSettings settingsValue;
   int saveSettingsCalls = 0;
+
+  /// Stage 1：设置页经 settingsProvider 保存，保存记录在这里
+  /// （原 `onSettingsChanged` 回调的观察点改到这里；断言口径不变）。
+  final List<AppSettings> savedSettings = [];
 
   final List<Question> questions = [
     Question(
@@ -88,6 +94,7 @@ class FakeOwnerRepo extends QuestionRepository {
   Future<void> saveSettings(AppSettings s) async {
     saveSettingsCalls++;
     settingsValue = s;
+    savedSettings.add(s);
   }
 
   @override
@@ -134,17 +141,17 @@ Future<List<AppSettings>> pumpSettings(
   tester.view.devicePixelRatio = 1.0;
   addTearDown(tester.view.resetPhysicalSize);
   addTearDown(tester.view.resetDevicePixelRatio);
-  final applied = <AppSettings>[];
+  // Stage 1：设置页经 settingsProvider 读写设置——传入的 settings
+  // 是“app 快照”，先放进 Fake 的 settingsValue（Provider 的
+  // build() 从这里读），再用 ProviderScope override 注入 Fake。
+  repo.settingsValue = settings;
+  final applied = repo.savedSettings;
   await tester.pumpWidget(
-    MaterialApp(
-      theme: AppTheme.light(scale: 1.0),
-      home: Scaffold(
-        body: SettingsPage(
-          key: UniqueKey(),
-          repo: repo,
-          settings: settings,
-          onSettingsChanged: (s) async => applied.add(s),
-        ),
+    ProviderScope(
+      overrides: [repositoryProvider.overrideWithValue(repo)],
+      child: MaterialApp(
+        theme: AppTheme.light(scale: 1.0),
+        home: Scaffold(body: SettingsPage(key: UniqueKey())),
       ),
     ),
   );
@@ -153,13 +160,17 @@ Future<List<AppSettings>> pumpSettings(
 }
 
 Future<void> pickMenuItem<T>(
-    WidgetTester tester, Finder dropdown, T value) async {
+  WidgetTester tester,
+  Finder dropdown,
+  T value,
+) async {
   await tester.ensureVisible(dropdown);
   await tester.pumpAndSettle();
   await tester.tap(dropdown);
   await tester.pumpAndSettle();
   final item = find.byWidgetPredicate(
-      (w) => w is DropdownMenuItem<T> && w.value == value);
+    (w) => w is DropdownMenuItem<T> && w.value == value,
+  );
   await tester.ensureVisible(item);
   await tester.pumpAndSettle();
   await tester.tap(item);
@@ -179,16 +190,14 @@ void main() {
   // onSettingsChanged 参数。设置页 #17 仍是改默认值的唯一入口。
   // 以下两测按新口径重写，设置页本身那测不变。
   group('P0B2 复习分页本地化：复习分页 ↔ 设置页', () {
-    testWidgets('复习页改每页数量：本页显示变了，库与设置默认值不动',
-        (tester) async {
+    testWidgets('复习页改每页数量：本页显示变了，库与设置默认值不动', (tester) async {
       final repo = FakeOwnerRepo(
         settings: AppSettings.defaults.copyWith(pageSize: 2),
       );
       await pumpReview(tester, repo: repo);
       expect(find.text('共 3 条 · 第 1 / 2 页'), findsOneWidget);
 
-      await pickMenuItem<int>(
-          tester, find.byType(DropdownButton<int>), 20);
+      await pickMenuItem<int>(tester, find.byType(DropdownButton<int>), 20);
       expect(find.text('共 3 条 · 第 1 / 1 页'), findsOneWidget);
 
       // 本地行为：库不写、设置默认值仍是 2。
@@ -196,8 +205,7 @@ void main() {
       expect(repo.saveSettingsCalls, 0);
     });
 
-    testWidgets('设置页：拿到新快照后显示 20，改主题不再把 pageSize 覆盖回去',
-        (tester) async {
+    testWidgets('设置页：拿到新快照后显示 20，改主题不再把 pageSize 覆盖回去', (tester) async {
       final repo = FakeOwnerRepo();
       // 设置页取 app 快照（此处直接给 20，模拟已在设置页改过默认值；
       // P0B2 起复习页改每页不再产生这样的快照）。
@@ -211,8 +219,7 @@ void main() {
       await openGroup(tester, '错题本');
       // “每页显示数量”分段选中 20（不是旧值 10）。
       expect(
-        find.byWidgetPredicate(
-            (w) => w is QmSegmented<int> && w.value == 20),
+        find.byWidgetPredicate((w) => w is QmSegmented<int> && w.value == 20),
         findsOneWidget,
       );
 
@@ -224,14 +231,12 @@ void main() {
       expect(applied.last.pageSize, 20);
     });
 
-    testWidgets('改每页数量不写库、不持久化：重开复习页仍跟默认值',
-        (tester) async {
+    testWidgets('改每页数量不写库、不持久化：重开复习页仍跟默认值', (tester) async {
       final repo = FakeOwnerRepo(
         settings: AppSettings.defaults.copyWith(pageSize: 2),
       );
       await pumpReview(tester, repo: repo);
-      await pickMenuItem<int>(
-          tester, find.byType(DropdownButton<int>), 20);
+      await pickMenuItem<int>(tester, find.byType(DropdownButton<int>), 20);
       expect(find.text('共 3 条 · 第 1 / 1 页'), findsOneWidget);
       expect(repo.settingsValue.pageSize, 2);
       expect(repo.saveSettingsCalls, 0);

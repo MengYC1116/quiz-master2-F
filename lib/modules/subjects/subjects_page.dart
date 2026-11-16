@@ -1,6 +1,9 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../data/repository.dart';
+import '../../state/repository_provider.dart';
+import '../../state/subjects_notifier.dart';
 import '../../models/models.dart';
 import '../../theme/design_tokens.dart';
 import '../../widgets/uikit.dart';
@@ -22,6 +25,12 @@ import '../../widgets/uikit.dart';
 /// 学科排序的处理逻辑与残留代码（Subject 模型也没有 hidden/icon/
 /// order 字段），只有新增/删除/改名；相关错误提示也不暗示不存在的
 /// 功能。所以 D5 在本页无代码可删（见 R10-REPORT §6）。
+/// 学科管理页（ARCH-PLAN-A 第 2 阶段）：外壳只负责把构造器接到的
+/// `repo` 注入 `repositoryProvider`（`app.dart` 仍传 `repo:` 进来，
+/// 本阶段不碰 `app.dart`，故保留该参数；Provider 的默认值与
+/// 根组件是同一单例库）。业务数据与管理逻辑在 `subjectsProvider`
+///（`lib/state/subjects_notifier.dart`），内层 `_SubjectsView` 是
+/// `ConsumerStatefulWidget`，只留 widget 与纯界面临时状态。
 class SubjectsPage extends StatefulWidget {
   const SubjectsPage({super.key, required this.repo});
 
@@ -31,58 +40,39 @@ class SubjectsPage extends StatefulWidget {
   State<SubjectsPage> createState() => _SubjectsPageState();
 }
 
-const _presetFolders = ['试卷', '平时作业', '模拟卷'];
-const _newSubjectColors = [
-  // 与 Subject.all 的 R1 新值同步（2026-11-13 修）：新库上前三科
-  // 占掉新蓝/新绿/新红后，新学科轮到紫；老库三科仍是旧值（不迁移，
-  // Meng 已定），老库上新学科仍可能拿到与数学旧蓝相近的新蓝。
-  // P0B2-3（2026-11-14）：加青、粉两色，第 6、7 科不再回落数学蓝；
-  // 青 0xFF06B6D4（cyan-500，色相约 192°，在蓝与绿之间）、
-  // 粉 0xFFEC4899（pink-500，色相约 336°，在红与紫之间），
-  // 与现有 5 色同为 500 级明艳色；圆点亮色用存色、深色走
-  // DesignTokens.subjectColor 的雾化（SR2-36），不再“两主题都
-  // 直接用存色”。
-  // SR-P2-51：再加 5 色到 12 色（青绿/草绿/琥珀/靛蓝/玫红），
-  // 第 8–12 科各有新色；12 色用完后按金角轮转生成，不再回落第一色。
-  Color(0xFF2E7CF6),
-  Color(0xFF00A884),
-  Color(0xFFEF4444),
-  Color(0xFF7C5CFC),
-  Color(0xFFF08A1D),
-  Color(0xFF06B6D4),
-  Color(0xFFEC4899),
-  Color(0xFF14B8A6),
-  Color(0xFF84CC16),
-  Color(0xFFF59E0B),
-  Color(0xFF6366F1),
-  Color(0xFFF43F5E),
-];
-
-/// 环形色相距离（0..180°）：SR2-31——金角生成色与任一已用色 hue 差
-/// 小于 25° 即视为撞色（Meng 已定阈值），继续步进直到拉开。
-double _hueDistance(double a, double b) {
-  final d = (a - b).abs() % 360;
-  return d > 180 ? 360 - d : d;
+class _SubjectsPageState extends State<SubjectsPage> {
+  @override
+  Widget build(BuildContext context) {
+    return ProviderScope(
+      overrides: [repositoryProvider.overrideWithValue(widget.repo)],
+      child: const _SubjectsView(),
+    );
+  }
 }
 
-class _SubjectsPageState extends State<SubjectsPage> {
+class _SubjectsView extends ConsumerStatefulWidget {
+  const _SubjectsView();
+
+  @override
+  ConsumerState<_SubjectsView> createState() => _SubjectsViewState();
+}
+
+class _SubjectsViewState extends ConsumerState<_SubjectsView> {
+  /// 业务数据（读）：只在 build 里用（`ref.watch` 只能在 build 里调）。
+  SubjectsState get _s => ref.watch(subjectsProvider);
+
+  /// 业务数据（读）：事件回调里用（`ref.read`，不订阅重建）。
+  SubjectsState get _sr => ref.read(subjectsProvider);
+
+  /// 业务逻辑（写）：事件回调里用。
+  SubjectsNotifier get _n => ref.read(subjectsProvider.notifier);
+
   String? _openSection; // subjects / knowledge / tags / exams
   bool _coverOpen = false;
-  bool _loadError = false;
   bool _errorDismissed = false;
 
-  List<Subject> _subjects = [];
-  Map<String, int> _questionCounts = {};
-  Map<String, int> _tagCounts = {};
-  Map<String, int> _examCounts = {};
-  List<KnowledgePoint> _kps = [];
-  List<String> _tags = [];
-  List<Exam> _exams = [];
-
-  String? _kpSubjectId;
   final Set<String> _expandedChapters = {};
   String _examQuery = '';
-  bool _loading = true;
 
   // 内联新增输入。
   final _newSubjectController = TextEditingController();
@@ -102,12 +92,6 @@ class _SubjectsPageState extends State<SubjectsPage> {
   String? _editTarget;
 
   @override
-  void initState() {
-    super.initState();
-    _load();
-  }
-
-  @override
   void dispose() {
     _newSubjectController.dispose();
     _newTagController.dispose();
@@ -120,47 +104,6 @@ class _SubjectsPageState extends State<SubjectsPage> {
     super.dispose();
   }
 
-  Future<void> _load() async {
-    try {
-      final subjects = await widget.repo.subjects();
-      final questions = await widget.repo.all(includeArchived: true);
-      final counts = <String, int>{};
-      final tagCounts = <String, int>{};
-      final examCounts = <String, int>{};
-      for (final q in questions) {
-        counts[q.subjectId] = (counts[q.subjectId] ?? 0) + 1;
-        for (final t in q.tags) {
-          tagCounts[t] = (tagCounts[t] ?? 0) + 1;
-        }
-        if (q.examId != null) {
-          examCounts[q.examId!] = (examCounts[q.examId!] ?? 0) + 1;
-        }
-      }
-      final kps = await widget.repo.knowledgePoints();
-      final tags = await widget.repo.tags();
-      final exams = await widget.repo.exams();
-      if (!mounted) return;
-      setState(() {
-        _subjects = subjects;
-        _questionCounts = counts;
-        _tagCounts = tagCounts;
-        _examCounts = examCounts;
-        _kps = kps;
-        _tags = tags;
-        _exams = exams;
-        _kpSubjectId ??= subjects.isNotEmpty ? subjects.first.id : 'math';
-        _loading = false;
-        _loadError = false;
-      });
-    } catch (_) {
-      if (!mounted) return;
-      setState(() {
-        _loading = false;
-        _loadError = true;
-      });
-    }
-  }
-
   void _toggleSection(String key) {
     setState(() => _openSection = _openSection == key ? null : key);
   }
@@ -170,9 +113,6 @@ class _SubjectsPageState extends State<SubjectsPage> {
     ScaffoldMessenger.of(context)
         .showSnackBar(SnackBar(content: Text(message)));
   }
-
-  String _subjectName(String id) =>
-      _subjects.where((s) => s.id == id).map((s) => s.name).firstOrNull ?? '数学';
 
   // ---------- 内联改名 ----------
 
@@ -197,52 +137,31 @@ class _SubjectsPageState extends State<SubjectsPage> {
     setState(() => _editTarget = null);
     switch (kind) {
       case 'subject':
-        final s = _subjects.where((e) => e.id == key).firstOrNull;
-        if (s == null || s.name == name) return;
-        if (_subjects.any((e) => e.name == name)) {
-          _snack('已经有了这个学科');
-          return;
-        }
-        await widget.repo.saveSubject(s.copyWith(name: name));
+        final r = await _n.renameSubject(key, name);
+        if (r.message != null) _snack(r.message!);
       case 'chapter':
         final sep = key.indexOf('|');
         final subjectId = key.substring(0, sep);
         final oldChapter = key.substring(sep + 1);
-        if (oldChapter == name) return;
-        if (_chaptersFor(subjectId).contains(name)) {
-          _snack('已经有了这个章节');
-          return;
+        final r = await _n.renameChapter(subjectId, oldChapter, name);
+        if (r.message != null) {
+          _snack(r.message!);
+        } else if (r.saved) {
+          setState(() {
+            _expandedChapters.remove(oldChapter);
+            _expandedChapters.add(name);
+          });
         }
-        await widget.repo.renameChapter(subjectId, oldChapter, name);
-        setState(() {
-          _expandedChapters.remove(oldChapter);
-          _expandedChapters.add(name);
-        });
       case 'kp':
-        final kp = _kps.where((e) => e.id == key).firstOrNull;
-        if (kp == null || kp.name == name) return;
-        await widget.repo.renameKnowledgePoint(kp.id, name);
+        final r = await _n.renameKnowledgePoint(key, name);
+        if (r.message != null) _snack(r.message!);
       case 'tag':
-        if (key == name) return;
-        if (hasBannedNameSeparator(name)) {
-          _snack('不能含逗号或竖线');
-          return;
-        }
-        if (_tags.contains(name)) {
-          _snack('已经有了这个标签');
-          return;
-        }
-        await widget.repo.renameTag(key, name);
+        final r = await _n.renameTag(key, name);
+        if (r.message != null) _snack(r.message!);
       case 'exam':
-        final e = _exams.where((e) => e.id == key).firstOrNull;
-        if (e == null || e.name == name) return;
-        if (_exams.any((e) => e.name == name)) {
-          _snack('已经有了这张试卷');
-          return;
-        }
-        await widget.repo.renameExam(e.id, name);
+        final r = await _n.renameExam(key, name);
+        if (r.message != null) _snack(r.message!);
     }
-    await _load();
   }
 
   // ---------- 删除确认（B3：模态 AlertDialog 弹窗） ----------
@@ -281,24 +200,20 @@ class _SubjectsPageState extends State<SubjectsPage> {
     final key = parts.sublist(1).join(':');
     switch (kind) {
       case 'subject':
-        final s = _subjects.where((e) => e.id == key).firstOrNull;
-        if (s == null) return;
-        await widget.repo.deleteSubject(s.id);
+        await _n.deleteSubject(key);
       case 'chapter':
         final sep = key.indexOf('|');
-        await widget.repo.deleteChapter(
-          key.substring(0, sep),
-          key.substring(sep + 1),
-        );
-        setState(() => _expandedChapters.remove(key.substring(sep + 1)));
+        final subjectId = key.substring(0, sep);
+        final chapter = key.substring(sep + 1);
+        await _n.deleteChapter(subjectId, chapter);
+        setState(() => _expandedChapters.remove(chapter));
       case 'kp':
-        await widget.repo.deleteKnowledgePoint(key);
+        await _n.deleteKnowledgePoint(key);
       case 'tag':
-        await widget.repo.deleteTag(key);
+        await _n.deleteTag(key);
       case 'exam':
-        await widget.repo.deleteExam(key);
+        await _n.deleteExam(key);
     }
-    await _load();
   }
 
   // ---------- 学科 ----------
@@ -306,148 +221,55 @@ class _SubjectsPageState extends State<SubjectsPage> {
   Future<void> _addSubject() async {
     final name = _newSubjectController.text.trim();
     if (name.isEmpty) return;
-    if (_subjects.any((s) => s.name == name)) {
-      _snack('已经有了这个学科');
+    final r = await _n.addSubject(name);
+    if (r.message != null) {
+      _snack(r.message!);
       return;
     }
-    final usedColors = _subjects.map((s) => s.color).toSet();
-    final color = _newSubjectColors.firstWhere(
-      (c) => !usedColors.contains(c),
-      // 12 色用完后按金角（137.5°）轮转生成新色（SR-P2-51），
-      // 不再回落到第一色（数学蓝）；撞色时再步进 37° 避开。
-      // SR2-31：只防精确相等不够——金角起点恰好落在既有色旁边
-      //（第 13 科 210° 距数学蓝仅 6.6°）；生成色与全部已用色算
-      // 环形 hue 距离，小于 25° 时继续步进 37° 直到拉开。
-      orElse: () {
-        var hue = (usedColors.length * 137.5) % 360;
-        var candidate = HSVColor.fromAHSV(1, hue, 0.65, 0.85).toColor();
-        bool tooClose(double h) => usedColors.any(
-          (c) => _hueDistance(HSVColor.fromColor(c).hue, h) < 25,
-        );
-        var guard = 0;
-        while ((usedColors.contains(candidate) || tooClose(hue)) &&
-            guard < 36) {
-          hue = (hue + 37) % 360;
-          candidate = HSVColor.fromAHSV(1, hue, 0.65, 0.85).toColor();
-          guard++;
-        }
-        // SR3-21（Meng 定口径 (a)）：第 15 科起 37° 步进的 36 个格点
-        // 全部落在 25° 禁区内，耗尽后不再原样返回违规色；改在 1°
-        // 细粒度上扫描，取“与全部已用色最小色相距最大”的色相
-        //（15 科时仍可达约 25°，16 科约 23°，之后随科数递减，
-        // 但恒为当前最优而非任意色；第 23 科旧值只差 0.7° 的
-        // 撞色不再出现）。
-        if (usedColors.contains(candidate) || tooClose(hue)) {
-          var bestHue = 0.0;
-          var bestMin = -1.0;
-          for (var h = 0; h < 360; h++) {
-            var minDist = 180.0;
-            for (final c in usedColors) {
-              final d = _hueDistance(HSVColor.fromColor(c).hue, h.toDouble());
-              if (d < minDist) minDist = d;
-            }
-            if (minDist > bestMin) {
-              bestMin = minDist;
-              bestHue = h.toDouble();
-            }
-          }
-          hue = bestHue;
-          candidate = HSVColor.fromAHSV(1, hue, 0.65, 0.85).toColor();
-        }
-        return candidate;
-      },
-    );
-    final id = 'subject-${DateTime.now().millisecondsSinceEpoch}';
-    final subject = Subject(
-      id: id,
-      name: name,
-      color: color,
-      icon: name.isEmpty ? '学' : name[0],
-      // 新学科封面默认灰色（Meng 2026-11-12 定）。模型默认值仍是蓝，
-      // 只在这里显式传 grey，不动模型默认值，避免影响其他构造点。
-      coverColor: 'grey',
-    );
-    await widget.repo.saveSubject(subject);
-    // 新学科自动获得预置文件夹。
-    for (var i = 0; i < _presetFolders.length; i++) {
-      await widget.repo.saveFolder(
-        Folder(
-          id: 'folder-$id-${_presetFolders[i]}',
-          name: _presetFolders[i],
-          subjectId: id,
-          sortOrder: i,
-        ),
-      );
-    }
     _newSubjectController.clear();
-    await _load();
   }
 
   Future<void> _setCover(Subject s, {String? style, String? color}) async {
-    await widget.repo.saveSubject(
-      s.copyWith(
-        coverStyle: style ?? s.coverStyle,
-        coverColor: color ?? s.coverColor,
-      ),
-    );
-    await _load();
+    await _n.setCover(s, style: style, color: color);
   }
 
   // ---------- 知识点 ----------
 
-  List<String> _chaptersFor(String subjectId) {
-    final chapters = <String>[];
-    for (final kp in _kps) {
-      if (kp.subjectId == subjectId && !chapters.contains(kp.chapter)) {
-        chapters.add(kp.chapter);
-      }
-    }
-    return chapters;
-  }
-
   Future<void> _addChapter() async {
-    final subjectId = _kpSubjectId ?? 'math';
+    final subjectId = _sr.kpSubjectId ?? 'math';
     final chapter = _newChapterController.text.trim();
     final kpName = _newChapterKpController.text.trim();
     if (chapter.isEmpty || kpName.isEmpty) {
       _snack('章节名和第一个知识点都要填');
       return;
     }
-    if (_chaptersFor(subjectId).contains(chapter)) {
-      _snack('已经有了这个章节');
+    final r = await _n.addChapter(
+      subjectId: subjectId,
+      chapter: chapter,
+      kpName: kpName,
+    );
+    if (r.message != null) {
+      _snack(r.message!);
       return;
     }
-    await widget.repo.addKnowledgePoint(
-      KnowledgePoint(
-        id: 'kp-${DateTime.now().millisecondsSinceEpoch}',
-        subjectId: subjectId,
-        chapter: chapter,
-        name: kpName,
-      ),
-    );
     setState(() {
       _expandedChapters.add(chapter);
       _addingChapter = false;
       _newChapterController.clear();
       _newChapterKpController.clear();
     });
-    await _load();
   }
 
   Future<void> _addKnowledgePoint(String chapter) async {
     final name = _newKpController.text.trim();
     if (name.isEmpty) return;
-    await widget.repo.addKnowledgePoint(
-      KnowledgePoint(
-        id: 'kp-${DateTime.now().millisecondsSinceEpoch}',
-        subjectId: _kpSubjectId ?? 'math',
-        chapter: chapter,
-        name: name,
-      ),
+    await _n.addKnowledgePoint(
+      subjectId: _sr.kpSubjectId ?? 'math',
+      chapter: chapter,
+      name: name,
     );
     _newKpController.clear();
     setState(() => _kpAddChapter = null);
-    await _load();
   }
 
   // ---------- 标签 / 试卷 ----------
@@ -455,37 +277,23 @@ class _SubjectsPageState extends State<SubjectsPage> {
   Future<void> _addTag() async {
     final name = _newTagController.text.trim();
     if (name.isEmpty) return;
-    // §6 第 4 条：标签名禁逗号与竖线（多值字段已改 JSON，不再靠
-    // 分隔符拆分，名字里不能再出现分隔符）。
-    if (hasBannedNameSeparator(name)) {
-      _snack('不能含逗号或竖线');
+    final r = await _n.addTag(name);
+    if (r.message != null) {
+      _snack(r.message!);
       return;
     }
-    if (_tags.contains(name)) {
-      _snack('已经有了这个标签');
-      return;
-    }
-    await widget.repo.addTag(name);
     _newTagController.clear();
-    await _load();
   }
 
   Future<void> _addExam() async {
     final name = _newExamController.text.trim();
     if (name.isEmpty) return;
-    if (_exams.any((e) => e.name == name)) {
-      _snack('已经有了这张试卷');
+    final r = await _n.addExam(name, _newExamDate);
+    if (r.message != null) {
+      _snack(r.message!);
       return;
     }
-    await widget.repo.addExam(
-      Exam(
-        id: 'exam-${DateTime.now().millisecondsSinceEpoch}',
-        name: name,
-        date: _newExamDate,
-      ),
-    );
     _newExamController.clear();
-    await _load();
   }
 
   Future<void> _pickExamDate() async {
@@ -507,7 +315,7 @@ class _SubjectsPageState extends State<SubjectsPage> {
 
   @override
   Widget build(BuildContext context) {
-    if (_loading) {
+    if (_s.loading) {
       return const Center(child: CircularProgressIndicator());
     }
     final scale = qmScaleOf(context);
@@ -518,7 +326,7 @@ class _SubjectsPageState extends State<SubjectsPage> {
         children: [
           Text('学科管理', style: Theme.of(context).textTheme.titleLarge),
           SizedBox(height: 14 * scale),
-          if (_loadError && !_errorDismissed)
+          if (_s.loadError && !_errorDismissed)
             QmBanner(
               tone: QmBannerTone.error,
               message: '学科管理读取失败，已显示默认内容。修改前请先重启应用。',
@@ -645,8 +453,8 @@ class _SubjectsPageState extends State<SubjectsPage> {
           ],
         ),
         SizedBox(height: 8 * scale),
-        if (_subjects.isEmpty) _noteText('还没有学科，先添加一个吧。'),
-        for (final s in _subjects) ...[
+        if (_s.subjects.isEmpty) _noteText('还没有学科，先添加一个吧。'),
+        for (final s in _s.subjects) ...[
           if (_editTarget == 'subject:${s.id}')
             Padding(
               padding: EdgeInsets.symmetric(
@@ -703,7 +511,7 @@ class _SubjectsPageState extends State<SubjectsPage> {
                           ),
                         ),
                         Text(
-                          '${_questionCounts[s.id] ?? 0} 道题',
+                          '${_s.questionCounts[s.id] ?? 0} 道题',
                           style: TextStyle(
                             fontSize: R10Tokens.subjectCountFontSize,
                             color: palette.muted,
@@ -719,9 +527,9 @@ class _SubjectsPageState extends State<SubjectsPage> {
                       target: 'subject:${s.id}',
                       title: '删除学科「${s.name}」，确定吗？',
                       detail:
-                          '删除这个学科会删掉其中全部的题——这一科现在有 ${_questionCounts[s.id] ?? 0} 道题，会全部一起删掉；这一科自己的文件夹也跟着一起删掉（其他科目的文件夹不受影响），删了就没了，确定吗？',
+                          '删除这个学科会删掉其中全部的题——这一科现在有 ${_s.questionCounts[s.id] ?? 0} 道题，会全部一起删掉；这一科自己的文件夹也跟着一起删掉（其他科目的文件夹不受影响），删了就没了，确定吗？',
                       confirmLabel:
-                          '确认删除这一科和全部 ${_questionCounts[s.id] ?? 0} 道题',
+                          '确认删除这一科和全部 ${_s.questionCounts[s.id] ?? 0} 道题',
                     ),
                   ),
                 ],
@@ -739,7 +547,7 @@ class _SubjectsPageState extends State<SubjectsPage> {
             children: [
               _noteText('每科一本、每科单独换：点样式小图换样式，点下面的颜色换封面颜色，样式和颜色能任意搭配，换完立即生效。'),
               SizedBox(height: 8 * scale),
-              for (final s in _subjects) _buildCoverPicker(s),
+              for (final s in _s.subjects) _buildCoverPicker(s),
             ],
           ),
         ),
@@ -884,8 +692,8 @@ class _SubjectsPageState extends State<SubjectsPage> {
 
   Widget _buildKnowledge() {
     final scale = qmScaleOf(context);
-    final subjectId = _kpSubjectId ?? 'math';
-    final chapters = _chaptersFor(subjectId);
+    final subjectId = _s.kpSubjectId ?? 'math';
+    final chapters = _s.chaptersFor(subjectId);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -893,18 +701,20 @@ class _SubjectsPageState extends State<SubjectsPage> {
           spacing: 8 * scale,
           runSpacing: 8 * scale,
           children: [
-            for (final s in _subjects)
+            for (final s in _s.subjects)
               QmChip(
                 label: s.name,
                 subjectId: s.id,
                 storedColor: s.color,
                 selected: subjectId == s.id,
-                onTap: () => setState(() {
-                  _kpSubjectId = s.id;
-                  _expandedChapters.clear();
-                  _addingChapter = false;
-                  _kpAddChapter = null;
-                }),
+                onTap: () {
+                  _n.selectKpSubject(s.id);
+                  setState(() {
+                    _expandedChapters.clear();
+                    _addingChapter = false;
+                    _kpAddChapter = null;
+                  });
+                },
               ),
           ],
         ),
@@ -951,10 +761,10 @@ class _SubjectsPageState extends State<SubjectsPage> {
           ),
         ],
         SizedBox(height: 8 * scale),
-        if (_subjects.isEmpty)
+        if (_s.subjects.isEmpty)
           _noteText('还没有学科，先在「学科」段里添加学科，这里就出现它的知识点树。')
         else if (chapters.isEmpty)
-          _noteText('「${_subjectName(subjectId)}」还没有章节，用上面「＋ 添加章节」加第一个。')
+          _noteText('「${_s.subjectName(subjectId)}」还没有章节，用上面「＋ 添加章节」加第一个。')
         else
           for (final chapter in chapters) ...[
             _buildChapterRow(subjectId, chapter),
@@ -968,7 +778,7 @@ class _SubjectsPageState extends State<SubjectsPage> {
     final palette = DesignTokens.of(Theme.of(context).brightness);
     final open = _expandedChapters.contains(chapter);
     final key = '$subjectId|$chapter';
-    final kps = _kps
+    final kps = _s.kps
         .where((k) => k.subjectId == subjectId && k.chapter == chapter)
         .toList();
     return Column(
@@ -1164,18 +974,18 @@ class _SubjectsPageState extends State<SubjectsPage> {
           ],
         ),
         SizedBox(height: 8 * scale),
-        if (_tags.isNotEmpty)
+        if (_s.tags.isNotEmpty)
           Wrap(
             spacing: 8 * scale,
             runSpacing: 8 * scale,
             children: [
-              for (final t in _tags)
+              for (final t in _s.tags)
                 QmChip(label: '#$t', displayOnly: true),
             ],
           ),
         SizedBox(height: 4 * scale),
-        if (_tags.isEmpty) _noteText('还没有标签，先添加一个吧。'),
-        for (final t in _tags) ...[
+        if (_s.tags.isEmpty) _noteText('还没有标签，先添加一个吧。'),
+        for (final t in _s.tags) ...[
           if (_editTarget == 'tag:$t')
             Padding(
               padding: EdgeInsets.symmetric(vertical: 4 * scale),
@@ -1188,7 +998,7 @@ class _SubjectsPageState extends State<SubjectsPage> {
                 children: [
                   Expanded(
                     child: Text(
-                      '#$t · ${_tagCounts[t] ?? 0} 道',
+                      '#$t · ${_s.tagCounts[t] ?? 0} 道',
                       style: const TextStyle(
                         fontSize: R10Tokens.subjectNameFontSize,
                       ),
@@ -1216,8 +1026,8 @@ class _SubjectsPageState extends State<SubjectsPage> {
     final scale = qmScaleOf(context);
     final query = _examQuery.trim();
     final filtered = query.isEmpty
-        ? _exams
-        : _exams
+        ? _s.exams
+        : _s.exams
             .where((e) => e.name.toLowerCase().contains(query.toLowerCase()))
             .toList();
     return Column(
@@ -1276,8 +1086,8 @@ class _SubjectsPageState extends State<SubjectsPage> {
                     Expanded(
                       child: Text(
                         e.date == null
-                            ? '${e.name} · ${_examCounts[e.id] ?? 0} 道题来自这张试卷'
-                            : '${e.name} · ${_dateText(e.date)} · ${_examCounts[e.id] ?? 0} 道题来自这张试卷',
+                            ? '${e.name} · ${_s.examCounts[e.id] ?? 0} 道题来自这张试卷'
+                            : '${e.name} · ${_dateText(e.date)} · ${_s.examCounts[e.id] ?? 0} 道题来自这张试卷',
                         style: const TextStyle(
                           fontSize: R10Tokens.subjectNameFontSize,
                         ),

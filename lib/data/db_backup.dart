@@ -499,16 +499,43 @@ extension AppDatabaseBackup on AppDatabase {
   /// 清单）；question_boxes 先清、随 questions 之后插（外键是逻辑
   /// 上的，没有声明 FK，顺序只是为可读性）。
   /// 恢复后 settings.schemaVersion 写回 2。
-  Future<void> importBackupJson(Map<String, dynamic> data) async =>
-      AppDatabase.importBackupJsonInto(await db, data);
+  /// Stage 4：恢复成功后只发一个含全部五种 kind 的事件（方案 §四）。
+  Future<void> importBackupJson(Map<String, dynamic> data) async {
+    await AppDatabase.importBackupJsonInto(await db, data);
+    DataChangeBus.instance.emit(
+      const DataChangeEvent(
+        kinds: {
+          DataChangeKind.badges,
+          DataChangeKind.reviewRecords,
+          DataChangeKind.subjects,
+          DataChangeKind.questions,
+          DataChangeKind.settings,
+        },
+      ),
+    );
+  }
 
   /// zip 备份（实例版）。
   Future<List<int>> exportBackupZip() async =>
       AppDatabase.exportBackupZipFrom(await db);
 
-  /// zip 备份恢复（实例版）。
-  Future<void> importBackupZip(List<int> bytes) async =>
-      AppDatabase.importBackupZipInto(await db, bytes);
+  /// zip 备份恢复（实例版）。成功后只发一个含全部五种 kind 的事件
+  ///（方案 §四）；按路径恢复的 [importBackupZipFile] 调本方法，
+  /// 不另发事件。
+  Future<void> importBackupZip(List<int> bytes) async {
+    await AppDatabase.importBackupZipInto(await db, bytes);
+    DataChangeBus.instance.emit(
+      const DataChangeEvent(
+        kinds: {
+          DataChangeKind.badges,
+          DataChangeKind.reviewRecords,
+          DataChangeKind.subjects,
+          DataChangeKind.questions,
+          DataChangeKind.settings,
+        },
+      ),
+    );
+  }
 
   /// zip 备份恢复（实例版，按文件路径读）。
   Future<void> importBackupZipFile(String path) async {

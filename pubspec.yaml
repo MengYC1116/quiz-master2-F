@@ -12,6 +12,10 @@ dependencies:
   flutter:
     sdk: flutter
   sqflite_common_ffi: ^2.3.6
+  # ARCH-PLAN-A 第 1 阶段：Riverpod 3.x 手写 Provider，不用代码生成
+  #（见 docs/ui-replication/ARCH-PLAN-A-STATE-MGMT-DRAFT.md §四）。
+  # ^3.4.3 可解析到 3.5.0（最低 Dart 3.12，与 Dart 3.13.7 兼容）。
+  flutter_riverpod: ^3.4.3
   path: ^1.9.1
   file_picker: ^8.0.0
   # B11-8：super_clipboard ^0.9.1（Min Dart SDK 3.0，与 Dart 3.13.7 /

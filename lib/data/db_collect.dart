@@ -580,9 +580,9 @@ extension AppDatabaseCollect on AppDatabase {
   Future<List<CollectTask>> allCollectTasks() async =>
       AppDatabase.allCollectTasksFrom(await db);
 
-  /// §4.3：角标刷新节流（只在状态变化时 bump）：进度百分比高频更新
-  /// （真实导入按字节回调）不触发 `_refreshBadges` 的 5 个查询；
-  /// 新任务、状态变化（导入中 → 待框选等）时才 bump。
+  /// §4.3：角标刷新节流（只在状态变化时发事件）：进度百分比高频更新
+  /// （真实导入按字节回调）不触发角标重读；
+  /// 新任务、状态变化（导入中 → 待框选等）时才发含 `badges` 的事件。
   Future<void> upsertCollectTask(CollectTask t) async {
     final d = await db;
     final old = await d.query(
@@ -594,7 +594,10 @@ extension AppDatabaseCollect on AppDatabase {
     );
     await AppDatabase.upsertCollectTaskInto(d, t);
     if (old.isEmpty || old.first['status'] != t.status.name) {
-      bumpBadgeVersion();
+      // 新任务或状态变化才发事件：进度百分比高频更新不触发角标重读。
+      DataChangeBus.instance.emit(
+        const DataChangeEvent(kinds: {DataChangeKind.badges}),
+      );
     }
   }
 
@@ -610,7 +613,17 @@ extension AppDatabaseCollect on AppDatabase {
   Future<void> deleteCollectTask(String id) async {
     final d = await db;
     await AppDatabase.deleteCollectTaskFrom(d, id);
-    bumpBadgeVersion();
+    // 删任务时该任务拆出来的未整理题随任务删（其解决记录同事务清掉，
+    // 见 deleteCollectTaskFromImpl）——按条件影响的全集发。
+    DataChangeBus.instance.emit(
+      const DataChangeEvent(
+        kinds: {
+          DataChangeKind.badges,
+          DataChangeKind.questions,
+          DataChangeKind.reviewRecords,
+        },
+      ),
+    );
   }
 
   /// §1.5：草稿保存（实例版）：直接调可单测版，不 bump
@@ -644,7 +657,13 @@ extension AppDatabaseCollect on AppDatabase {
   ) async {
     final d = await db;
     await AppDatabase.replaceQuestionBoxesInto(d, questionId, boxes);
-    bumpBadgeVersion();
+    // 只换框，不进角标查询——旧 bump 是防御性的，本阶段按实际影响只发 questions。
+    DataChangeBus.instance.emit(
+      DataChangeEvent(
+        kinds: const {DataChangeKind.questions},
+        questionId: questionId,
+      ),
+    );
   }
 
   /// B3-P01：详情页重框 + 保存切片（实例版）。
@@ -664,7 +683,14 @@ extension AppDatabaseCollect on AppDatabase {
       sliceWidth: sliceWidth,
       sliceHeight: sliceHeight,
     );
-    bumpBadgeVersion();
+    // 只换框与切片尺寸，不进角标查询——旧 bump 是防御性的，
+    // 本阶段按实际影响只发 questions。
+    DataChangeBus.instance.emit(
+      DataChangeEvent(
+        kinds: const {DataChangeKind.questions},
+        questionId: questionId,
+      ),
+    );
   }
 
   /// §1.5：确认拆题（实例版）：事务提交后 bump 一次。
@@ -688,6 +714,11 @@ extension AppDatabaseCollect on AppDatabase {
       retainedTask: retainedTask,
       retainedBoxesByPage: retainedBoxesByPage,
     );
-    bumpBadgeVersion();
+    // 确认拆题新建题目与拆分任务、原任务状态变化——待整理角标与收集角标都变。
+    DataChangeBus.instance.emit(
+      const DataChangeEvent(
+        kinds: {DataChangeKind.badges, DataChangeKind.questions},
+      ),
+    );
   }
 }

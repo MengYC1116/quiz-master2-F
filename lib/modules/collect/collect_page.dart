@@ -1,24 +1,20 @@
 import 'dart:async';
 import 'dart:io';
-import 'dart:math' as math;
 
 import 'package:desktop_drop/desktop_drop.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../../data/database.dart';
 import '../../data/repository.dart';
 import '../../models/models.dart';
-import '../../services/import_guess.dart';
-import '../../services/import_service.dart';
-import '../../services/page_image_pipeline.dart';
 import '../../services/pdf_render_service.dart';
 import '../../services/yolo_onnx_service.dart';
+import '../../state/collect_notifier.dart';
+import '../../state/repository_provider.dart';
 import '../../theme/design_tokens.dart';
 import '../../widgets/uikit.dart';
 import '../../widgets/widgets.dart';
 
-import 'batch_import.dart';
 import 'batch_import_card.dart';
 import 'box_editor.dart';
 import 'collect_widgets.dart';
@@ -40,10 +36,16 @@ export 'box_editor.dart';
 ///   `DropTarget`），拖进来走与文件选择导入相同的流程（先选学科、
 ///   大小限制、重复提示“已经导入过”）；不接全窗口落点、不接微信 /
 ///   QQ 窗口拖入；拖放手感只在 Win11 真机上验。
-/// - 左导航收集角标沿用现有口径（`CollectPage.countPendingBox` +
+/// - 左导航收集角标沿用现有口径（`BadgeCounts.countPendingBox` +
 ///   未整理题数），不改 repository。
 /// - 页内无边距：外壳已给内容区 padding 26/30，本页不再叠加。
 /// - 全部取 DesignTokens 与 UI Kit，不用图标字体（`Icon` 为零）。
+///
+/// ARCH-PLAN-A 第 3 阶段：业务逻辑在 `lib/state/collect_notifier.dart`
+///（`CollectNotifier` + `collectProvider`）；本文件只留 widget 与纯 UI
+/// 状态（`_picking` / `_noSubjectWarning` / `_hideErrorBanner` / `_filter` /
+/// `_dragOver`）。修框状态（框选、缩放、旋转）是纯 UI 临时状态，留在
+/// 编辑器本地 `setState`，不进 Provider。
 class CollectPage extends StatefulWidget {
   const CollectPage({
     super.key,
@@ -70,149 +72,60 @@ class CollectPage extends StatefulWidget {
   final PdfRenderService? pdfRenderService;
 
   /// 待框选 + 修框中任务数（左导航角标用；沿用基线口径，未改）。
-  static int countPendingBox(List<CollectTask> tasks) => tasks
-      .where(
-        (t) =>
-            t.status == CollectStatus.needBox ||
-            t.status == CollectStatus.boxing,
-      )
-      .length;
+  /// 口径现由 `BadgeCounts.countPendingBox`（`lib/state/`）持有，
+  /// 本页不再另存一份（Stage 4 角标收进 Provider 时移走）。
 
   @override
   State<CollectPage> createState() => _CollectPageState();
 }
 
-/// 待确认的一批导入：已选文件，但重复 / 超限警告还没被用户处理。
-class _PendingImport {
-  const _PendingImport({
-    required this.paths,
-    required this.subjectId,
-    required this.duplicateNames,
-    required this.oversizeHints,
-  });
-
-  final List<String> paths;
-  final String subjectId;
-  final List<String> duplicateNames;
-  final List<String> oversizeHints;
+/// 外壳：只包一层 `ProviderScope`，把构造器接进来的库交进依赖图
+///（D-35 外壳模式：内层 `Consumer` 的 ref 才属于这层 scope）。
+/// 本阶段不碰 `lib/app.dart`，`repo` 构造参数保留。
+class _CollectPageState extends State<CollectPage> {
+  @override
+  Widget build(BuildContext context) {
+    return ProviderScope(
+      overrides: [repositoryProvider.overrideWithValue(widget.repo)],
+      child: _CollectView(
+        onOpenOrganize: widget.onOpenOrganize,
+        onGoSubjects: widget.onGoSubjects,
+        yoloService: widget.yoloService,
+        pdfRenderService: widget.pdfRenderService,
+      ),
+    );
+  }
 }
 
-class _CollectPageState extends State<CollectPage> {
-  List<CollectTask> _tasks = [];
-  // 导入学科下拉框：读库 subjects（B2 补充；以前写死 Subject.all，
-  // 新学科选不到、无法导入）。B8-1：空表是删光学科后的合法状态，
-  // 不再回退预设三科（回退就是截图里下拉仍有数学/英语/政治的原因）；
-  // 首帧与读库后都以真实列表为准，空就是空。
-  List<Subject> _subjects = const [];
-  // 库里找学科：新学科用库里的名与色；找不到才回退 Subject.byId
-  //（数学兜底，只发生在数据不一致时）。
-  Subject _subjectOf(String id) =>
-      _subjects.firstWhere((s) => s.id == id, orElse: () => Subject.byId(id));
-  String? _selectedSubjectId; // 每次导入都选，默认“请选择学科”
+class _CollectView extends ConsumerStatefulWidget {
+  const _CollectView({
+    required this.onOpenOrganize,
+    this.onGoSubjects,
+    this.yoloService,
+    this.pdfRenderService,
+  });
+
+  final VoidCallback onOpenOrganize;
+  final VoidCallback? onGoSubjects;
+  final YoloOnnxService? yoloService;
+  final PdfRenderService? pdfRenderService;
+
+  @override
+  ConsumerState<_CollectView> createState() => _CollectViewState();
+}
+
+class _CollectViewState extends ConsumerState<_CollectView> {
+  CollectNotifier get _notifier => ref.read(collectProvider.notifier);
+
   bool _picking = false;
   bool _noSubjectWarning = false;
   bool _hideErrorBanner = false;
   CollectStatus? _filter; // null = 全部；筛选不改变时间顺序
-  _PendingImport? _pendingImport;
   // B11-1：有文件正悬在拖放区上（只改落点文案与边框，不改布局）。
   bool _dragOver = false;
-  // B11-2：批量导入队列（>1 个文件时建，单文件不建；重试失败项时复用）。
-  BatchImportState? _batch;
-  // B11-2：没选学科时选好的文件先暂存，等用户选好学科点“开始导入”
-  // 再走同一套检查；选了学科的文件不经过这里，直接导入。
-  List<String>? _stagedPaths;
-  // B11-2：按文件名猜学科后的提示（“按文件名猜是「数学」，不对可以改”），
-  // 用户手动改下拉后清除；猜不出时为 null。
-  String? _subjectGuessHint;
-
-  @override
-  void initState() {
-    super.initState();
-    _load();
-  }
-
-  /// 待框选/修框中任务每页有没有 1 层草稿框（行上无框警告用，
-  /// 见 _taskRow；只查这两个状态，其余状态不查）。
-  Map<String, List<int>> _unboxedPagesByTask = {};
-
-  /// 有任意草稿框（任意层、任意页）的任务 id（SR-P2-25：行上无框警告
-  /// 的“打开过”信号的一半；另一半是任务状态本身——任务一旦打开过
-  /// 修框，_openBoxEditor 会把它置为 boxing 并落盘，无需新字段）。
-  Set<String> _hasAnyDraftBox = {};
-
-  /// 有同 sourcePath 拆分任务（待整理/已整理）的任务 id（SR-P2-25
-  /// 补信号：P1-2 保留任务按同 id 重建、未框页又没有草稿框——光看状
-  /// 态与草稿会误判为“从未打开”。但拆分任务只可能由编辑器确认产生，
-  /// 有拆分任务的同源任务一定打开过、应继续警告。sourcePath 含原任
-  /// 务 id、重导入不串，与 _load 的 splitPagesBySource 同口径）。
-  /// SR2-22：这是派生信号，不是持久化信号——每次 _load 由当前任务
-  /// 表重算，没有字段落盘；删掉全部同源拆分任务行后它就消失。新修
-  /// 的保留任务不再靠它（重建时直接写 boxing 状态，见 _confirmSplit），
-  /// 它只为修前已重建回 needBox 的旧保留任务兜底。
-  Set<String> _hasSplitSibling = {};
-
-  Future<void> _load() async {
-    final tasks = await widget.repo.collectTasks();
-    final subjects = await widget.repo.subjects();
-    final unboxed = <String, List<int>>{};
-    final hasAnyDraftBox = <String>{};
-    final hasSplitSibling = <String>{};
-    // P1-2：同 sourcePath 的拆分任务（待整理/已整理）所在页就是已拆页，
-    // 不算未框（保留任务重进列表时，第 1 页已拆成题，不能再报没框）。
-    // B9-1：SR-P2-33 在此结案——done 现在有生产入口，不再是死分支：
-    // 题变为已整理时，数据层 upsertQuestionIntoImpl（db_questions.dart）
-    // 同句柄把指向它的任务置 done；开库时 onOpen 再扫一遍回填卡住
-    // 的旧行（backfillCollectDoneIntoImpl）。这里的 done 分支仍保
-    // 留：旧库读回 done 状态时仍按已拆页算，不会把它误报成未框；
-    // _taskNote / _statusPill / _taskActions 里的 done 分支同理
-    // （switch 穷举也要求保留）。
-    final splitPagesBySource = <String, Set<int>>{};
-    for (final t in tasks) {
-      if (t.status != CollectStatus.pendingOrganize &&
-          t.status != CollectStatus.done) {
-        continue;
-      }
-      if (t.sourcePath.isEmpty) continue;
-      (splitPagesBySource[t.sourcePath] ??= {}).add(t.page);
-    }
-    for (final task in tasks) {
-      if (task.status != CollectStatus.needBox &&
-          task.status != CollectStatus.boxing) {
-        continue;
-      }
-      try {
-        final boxes = await widget.repo.boxesForTask(task.id);
-        // SR-P2-25：任意页的草稿框都算“已有草稿”。
-        if (boxes.isNotEmpty) hasAnyDraftBox.add(task.id);
-        // SR-P2-25 补信号：同源已有拆分任务 = 打开过并确认过（见字段注释）。
-        final split = splitPagesBySource[task.sourcePath] ?? const <int>{};
-        if (split.isNotEmpty) hasSplitSibling.add(task.id);
-        final boxedPages = <int>{
-          // 只认 1 层框：旧的 layer-2 行编辑器读到就丢，不算“已框”
-          //（B8-2；否则只有旧内框的页会被误判为已框，警告出不来）。
-          for (final b in boxes)
-            if (b.layer == 1) b.page,
-        };
-        final missing = <int>[
-          for (var p = 1; p <= task.pageCount; p++)
-            if (!boxedPages.contains(p) && !split.contains(p)) p,
-        ];
-        if (missing.isNotEmpty) unboxed[task.id] = missing;
-      } catch (_) {
-        // 草稿读不到就不出警告，列表本身不受影响。
-      }
-    }
-    if (!mounted) return;
-    setState(() {
-      _tasks = tasks;
-      _subjects = subjects;
-      _unboxedPagesByTask = unboxed;
-      _hasAnyDraftBox = hasAnyDraftBox;
-      _hasSplitSibling = hasSplitSibling;
-    });
-  }
 
   void _snack(String message) {
+    if (!mounted) return;
     ScaffoldMessenger.of(context)
         .showSnackBar(SnackBar(content: Text(message)));
   }
@@ -227,14 +140,10 @@ class _CollectPageState extends State<CollectPage> {
       _noSubjectWarning = false;
     });
     try {
-      final service = ImportService(
-        widget.repo.db,
+      final paths = await _notifier.pickFiles(
         pdfRenderService: widget.pdfRenderService,
       );
-      List<String> paths;
-      try {
-        paths = await service.pickFiles();
-      } catch (_) {
+      if (paths == null) {
         if (mounted) _snack('打不开文件选择器，请重试');
         return;
       }
@@ -274,132 +183,41 @@ class _CollectPageState extends State<CollectPage> {
     }
   }
 
-  /// B11-1 + B11-2：文件选择与拖放的统一入口。
-  /// 只收 PDF / JPG / PNG；同批内容重复只留第一份；文件名重复与
-  /// 内容重复（SHA-256）都走既有“已经导入过”横幅；超限走既有超限
-  /// 横幅；没选学科时按文件名猜一个建议预填，仍没学科就暂存文件。
+  /// B11-1 + B11-2：文件选择与拖放的统一入口（业务在 Notifier，
+  /// 导入前提示经 `onNotice` 在导入开始前就弹出）。
   Future<void> _handleIncomingPaths(List<String> paths) async {
-    final kept = <String>[];
-    var skippedDirs = 0;
-    var skippedTypes = 0;
-    for (final path in paths) {
-      // Win11 上拖文件夹进来也是一条路径，先按目录拦掉。
-      if (Directory(path).existsSync()) {
-        skippedDirs++;
-        continue;
-      }
-      final ext = path.split('.').last.toLowerCase();
-      if (!ImportService.allowedExtensions.contains(ext)) {
-        skippedTypes++;
-        continue;
-      }
-      kept.add(path);
-    }
-    if (skippedDirs > 0 || skippedTypes > 0) {
-      _snack('只收 PDF / JPG / PNG：跳过了 $skippedDirs 个文件夹、$skippedTypes 个不支持的文件');
-    }
-    if (kept.isEmpty) return;
-    final service = ImportService(
-      widget.repo.db,
+    await _notifier.handleIncomingPaths(
+      paths,
       pdfRenderService: widget.pdfRenderService,
+      onNotice: _snack,
     );
-    // 同批内容重复：只留第一份导入（第二份起直接丢掉，不建任务）。
-    final dedup = await service.checkContentDuplicates(kept, _tasks);
-    var effective = kept;
-    if (dedup.withinBatchDropped.isNotEmpty) {
-      effective = kept
-          .where((p) => !dedup.withinBatchDropped.contains(p))
-          .toList();
-      _snack('其中 ${dedup.withinBatchDropped.length} 个文件与本批另一文件内容相同，已只导一份');
-    }
-    if (effective.isEmpty) return;
-    // 重复文件：文件名命中（既有口径）或内容哈希命中（B11-2），
-    // 都进同一条“已经导入过”横幅，等用户点“仍然再导一份”才继续。
-    final duplicateNames = <String>[];
-    for (final path in effective) {
-      final name = File(path).uri.pathSegments.last;
-      if (_tasks.any((t) => t.fileName == name) &&
-          !duplicateNames.contains(name)) {
-        duplicateNames.add(name);
-      }
-    }
-    for (final name in dedup.libraryDuplicates) {
-      if (!duplicateNames.contains(name)) duplicateNames.add(name);
-    }
-    final oversizeHints = <String>[];
-    for (final path in effective) {
-      final file = File(path);
-      try {
-        final hint = ImportService.oversizeHint(file);
-        if (hint != null) oversizeHints.add(hint);
-      } catch (_) {}
-    }
-    // 没选学科时按文件名猜一个建议预填（B11-2）：猜不出、或本批
-    // 猜得不一致时留空，等用户自己选；绝不静默自动指定。
-    if (_selectedSubjectId == null) {
-      final guessed = guessCommonSubjectId(
-        effective.map((p) => File(p).uri.pathSegments.last).toList(),
-        _subjects,
-      );
-      if (guessed != null) {
-        setState(() {
-          _selectedSubjectId = guessed;
-          _subjectGuessHint = '按文件名猜是「${_subjectOf(guessed).name}」，不对可以改';
-        });
-      }
-    }
-    if (_selectedSubjectId == null) {
-      // 仍没学科：文件暂存，等用户选好学科点“开始导入”再走同一套
-      // 重复 / 超限检查；不直接导入（没选学科不能导入）。
-      setState(() {
-        _stagedPaths = [...?_stagedPaths, ...effective];
-      });
-      return;
-    }
-    if (duplicateNames.isNotEmpty || oversizeHints.isNotEmpty) {
-      if (!mounted) return;
-      setState(
-        () => _pendingImport = _PendingImport(
-          paths: effective,
-          subjectId: _selectedSubjectId!,
-          duplicateNames: duplicateNames,
-          oversizeHints: oversizeHints,
-        ),
-      );
-      return;
-    }
-    await _importFiles(effective, _selectedSubjectId!);
   }
 
-  /// B11-2：暂存文件的“开始导入”——学科仍没选时出“先选学科”提示；
-  /// 选好了就把暂存文件重走 [_handleIncomingPaths]（重复 / 超限 /
-  /// 内容去重同一套检查再算一遍）。
+  /// B11-2：暂存文件的“开始导入”。
   Future<void> _startStagedImport() async {
-    final staged = _stagedPaths;
-    if (staged == null || staged.isEmpty) return;
-    if (_selectedSubjectId == null) {
+    final outcome = await _notifier.startStagedImport(
+      pdfRenderService: widget.pdfRenderService,
+      onNotice: _snack,
+    );
+    if (!mounted) return;
+    if (outcome.needsSubject) {
       setState(() => _noSubjectWarning = true);
-      return;
     }
-    setState(() => _stagedPaths = null);
-    await _handleIncomingPaths(staged);
   }
 
   void _discardStagedImport() {
-    setState(() => _stagedPaths = null);
+    _notifier.discardStagedImport();
   }
 
   /// B11-2：重试本批全部失败项（只重导失败的，成功的、已在队列里
   /// 的不动；沿用本批的学科，不重新猜）。
   Future<void> _retryBatchFailures() async {
-    final batch = _batch;
+    final batch = ref.read(collectProvider).batch;
     if (batch == null || !batch.hasFailures || _picking) return;
     setState(() => _picking = true);
     try {
-      await _importFiles(
-        batch.failedPaths,
-        batch.subjectId,
-        resumeBatch: batch,
+      await _notifier.retryBatchFailures(
+        pdfRenderService: widget.pdfRenderService,
       );
     } finally {
       if (mounted) setState(() => _picking = false);
@@ -408,572 +226,131 @@ class _CollectPageState extends State<CollectPage> {
 
   /// B11-2：重试队列里失败的一行。
   Future<void> _retryBatchPath(String path) async {
-    final batch = _batch;
+    final batch = ref.read(collectProvider).batch;
     if (batch == null || _picking) return;
     setState(() => _picking = true);
     try {
-      await _importFiles([path], batch.subjectId, resumeBatch: batch);
+      await _notifier.retryBatchPath(
+        path,
+        pdfRenderService: widget.pdfRenderService,
+      );
     } finally {
       if (mounted) setState(() => _picking = false);
     }
   }
 
   Future<void> _confirmPendingImport() async {
-    final pending = _pendingImport;
-    if (pending == null || _picking) return;
-    setState(() {
-      _pendingImport = null;
-      _picking = true;
-    });
+    if (_picking) return;
+    setState(() => _picking = true);
     try {
-      await _importFiles(pending.paths, pending.subjectId);
+      await _notifier.confirmPendingImport(
+        pdfRenderService: widget.pdfRenderService,
+      );
     } finally {
       if (mounted) setState(() => _picking = false);
     }
   }
 
   void _discardPendingImport() {
-    setState(() => _pendingImport = null);
-  }
-
-  Future<void> _importFiles(
-    List<String> paths,
-    String subjectId, {
-    BatchImportState? resumeBatch,
-  }) async {
-    final service = ImportService(
-      widget.repo.db,
-      pdfRenderService: widget.pdfRenderService,
-    );
-    // B11-2：>1 个文件建批量队列（单文件不建，行为不变）；重试失败项
-    // 时复用原队列，只把失败行打回排队中。
-    if (resumeBatch != null) {
-      _batch = resumeBatch;
-      for (final path in paths) {
-        final i = _batch!.indexOfPath(path);
-        if (i >= 0) _batch!.resetForRetry(i);
-      }
-    } else if (paths.length > 1) {
-      _batch = BatchImportState(
-        subjectId: subjectId,
-        files: [
-          for (final p in paths)
-            BatchImportFile(
-              path: p,
-              name: File(p).uri.pathSegments.last,
-              guessedExam: guessExamName(File(p).uri.pathSegments.last),
-            ),
-        ],
-      );
-    } else {
-      _batch = null;
-    }
-    if (mounted) setState(() {});
-    for (final path in paths) {
-      final file = File(path);
-      final name = file.uri.pathSegments.last;
-      final batchIndex = _batch?.indexOfPath(path) ?? -1;
-      if (batchIndex >= 0) _batch!.markImporting(batchIndex);
-      if (mounted) setState(() {});
-      if (!file.existsSync()) {
-        if (batchIndex >= 0) {
-          _batch!.markFailed(batchIndex, '文件损坏：找不到这个文件');
-        }
-        await _failTask(name, subjectId, '文件损坏：找不到这个文件');
-        if (mounted) setState(() {});
-        continue;
-      }
-      String? failure;
-      try {
-        if (file.lengthSync() == 0) {
-          failure = '文件损坏：文件为空，无法导入';
-        } else if (path.toLowerCase().endsWith('.pdf') &&
-            _isEncryptedPdf(file)) {
-          failure = '这个 PDF 带密码，解开密码再导';
-        }
-      } catch (_) {
-        failure = '文件损坏：无法读取';
-      }
-      if (failure != null) {
-        if (batchIndex >= 0) _batch!.markFailed(batchIndex, failure);
-        await _failTask(name, subjectId, failure);
-        if (mounted) setState(() {});
-        continue;
-      }
-      // §1.4：真实导入（复制进库 + PDF 整本渲染 / 图片 EXIF 归一化
-      // + 真实进度）。PDF 加密 / 损坏 / 超 50MB / 超 20 页 /
-      // 渲染失败都进失败任务（enqueue 内判），不建无页图任务；
-      // 复制失败 / 镜像方向同样进失败任务，不建空任务。
-      // B11-2：逐个处理，单张失败只记本行失败，不中断整批。
-      final created = await service.enqueue(
-        [path],
-        subjectId: subjectId,
-        onProgress: (taskId, progress) {
-          if (batchIndex >= 0) {
-            // 任务行要等 enqueue 返回才进 _tasks，批量进度不能等它：
-            // 进度变了就直接刷新（与任务行同一“只在变化时刷新”口径）。
-            final file = _batch!.files[batchIndex];
-            if (file.progress != progress) {
-              _batch!.markProgress(batchIndex, progress);
-              if (mounted) setState(() {});
-            }
-          }
-          final i = _tasks.indexWhere((t) => t.id == taskId);
-          if (i < 0 || !mounted) return;
-          final t = _tasks[i];
-          if (t.progress == progress) return;
-          setState(() {
-            _tasks[i] = CollectTask(
-              id: t.id,
-              name: t.name,
-              fileName: t.fileName,
-              subjectId: t.subjectId,
-              status: t.status,
-              progress: progress,
-              pageCount: t.pageCount,
-              page: t.page,
-              error: t.error,
-              questionId: t.questionId,
-              createdAt: t.createdAt,
-              sourcePath: t.sourcePath,
-              pageRotations: t.pageRotations,
-            );
-          });
-        },
-      );
-      for (final task in created) {
-        if (!_tasks.any((t) => t.id == task.id)) _tasks.add(task);
-      }
-      if (batchIndex >= 0) {
-        final failed = created
-            .where((t) => t.status == CollectStatus.failed)
-            .toList();
-        if (failed.isNotEmpty) {
-          _batch!.markFailed(batchIndex, failed.first.error ?? '导入失败');
-        } else {
-          _batch!.markDone(batchIndex);
-        }
-      }
-      if (mounted) setState(() {});
-    }
-    await widget.repo.saveRecentTask(
-      kind: '收集',
-      subjectId: subjectId,
-      title: paths.map((p) => File(p).uri.pathSegments.last).join('、'),
-    );
-    // 选完一批后清空已选学科，下次导入重新选。
-    if (mounted) setState(() => _selectedSubjectId = null);
-    await _load();
-  }
-
-  /// 加密 PDF 启发式检查：文件里出现 /Encrypt 标记即视为带密码。
-  bool _isEncryptedPdf(File file) {
-    try {
-      final bytes = file.readAsBytesSync().take(4096).toList();
-      final head = String.fromCharCodes(bytes);
-      return head.contains('/Encrypt');
-    } catch (_) {
-      return false;
-    }
-  }
-
-  Future<void> _failTask(
-    String fileName,
-    String subjectId,
-    String error,
-  ) async {
-    final task = CollectTask(
-      // SR-P2-28：id 用 newEntityId（毫秒 + 随机后缀）；旧写法只拼
-      // 毫秒 + 文件名 hash，同名文件同毫秒两次失败会互相覆盖。
-      id: newEntityId('task'),
-      name: '$fileName · 第1页 · 第1题',
-      fileName: fileName,
-      subjectId: subjectId,
-      status: CollectStatus.failed,
-      error: error,
-    );
-    await widget.repo.saveCollectTask(task);
+    _notifier.discardPendingImport();
   }
 
   Future<void> _openBoxEditor(CollectTask task) async {
-    // §6 第 6 条：页图缺失明确报错、不开编辑器。
-    // PDF 多页任务：每页的页图都要在（切页就换底图），缺任何一页
-    // 都不开编辑器；单页图片任务只校验当前页。
-    final pageImageRel = ImportService.pageImageRelativeForTask(task);
-    final pageImageAbs = pageImageRel.isEmpty
-        ? null
-        : AppDatabase.resolveDataPath(pageImageRel);
-    if (pageImageAbs == null || !File(pageImageAbs).existsSync()) {
-      _snack('页图缺失：找不到这份文件的页图，无法修框，请重新导入');
+    final (prep: prep, error: error) = await _notifier.prepareBoxEditor(
+      task,
+      yoloService: widget.yoloService,
+    );
+    if (error != null) {
+      _snack(error);
       return;
-    }
-    final pageImagePaths = <int, String>{};
-    if (ImportService.isPdfTask(task)) {
-      for (var p = 1; p <= task.pageCount; p++) {
-        final rel = ImportService.pageImageRelativeForTask(task, page: p);
-        final abs = AppDatabase.resolveDataPath(rel);
-        if (abs == null || !File(abs).existsSync()) {
-          _snack('页图缺失：找不到第 $p 页的页图，无法修框，请重新导入');
-          return;
-        }
-        pageImagePaths[p] = abs;
-      }
-    }
-    task.status = CollectStatus.boxing;
-    await widget.repo.saveCollectTask(task);
-    await _load();
-    // 草稿优先：该页有草稿框就用草稿，不再检测（§1.5）；
-    // 没有草稿才跑检测，检测结果是原页坐标，先按草稿已存的旋转角度
-    // 做坐标变换再进框列表（P2 实施注意 1，见 rotateBoxToRotatedPage）。
-    final drafts = await widget.repo.boxesForTask(task.id);
-    final draftsByPage = <int, List<QuestionBox>>{};
-    for (final b in drafts) {
-      (draftsByPage[b.page] ??= []).add(b);
-    }
-    final pageRotation = task.pageRotations[task.page] ?? 0;
-    var detected = const <QuestionBox>[];
-    String? detectError;
-    if ((draftsByPage[task.page] ?? const <QuestionBox>[]).isEmpty) {
-      final yolo = widget.yoloService ?? YoloOnnxService();
-      final result = await yolo.detectPage(
-        imagePath: pageImageAbs,
-        page: task.page,
-      );
-      if (result.usedFallback) {
-        // §1.3：模型失败不落占位框，只提示手动框选，原有框保持不动。
-        detectError = result.error ?? '自动检测不可用，请手动框选';
-      } else {
-        detected = result.boxes
-            .map((b) => rotateBoxToRotatedPage(b, pageRotation))
-            .toList();
-      }
     }
     if (!mounted) return;
     final result = await showBoxEditorDialog(
       context: context,
       fileName: task.fileName,
-      pageImagePath: pageImageAbs,
-      pageImagePaths: pageImagePaths,
+      pageImagePath: prep!.pageImageAbs,
+      pageImagePaths: prep.pageImagePaths,
       page: task.page,
       pageCount: task.pageCount,
-      subjectName: _subjectOf(task.subjectId).name,
+      subjectName: ref.read(collectProvider).subjectOf(task.subjectId).name,
       taskId: task.id,
       mode: BoxEditorMode.draft,
-      initialBoxesByPage: draftsByPage,
-      initialDetected: detected,
+      initialBoxesByPage: prep.draftsByPage,
+      initialDetected: prep.detected,
       initialRotations: task.pageRotations,
-      detectError: detectError,
+      detectError: prep.detectError,
       yoloService: widget.yoloService ?? YoloOnnxService(),
       onSaveDraft: (draft) async {
-        await widget.repo.saveDraftBoxes(
-          taskId: task.id,
-          boxesByPage: draft.boxesByPage,
-          rotations: draft.rotationsByPage,
+        await _notifier.saveDraftBoxes(
+          task.id,
+          draft.boxesByPage,
+          draft.rotationsByPage,
         );
       },
     );
     if (result == null) {
       // 取消中途退出：草稿已由编辑器保存，任务留“修框中”，
       // 下次点“继续修框”接着修。
-      await _load();
+      await _notifier.load();
       return;
     }
     await _confirmSplit(task, result);
   }
 
-  /// SR2-62：上一次确认的 `ts-rnd` 戳（只记这一个值，不作他用）。
-  /// 两次确认落在同一毫秒且随机段恰好撞上时，题 id 与拆分任务 id
-  /// 会全撞（SR-P2-60 的 6 位随机段只把概率压到 1e-6，不是保证）；
-  /// 撞上就重抽，直到与上一次不同，保证两次确认的 id 不同。
-  static String _lastSplitStamp = '';
-
-  /// §1.5/§1.6：确认拆题——先写切片文件（失败不写库），再四步同事务。
-  /// 每页：旋转角度 != 0 时把旋转烘焙进页图（生成
-  /// `pages/page-<p>-r<角度>.png`，框坐标已是旋转后的坐标系，
-  /// 直接按框裁剪）；0° 时不生成新文件。
-  /// 页图按页取（PDF 多页任务每页一张页图，图片任务每页同一张）；
-  /// 某页页图缺失时整单失败、库不动。
-  /// P1-2：没框的页不丢——确认前先报未框页数让用户知情；确认后
-  /// 只拆有框的页，没框的页留在原任务里（同 id 重建、带上原任务的
-  /// 修框中状态，从首个未框页继续修，见方法尾部与 SR2-22）。
-  /// SR-P2-22：按相对路径清单删文件（本次确认新写的切片/烘焙图）。
-  /// 单个删失败不影响其余——清理本身走在失败处理里，静默跳过即可。
-  Future<void> _deleteWrittenFiles(List<String> rels) async {
-    for (final rel in rels) {
-      try {
-        final abs = AppDatabase.resolveDataPath(rel);
-        final file = abs == null ? null : File(abs);
-        if (file != null && file.existsSync()) await file.delete();
-      } catch (_) {}
-    }
-  }
-
+  /// §1.5/§1.6：确认拆题——未框页的确认框在页面里弹（要 `BuildContext`），
+  /// 其余业务在 Notifier。
   Future<void> _confirmSplit(CollectTask task, BoxEditorResult result) async {
-    final pages = result.boxesByPage.keys.toList()..sort();
-    // P1-2：保留任务重进再确认时，已拆过的页不再重复拆（同 sourcePath
-    // 的拆分任务就是已拆页；sourcePath 含原任务 id，重导入不串）。
-    final alreadySplit = _splitPagesFor(_tasks, task);
-    final boxedPages = <int>{
-      for (final p in pages)
-        if (!alreadySplit.contains(p) && result.boxesByPage[p]!.isNotEmpty) p,
-    };
-    var total = 0;
-    for (final p in boxedPages) {
-      total += result.boxesByPage[p]!.length;
-    }
-    if (total == 0) {
-      final hadSkippedBoxes = pages.any(
-        (p) => alreadySplit.contains(p) && result.boxesByPage[p]!.isNotEmpty,
-      );
-      await _load();
-      if (hadSkippedBoxes && mounted) _snack('这些页已经拆成题了，不用再拆');
-      return;
-    }
-    final unboxedPages = <int>[
-      for (var p = 1; p <= task.pageCount; p++)
-        if (!boxedPages.contains(p) && !alreadySplit.contains(p)) p,
-    ];
-    if (unboxedPages.isNotEmpty && mounted) {
-      final ok = await showDialog<bool>(
-        context: context,
-        builder: (ctx) => AlertDialog(
-          title: Text('还有 ${unboxedPages.length} 页没有框'),
-          content: Text(
-            '第 ${_pageListText(unboxedPages)} 页还没有框。确认后，有框的 ${boxedPages.length} 页先拆成 $total 道题去整理，没框的 ${unboxedPages.length} 页会留在这个任务里，之后点「修框」继续框。',
+    final outcome = await _notifier.confirmSplit(
+      task,
+      result.boxesByPage,
+      result.rotationsByPage,
+    );
+    if (!mounted) return;
+    switch (outcome.kind) {
+      case ConfirmSplitKind.needsUnboxedConfirm:
+        final ok = await showDialog<bool>(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            title: Text('还有 ${outcome.unboxedPages.length} 页没有框'),
+            content: Text(
+              '第 ${pageListText(outcome.unboxedPages)} 页还没有框。确认后，有框的 ${outcome.boxedPages} 页先拆成 ${outcome.total} 道题去整理，没框的 ${outcome.unboxedPages.length} 页会留在这个任务里，之后点「修框」继续框。',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(ctx).pop(false),
+                child: const Text('取消'),
+              ),
+              TextButton(
+                onPressed: () => Navigator.of(ctx).pop(true),
+                child: const Text('确认拆题'),
+              ),
+            ],
           ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(ctx).pop(false),
-              child: const Text('取消'),
-            ),
-            TextButton(
-              onPressed: () => Navigator.of(ctx).pop(true),
-              child: const Text('确认拆题'),
-            ),
-          ],
-        ),
-      );
-      if (ok != true) {
-        // 取消：什么都没拆，任务留修框中，下次接着修。
-        await _load();
-        return;
-      }
-    }
-    final ts = DateTime.now().millisecondsSinceEpoch;
-    // SR-P2-60 同款：同一毫秒内两次确认会撞 id，补 6 位随机段（本次确认内共用）。
-    // SR2-62：与上一次确认的戳撞上时重抽，保证两次确认的 id 不同。
-    var rnd = math.Random().nextInt(1000000).toString().padLeft(6, '0');
-    while ('$ts-$rnd' == _lastSplitStamp) {
-      rnd = math.Random().nextInt(1000000).toString().padLeft(6, '0');
-    }
-    _lastSplitStamp = '$ts-$rnd';
-    final questions = <Question>[];
-    final splitTasks = <CollectTask>[];
-    final boxesByQuestionId = <String, List<QuestionBox>>{};
-    final isPdf = ImportService.isPdfTask(task);
-    // SR-P2-22：本次确认新写的文件（切片 + 旋转烘焙页图）清单。
-    // 切片写盘在事务前：某页裁剪失败或 confirmSplit 事务失败时，
-    // 前面已写的文件会成孤儿留在 slices/、imports/<id>/pages/ 里，
-    // 失败即按清单删（只删本次新建的，不碰原任务页图——rotation == 0
-    // 时 bakedRel 就是原页图，不记）。先记后写：写一半失败的残文件
-    // 也一并清掉（delete 时文件不存在也无妨）。
-    final writtenRels = <String>[];
-    try {
-      for (final p in pages) {
-        // 已拆过的页不再切（见方法头的 alreadySplit）。
-        if (alreadySplit.contains(p)) continue;
-        final pageBoxes = result.boxesByPage[p]!;
-        if (pageBoxes.isEmpty) continue;
-        // 本页页图：PDF 每页一张，图片各页同一张；缺失则整单失败。
-        final pageRel = ImportService.pageImageRelativeForTask(task, page: p);
-        final pageAbs = pageRel.isEmpty
-            ? null
-            : AppDatabase.resolveDataPath(pageRel);
-        if (pageAbs == null || !File(pageAbs).existsSync()) {
-          throw StateError('第 $p 页的页图缺失');
+        );
+        if (ok != true) {
+          // 取消：什么都没拆，任务留修框中，下次接着修。
+          return;
         }
-        final pageBytes = await File(pageAbs).readAsBytes();
-        final rotation = result.rotationsByPage[p] ?? 0;
-        late final Uint8List bakedBytes;
-        late final String bakedRel;
-        if (rotation != 0) {
-          bakedBytes = await rotateImageBytes(pageBytes, rotation);
-          bakedRel = ImportService.bakedPageRelative(task.id, p, rotation);
-          final bakedAbs = AppDatabase.resolveDataPath(bakedRel)!;
-          writtenRels.add(bakedRel);
-          await File(bakedAbs).parent.create(recursive: true);
-          await File(bakedAbs).writeAsBytes(bakedBytes);
-        } else {
-          bakedBytes = pageBytes;
-          bakedRel = pageRel;
-        }
-        for (var i = 0; i < pageBoxes.length; i++) {
-          final box = pageBoxes[i];
-          final qid = 'import-$ts-$rnd-$p-$i';
-          // 切片写盘在事务前：失败直接抛，库一律不动。
-          final slice = await cropBoxPng(bakedBytes, box);
-          final sliceRel = ImportService.sliceRelative(qid);
-          final sliceAbs = AppDatabase.resolveDataPath(sliceRel)!;
-          writtenRels.add(sliceRel);
-          await File(sliceAbs).parent.create(recursive: true);
-          await File(sliceAbs).writeAsBytes(slice.png);
-          questions.add(
-            Question(
-              id: qid,
-              title: '${task.fileName} · 第$p页 · 第${i + 1}题',
-              subjectId: task.subjectId,
-              isDemo: false,
-              isOrganized: false,
-              createdAt: DateTime.now(),
-              sourcePath: task.sourcePath,
-              sourceKind: isPdf ? 'pdf' : 'image',
-              sourcePage: p,
-              pageImagePath: bakedRel,
-              slicePath: sliceRel,
-              sliceWidth: slice.width,
-              sliceHeight: slice.height,
-            ),
-          );
-          // 该题的框：题级框。
-          boxesByQuestionId[qid] = [box];
-          splitTasks.add(
-            CollectTask(
-              id: 'task-$ts-$rnd-$p-$i',
-              name: '${task.fileName} · 第$p页 · 第${i + 1}题',
-              fileName: task.fileName,
-              subjectId: task.subjectId,
-              status: CollectStatus.pendingOrganize,
-              progress: 100,
-              pageCount: task.pageCount,
-              page: p,
-              questionId: qid,
-              createdAt: DateTime.now(),
-              sourcePath: task.sourcePath,
-            ),
-          );
-        }
-      }
-    } catch (e) {
-      // SR-P2-22：裁剪/写盘失败——前面已写的新文件按清单删掉再提示，
-      // 不留孤儿切片与烘焙图；原任务页图不在清单里，不会误删。
-      await _deleteWrittenFiles(writtenRels);
-      if (mounted) _snack('拆题失败：切片写不进去（$e），请重试');
-      await _load();
-      return;
+        final confirmed = await _notifier.confirmSplit(
+          task,
+          result.boxesByPage,
+          result.rotationsByPage,
+          confirmedUnboxed: true,
+        );
+        if (!mounted) return;
+        if (confirmed.message != null) _snack(confirmed.message!);
+      case ConfirmSplitKind.done:
+      case ConfirmSplitKind.nothingToSplit:
+      case ConfirmSplitKind.sliceFailed:
+      case ConfirmSplitKind.saveFailed:
+        if (outcome.message != null) _snack(outcome.message!);
     }
-    // 四步同事务：建题 + 回填 question_id + 建拆分任务 + 删原任务。
-    // SR-P1-2：有未框页时，保留任务的重建也在同一事务里——保留任务
-    // 与未框页草稿在确认前就构造好，随 confirmSplit 一起传进去；
-    // 事务外重建有崩溃窗口（原任务已删、保留任务还没建出来，未框页
-    // 连同页图引用一起丢）。无未框页时 retained 为空，行为不变。
-    CollectTask? retained;
-    Map<int, List<QuestionBox>> retainedBoxesByPage = const {};
-    if (unboxedPages.isNotEmpty) {
-      // 保留任务：按同 id 重建，页图目录 imports/<id>/ 不变，从首个
-      // 未框页继续修；未框页的草稿与旋转角一并写回。
-      // SR2-22：状态写 boxing，不重置回 needBox——boxing 就是“已打开过
-      // 修框”的持久化标志（_openBoxEditor 打开时置为 boxing 并落盘）；
-      // 保留任务只可能由编辑器确认产生，必定打开过，直接写 boxing，
-      // 不依赖调用方传进来的状态值。行上按“修框中”显示（文案“上次修
-      // 到一半，点「继续修框」接着修”正合此态），无框警告不再只靠派生
-      // 的 _hasSplitSibling；删掉全部同源拆分任务行后警告仍在。
-      // _hasSplitSibling 仍保留：它是修前已重建回 needBox 的旧保留
-      // 任务的唯一信号（见 _load）。
-      retained = CollectTask(
-        id: task.id,
-        name: task.name,
-        fileName: task.fileName,
-        subjectId: task.subjectId,
-        status: CollectStatus.boxing,
-        progress: 100,
-        pageCount: task.pageCount,
-        page: unboxedPages.first,
-        createdAt: task.createdAt,
-        sourcePath: task.sourcePath,
-        pageRotations: {
-          for (final p in unboxedPages)
-            if (result.rotationsByPage.containsKey(p))
-              p: result.rotationsByPage[p]!,
-        },
-      );
-      retainedBoxesByPage = {
-        for (final p in unboxedPages)
-          p: List.of(result.boxesByPage[p] ?? const <QuestionBox>[]),
-      };
-    }
-    try {
-      await widget.repo.confirmSplit(
-        originalTask: task,
-        questions: questions,
-        splitTasks: splitTasks,
-        boxesByQuestionId: boxesByQuestionId,
-        retainedTask: retained,
-        retainedBoxesByPage: retainedBoxesByPage,
-      );
-    } catch (e) {
-      // SR-P2-22：事务失败——库已回滚，本次新写的文件同样按清单删，
-      // 不留孤儿切片与烘焙图；任务本身不动，用户可重试。
-      await _deleteWrittenFiles(writtenRels);
-      if (mounted) _snack('拆题失败：保存失败（$e），请重试');
-      await _load();
-      return;
-    }
-    // SR2-25：收尾写最近任务失败也不影响成功提示与列表刷新——
-    // 拆题已提交，记日志后继续。
-    try {
-      await widget.repo.saveRecentTask(
-        kind: '收集',
-        subjectId: task.subjectId,
-        title: task.fileName,
-      );
-    } catch (e) {
-      debugPrint('SR2-25：saveRecentTask 失败，已忽略：$e');
-    }
-    await _load();
-    if (mounted) {
-      final base = unboxedPages.isNotEmpty
-          ? '已生成 $total 道题去整理，还有 ${unboxedPages.length} 页没框留在任务里'
-          : '已生成 $total 道题，去整理吧';
-      _snack(base);
-    }
-  }
-
-  /// 同 sourcePath 的拆分任务（待整理/已整理）所在页就是已拆页。
-  /// sourcePath 是 `imports/<原任务 id>/...`，原任务 id 唯一，
-  /// 重导入同一份文件不串（见 _load 的 splitPagesBySource）。
-  static Set<int> _splitPagesFor(List<CollectTask> all, CollectTask task) {
-    if (task.sourcePath.isEmpty) return {};
-    return {
-      for (final t in all)
-        if (t.id != task.id &&
-            t.sourcePath == task.sourcePath &&
-            (t.status == CollectStatus.pendingOrganize ||
-                t.status == CollectStatus.done))
-          t.page,
-    };
-  }
-
-  /// 页码清单：超过 5 页只列前 5 页加“等”，文案不刷屏。
-  static String _pageListText(List<int> pages) {
-    if (pages.length <= 5) return pages.join('、');
-    return '${pages.take(5).join('、')} 等';
-  }
-
-  /// 行上的无框警告文案：单张图直接说“这张图还没有框”，
-  /// 多页只报没框的页数与页码。
-  static String _noBoxWarningText(CollectTask task, List<int> unboxed) {
-    if (task.pageCount <= 1) return '这张图还没有框';
-    if (unboxed.length == task.pageCount) {
-      return '这份文件还有 ${unboxed.length} 页没有框';
-    }
-    return '还有 ${unboxed.length} 页没有框：第 ${_pageListText(unboxed)} 页';
   }
 
   /// 取消导入 / 取消排队：直接删，无二次确认。
   /// B3：失败任务的删除不再走这里，改走 [_deleteTask] 弹模态确认框。
   Future<void> _removeTask(CollectTask task) async {
-    await widget.repo.deleteCollectTask(task.id);
-    await _load();
+    await _notifier.deleteTask(task);
   }
 
   /// B2-6a：删除任务（待框选 / 修框中 / 待整理 / 已整理行上的「删除」）：
@@ -1000,26 +377,16 @@ class _CollectPageState extends State<CollectPage> {
       ),
     );
     if (ok != true) return;
-    await widget.repo.deleteCollectTask(task.id);
-    await _load();
-  }
-
-  int _count(CollectStatus status) =>
-      _tasks.where((t) => t.status == status).length;
-
-  List<CollectTask> get _shownTasks {
-    // 只按导入时间排（新的在上，来自 collect_tasks 的 rowid DESC），
-    // 筛选只过滤，不改变顺序；永不按状态重排。
-    if (_filter == null) return _tasks;
-    return _tasks.where((t) => t.status == _filter).toList();
+    await _notifier.deleteTask(task);
   }
 
   @override
   Widget build(BuildContext context) {
+    final s = ref.watch(collectProvider);
     final palette = DesignTokens.of(Theme.of(context).brightness);
     final scale = qmScaleOf(context);
-    final failed = _tasks.where((t) => t.status == CollectStatus.failed);
-    final shown = _shownTasks;
+    final failed = s.tasks.where((t) => t.status == CollectStatus.failed);
+    final shown = s.shownTasks(_filter);
     return Scaffold(
       backgroundColor: Colors.transparent,
       body: SingleChildScrollView(
@@ -1053,13 +420,13 @@ class _CollectPageState extends State<CollectPage> {
                     '有 ${failed.length} 个任务导入失败：${failed.map((t) => '文件「${t.fileName}」是${t.error ?? '导入失败'}').join('；')}。请自行检查自己的文件，其余任务不受影响。',
                 onDismiss: () => setState(() => _hideErrorBanner = true),
               ),
-            if (_pendingImport != null) ...[
-              if (_pendingImport!.duplicateNames.isNotEmpty)
+            if (s.pendingImport != null) ...[
+              if (s.pendingImport!.duplicateNames.isNotEmpty)
                 QmBanner(
                   tone: QmBannerTone.warning,
                   title: '这个文件已经导入过。',
                   message:
-                      '列表里已有「${_pendingImport!.duplicateNames.join('、')}」的任务，再导一份会多出一组重复任务。要再导一份吗？',
+                      '列表里已有「${s.pendingImport!.duplicateNames.join('、')}」的任务，再导一份会多出一组重复任务。要再导一份吗？',
                   actions: [
                     QmBannerAction(
                       label: '仍然再导一份',
@@ -1071,12 +438,12 @@ class _CollectPageState extends State<CollectPage> {
                     ),
                   ],
                 ),
-              if (_pendingImport!.oversizeHints.isNotEmpty)
+              if (s.pendingImport!.oversizeHints.isNotEmpty)
                 QmBanner(
                   tone: QmBannerTone.warning,
                   title: '文件超过大小上限，导入会失败。',
                   message:
-                      '${_pendingImport!.oversizeHints.join(' ')}可以先压缩再重新选；如果仍要导入，超限的文件会记为失败任务，其他文件正常导入。',
+                      '${s.pendingImport!.oversizeHints.join(' ')}可以先压缩再重新选；如果仍要导入，超限的文件会记为失败任务，其他文件正常导入。',
                   actions: [
                     QmBannerAction(
                       label: '仍然再导一份',
@@ -1096,7 +463,7 @@ class _CollectPageState extends State<CollectPage> {
                 message: '每次导入都自己选：不默认上次选的，也不默认数学，没选学科不能导入。',
                 onDismiss: () => setState(() => _noSubjectWarning = false),
               ),
-            _importRow(scale, palette),
+            _importRow(scale, palette, s),
             SizedBox(height: 10 * scale),
             _dropZone(scale, palette),
             SizedBox(height: 10 * scale),
@@ -1108,17 +475,17 @@ class _CollectPageState extends State<CollectPage> {
                 height: 1.55,
               ),
             ),
-            if (_stagedPaths != null) ...[
+            if (s.stagedPaths != null) ...[
               SizedBox(height: 10 * scale),
-              _stagedCard(scale, palette),
+              _stagedCard(scale, palette, s),
             ],
-            if (_batch != null) ...[
+            if (s.batch != null) ...[
               SizedBox(height: 10 * scale),
               BatchImportCard(
-                batch: _batch!,
+                batch: s.batch!,
                 onRetryFailed: _retryBatchFailures,
                 onRetryPath: _retryBatchPath,
-                onDismiss: () => setState(() => _batch = null),
+                onDismiss: () => _notifier.dismissBatch(),
               ),
             ],
             SizedBox(height: 22 * scale),
@@ -1134,7 +501,7 @@ class _CollectPageState extends State<CollectPage> {
             ),
             SizedBox(height: 4 * scale),
             Text(
-              '按导入时间排，新的在上面，不按状态排 · 导入中 ${_count(CollectStatus.importing)} · 排队中 ${_count(CollectStatus.queued)} · 待框选 ${_count(CollectStatus.needBox)} · 修框中 ${_count(CollectStatus.boxing)} · 待整理 ${_count(CollectStatus.pendingOrganize)}${failed.isNotEmpty ? ' · 失败 ${failed.length}' : ''}',
+              '按导入时间排，新的在上面，不按状态排 · 导入中 ${s.count(CollectStatus.importing)} · 排队中 ${s.count(CollectStatus.queued)} · 待框选 ${s.count(CollectStatus.needBox)} · 修框中 ${s.count(CollectStatus.boxing)} · 待整理 ${s.count(CollectStatus.pendingOrganize)}${failed.isNotEmpty ? ' · 失败 ${failed.length}' : ''}',
               style: TextStyle(
                 fontSize: DesignTokens.bodySmallFontSize,
                 color: palette.muted,
@@ -1142,9 +509,9 @@ class _CollectPageState extends State<CollectPage> {
               ),
             ),
             SizedBox(height: 2 * scale),
-            _filterChips(scale),
+            _filterChips(scale, s),
             SizedBox(height: 6 * scale),
-            if (_tasks.isEmpty)
+            if (s.tasks.isEmpty)
               QmEmptyState(
                 title: '还没有收集任务，拖一个文件进来吧',
                 description:
@@ -1178,7 +545,7 @@ class _CollectPageState extends State<CollectPage> {
                 ),
                 child: ListView.builder(
                   itemCount: shown.length,
-                  itemBuilder: (ctx, i) => _taskRow(shown[i], scale, palette),
+                  itemBuilder: (ctx, i) => _taskRow(shown[i], scale, palette, s),
                 ),
               )
             else
@@ -1197,7 +564,7 @@ class _CollectPageState extends State<CollectPage> {
                 ),
                 child: Column(
                   children: shown
-                      .map((t) => _taskRow(t, scale, palette))
+                      .map((t) => _taskRow(t, scale, palette, s))
                       .toList(),
                 ),
               ),
@@ -1207,7 +574,7 @@ class _CollectPageState extends State<CollectPage> {
     );
   }
 
-  Widget _importRow(double scale, AppPalette palette) {
+  Widget _importRow(double scale, AppPalette palette, CollectState s) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -1245,7 +612,7 @@ class _CollectPageState extends State<CollectPage> {
                 padding: EdgeInsets.symmetric(horizontal: 12 * scale),
                 child: DropdownButton<String>(
                   key: const Key('collect-subject-select'),
-                  value: _selectedSubjectId,
+                  value: s.selectedSubjectId,
                   isExpanded: true,
                   underline: const SizedBox.shrink(),
                   borderRadius: BorderRadius.circular(
@@ -1261,22 +628,18 @@ class _CollectPageState extends State<CollectPage> {
                   hint: Text(
                     // B8-1：学科删空时下拉无选项——改提示、禁用下拉，
                     // 不再靠回退的预设三科充数。
-                    _subjects.isEmpty ? '还没有学科' : '请选择学科',
+                    s.subjects.isEmpty ? '还没有学科' : '请选择学科',
                     style: TextStyle(color: palette.muted),
                   ),
-                  items: _subjects
+                  items: s.subjects
                       .map(
                         (s) =>
                             DropdownMenuItem(value: s.id, child: Text(s.name)),
                       )
                       .toList(),
-                  onChanged: _subjects.isEmpty
+                  onChanged: s.subjects.isEmpty
                       ? null
-                      : (v) => setState(() {
-                          _selectedSubjectId = v;
-                          // 用户手动改了学科，猜测提示清除。
-                          _subjectGuessHint = null;
-                        }),
+                      : (v) => _notifier.selectSubject(v),
                 ),
               ),
             ),
@@ -1285,7 +648,7 @@ class _CollectPageState extends State<CollectPage> {
         SizedBox(height: 4 * scale),
         Text(
           // B8-1：学科删空时说明去处，不留一个打不开的空下拉。
-          _subjects.isEmpty
+          s.subjects.isEmpty
               ? '还没有学科：先去「学科管理」添加一个，再回来导入。'
               : '每次导入都自己选：不默认上次选的，也不默认数学，没选学科不能导入',
           style: TextStyle(
@@ -1295,10 +658,10 @@ class _CollectPageState extends State<CollectPage> {
           ),
         ),
         // B11-2：按文件名猜学科的建议提示（只建议，用户随时可改下拉）。
-        if (_subjectGuessHint != null) ...[
+        if (s.subjectGuessHint != null) ...[
           SizedBox(height: 4 * scale),
           Text(
-            _subjectGuessHint!,
+            s.subjectGuessHint!,
             style: TextStyle(
               fontSize: DesignTokens.captionFontSize,
               color: palette.accentText,
@@ -1306,7 +669,7 @@ class _CollectPageState extends State<CollectPage> {
             ),
           ),
         ],
-        if (_subjects.isEmpty && widget.onGoSubjects != null) ...[
+        if (s.subjects.isEmpty && widget.onGoSubjects != null) ...[
           SizedBox(height: 8 * scale),
           QmButton(
             label: '去学科管理',
@@ -1397,8 +760,8 @@ class _CollectPageState extends State<CollectPage> {
 
   /// B11-2：没选学科时暂存的文件卡片——列出文件名，等用户在上方选
   /// 好学科后点“开始导入”；也可以“取消”丢掉这批暂存。
-  Widget _stagedCard(double scale, AppPalette palette) {
-    final staged = _stagedPaths ?? const <String>[];
+  Widget _stagedCard(double scale, AppPalette palette, CollectState s) {
+    final staged = s.stagedPaths ?? const <String>[];
     return Container(
       key: const Key('staged-import-card'),
       decoration: BoxDecoration(
@@ -1463,15 +826,15 @@ class _CollectPageState extends State<CollectPage> {
     );
   }
 
-  Widget _filterChips(double scale) {
+  Widget _filterChips(double scale, CollectState s) {
     final filters = <(String, CollectStatus?)>[
-      ('全部 ${_tasks.length}', null),
-      ('导入中 ${_count(CollectStatus.importing)}', CollectStatus.importing),
-      ('排队中 ${_count(CollectStatus.queued)}', CollectStatus.queued),
-      ('待框选 ${_count(CollectStatus.needBox)}', CollectStatus.needBox),
-      ('修框中 ${_count(CollectStatus.boxing)}', CollectStatus.boxing),
+      ('全部 ${s.tasks.length}', null),
+      ('导入中 ${s.count(CollectStatus.importing)}', CollectStatus.importing),
+      ('排队中 ${s.count(CollectStatus.queued)}', CollectStatus.queued),
+      ('待框选 ${s.count(CollectStatus.needBox)}', CollectStatus.needBox),
+      ('修框中 ${s.count(CollectStatus.boxing)}', CollectStatus.boxing),
       (
-        '待整理 ${_count(CollectStatus.pendingOrganize)}',
+        '待整理 ${s.count(CollectStatus.pendingOrganize)}',
         CollectStatus.pendingOrganize,
       ),
     ];
@@ -1492,9 +855,14 @@ class _CollectPageState extends State<CollectPage> {
     );
   }
 
-  Widget _taskRow(CollectTask task, double scale, AppPalette palette) {
-    final subject = _subjectOf(task.subjectId);
-    final isLast = _shownTasks.last == task;
+  Widget _taskRow(
+    CollectTask task,
+    double scale,
+    AppPalette palette,
+    CollectState s,
+  ) {
+    final subject = s.subjectOf(task.subjectId);
+    final isLast = s.shownTasks(_filter).last == task;
     // SR-P2-25：红色无框警告只对“打开过修框或已有任意草稿框”的任务
     // 显示（Meng 已定，收窄范围）。新导入、从未打开过的任务不警告。
     // “打开过”不用新字段：_openBoxEditor 打开时就把任务置为 boxing
@@ -1505,8 +873,8 @@ class _CollectPageState extends State<CollectPage> {
     // 兜底（有同源拆分任务即一定打开并确认过）。
     final warnUnboxed =
         task.status == CollectStatus.boxing ||
-        _hasAnyDraftBox.contains(task.id) ||
-        _hasSplitSibling.contains(task.id);
+        s.hasAnyDraftBox.contains(task.id) ||
+        s.hasSplitSibling.contains(task.id);
     final row = Padding(
       padding: EdgeInsets.symmetric(
         vertical: DesignTokens.collectTaskRowPaddingV * scale,
@@ -1544,7 +912,7 @@ class _CollectPageState extends State<CollectPage> {
                     ),
                     SizedBox(height: 2 * scale),
                     Text(
-                      _taskNote(task, subject.name),
+                      taskNote(task, subject.name),
                       style: TextStyle(
                         fontSize: DesignTokens.bodySmallFontSize,
                         color: palette.muted,
@@ -1571,12 +939,12 @@ class _CollectPageState extends State<CollectPage> {
           // SR-P2-25：只对打开过修框或已有任意草稿框的任务显示，
           // 新导入的任务不警告（见 _taskRow 头的 warnUnboxed）。
           // 行与页的对应：一个任务一行，一行管 pageCount 张图，
-          // 未框页是 _load 按草稿框逐页算出来的（见 _unboxedPagesByTask）。
+          // 未框页是 load 按草稿框逐页算出来的（见 unboxedPagesByTask）。
           if (warnUnboxed &&
-              (_unboxedPagesByTask[task.id] ?? const <int>[]).isNotEmpty) ...[
+              (s.unboxedPagesByTask[task.id] ?? const <int>[]).isNotEmpty) ...[
             SizedBox(height: 6 * scale),
             Text(
-              _noBoxWarningText(task, _unboxedPagesByTask[task.id]!),
+              noBoxWarningText(task, s.unboxedPagesByTask[task.id]!),
               style: TextStyle(
                 fontSize: DesignTokens.bodySmallFontSize,
                 color: palette.errInk,
@@ -1625,22 +993,6 @@ class _CollectPageState extends State<CollectPage> {
         QmRowLine(kind: QmRowLineKind.line),
       ],
     );
-  }
-
-  String _taskNote(CollectTask task, String subjectName) {
-    final pagePart = task.pageCount > 1
-        ? '第${task.page}页 / 共${task.pageCount}页'
-        : '第${task.page}页';
-    return switch (task.status) {
-      CollectStatus.importing => '整题检测中… · $subjectName · $pagePart',
-      CollectStatus.queued => '排队中 · 轮到会自动开始，一个一个检测 · $subjectName · $pagePart',
-      CollectStatus.needBox => '检测完成，等你修框确认 · $subjectName · $pagePart',
-      CollectStatus.boxing =>
-        '修框中 · 上次修到一半，点「继续修框」接着修 · $subjectName · $pagePart',
-      CollectStatus.pendingOrganize => '已确认修框，等整理 · $subjectName · $pagePart',
-      CollectStatus.failed => '${task.fileName} · $subjectName · $pagePart',
-      CollectStatus.done => '${task.fileName} · $subjectName · $pagePart',
-    };
   }
 
   Widget _statusPill(CollectTask task, AppPalette palette) {

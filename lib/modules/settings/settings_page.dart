@@ -1,22 +1,24 @@
-import 'dart:convert';
 import 'dart:io';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../../data/badge_notifier.dart';
 import '../../data/database.dart';
-import '../../data/repository.dart';
 import '../../models/exam_event.dart';
 import '../../models/models.dart';
 import '../../services/import_service.dart';
-import '../../services/zip_archive.dart';
+import '../../state/settings_notifier.dart';
 import '../../theme/design_tokens.dart';
 import '../../widgets/uikit.dart';
 
 /// 设置：分段折叠式六组（外观 / 复习 / 错题本 / 考试 / 数据 / 启动与关于），
 /// 默认全折起，一次只展开一个。每项标题 + 一句短说明 + 选项，简洁直接。
-/// 改设置后调 onSettingsChanged 保存并刷新主题 / 字体。
+/// 改设置后经 `settingsProvider`（见 lib/state/settings_notifier.dart）
+/// 写库并刷新主题 / 字体——设置页与根组件读的是同一个 Provider，
+/// 不再各传各的快照（ARCH-PLAN-A 第 1 阶段，见 D-34）。
+/// 折叠组展开/收起、输入框内容、迁移进度等纯界面临时状态仍留页面
+/// 本地 State，不进 Provider。
 ///
 /// 结构与文案以 HTML 原型 `viewSettings()` 为准（R0 附录 A）：
 /// 外观三段 + 问候语（保存/恢复默认，留空保存不生效）；复习含加入方式
@@ -29,20 +31,13 @@ import '../../widgets/uikit.dart';
 /// （版本 v0.1.0、作者 Meng（个人项目）、更新说明）。
 /// 不做的项不出现：首页显示内容开关、封面计数牌开关、导入文件大小、
 /// 整理台默认排序（与 HTML psub 的“不做”清单一致）。
-class SettingsPage extends StatefulWidget {
+class SettingsPage extends ConsumerStatefulWidget {
   const SettingsPage({
     super.key,
-    required this.repo,
-    required this.settings,
-    required this.onSettingsChanged,
     this.loadFailed = false,
     this.onBackupFailed,
     this.initialOpenGroup,
   });
-
-  final QuestionRepository repo;
-  final AppSettings settings;
-  final Future<void> Function(AppSettings s) onSettingsChanged;
 
   /// 设置读取失败时由 app 传入：显示错误横幅，已显示默认设置。
   final bool loadFailed;
@@ -57,31 +52,19 @@ class SettingsPage extends StatefulWidget {
   final String? initialOpenGroup;
 
   @override
-  State<SettingsPage> createState() => _SettingsPageState();
+  ConsumerState<SettingsPage> createState() => _SettingsPageState();
 }
 
-class _CachePreview {
-  const _CachePreview({
-    required this.tempCount,
-    required this.thumbCount,
-    required this.failedCount,
-    required this.bytes,
-    required this.items,
-  });
-
-  final int tempCount;
-  final int thumbCount;
-  final int failedCount;
-  final int bytes;
-  final List<FileSystemEntity> items;
-
-  int get totalCount => tempCount + thumbCount + failedCount;
-  String get mb => (bytes / (1024 * 1024)).toStringAsFixed(1);
-}
-
-class _SettingsPageState extends State<SettingsPage> {
+class _SettingsPageState extends ConsumerState<SettingsPage> {
+  // Stage 1：业务逻辑在 SettingsNotifier（经 settingsProvider 拿），
+  // 页面只留 setState 转发与 UI 副作用（弹窗、选文件对话框、
+  // SnackBar、导航），见 D-34。_s 是 Provider 值的本地镜像：
+  // build 里 watch 到新值时同步过来（问候语输入框的 controller
+  // 文本同时跟进）；_apply 只调 notifier.saveSettings，不再
+  // 自己 setState——Provider 重建会把新值带回来。
+  SettingsNotifier get _controller => ref.read(settingsProvider.notifier);
   String? _openGroup;
-  late AppSettings _s;
+  AppSettings _s = AppSettings.defaults;
   final _greetingController = TextEditingController();
   bool _busy = false;
   bool _errorDismissed = false;
@@ -109,7 +92,7 @@ class _SettingsPageState extends State<SettingsPage> {
   bool _migrateCancelled = false;
 
   // 缓存清理：只在打开数据组时扫描一次；清理完显示释放量，可重新扫描。
-  _CachePreview? _cachePreview;
+  CachePreview? _cachePreview;
   bool _cacheScanned = false;
   String? _cacheCleanedMb;
 
@@ -121,7 +104,6 @@ class _SettingsPageState extends State<SettingsPage> {
   @override
   void initState() {
     super.initState();
-    _s = widget.settings;
     _greetingController.text = _s.greeting;
     // B11-9：从首页倒计时点进来时直接展开考试组（平时为 null，全折）。
     _openGroup = widget.initialOpenGroup;
@@ -134,7 +116,7 @@ class _SettingsPageState extends State<SettingsPage> {
 
   Future<void> _loadExamEvents() async {
     try {
-      final list = await widget.repo.examEvents();
+      final list = await _controller.loadExamEvents();
       if (!mounted) return;
       setState(() => _examEvents = list);
     } catch (_) {
@@ -144,9 +126,9 @@ class _SettingsPageState extends State<SettingsPage> {
 
   Future<void> _loadQuestionCount() async {
     try {
-      final list = await widget.repo.all(includeArchived: true);
+      final count = await _controller.loadQuestionCount();
       if (!mounted) return;
-      setState(() => _questionCount = list.length);
+      setState(() => _questionCount = count);
     } catch (_) {
       // 计数拿不到不影响设置页本身；恢复确认里只写备份题数。
     }
@@ -155,10 +137,6 @@ class _SettingsPageState extends State<SettingsPage> {
   @override
   void didUpdateWidget(covariant SettingsPage oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (widget.settings.toMap().toString() != _s.toMap().toString()) {
-      _s = widget.settings;
-      _greetingController.text = _s.greeting;
-    }
     // B11-9：应用层换了 initialOpenGroup（如从首页倒计时点进来）
     // 时跟进展开对应组；用户自己在页内折叠/展开后不再干预。
     if (widget.initialOpenGroup != oldWidget.initialOpenGroup &&
@@ -174,9 +152,11 @@ class _SettingsPageState extends State<SettingsPage> {
     super.dispose();
   }
 
+  /// 保存一组设置：唯一保存路径——经 settingsProvider 写库，
+  /// 写成功后 Provider 重建本页（build 里把新值同步进 _s），
+  /// 这里不再 setState（Stage 0 的 onSettingsChanged 已合并进来）。
   Future<void> _apply(AppSettings s) async {
-    setState(() => _s = s);
-    await widget.onSettingsChanged(s);
+    await ref.read(settingsProvider.notifier).saveSettings(s);
   }
 
   void _toggleGroup(String key) {
@@ -193,12 +173,12 @@ class _SettingsPageState extends State<SettingsPage> {
   /// 孤儿清理的提醒就放在这里：每次打开数据组，有孤儿就提示一次。
   Future<void> _scanStorageAndOrphans() async {
     try {
-      final usage = await widget.repo.storageUsageBreakdown();
+      final usage = await _controller.storageUsage();
       if (!mounted) return;
       setState(() => _storageUsage = usage);
     } catch (_) {}
     try {
-      final scan = await widget.repo.scanOrphanFiles();
+      final scan = await _controller.scanOrphans();
       if (!mounted) return;
       setState(() => _orphanScan = scan);
     } catch (_) {}
@@ -222,16 +202,18 @@ class _SettingsPageState extends State<SettingsPage> {
     final scan = _orphanScan;
     if (scan == null || scan.files.isEmpty) return;
     try {
-      final result = await widget.repo.deleteOrphanFiles(
+      final result = await _controller.clearOrphans(
         scan.files.map((f) => f.relativePath).toList(),
       );
       if (!mounted) return;
       setState(() => _orphanScan = null);
       await _scanStorageAndOrphans();
-      _snack(result.deletedCount == 0
-          ? '没有可清理的无用文件'
-          : '已清理 ${result.deletedCount} 个无用文件，'
-              '释放 ${ImportService.formatBytes(result.freedBytes)}');
+      _snack(
+        result.deletedCount == 0
+            ? '没有可清理的无用文件'
+            : '已清理 ${result.deletedCount} 个无用文件，'
+                  '释放 ${ImportService.formatBytes(result.freedBytes)}',
+      );
     } catch (_) {
       _snack('清理失败，稍后再试');
     }
@@ -246,18 +228,20 @@ class _SettingsPageState extends State<SettingsPage> {
   // ---------- 问候语 ----------
 
   Future<void> _saveGreeting() async {
-    final text = _greetingController.text.trim();
-    if (text.isEmpty) {
-      _snack('留空保存不生效');
+    AppSettings next;
+    try {
+      next = _controller.greetingToSave(_s, _greetingController.text);
+    } on SettingsValidationException catch (e) {
+      _snack(e.message);
       return;
     }
-    await _apply(_s.copyWith(greeting: text));
+    await _apply(next);
     _snack('问候语已保存');
   }
 
   Future<void> _resetGreeting() async {
-    _greetingController.text = '今天也要加油呀';
-    await _apply(_s.copyWith(greeting: '今天也要加油呀'));
+    _greetingController.text = SettingsNotifier.defaultGreetingText;
+    await _apply(_controller.defaultGreeting(_s));
   }
 
   // ---------- 数据：备份 / 恢复 ----------
@@ -266,7 +250,7 @@ class _SettingsPageState extends State<SettingsPage> {
   /// 标志写失败也不影响本页的即时提示（静默跳过）。
   Future<void> _markBackupFailed() async {
     try {
-      await widget.repo.setBackupFailed(true);
+      await _controller.markBackupFailed();
     } catch (_) {}
     widget.onBackupFailed?.call();
   }
@@ -276,7 +260,7 @@ class _SettingsPageState extends State<SettingsPage> {
     try {
       // P3 §2.3：备份改为 zip（JSON + imports/ + slices/），扩展名
       // 仍是 .qm2backup，内容改为 zip；恢复即完整（含题目图片）。
-      final bytes = await widget.repo.exportBackupZip();
+      final bytes = await _controller.exportBackupBytes();
       final path = await FilePicker.platform.saveFile(
         dialogTitle: '备份题库',
         // §2.3：v2 备份扩展名 .qm2backup（v1 选择器只允许 .json，
@@ -293,7 +277,7 @@ class _SettingsPageState extends State<SettingsPage> {
         await File(path).writeAsBytes(bytes);
         // 待定3：备份成功，清掉之前可能留下的失败标志。
         try {
-          await widget.repo.setBackupFailed(false);
+          await _controller.clearBackupFailedFlag();
         } catch (_) {}
         _snack('备份已保存（含题目图片，此备份仅新版可恢复）');
       } catch (_) {
@@ -323,16 +307,14 @@ class _SettingsPageState extends State<SettingsPage> {
       _restoreZipPath = null;
     });
     try {
-      if (zipPath != null) {
-        // P3 §2.3：zip 恢复（JSON + 文件一起恢复，失败回滚、原库不动）。
-        await widget.repo.importBackupZipFile(zipPath);
-      } else {
-        // 老 JSON 备份（.qm2backup 但内容是 JSON）：走 JSON 恢复。
-        await widget.repo.importBackupJson(data);
-      }
-      bumpBadgeVersion();
-      final restored = await widget.repo.settings();
-      await _apply(restored);
+      await _controller.restoreBackup(jsonData: data, zipPath: zipPath);
+      // 恢复成功已发一个含全部五种 kind 的变更事件（见
+      // AppDatabase.importBackupJson/Zip），角标由 badgeCountsProvider
+      // 刷新，本页不再手动 bump。
+      // 恢复可能覆盖了设置表：从库里重读一次，Provider 更新后
+      // 根组件与本页同时看到恢复后的设置（Stage 0 是 loadSettings
+      // + _apply 两步，现合并为一次 reloadSettings）。
+      await _controller.reloadSettings();
       await _loadQuestionCount();
       _snack('已恢复备份');
     } on BackupRestoreException catch (e) {
@@ -380,46 +362,15 @@ class _SettingsPageState extends State<SettingsPage> {
     );
     final path = result?.files.single.path;
     if (path == null) return;
-    List<int> bytes;
-    try {
-      bytes = await File(path).readAsBytes();
-    } catch (_) {
-      _snack('这个备份文件打不开，换一个再试');
-      return;
-    }
     // P3 §2.3：按魔数识别，不靠扩展名——新 zip 备份以 PK 开头，
     // 老 .qm2backup JSON 内容是 JSON 文本；两者恢复口径不同，
-    // 不要静默读坏。
-    if (isZipBytes(bytes)) {
-      Map<String, dynamic> data;
-      try {
-        data = AppDatabase.readBackupJsonFromZip(bytes);
-      } on BackupRestoreException catch (e) {
-        _snack(e.message);
-        return;
-      } catch (_) {
-        _snack('这个文件不是 quiz-master2 的备份，恢复不了');
-        return;
-      }
-      setState(() {
-        _restoreFileName = result!.files.single.name;
-        _restoreData = data;
-        _restoreZipPath = path;
-      });
-      await _askRestore();
-      return;
-    }
-    Map<String, dynamic> data;
+    // 不要静默读坏。解析在 Controller，页面只按异常类型提示。
+    ({Map<String, dynamic> data, String? zipPath}) parsed;
     try {
-      final decoded = jsonDecode(utf8.decode(bytes));
-      if (decoded is! Map<String, dynamic>) throw const FormatException();
-      data = decoded;
-      if (data['questions'] is! List || data['subjects'] is! List) {
-        throw const FormatException();
-      }
-      // §2.3：选文件时先校验版本（_meta 缺失 / > 2 都拒绝），
-      // 即时反馈；确认恢复时数据层再校验一次。
-      AppDatabase.validateBackupData(data);
+      parsed = await _controller.parseRestoreFile(path);
+    } on RestoreFileReadException {
+      _snack('这个备份文件打不开，换一个再试');
+      return;
     } on BackupRestoreException catch (e) {
       _snack(e.message);
       return;
@@ -429,17 +380,13 @@ class _SettingsPageState extends State<SettingsPage> {
     }
     setState(() {
       _restoreFileName = result!.files.single.name;
-      _restoreData = data;
-      _restoreZipPath = null;
+      _restoreData = parsed.data;
+      _restoreZipPath = parsed.zipPath;
     });
     await _askRestore();
   }
 
-  String get _dbPath {
-    final used = widget.repo.db.dbPathUsed;
-    if (used != null && used.isNotEmpty) return used;
-    return '${AppDatabase.dataDirectoryPath()}${Platform.pathSeparator}quiz-master2.db';
-  }
+  String get _dbPath => _controller.dbPath;
 
   /// B4.3：切换数据库位置时迁移旧库（复制旧库文件到新位置，不只写
   /// 标记）。新位置已有库文件时先问用户：覆盖（用当前题库替换新
@@ -451,13 +398,14 @@ class _SettingsPageState extends State<SettingsPage> {
     );
     if (dir == null) return;
     if (!mounted) return;
-    if (AppDatabase.databaseExistsAt(dir)) {
+    if (_controller.databaseExistsAt(dir)) {
       final choice = await showDialog<String>(
         context: context,
         builder: (dctx) => AlertDialog(
           title: const Text('这个位置已经有题库了'),
           content: const Text(
-              '新位置已经有一个 quiz-master2.db。覆盖会用现在的题库替换它（题库和图片一起搬过去；新位置原来的题库就没了）；保留会直接用新位置原来的题库，现在的题库留在原位置不动。'),
+            '新位置已经有一个 quiz-master2.db。覆盖会用现在的题库替换它（题库和图片一起搬过去；新位置原来的题库就没了）；保留会直接用新位置原来的题库，现在的题库留在原位置不动。',
+          ),
           actions: [
             TextButton(
               onPressed: () => Navigator.of(dctx).pop(null),
@@ -476,7 +424,7 @@ class _SettingsPageState extends State<SettingsPage> {
       );
       if (choice == null) return;
       if (choice == 'keep') {
-        await widget.repo.setCustomDataDirectory(dir);
+        await _controller.keepExistingDatabase(dir);
         if (!mounted) return;
         setState(() {
           _dbPendingRestart = true;
@@ -498,7 +446,7 @@ class _SettingsPageState extends State<SettingsPage> {
       _migrateProgress = 0;
       _migrateCancelled = false;
     });
-    final outcome = await widget.repo.migrateToDirectory(
+    final outcome = await _controller.migrateDatabase(
       dir,
       overwrite: overwrite,
       onProgress: (p) {
@@ -534,119 +482,9 @@ class _SettingsPageState extends State<SettingsPage> {
 
   // ---------- 数据：缓存清理 ----------
 
-  /// 缓存清理预览：临时文件 + 缩略图缓存 + 失败导入残留，不动题目数据。
-  /// 递归扫数据目录下名字含 cache / thumb / tmp 的目录与 .tmp / .cache
-  /// 文件，按类计数并合计字节数（HTML 预览口径，不照搬演示数字）。
-  _CachePreview _scanCacheSync() {
-    final dir = Directory(AppDatabase.dataDirectoryPath());
-    var tempCount = 0;
-    var thumbCount = 0;
-    var failedCount = 0;
-    var bytes = 0;
-    final items = <FileSystemEntity>[];
-    if (!dir.existsSync()) {
-      return const _CachePreview(
-          tempCount: 0,
-          thumbCount: 0,
-          failedCount: 0,
-          bytes: 0,
-          items: []);
-    }
-    void add(FileSystemEntity e, String kind) {
-      items.add(e);
-      if (e is File) {
-        try {
-          bytes += e.lengthSync();
-        } catch (_) {}
-      } else if (e is Directory) {
-        try {
-          for (final f in e.listSync(recursive: true)) {
-            if (f is File) bytes += f.lengthSync();
-          }
-        } catch (_) {}
-      }
-      switch (kind) {
-        case 'thumb':
-          thumbCount++;
-        case 'failed':
-          failedCount++;
-        default:
-          tempCount++;
-      }
-    }
-
-    void walk(Directory d, {bool insideCacheDir = false, String? cacheKind}) {
-      List<FileSystemEntity> entries;
-      try {
-        entries = d.listSync();
-      } catch (_) {
-        return;
-      }
-      for (final e in entries) {
-        final name = e.path.split(Platform.pathSeparator).last;
-        if (name == 'quiz-master2.db') continue;
-        final lower = name.toLowerCase();
-        if (lower.contains('failed') || lower.contains('import-error')) {
-          // SR3-19：failed 目录也与 cache 分支同款——递归进去、文件逐个计，
-          // 目录本身不再按 1 项算（B6 只改了 cache/thumb/tmp 分支）。
-          // 之后 preview.items 里只有文件，与“不再有目录本身”对齐。
-          if (e is Directory) {
-            try {
-              for (final f in e.listSync(recursive: true)) {
-                if (f is File) add(f, 'failed');
-              }
-            } catch (_) {}
-          } else {
-            add(e, 'failed');
-          }
-          continue;
-        }
-        if (e is Directory &&
-            (lower.contains('cache') ||
-                lower.contains('thumb') ||
-                lower.contains('tmp'))) {
-          // SR2-30：cache/thumb/tmp 目录不再整体按 1 个计——递归进去，
-          // 里面的文件逐个按类计数（thumb 目录里的按缩略图计，其余按
-          // 临时文件计）；目录本身不再单独计 1，避免个数偏小。
-          // 旧代码在这里 add() 后 continue，`insideCacheDir` 从未为
-          // true，目录里的文件一个都没数上（8 个文件只算出 4 项）。
-          walk(
-            e,
-            insideCacheDir: true,
-            cacheKind: lower.contains('thumb') ? 'thumb' : 'temp',
-          );
-          continue;
-        }
-        if (e is File) {
-          if (lower.startsWith('thumb')) {
-            add(e, 'thumb');
-          } else if (lower.endsWith('.tmp') || lower.endsWith('.cache')) {
-            add(e, 'temp');
-          } else if (insideCacheDir) {
-            add(e, cacheKind ?? 'temp');
-          }
-        } else if (e is Directory) {
-          // 普通子目录也要递归进入（SR-P2-50）：以前只扫顶层一层，
-          // 藏在某子目录下的 cache/thumb/tmp 目录不会被发现，
-          // 预览数字偏小、清理也删不到它们。
-          walk(e, insideCacheDir: insideCacheDir, cacheKind: cacheKind);
-        }
-      }
-    }
-
-    walk(dir);
-    return _CachePreview(
-      tempCount: tempCount,
-      thumbCount: thumbCount,
-      failedCount: failedCount,
-      bytes: bytes,
-      items: items,
-    );
-  }
-
   void _scanCache() {
     setState(() {
-      _cachePreview = _scanCacheSync();
+      _cachePreview = _controller.scanCache();
       _cacheScanned = true;
       _cacheCleanedMb = null;
     });
@@ -655,22 +493,10 @@ class _SettingsPageState extends State<SettingsPage> {
   Future<void> _clearCache() async {
     final preview = _cachePreview;
     if (preview == null) return;
-    var deleted = 0;
-    for (final e in preview.items) {
-      try {
-        if (e is Directory) {
-          await e.delete(recursive: true);
-        } else {
-          await e.delete();
-        }
-        deleted++;
-      } catch (_) {
-        // 单个删不掉就跳过，不中断。
-      }
-    }
+    final deleted = await _controller.clearCache(preview);
     setState(() {
       _cacheCleanedMb = preview.mb;
-      _cachePreview = _scanCacheSync();
+      _cachePreview = _controller.scanCache();
     });
     _snack(deleted == 0 ? '没有可清理的缓存' : '已清理 $deleted 项缓存');
   }
@@ -681,10 +507,7 @@ class _SettingsPageState extends State<SettingsPage> {
       hour: int.tryParse(parts.elementAtOrNull(0) ?? '') ?? 20,
       minute: int.tryParse(parts.elementAtOrNull(1) ?? '') ?? 0,
     );
-    final picked = await showTimePicker(
-      context: context,
-      initialTime: initial,
-    );
+    final picked = await showTimePicker(context: context, initialTime: initial);
     if (picked == null) return;
     final text =
         '${picked.hour.toString().padLeft(2, '0')}:${picked.minute.toString().padLeft(2, '0')}';
@@ -695,28 +518,15 @@ class _SettingsPageState extends State<SettingsPage> {
 
   /// 新增一场考试：只填自定义名称 + 考试日期，不选试卷、不关联试卷。
   Future<void> _addExamEvent() async {
-    final name = _examNameController.text.trim();
-    if (name.isEmpty) {
-      _snack('先填一个考试名称');
-      return;
-    }
-    final date = _newExamDate;
-    if (date == null) {
-      _snack('先选一个考试日期');
-      return;
-    }
-    if (_examEvents.any((e) => e.name == name)) {
-      _snack('已经有了这场考试');
-      return;
-    }
     try {
-      await widget.repo.saveExamEvent(
-        ExamEvent(
-          id: 'exam-event-${DateTime.now().millisecondsSinceEpoch}',
-          name: name,
-          date: date,
-        ),
+      await _controller.addExamEvent(
+        existing: _examEvents,
+        name: _examNameController.text,
+        date: _newExamDate,
       );
+    } on SettingsValidationException catch (e) {
+      _snack(e.message);
+      return;
     } catch (_) {
       _snack('没加上，稍后再试');
       return;
@@ -769,12 +579,15 @@ class _SettingsPageState extends State<SettingsPage> {
     );
     name = name.trim();
     if (ok != true || name.isEmpty || name == e.name) return;
-    if (_examEvents.any((x) => x.id != e.id && x.name == name)) {
-      _snack('已经有了这场考试');
-      return;
-    }
     try {
-      await widget.repo.saveExamEvent(e.copyWith(name: name));
+      await _controller.renameExamEvent(
+        event: e,
+        newName: name,
+        existing: _examEvents,
+      );
+    } on SettingsValidationException catch (err) {
+      _snack(err.message);
+      return;
     } catch (_) {
       _snack('没改成，稍后再试');
       return;
@@ -794,7 +607,7 @@ class _SettingsPageState extends State<SettingsPage> {
     final date = dateOnly(picked);
     if (date == e.date) return;
     try {
-      await widget.repo.saveExamEvent(e.copyWith(date: date));
+      await _controller.changeExamEventDate(e, date);
     } catch (_) {
       _snack('没改成，稍后再试');
       return;
@@ -811,7 +624,7 @@ class _SettingsPageState extends State<SettingsPage> {
     );
     if (!ok) return;
     try {
-      await widget.repo.deleteExamEvent(e.id);
+      await _controller.deleteExamEvent(e.id);
     } catch (_) {
       _snack('没删掉，稍后再试');
       return;
@@ -823,6 +636,25 @@ class _SettingsPageState extends State<SettingsPage> {
 
   @override
   Widget build(BuildContext context) {
+    // 业务设置只从 settingsProvider 读：加载中先转圈（生产上根组件
+    // 已等 Provider 就绪才进本页，这里只覆盖单测直 pump 本页的情形）；
+    // 读到新值时同步进本地镜像 _s（问候语输入框文本同时跟进，
+    // 文本相同时不重复赋值，避免打断正在输入的光标）。
+    final settingsAsync = ref.watch(settingsProvider);
+    final latest = settingsAsync.value;
+    if (latest == null) {
+      if (settingsAsync.isLoading) {
+        return const Center(child: CircularProgressIndicator());
+      }
+      // 读设置出错且无旧值：用默认设置继续跑（错误横幅由
+      // widget.loadFailed 控制，与原来一致）。
+    }
+    if (latest != null && latest.toMap().toString() != _s.toMap().toString()) {
+      _s = latest;
+      if (_greetingController.text != latest.greeting) {
+        _greetingController.text = latest.greeting;
+      }
+    }
     final scale = qmScaleOf(context);
     return SingleChildScrollView(
       padding: EdgeInsets.zero,
@@ -918,15 +750,21 @@ class _SettingsPageState extends State<SettingsPage> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(title,
-              style: const TextStyle(
-                  fontSize: R10Tokens.settingsRowTitleFontSize,
-                  fontWeight: FontWeight.w700)),
+          Text(
+            title,
+            style: const TextStyle(
+              fontSize: R10Tokens.settingsRowTitleFontSize,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
           SizedBox(height: 2 * scale),
-          Text(desc,
-              style: TextStyle(
-                  fontSize: R10Tokens.settingsRowDescFontSize,
-                  color: palette.muted)),
+          Text(
+            desc,
+            style: TextStyle(
+              fontSize: R10Tokens.settingsRowDescFontSize,
+              color: palette.muted,
+            ),
+          ),
         ],
       ),
     );
@@ -962,11 +800,7 @@ class _SettingsPageState extends State<SettingsPage> {
     required List<QmSegmentOption<T>> options,
     required ValueChanged<T> onChanged,
   }) {
-    return QmSegmented<T>(
-      options: options,
-      value: value,
-      onChanged: onChanged,
-    );
+    return QmSegmented<T>(options: options, value: value, onChanged: onChanged);
   }
 
   Widget _noteText(String text) {
@@ -1050,11 +884,7 @@ class _SettingsPageState extends State<SettingsPage> {
   Widget _buildReview() {
     return Column(
       children: [
-        _row(
-          '加入方式',
-          '手动加入：在题目详情点「加入复习」。',
-          const SizedBox.shrink(),
-        ),
+        _row('加入方式', '手动加入：在题目详情点「加入复习」。', const SizedBox.shrink()),
         _row(
           '复查间隔',
           '错因解决后，隔几天复查。',
@@ -1265,18 +1095,21 @@ class _SettingsPageState extends State<SettingsPage> {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text(e.name,
-                            style: const TextStyle(
-                                fontSize:
-                                    R10Tokens.settingsRowTitleFontSize,
-                                fontWeight: FontWeight.w700)),
+                        Text(
+                          e.name,
+                          style: const TextStyle(
+                            fontSize: R10Tokens.settingsRowTitleFontSize,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
                         SizedBox(height: 2 * scale),
                         Text(
                           '${formatExamEventDate(e.date)} · '
                           '${examCountdownText(e)}',
                           style: TextStyle(
-                              fontSize: R10Tokens.settingsRowDescFontSize,
-                              color: palette.muted),
+                            fontSize: R10Tokens.settingsRowDescFontSize,
+                            color: palette.muted,
+                          ),
                         ),
                       ],
                     ),
@@ -1370,12 +1203,15 @@ class _SettingsPageState extends State<SettingsPage> {
           ),
         ),
         if (_dbPendingRestart)
-          _noteText(_dbMigrated
-              ? '新位置已保存：题库已迁过去，重启后彻底生效。'
-              : '新位置已保存：要重启软件才生效——重启后才会改用新位置存数据库，重启前还是用现在这个位置。'),
+          _noteText(
+            _dbMigrated
+                ? '新位置已保存：题库已迁过去，重启后彻底生效。'
+                : '新位置已保存：要重启软件才生效——重启后才会改用新位置存数据库，重启前还是用现在这个位置。',
+          ),
         if (_migrating)
           _noteText(
-              '正在迁移…${(_migrateProgress * 100).toStringAsFixed(0)}%（题库和图片一起搬，搬完前不要退出）。'),
+            '正在迁移…${(_migrateProgress * 100).toStringAsFixed(0)}%（题库和图片一起搬，搬完前不要退出）。',
+          ),
         if (_migrating)
           QmButton(
             label: '取消迁移',
@@ -1388,8 +1224,8 @@ class _SettingsPageState extends State<SettingsPage> {
           _storageUsage == null
               ? '正在统计…'
               : '题图与原图共占 ${ImportService.formatBytes(storageTotal!)}'
-                  '（原图 ${ImportService.formatBytes(_storageUsage!.importsBytes)}、'
-                  '切片 ${ImportService.formatBytes(_storageUsage!.slicesBytes)}），上限 2GB。',
+                    '（原图 ${ImportService.formatBytes(_storageUsage!.importsBytes)}、'
+                    '切片 ${ImportService.formatBytes(_storageUsage!.slicesBytes)}），上限 2GB。',
           const SizedBox.shrink(),
         ),
         if (storageWarning != null) _noteText(storageWarning),
@@ -1398,8 +1234,8 @@ class _SettingsPageState extends State<SettingsPage> {
           orphanScan == null
               ? '正在扫描无用文件…'
               : orphanScan.files.isEmpty
-                  ? '没有无用文件（所有图片都有题目在用）。'
-                  : '发现 ${orphanScan.count} 个无用文件，共约 ${ImportService.formatBytes(orphanScan.totalBytes)}：删题、删学科后留下的旧图片。清理只删这些没人用的文件，题目图片不会动。',
+              ? '没有无用文件（所有图片都有题目在用）。'
+              : '发现 ${orphanScan.count} 个无用文件，共约 ${ImportService.formatBytes(orphanScan.totalBytes)}：删题、删学科后留下的旧图片。清理只删这些没人用的文件，题目图片不会动。',
           QmButton(
             label: '清理无用文件',
             size: QmButtonSize.small,
@@ -1413,28 +1249,30 @@ class _SettingsPageState extends State<SettingsPage> {
           preview == null
               ? '正在扫描缓存…'
               : _cacheCleanedMb != null
-                  ? '已清理完成，释放 ${_cacheCleanedMb!} MB，题目和数据未动。'
-                  : preview.totalCount == 0
-                      ? '现在没有可清理的缓存。'
-                      : '临时文件 ${preview.tempCount} 个、缩略图缓存 ${preview.thumbCount} 张，共约 ${preview.mb} MB；清理不影响题目和数据。',
+              ? '已清理完成，释放 ${_cacheCleanedMb!} MB，题目和数据未动。'
+              : preview.totalCount == 0
+              ? '现在没有可清理的缓存。'
+              : '临时文件 ${preview.tempCount} 个、缩略图缓存 ${preview.thumbCount} 张，共约 ${preview.mb} MB；清理不影响题目和数据。',
           QmButton(
             label: _cacheCleanedMb != null ? '重新扫描' : '清理缓存',
             size: QmButtonSize.small,
             onPressed: preview == null
                 ? null
                 : _cacheCleanedMb != null
-                    ? _scanCache
-                    : preview.totalCount == 0
-                        ? null
-                        : () => _clearCache(),
+                ? _scanCache
+                : preview.totalCount == 0
+                ? null
+                : () => _clearCache(),
           ),
         ),
         if (preview != null &&
             preview.totalCount > 0 &&
             _cacheCleanedMb == null)
-          _noteText(preview.failedCount > 0
-              ? '其中含导入失败的残留文件 ${preview.failedCount} 个，缩略图之后用到时会自动重新生成。'
-              : '缩略图之后用到时会自动重新生成。'),
+          _noteText(
+            preview.failedCount > 0
+                ? '其中含导入失败的残留文件 ${preview.failedCount} 个，缩略图之后用到时会自动重新生成。'
+                : '缩略图之后用到时会自动重新生成。',
+          ),
       ],
     );
   }
@@ -1449,16 +1287,23 @@ class _SettingsPageState extends State<SettingsPage> {
         children: [
           SizedBox(
             width: R10Tokens.kvLabelWidth * scale,
-            child: Text(label,
-                style: TextStyle(
-                    fontSize: R10Tokens.kvFontSize,
-                    fontWeight: FontWeight.w700,
-                    color: palette.ink)),
+            child: Text(
+              label,
+              style: TextStyle(
+                fontSize: R10Tokens.kvFontSize,
+                fontWeight: FontWeight.w700,
+                color: palette.ink,
+              ),
+            ),
           ),
           Expanded(
-            child: Text(value,
-                style: TextStyle(
-                    fontSize: R10Tokens.kvFontSize, color: palette.ink2)),
+            child: Text(
+              value,
+              style: TextStyle(
+                fontSize: R10Tokens.kvFontSize,
+                color: palette.ink2,
+              ),
+            ),
           ),
         ],
       ),
@@ -1480,15 +1325,13 @@ class _SettingsPageState extends State<SettingsPage> {
             onChanged: (v) => _apply(_s.copyWith(startupPage: v)),
           ),
         ),
-        _row(
-          '关于',
-          '版本与更新说明。',
-          const SizedBox.shrink(),
-        ),
+        _row('关于', '版本与更新说明。', const SizedBox.shrink()),
         _kvRow('版本', 'quiz-master2 v0.1.0'),
         _kvRow('作者', 'Meng（个人项目）'),
-        _kvRow('更新说明',
-            'v0.1.0：首个版本。错题收集 → 整理 → 按错因复习的主流程；学科管理定稿：学科 / 知识点树 / 标签 / 试卷可增删改，删学科删题，改名同步到题；文件夹只在错题本目录页管，删知识点 / 标签 / 试卷只让题上对应项变空（待补充）；主题默认跟随系统、可手动选亮 / 深，字体标准 / 大 / 特大三档；错题本目录页可增删改查文件夹，题可单个 / 批量移入其他文件夹。'),
+        _kvRow(
+          '更新说明',
+          'v0.1.0：首个版本。错题收集 → 整理 → 按错因复习的主流程；学科管理定稿：学科 / 知识点树 / 标签 / 试卷可增删改，删学科删题，改名同步到题；文件夹只在错题本目录页管，删知识点 / 标签 / 试卷只让题上对应项变空（待补充）；主题默认跟随系统、可手动选亮 / 深，字体标准 / 大 / 特大三档；错题本目录页可增删改查文件夹，题可单个 / 批量移入其他文件夹。',
+        ),
       ],
     );
   }

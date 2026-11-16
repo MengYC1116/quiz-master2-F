@@ -388,7 +388,6 @@ Future<void> pumpDetail(
                 orderIds: orderIds,
                 sourceLabel: sourceLabel,
                 imageFailed: imageFailed,
-                onChanged: () {},
               ),
             ),
           );
@@ -848,9 +847,23 @@ void main() {
       // 框把它重裁一次。先在 runAsync 内把自愈跑完（生产上用户打开
       // 页到点重框之间自愈早已完成），再以自愈后的切片为基线：
       // 本用例断言的是“事务失败不碰切片”，基线是自愈后的切片。
+      // D-38：固定等 6 秒在 1.5 核 VM 全量负载下会抖（原生图片解码
+      // 慢于等待），改成按条件轮询——等到切片宽度变成自愈后的 492
+      // 且自愈那次 repo.save 已落袋才继续，断言本身不变。
+      // 注意顺序：自愈先写文件、再调 save 改库里尺寸；只等文件会
+      // 破得太早，后面的 repo.saved.clear() 就清不到那次保存。
       await tester.runAsync(() async {
-        for (var i = 0; i < 30; i++) {
+        for (var i = 0; i < 75; i++) {
           await tester.pump();
+          try {
+            final healed =
+                pngSize(oldSliceFile.readAsBytesSync()).width == 492;
+            final saved =
+                repo.saved.any((q) => q.id == 'q1');
+            if (healed && saved) break;
+          } catch (_) {
+            // 文件正被重写、解不出来时继续等。
+          }
           await Future<void>.delayed(const Duration(milliseconds: 200));
         }
         await tester.pumpAndSettle();
@@ -864,10 +877,21 @@ void main() {
       await openSection(tester, '题目信息');
       await tapText(tester, '重新框选这道题');
       expect(find.textContaining('修框 ·'), findsOneWidget);
+      // D-38：确认后的失败路径含真实文件 IO + 临时文件异步清理，
+      // 固定等 4 秒在全量负载下会抖（失败提示已出、清理还没落定）。
+      // 改成按条件轮询——失败提示出现且 .tmp 临时文件清干净才继续，
+      // 后面的断言本身不变。
       await tester.runAsync(() async {
         await tester.tap(find.text('确认修框，去整理'));
-        for (var i = 0; i < 20; i++) {
+        for (var i = 0; i < 50; i++) {
           await tester.pump();
+          final failedShown =
+              find.text('重新框选失败：保存失败，请重试').evaluate().isNotEmpty;
+          final tmpGone = slicesDir
+              .listSync()
+              .where((f) => f.path.contains('.tmp-'))
+              .isEmpty;
+          if (failedShown && tmpGone) break;
           await Future<void>.delayed(const Duration(milliseconds: 200));
         }
         await tester.pumpAndSettle();

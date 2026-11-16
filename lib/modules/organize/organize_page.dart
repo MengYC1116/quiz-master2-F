@@ -4,24 +4,19 @@ import 'dart:io';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../data/database.dart';
 import '../../data/repository.dart';
 import '../../models/models.dart';
+import '../../state/organize_notifier.dart';
+import '../../state/repository_provider.dart';
 import '../../theme/design_tokens.dart';
 import '../../widgets/uikit.dart';
 import '../../widgets/widgets.dart';
 
-/// 学科首字母：数学 S / 英语 Y / 政治 Z。
-/// 父页与队列弹窗共用（SR-P2-35：原来两处各一份，一字相同）。
-String _subjectInitial(String subjectId) => switch (subjectId) {
-  'english' => 'Y',
-  'politics' => 'Z',
-  _ => 'S',
-};
-
 /// 日期文本：2026-11-14（月、日零补齐）。
-/// 父页与队列弹窗共用（SR-P2-35；队列弹窗旧实现不补零，统一用补零版）。
+/// 父页与队列弹窗共用（SR-P2-35：原来两处各一份，一字相同）。
 String _dateText(DateTime d) =>
     '${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
 
@@ -31,9 +26,19 @@ enum _RightSection { folder, source, classify, answer }
 
 /// 整理工作台 H 布局：左图右表，整页滚动，无固定高度容器。
 /// 队列藏在左上角「队列」按钮后，点开弹出 D 极简式队列层（Overlay 定位
-/// 在按钮正下方，见 [_openQueue]）。
+/// 在按钮正下方，见 [_OrganizeViewState._openQueue]）。
 /// 表单里不显示学科（导入时已定，不可改）；只有文件夹是必填。
 /// 左栏只显示整题图与修框切片（整题框切片），不再有区域高亮与分框切片。
+///
+/// ARCH-PLAN-A 第 3 阶段：业务数据 + 队列 / 表单状态收进
+/// [organizeProvider]（`lib/state/organize_notifier.dart`）；本页只留
+/// widget 与纯界面临时状态——文本控制器、手风琴开合、知识点章节展开、
+/// 内联新建展开态、队列弹出层。`repo` 构造参数保留——`app.dart`
+/// 仍按老样子传，本页在 build 里包一层 `ProviderScope` 把它以
+/// `repositoryProvider.overrideWithValue(widget.repo)` 交进依赖图，
+/// 页内不再直接调 `repo` 的方法；内层 Consumer 的 ref 才属于这层
+/// scope。切题 / 刷新时表单控制器按 `OrganizeState.formResetKey`
+/// 的变化、下一帧按当前题重建（见 `_syncFormFromState`）。
 class OrganizePage extends StatefulWidget {
   const OrganizePage({
     super.key,
@@ -59,38 +64,44 @@ class OrganizePage extends StatefulWidget {
 }
 
 class _OrganizePageState extends State<OrganizePage> {
-  List<Question> _queue = [];
-  int _index = 0;
-  String _sort = 'timeDesc';
-  bool _loading = true;
-  bool _hasAnyQuestion = false;
+  @override
+  Widget build(BuildContext context) {
+    // 构造器接进来的 repo（应用层传的单例库 / 测试传的 FakeRepo）只在
+    // 这里交进 Riverpod 依赖图：`organizeProvider` 的 Notifier 经
+    // `repositoryProvider` 拿库；本页不再直接调 `repo` 的方法。
+    // 内层 Consumer 的 ref 才属于这层 scope。
+    return ProviderScope(
+      overrides: [repositoryProvider.overrideWithValue(widget.repo)],
+      child: _OrganizeView(
+        onOpenDetail: widget.onOpenDetail,
+        onGoReview: widget.onGoReview,
+        onGoCollect: widget.onGoCollect,
+        imageFailed: widget.imageFailed,
+      ),
+    );
+  }
+}
 
-  // B11-10 今日小结：队列已空时空状态显示的两个数（_refresh 里只在
-  // 队列已空且库里有题时读；队列非空时不读，省一次全表 + 记录查询）。
-  int _organizedToday = 0;
-  int _toReviewCount = 0;
+/// 整理页内层：持有文本控制器与纯界面临时状态，业务数据走 Provider。
+class _OrganizeView extends ConsumerStatefulWidget {
+  const _OrganizeView({
+    required this.onOpenDetail,
+    required this.onGoReview,
+    required this.onGoCollect,
+    this.imageFailed = false,
+  });
 
-  List<Folder> _folders = [];
-  List<Exam> _exams = [];
-  List<KnowledgePoint> _kps = [];
-  List<String> _allTags = [];
-  List<String> _customTypesAll = [];
-  // 学科表：读库 subjects（P0B1 扫尾；以前直接 Subject.byId，
-  // 新学科显示成“数学”）。B8-1 扫尾：空表是删光学科后的合法状态，
-  // 不再回退预设三科；首帧与读库后都以真实列表为准，空就是空。
-  List<Subject> _subjects = const [];
-  // 库里找学科：新学科用库里的名与色；找不到才回退 Subject.byId
-  //（数学兜底，只发生在数据不一致时）。
-  Subject _subjectOf(String id) =>
-      _subjects.firstWhere((s) => s.id == id, orElse: () => Subject.byId(id));
+  final Future<void> Function(Question q, List<String> orderIds) onOpenDetail;
+  final VoidCallback onGoReview;
+  final VoidCallback onGoCollect;
+  final bool imageFailed;
 
-  // 表单状态（当前题）。
-  List<String> _folderIds = [];
-  String? _examId;
-  List<String> _kpIds = [];
-  List<String> _errorTypes = [];
-  List<String> _customTypes = [];
-  List<String> _tags = [];
+  @override
+  ConsumerState<_OrganizeView> createState() => _OrganizeViewState();
+}
+
+class _OrganizeViewState extends ConsumerState<_OrganizeView> {
+  // 表单文本框的控制器（页面本地 UI 状态，不进 Provider）。
   final _answerCtrl = TextEditingController();
   final _explanationCtrl = TextEditingController();
   final _notesCtrl = TextEditingController();
@@ -99,6 +110,10 @@ class _OrganizePageState extends State<OrganizePage> {
   final _newFolderCtrl = TextEditingController();
   final _newExamNameCtrl = TextEditingController();
   DateTime? _newExamDate;
+
+  /// 上次见过的 `formResetKey`：变了说明 Notifier 重建了表单
+  /// （切题 / 刷新 / 排序），控制器文本按当前题重建一次。
+  int _seenFormKey = -1;
 
   // 各段默认开合：文件夹展开，其余折起。
   // B8-6：右侧表单四区是手风琴——一次只展开一个（Meng 2026-11-15
@@ -145,16 +160,7 @@ class _OrganizePageState extends State<OrganizePage> {
   final _queueButtonKey = GlobalKey();
   OverlayEntry? _queueEntry;
 
-  Question? get _current =>
-      _queue.isEmpty ? null : _queue[_index.clamp(0, _queue.length - 1)];
-
-  List<String> get _orderIds => _queue.map((q) => q.id).toList();
-
-  @override
-  void initState() {
-    super.initState();
-    _refresh();
-  }
+  OrganizeNotifier get _notifier => ref.read(organizeProvider.notifier);
 
   @override
   void dispose() {
@@ -170,169 +176,57 @@ class _OrganizePageState extends State<OrganizePage> {
     super.dispose();
   }
 
-  void _sortQueue() {
-    switch (_sort) {
-      case 'timeAsc':
-        _queue.sort((a, b) => a.createdAt.compareTo(b.createdAt));
-      case 'subjectAsc':
-        _queue.sort((a, b) {
-          final c = _subjectInitial(a.subjectId)
-              .compareTo(_subjectInitial(b.subjectId));
-          return c != 0 ? c : b.createdAt.compareTo(a.createdAt);
-        });
-      case 'subjectDesc':
-        _queue.sort((a, b) {
-          final c = _subjectInitial(b.subjectId)
-              .compareTo(_subjectInitial(a.subjectId));
-          return c != 0 ? c : b.createdAt.compareTo(a.createdAt);
-        });
-      case 'timeDesc':
-      default:
-        _queue.sort((a, b) => b.createdAt.compareTo(a.createdAt));
-    }
-  }
-
-  Future<void> _refresh() async {
-    final all = await widget.repo.all();
-    final pending = all.where((q) => !q.isOrganized && !q.isArchived).toList();
-    final exams = await widget.repo.exams();
-    final kps = await widget.repo.knowledgePoints();
-    final tags = await widget.repo.tags();
-    final subjects = await widget.repo.subjects();
-    final customs = <String>{};
-    for (final q in all) {
-      customs.addAll(q.customErrorTypes);
-    }
-    // B11-10 今日小结：队列已空且库里有题时（空状态要显示小结行）才读
-    // 两个数；队列非空时空状态不显示，不读。N1 = 今天已整理的题数
-    // （settings 键 organizedToday，当天内整理确认的跃迁计数）；
-    // N2 = 待复习题数，与首页焦点卡 / 复习角标同一口径
-    // （repo.dueToday：手动加入、已整理、未治愈或到复查时间，数题）。
-    var organizedToday = 0;
-    var toReview = 0;
-    if (pending.isEmpty && all.isNotEmpty) {
-      organizedToday = await widget.repo.organizedTodayCount();
-      toReview = (await widget.repo.dueToday()).length;
-    }
-    if (!mounted) return;
-    setState(() {
-      _hasAnyQuestion = all.isNotEmpty;
-      _queue = pending;
-      _sortQueue();
-      if (_index >= _queue.length) {
-        _index = _queue.isEmpty ? 0 : _queue.length - 1;
-      }
-      _exams = exams;
-      _kps = kps;
-      _allTags = tags;
-      _subjects = subjects;
-      _customTypesAll = customs.toList();
-      _organizedToday = organizedToday;
-      _toReviewCount = toReview;
-      _loading = false;
-    });
-    await _loadFolders();
-    _loadForm();
-  }
-
-  Future<void> _loadFolders() async {
-    final current = _current;
-    if (current == null) return;
-    final folders = await widget.repo.folders(subjectId: current.subjectId);
-    if (!mounted) return;
-    setState(() => _folders = folders);
-  }
-
-  void _loadForm() {
-    final q = _current;
-    if (q == null) {
-      return;
-    }
-    setState(() {
-      _folderIds = List.of(q.folderIds);
-      _examId = q.examId;
-      _kpIds = List.of(q.knowledgePointIds);
-      // SR-P2-27：旧数据里与固定枚举同名的自定义错因，在读表单时就
-      // 合并进固定项（不丢错因、不在界面上重复出现）；下次保存即写回。
-      _errorTypes = {
-        ...q.errorTypes,
-        ...q.customErrorTypes.where((t) => ErrorTypes.fixed.contains(t)),
-      }.toList();
-      _customTypes = q.customErrorTypes
-          .where((t) => !ErrorTypes.fixed.contains(t))
-          .toList();
-      _tags = List.of(q.tags);
-      _answerCtrl.text = q.answer ?? '';
-      _explanationCtrl.text = q.explanation ?? '';
-      _notesCtrl.text = q.notes ?? '';
-      _addingFolder = false;
-      _addingTag = false;
-      _addingExam = false;
-      _newFolderCtrl.clear();
-      _newTagCtrl.clear();
-      _newExamNameCtrl.clear();
-      _newExamDate = null;
-    });
-  }
-
-  Question _formQuestion(Question q, {bool organized = false}) {
-    final answer = _answerCtrl.text.trim();
-    final explanation = _explanationCtrl.text.trim();
-    final notes = _notesCtrl.text.trim();
-    // SR-P2-27：保存兜底——表单里万一还有与固定枚举同名的自定义项
-    //（如别处入口带进来的旧数据），合并进固定项再写库，不丢、不重复。
-    final errorTypes = {
-      ..._errorTypes,
-      ..._customTypes.where((t) => ErrorTypes.fixed.contains(t)),
-    }.toList();
-    final customTypes = _customTypes
-        .where((t) => !ErrorTypes.fixed.contains(t))
-        .toList();
-    return q.copyWith(
-      folderIds: _folderIds,
-      examId: _examId,
-      knowledgePointIds: _kpIds,
-      errorTypes: errorTypes,
-      customErrorTypes: customTypes,
-      tags: _tags,
-      answer: answer.isEmpty ? null : answer,
-      explanation: explanation.isEmpty ? null : explanation,
-      notes: notes.isEmpty ? null : notes,
-      // 选了「未归属试卷」且原题有试卷时才真正清空（基线 copyWith
-      // 里 examId 传 null 表示“保持原值”，不处理就清不掉）。
-      clearExamId: _examId == null && q.examId != null,
-      clearAnswer: answer.isEmpty,
-      clearExplanation: explanation.isEmpty,
-      clearNotes: notes.isEmpty,
-      isOrganized: organized ? true : q.isOrganized,
-    );
-  }
-
-  /// 切题自动保存。
-  Future<void> _saveCurrent() async {
-    final q = _current;
+  /// Notifier 重建表单后（`formResetKey` 变了），把控制器文本按
+  /// 当前题重建、内联新建框收起并清空——原 `_loadForm` 里设控制器
+  /// 文本 + 收框的部分。注意：自定义错因输入框不在其中
+  /// （原 `_loadForm` 也不清它）。
+  void _syncFormFromState(OrganizeState st) {
+    final q = st.current;
     if (q == null) return;
-    final updated = _formQuestion(q);
-    await widget.repo.save(updated);
-    await widget.repo.syncCauseRecords(updated);
-    // SR2-6 根治：保存成功后把新行写回内存 `_queue`。只写库不同步
-    // 内存时，`_loadForm` 切题往返后仍读旧对象，再保存会把已落盘的
-    // 改动（文件夹、答案等）整行覆盖回旧值。只在保存成功后写回；
-    // 失败时 `_queue` 保持旧行，调用方拦下切题、提示重试。
-    // 这里不用 setState：调用方随后都会 setState / `_loadForm` /
-    // `_refresh`，且失败路径（未挂载）下直接改列表最安全。
-    final i = _queue.indexWhere((x) => x.id == q.id);
-    if (i >= 0) _queue[i] = updated;
+    if (_answerCtrl.text != (q.answer ?? '')) {
+      _answerCtrl.text = q.answer ?? '';
+    }
+    if (_explanationCtrl.text != (q.explanation ?? '')) {
+      _explanationCtrl.text = q.explanation ?? '';
+    }
+    if (_notesCtrl.text != (q.notes ?? '')) {
+      _notesCtrl.text = q.notes ?? '';
+    }
+    if (_addingFolder ||
+        _addingTag ||
+        _addingExam ||
+        _newExamDate != null ||
+        _newFolderCtrl.text.isNotEmpty ||
+        _newTagCtrl.text.isNotEmpty ||
+        _newExamNameCtrl.text.isNotEmpty) {
+      setState(() {
+        _addingFolder = false;
+        _addingTag = false;
+        _addingExam = false;
+        _newFolderCtrl.clear();
+        _newTagCtrl.clear();
+        _newExamNameCtrl.clear();
+        _newExamDate = null;
+      });
+    }
   }
 
   /// 切题 / 开队列 / 跳转前的自动保存（SR2-26）：保存失败不抛错，
   /// 弹提示并返回 false，由调用方拦下本次动作——表单改动仍在内存
-  /// 里（控制器与 `_queue` 都没动），用户可重试保存。直接放行会
-  /// 让 `_loadForm` / `_refresh` 用旧行重建表单，等于静默丢掉未
-  /// 保存的改动，所以这里选择拦下而不是放行。
+  /// 里（控制器与队列行都没动），用户可重试保存。直接放行会
+  /// 让重读用旧行重建表单，等于静默丢掉未保存的改动，所以这里
+  /// 选择拦下而不是放行。
   Future<bool> _trySaveCurrent() async {
     try {
-      await _saveCurrent();
+      final ok = await _notifier.saveCurrent(
+        answer: _answerCtrl.text,
+        explanation: _explanationCtrl.text,
+        notes: _notesCtrl.text,
+      );
+      if (!ok) {
+        if (mounted) _snack('保存失败，请重试');
+        return false;
+      }
       return true;
     } catch (_) {
       if (mounted) _snack('保存失败，请重试');
@@ -347,41 +241,38 @@ class _OrganizePageState extends State<OrganizePage> {
   }
 
   Future<void> _goTo(int next) async {
-    if (next < 0 || next >= _queue.length || next == _index) return;
+    final st = ref.read(organizeProvider);
+    if (next < 0 || next >= st.queue.length || next == st.index) return;
     if (!await _trySaveCurrent()) return;
     if (!mounted) return;
-    setState(() => _index = next);
-    await _loadFolders();
-    _loadForm();
+    await _notifier.goTo(next);
   }
 
   Future<void> _confirmCurrent() async {
-    final q = _current;
+    final st = ref.read(organizeProvider);
+    final q = st.current;
     if (q == null) return;
-    if (_folderIds.isEmpty) {
+    if (st.folderIds.isEmpty) {
       _snack('先选文件夹');
       // B8-6：手风琴下只开文件夹区，其余收起。
       _openRightSectionOnly(_RightSection.folder);
       return;
     }
-    final updated = _formQuestion(q, organized: true);
-    await widget.repo.save(updated);
-    await widget.repo.syncCauseRecords(updated);
-    await widget.repo.saveRecentTask(
-      kind: '整理',
-      subjectId: q.subjectId,
-      title: q.title,
+    await _notifier.confirmCurrent(
+      answer: _answerCtrl.text,
+      explanation: _explanationCtrl.text,
+      notes: _notesCtrl.text,
     );
-    await _refresh();
   }
 
   Future<void> _openDetail() async {
-    final q = _current;
+    final st = ref.read(organizeProvider);
+    final q = st.current;
     if (q == null) return;
     // SR2-26 同款：保存失败时拦下、不进详情页，提示重试。
     if (!await _trySaveCurrent()) return;
-    await widget.onOpenDetail(q, _orderIds);
-    await _refresh();
+    await widget.onOpenDetail(q, ref.read(organizeProvider).orderIds);
+    await _notifier.refresh();
   }
 
   // ---------------------------------------------------------- 队列弹出层 --
@@ -393,18 +284,20 @@ class _OrganizePageState extends State<OrganizePage> {
   /// [_applyQueueSort] 同款），再给弹出层拍快照——批量操作拿快照里
   /// 的旧 `Question` 整行覆盖，不先保存就会把表单里未保存的改动
   /// （文件夹、标签、答案、错因等）静默抹掉；随后 `_closeQueue` →
-  /// `_refresh` → `_loadForm` 从库重读，改动就再也回不来了。
+  /// 重读 → 表单重建从库重读，改动就再也回不来了。
   Future<void> _openQueue() async {
-    if (_queue.isEmpty || _queueEntry != null) return;
+    final st = ref.read(organizeProvider);
+    if (st.queue.isEmpty || _queueEntry != null) return;
     // SR2-26：保存失败时拦下、不开队列（提示见 `_trySaveCurrent`），
     // 表单改动仍在内存里，用户可重试保存。
     if (!await _trySaveCurrent()) return;
     if (!mounted) return;
-    // SR2-6：`_saveCurrent` 成功后已把表单行写回 `_queue`，这里
-    // 直接拍快照即可，不再像 B5 那样单点打补丁。
+    // SR2-6：保存成功后已把表单行写回队列，这里直接拍快照即可，
+    // 不再像 B5 那样单点打补丁。
     // 保存是异步的：等的过程中用户可能又点了一次「队列」，上面的
     // 首道 guard 拦不住第二次调用，这里再拦一次，避免插两个层。
-    if (_queue.isEmpty || _queueEntry != null) return;
+    final st2 = ref.read(organizeProvider);
+    if (st2.queue.isEmpty || _queueEntry != null) return;
     final box =
         _queueButtonKey.currentContext?.findRenderObject() as RenderBox?;
     if (box == null) return;
@@ -422,10 +315,17 @@ class _OrganizePageState extends State<OrganizePage> {
     late final OverlayEntry entry;
     entry = OverlayEntry(
       builder: (overlayContext) => _QueuePopup(
-        repo: widget.repo,
-        questions: List.of(_queue),
-        currentId: () => _current?.id,
-        sortKey: _sort,
+        // 弹出层是 OverlayEntry，它的 build 上下文不在页面嵌套
+        // ProviderScope 之内，拿不到 ref：Notifier 实例与打开时的
+        // 元数据快照经构造器传进去，弹出层只留纯界面状态在本地。
+        notifier: _notifier,
+        questions: List.of(st2.queue),
+        currentId: () => ref.read(organizeProvider).current?.id,
+        sortKey: st2.sort,
+        folders: List.of(st2.folders),
+        exams: List.of(st2.exams),
+        subjects: List.of(st2.subjects),
+        allTags: List.of(st2.allTags),
         left: left,
         top: top,
         width: width,
@@ -447,7 +347,7 @@ class _OrganizePageState extends State<OrganizePage> {
     if (entry == null) return;
     _queueEntry = null;
     entry.remove();
-    await _refresh();
+    await _notifier.refresh();
   }
 
   /// 队列里点中一道题：先保存当前题，再切过去（弹出层已关，不刷新）。
@@ -459,14 +359,7 @@ class _OrganizePageState extends State<OrganizePage> {
     // SR2-26：保存失败时拦下跳转、留在当前题（弹出层已关），提示重试。
     if (!await _trySaveCurrent()) return;
     if (!mounted) return;
-    final idx = _queue.indexWhere((q) => q.id == id);
-    if (idx < 0) {
-      await _refresh();
-      return;
-    }
-    setState(() => _index = idx);
-    await _loadFolders();
-    _loadForm();
+    await _notifier.jumpTo(id);
   }
 
   /// 队列里改排序：先保存当前题，按新排序重排并回到第 1 道（与基线
@@ -475,12 +368,7 @@ class _OrganizePageState extends State<OrganizePage> {
     // SR2-26：保存失败时拦下、不改排序（弹出层仍开着），提示重试。
     if (!await _trySaveCurrent()) return;
     if (!mounted) return;
-    setState(() {
-      _sort = sort;
-      _sortQueue();
-      _index = 0;
-    });
-    _loadForm();
+    _notifier.applyQueueSort(sort);
     _queueEntry?.markNeedsBuild();
   }
 
@@ -491,48 +379,20 @@ class _OrganizePageState extends State<OrganizePage> {
 
   // ---------------------------------------------------------- 内联新建 --
 
-  String _folderDisplayName(Folder folder) {
-    if (folder.parentId == null) return folder.name;
-    final parent = _folders.firstWhere(
-      (f) => f.id == folder.parentId,
-      orElse: () => folder,
-    );
-    return parent.id == folder.id
-        ? folder.name
-        : '${parent.name} / ${folder.name}';
-  }
-
   Future<void> _submitNewFolder() async {
-    final q = _current;
+    final st = ref.read(organizeProvider);
+    final q = st.current;
     if (q == null) return;
     final name = _newFolderCtrl.text.trim();
     if (name.isEmpty) return;
-    // SR-P2-36：整科同名预检（新建不传 excludeId）——旧代码只查顶层
-    // 同名，跨层同名会一路写到 upsertFolder 才被 StateError 拦下。
-    // 预检命中即提示“已经有了”并中止；仍留 StateError 捕获作兜底
-    //（竞态：预检与写入之间别人建了同名）。
-    if (await widget.repo.folderNameExistsInSubject(q.subjectId, name)) {
+    final folder = await _notifier.submitNewFolder(name, q.subjectId);
+    if (!mounted) return;
+    // 整科同名：Notifier 返回 null，提示“已经有了”。
+    if (folder == null) {
       _snack('已经有了');
       return;
     }
-    final folder = Folder(
-      // SR-P2-28：id 用 newEntityId（毫秒 + 随机后缀）；纯毫秒在同一
-      // 毫秒内连点两次会撞主键、后一次覆盖前一次。
-      id: newEntityId('folder'),
-      name: name,
-      subjectId: q.subjectId,
-      sortOrder: _folders.length,
-    );
-    try {
-      await widget.repo.saveFolder(folder);
-    } on StateError {
-      if (mounted) _snack('已经有了');
-      return;
-    }
-    await _loadFolders();
-    if (!mounted) return;
     setState(() {
-      if (!_folderIds.contains(folder.id)) _folderIds.add(folder.id);
       _addingFolder = false;
       _newFolderCtrl.clear();
     });
@@ -541,17 +401,9 @@ class _OrganizePageState extends State<OrganizePage> {
   Future<void> _submitNewExam() async {
     final name = _newExamNameCtrl.text.trim();
     if (name.isEmpty) return;
-    final exam = Exam(
-      // SR-P2-28：id 用 newEntityId（毫秒 + 随机后缀），防同毫秒连点撞主键。
-      id: newEntityId('exam'),
-      name: name,
-      date: _newExamDate,
-    );
-    await widget.repo.addExam(exam);
+    await _notifier.submitNewExam(name, _newExamDate);
     if (!mounted) return;
     setState(() {
-      _exams = [..._exams, exam];
-      _examId = exam.id;
       _addingExam = false;
       _newExamNameCtrl.clear();
       _newExamDate = null;
@@ -566,11 +418,9 @@ class _OrganizePageState extends State<OrganizePage> {
       _snack('不能含逗号或竖线');
       return;
     }
-    await widget.repo.addTag(name);
+    await _notifier.submitNewTag(name);
     if (!mounted) return;
     setState(() {
-      if (!_tags.contains(name)) _tags.add(name);
-      if (!_allTags.contains(name)) _allTags.add(name);
       _addingTag = false;
       _newTagCtrl.clear();
     });
@@ -584,36 +434,34 @@ class _OrganizePageState extends State<OrganizePage> {
       _snack('不能含逗号或竖线');
       return;
     }
-    // SR-P2-27：与固定枚举同名时不进自定义集合，直接选中对应固定项
-    //（否则 allCauses 里出现两次“其他”，详情页副标题与复习记录的
-    // 错因行都会重复；详情页保存还会把它静默滤掉、错因直接消失）。
-    if (ErrorTypes.fixed.contains(name)) {
-      setState(() {
-        if (!_errorTypes.contains(name)) _errorTypes.add(name);
-        _customTypeCtrl.clear();
-      });
+    final wasFixed = _notifier.addCustomType(name);
+    if (wasFixed) {
       _snack('“$name”是固定错误类型，已帮你选中');
-      return;
     }
-    setState(() {
-      if (!_customTypes.contains(name)) _customTypes.add(name);
-      if (!_customTypesAll.contains(name)) _customTypesAll.add(name);
-      _customTypeCtrl.clear();
-    });
+    _customTypeCtrl.clear();
   }
 
   // ---------------------------------------------------------- 页面结构 --
 
   @override
   Widget build(BuildContext context) {
-    final q = _current;
+    final st = ref.watch(organizeProvider);
+    if (st.formResetKey != _seenFormKey) {
+      _seenFormKey = st.formResetKey;
+      // build 里不直接改控制器（会触 TextField 的监听重建），
+      // 下一帧再按当前题重建；测试里 `pumpAndSettle` 后已是重建后的状态。
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _syncFormFromState(ref.read(organizeProvider));
+      });
+    }
+    final q = st.current;
     final scale = qmScaleOf(context);
     return Scaffold(
       backgroundColor: Colors.transparent,
-      body: _loading
+      body: st.loading
           ? const Center(child: CircularProgressIndicator())
           : q == null
-          ? _emptyPage()
+          ? _emptyPage(st)
           : SingleChildScrollView(
               padding: EdgeInsets.zero,
               child: Column(
@@ -621,7 +469,7 @@ class _OrganizePageState extends State<OrganizePage> {
                 children: [
                   _pageHeader(),
                   SizedBox(height: 20 * scale),
-                  _topbar(q),
+                  _topbar(q, st),
                   SizedBox(
                     height: DesignTokens.organizeTopbarMarginBottom * scale,
                   ),
@@ -629,19 +477,19 @@ class _OrganizePageState extends State<OrganizePage> {
                       ? Row(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Expanded(child: _leftPane(q)),
+                            Expanded(child: _leftPane(q, st)),
                             SizedBox(
                               width: DesignTokens.organizeGridGap * scale,
                             ),
-                            Expanded(child: _rightPane(q)),
+                            Expanded(child: _rightPane(q, st)),
                           ],
                         )
                       : Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            _leftPane(q),
+                            _leftPane(q, st),
                             SizedBox(height: 24 * scale),
-                            _rightPane(q),
+                            _rightPane(q, st),
                           ],
                         ),
                 ],
@@ -686,9 +534,9 @@ class _OrganizePageState extends State<OrganizePage> {
   /// 但都已整理完）。今日小结行只在后一种显示（前一种是首次使用的
   /// 引导态，没有“今天整理了”的语境）；只这一行，不加本周累计与
   /// 连续天数（B11-10 最小版）。
-  Widget _emptyPage() {
+  Widget _emptyPage(OrganizeState st) {
     final palette = DesignTokens.of(Theme.of(context).brightness);
-    if (_hasAnyQuestion) {
+    if (st.hasAnyQuestion) {
       return SingleChildScrollView(
         padding: EdgeInsets.zero,
         child: Column(
@@ -705,7 +553,7 @@ class _OrganizePageState extends State<OrganizePage> {
             const SizedBox(height: 12),
             Center(
               child: Text(
-                '今天整理了 $_organizedToday 道、待复习 $_toReviewCount 道',
+                '今天整理了 ${st.organizedToday} 道、待复习 ${st.toReviewCount} 道',
                 style: TextStyle(
                   fontSize: 13.5,
                   color: palette.muted,
@@ -737,10 +585,10 @@ class _OrganizePageState extends State<OrganizePage> {
 
   /// 顶栏：左上角「队列」按钮（带“还剩 N 道”计数 pill）+
   /// “当前整理：学科 · 题名”。
-  Widget _topbar(Question q) {
+  Widget _topbar(Question q, OrganizeState st) {
     final scale = qmScaleOf(context);
     final palette = DesignTokens.of(Theme.of(context).brightness);
-    final subject = _subjectOf(q.subjectId);
+    final subject = st.subjectOf(q.subjectId);
     return Row(
       crossAxisAlignment: CrossAxisAlignment.center,
       children: [
@@ -787,7 +635,7 @@ class _OrganizePageState extends State<OrganizePage> {
                     borderRadius: BorderRadius.circular(999),
                   ),
                   child: Text(
-                    '还剩 ${_queue.length} 道',
+                    '还剩 ${st.queue.length} 道',
                     style: TextStyle(
                       fontSize: DesignTokens.organizeQueueCountFontSize,
                       fontWeight: FontWeight.w800,
@@ -840,12 +688,12 @@ class _OrganizePageState extends State<OrganizePage> {
 
   // ---------------------------------------------------------- 左：图 --
 
-  Widget _leftPane(Question q) {
+  Widget _leftPane(Question q, OrganizeState st) {
     final scale = qmScaleOf(context);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        _paperImage(q),
+        _paperImage(q, st),
         if (!widget.imageFailed) ...[
           SizedBox(height: DesignTokens.organizeSectionGap * scale),
           QmFoldSection(
@@ -853,7 +701,7 @@ class _OrganizePageState extends State<OrganizePage> {
             expanded: _slicesOpen,
             onToggle: () => setState(() => _slicesOpen = !_slicesOpen),
             variant: QmFoldVariant.form,
-            child: _slicesSection(q),
+            child: _slicesSection(q, st),
           ),
         ],
       ],
@@ -861,11 +709,11 @@ class _OrganizePageState extends State<OrganizePage> {
   }
 
   /// 整题纸面图（可点放大）。
-  Widget _paperImage(Question q) {
+  Widget _paperImage(Question q, OrganizeState st) {
     final scale = qmScaleOf(context);
     final slice = QuestionSlice(
       question: q,
-      subject: _subjectOf(q.subjectId),
+      subject: st.subjectOf(q.subjectId),
       maxHeight: DesignTokens.organizePaperMaxHeight * scale,
       failed: widget.imageFailed,
       onTap: widget.imageFailed
@@ -886,7 +734,7 @@ class _OrganizePageState extends State<OrganizePage> {
   /// 修框切片：只有「整题框切片」一张卡，只存图不做 OCR。
   /// 整题框有真实切片时显示真图（QuestionSlice 已接 slice_path），
   /// 否则显示题干文字。
-  Widget _slicesSection(Question q) {
+  Widget _slicesSection(Question q, OrganizeState st) {
     // B2 Bug 3：整题框有真实切片时，图按固有尺寸窄于卡宽，卡框伸到
     // 图外面（与 Bug 2 同因）。卡贴图收窄：Align 让卡收成图宽，
     // 卡头 Row 也随之收窄（hugContent，见 _sliceCard）；文字卡
@@ -904,7 +752,7 @@ class _OrganizePageState extends State<OrganizePage> {
               maxHeight: 220,
               // SR-P2-29：补传学科对象；不传时缺图占位回退 Subject.byId，
               // 新学科会显示成数学。
-              subject: _subjectOf(q.subjectId),
+              subject: st.subjectOf(q.subjectId),
             )
           : _sliceTextBody(q),
       hugContent: hasRealSlice,
@@ -994,12 +842,12 @@ class _OrganizePageState extends State<OrganizePage> {
 
   // ---------------------------------------------------------- 右：表单 --
 
-  Widget _rightPane(Question q) {
+  Widget _rightPane(Question q, OrganizeState st) {
     final scale = qmScaleOf(context);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        _missingLine(),
+        _missingLine(st),
         SizedBox(height: DesignTokens.organizeSectionGap * scale),
         QmFoldSection(
           key: _folderSectionKey,
@@ -1007,7 +855,7 @@ class _OrganizePageState extends State<OrganizePage> {
           expanded: _folderOpen,
           onToggle: () => _toggleRightSection(_RightSection.folder),
           variant: QmFoldVariant.form,
-          child: _folderSection(q),
+          child: _folderSection(q, st),
         ),
         SizedBox(height: DesignTokens.organizeSectionGap * scale),
         QmFoldSection(
@@ -1016,7 +864,7 @@ class _OrganizePageState extends State<OrganizePage> {
           expanded: _sourceOpen,
           onToggle: () => _toggleRightSection(_RightSection.source),
           variant: QmFoldVariant.form,
-          child: _sourceSection(),
+          child: _sourceSection(st),
         ),
         SizedBox(height: DesignTokens.organizeSectionGap * scale),
         QmFoldSection(
@@ -1025,7 +873,7 @@ class _OrganizePageState extends State<OrganizePage> {
           expanded: _classifyOpen,
           onToggle: () => _toggleRightSection(_RightSection.classify),
           variant: QmFoldVariant.form,
-          child: _classifySection(q),
+          child: _classifySection(q, st),
         ),
         SizedBox(height: DesignTokens.organizeSectionGap * scale),
         QmFoldSection(
@@ -1036,7 +884,7 @@ class _OrganizePageState extends State<OrganizePage> {
           variant: QmFoldVariant.form,
           child: _answerSection(),
         ),
-        _workActs(),
+        _workActs(st),
         _confirmBar(),
       ],
     );
@@ -1044,10 +892,10 @@ class _OrganizePageState extends State<OrganizePage> {
 
   /// 待补充行：只数必填项（只有文件夹是必填，表单里无学科字段）。
   /// 点「文件夹（归类）」跳到文件夹那一栏。
-  Widget _missingLine() {
+  Widget _missingLine(OrganizeState st) {
     final scale = qmScaleOf(context);
     final palette = DesignTokens.of(Theme.of(context).brightness);
-    final missing = _folderIds.isEmpty;
+    final missing = st.folderIds.isEmpty;
     return Container(
       padding: EdgeInsets.symmetric(
         horizontal: 11 * scale,
@@ -1177,8 +1025,8 @@ class _OrganizePageState extends State<OrganizePage> {
     );
   }
 
-  Widget _folderSection(Question q) {
-    final subject = _subjectOf(q.subjectId);
+  Widget _folderSection(Question q, OrganizeState st) {
+    final subject = st.subjectOf(q.subjectId);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -1187,17 +1035,11 @@ class _OrganizePageState extends State<OrganizePage> {
           spacing: 6,
           runSpacing: 6,
           children: [
-            for (final folder in _folders)
+            for (final folder in st.folders)
               QmChip(
-                label: _folderDisplayName(folder),
-                selected: _folderIds.contains(folder.id),
-                onTap: () => setState(() {
-                  if (_folderIds.contains(folder.id)) {
-                    _folderIds.remove(folder.id);
-                  } else {
-                    _folderIds.add(folder.id);
-                  }
-                }),
+                label: st.folderDisplayName(folder),
+                selected: st.folderIds.contains(folder.id),
+                onTap: () => _notifier.toggleFolder(folder.id),
               ),
             QmButton(
               label: '添加新文件夹…',
@@ -1258,19 +1100,19 @@ class _OrganizePageState extends State<OrganizePage> {
     );
   }
 
-  Widget _sourceSection() {
+  Widget _sourceSection(OrganizeState st) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         _fieldLabel('试卷（来源）', hint: '可选 · 独立试卷实体'),
         DropdownButton<String>(
-          value: _examId,
+          value: st.examId,
           hint: const Text('选择试卷（可选）'),
           isExpanded: true,
           items: [
             const DropdownMenuItem(value: '__add__', child: Text('＋ 添加新试卷…')),
             const DropdownMenuItem(value: '__none__', child: Text('未归属试卷')),
-            ..._exams.map(
+            ...st.exams.map(
               (e) => DropdownMenuItem(
                 value: e.id,
                 child: Text(
@@ -1285,7 +1127,7 @@ class _OrganizePageState extends State<OrganizePage> {
               setState(() => _addingExam = true);
               return;
             }
-            setState(() => _examId = v == '__none__' ? null : v);
+            _notifier.setExamId(v == '__none__' ? null : v);
           },
         ),
         if (_addingExam)
@@ -1365,20 +1207,20 @@ class _OrganizePageState extends State<OrganizePage> {
     );
   }
 
-  Widget _classifySection(Question q) {
+  Widget _classifySection(Question q, OrganizeState st) {
     final palette = DesignTokens.of(Theme.of(context).brightness);
-    final subjectKps = _kps.where((k) => k.subjectId == q.subjectId).toList();
+    final subjectKps = st.kps.where((k) => k.subjectId == q.subjectId).toList();
     final chapters = <String>[];
     for (final k in subjectKps) {
       if (!chapters.contains(k.chapter)) chapters.add(k.chapter);
     }
-    final customOptions = {..._customTypesAll, ..._customTypes}
+    final customOptions = {...st.customTypesAll, ...st.customTypes}
         // SR-P2-27：旧数据里与固定枚举同名的自定义项不重复出芯片。
         .where((t) => !ErrorTypes.fixed.contains(t))
         .toList();
-    final selectedKpNames = _kpIds
+    final selectedKpNames = st.kpIds
         .map(
-          (id) => _kps.firstWhere(
+          (id) => st.kps.firstWhere(
             (k) => k.id == id,
             orElse: () => KnowledgePoint(
               id: id,
@@ -1394,7 +1236,7 @@ class _OrganizePageState extends State<OrganizePage> {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         _fieldLabel('知识点', hint: '可选 · 多选不限个数'),
-        _kpTree(q, subjectKps, chapters, selectedKpNames),
+        _kpTree(q, subjectKps, chapters, selectedKpNames, st),
         Padding(
           padding: const EdgeInsets.symmetric(vertical: 12),
           child: QmRowLine(kind: QmRowLineKind.line),
@@ -1409,7 +1251,7 @@ class _OrganizePageState extends State<OrganizePage> {
             ),
             const SizedBox(width: 4),
             Expanded(
-              child: _errorTypes.isEmpty && _customTypes.isEmpty
+              child: st.errorTypes.isEmpty && st.customTypes.isEmpty
                   ? Text(
                       '还没选错误类型',
                       style: TextStyle(
@@ -1422,17 +1264,15 @@ class _OrganizePageState extends State<OrganizePage> {
                       spacing: 6,
                       runSpacing: 6,
                       children: [
-                        for (final t in _errorTypes)
+                        for (final t in st.errorTypes)
                           QmChip(
                             label: t,
-                            onDelete: () =>
-                                setState(() => _errorTypes.remove(t)),
+                            onDelete: () => _notifier.removeErrorType(t),
                           ),
-                        for (final t in _customTypes)
+                        for (final t in st.customTypes)
                           QmChip(
                             label: '$t（自定义）',
-                            onDelete: () =>
-                                setState(() => _customTypes.remove(t)),
+                            onDelete: () => _notifier.removeCustomType(t),
                           ),
                       ],
                     ),
@@ -1447,27 +1287,15 @@ class _OrganizePageState extends State<OrganizePage> {
             ...ErrorTypes.fixed.map(
               (t) => QmChip(
                 label: t,
-                selected: _errorTypes.contains(t),
-                onTap: () => setState(() {
-                  if (_errorTypes.contains(t)) {
-                    _errorTypes.remove(t);
-                  } else {
-                    _errorTypes.add(t);
-                  }
-                }),
+                selected: st.errorTypes.contains(t),
+                onTap: () => _notifier.toggleErrorType(t),
               ),
             ),
             ...customOptions.map(
               (t) => QmChip(
                 label: '$t（自定义）',
-                selected: _customTypes.contains(t),
-                onTap: () => setState(() {
-                  if (_customTypes.contains(t)) {
-                    _customTypes.remove(t);
-                  } else {
-                    _customTypes.add(t);
-                  }
-                }),
+                selected: st.customTypes.contains(t),
+                onTap: () => _notifier.toggleCustomType(t),
               ),
             ),
           ],
@@ -1508,28 +1336,16 @@ class _OrganizePageState extends State<OrganizePage> {
             for (final t in QmChip.presetTags)
               QmChip(
                 label: t,
-                selected: _tags.contains(t),
-                onTap: () => setState(() {
-                  if (_tags.contains(t)) {
-                    _tags.remove(t);
-                  } else {
-                    _tags.add(t);
-                  }
-                }),
+                selected: st.tags.contains(t),
+                onTap: () => _notifier.toggleTag(t),
               ),
-            for (final t in _allTags.where(
+            for (final t in st.allTags.where(
               (t) => !QmChip.presetTags.contains(t),
             ))
               QmChip(
                 label: t,
-                selected: _tags.contains(t),
-                onTap: () => setState(() {
-                  if (_tags.contains(t)) {
-                    _tags.remove(t);
-                  } else {
-                    _tags.add(t);
-                  }
-                }),
+                selected: st.tags.contains(t),
+                onTap: () => _notifier.toggleTag(t),
               ),
             QmButton(
               label: '新建标签',
@@ -1598,10 +1414,11 @@ class _OrganizePageState extends State<OrganizePage> {
     List<KnowledgePoint> subjectKps,
     List<String> chapters,
     List<String> selectedKpNames,
+    OrganizeState st,
   ) {
     final scale = qmScaleOf(context);
     final palette = DesignTokens.of(Theme.of(context).brightness);
-    final subject = _subjectOf(q.subjectId);
+    final subject = st.subjectOf(q.subjectId);
     return Container(
       padding: EdgeInsets.symmetric(
         horizontal: 14 * scale,
@@ -1634,7 +1451,7 @@ class _OrganizePageState extends State<OrganizePage> {
               padding: EdgeInsets.only(top: 6 * scale),
               child: QmRowLine(kind: QmRowLineKind.line),
             ),
-            _kpChapterRow(q, subject, chapters[ci], subjectKps),
+            _kpChapterRow(q, subject, chapters[ci], subjectKps, st),
           ],
           Padding(
             padding: EdgeInsets.only(top: 8 * scale),
@@ -1657,11 +1474,12 @@ class _OrganizePageState extends State<OrganizePage> {
     Subject subject,
     String chapter,
     List<KnowledgePoint> subjectKps,
+    OrganizeState st,
   ) {
     final key = '${q.subjectId}|$chapter';
     final open = _kpOpen[key] ?? false;
     final points = subjectKps.where((k) => k.chapter == chapter).toList();
-    final inChapter = points.where((k) => _kpIds.contains(k.id)).length;
+    final inChapter = points.where((k) => st.kpIds.contains(k.id)).length;
     final palette = DesignTokens.of(Theme.of(context).brightness);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -1710,14 +1528,8 @@ class _OrganizePageState extends State<OrganizePage> {
                 for (final kp in points)
                   QmChip(
                     label: kp.name,
-                    selected: _kpIds.contains(kp.id),
-                    onTap: () => setState(() {
-                      if (_kpIds.contains(kp.id)) {
-                        _kpIds.remove(kp.id);
-                      } else {
-                        _kpIds.add(kp.id);
-                      }
-                    }),
+                    selected: st.kpIds.contains(kp.id),
+                    onTap: () => _notifier.toggleKp(kp.id),
                   ),
               ],
             ),
@@ -1772,7 +1584,7 @@ class _OrganizePageState extends State<OrganizePage> {
     );
   }
 
-  Widget _workActs() {
+  Widget _workActs(OrganizeState st) {
     final scale = qmScaleOf(context);
     final palette = DesignTokens.of(Theme.of(context).brightness);
     return Container(
@@ -1814,14 +1626,14 @@ class _OrganizePageState extends State<OrganizePage> {
               QmButton(
                 label: '上一道',
                 variant: QmButtonVariant.plain,
-                onPressed: _index > 0 ? () => _goTo(_index - 1) : null,
+                onPressed: st.index > 0 ? () => _goTo(st.index - 1) : null,
               ),
               SizedBox(width: 8 * scale),
               QmButton(
                 label: '下一道',
                 variant: QmButtonVariant.plain,
-                onPressed: _index < _queue.length - 1
-                    ? () => _goTo(_index + 1)
+                onPressed: st.index < st.queue.length - 1
+                    ? () => _goTo(st.index + 1)
                     : null,
               ),
               SizedBox(width: 8 * scale),
@@ -1879,12 +1691,23 @@ class _OrganizePageState extends State<OrganizePage> {
 /// 时间降序；底部浮动批量条只在有勾选时出现。
 /// 勾选状态只活在本层内：关闭（关闭按钮 / 遮罩 / Esc）即销毁，下次
 /// 打开为已选 0 道。本层不直接改主队列的排序与下标，改动经回调交父页。
+///
+/// ARCH-PLAN-A 第 3 阶段：本层不直接调 `repo`——它是 OverlayEntry，
+/// build 上下文不在页面嵌套 ProviderScope 之内，拿不到 ref；
+/// 批量操作（单删 / 批量打标签 / 批量加文件夹 / 新建文件夹 /
+/// 批量确认 / 批量删除）走构造器接进来的 [OrganizeNotifier]，
+/// 元数据（folders / exams / subjects / allTags）是打开时的快照；
+/// 勾选、搜索、排序、内联菜单、确认框是纯界面状态，仍留本层本地。
 class _QueuePopup extends StatefulWidget {
   const _QueuePopup({
-    required this.repo,
+    required this.notifier,
     required this.questions,
     required this.currentId,
     required this.sortKey,
+    required this.folders,
+    required this.exams,
+    required this.subjects,
+    required this.allTags,
     required this.left,
     required this.top,
     required this.width,
@@ -1895,12 +1718,16 @@ class _QueuePopup extends StatefulWidget {
     required this.onNotify,
   });
 
-  final QuestionRepository repo;
+  final OrganizeNotifier notifier;
   final List<Question> questions;
 
   /// 当前题 id（函数形式：父页切题后弹出层重绘时读最新值）。
   final String? Function() currentId;
   final String sortKey;
+  final List<Folder> folders;
+  final List<Exam> exams;
+  final List<Subject> subjects;
+  final List<String> allTags;
   final double left;
   final double top;
   final double width;
@@ -1936,10 +1763,9 @@ class _QueuePopupState extends State<_QueuePopup> {
   List<Question> _questions = [];
   Map<String, String> _examNames = {};
   List<Folder> _folders = [];
-  // 学科表：读库 subjects（P0B1 扫尾；队列搜索 / 详情行 / 删除确认
+  // 学科表：打开时的快照（P0B1 扫尾；队列搜索 / 详情行 / 删除确认
   // 以前直接 Subject.byId，新学科显示成“数学”）。B8-1 扫尾：空表是
-  // 删光学科后的合法状态，不再回退预设三科；首帧与读库后都以真实
-  // 列表为准，空就是空。
+  // 删光学科后的合法状态，不再回退预设三科。
   List<Subject> _subjects = const [];
   // 库里找学科：新学科用库里的名与色；找不到才回退 Subject.byId
   //（数学兜底，只发生在数据不一致时）。
@@ -1948,8 +1774,7 @@ class _QueuePopupState extends State<_QueuePopup> {
   bool _addingBatchFolder = false;
   String? _batchFolderId;
   // B9-2：批量打标签的标签来源（与整理表单一致：预设 + 自定义）。
-  // 弹窗自己的 `_loadMeta` 以前只读 exams/folders/subjects，不读标签，
-  // 这里补上；下拉选项见 `_tagOptions`。
+  // 弹窗自己的元数据以前在 `_loadMeta` 里读库，现由打开时的快照传入。
   List<String> _allTags = [];
   // B9-2：批量打标签当前选中的标签。默认 '需重做'，与旧固定按钮
   // 一次点按的行为一致（不清空选中，只提示，见 `_batchTag`）。
@@ -1969,7 +1794,13 @@ class _QueuePopupState extends State<_QueuePopup> {
     super.initState();
     _questions = List.of(widget.questions);
     _sort = widget.sortKey;
-    _loadMeta();
+    // 元数据是打开时的快照（不再像以前那样在 initState 里读库）：
+    // 试卷名表、当前学科文件夹、学科表、标签表。
+    _examNames = {for (final e in widget.exams) e.id: e.name};
+    _folders = List.of(widget.folders);
+    _subjects = widget.subjects;
+    _allTags = widget.allTags;
+    _batchFolderId ??= _folders.isEmpty ? null : _folders.first.id;
     // autofocus 在 OverlayEntry 里不可靠（首帧后焦点仍在路由级
     // FocusScope），显式要一次焦点，保证 Esc 能关弹窗。
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -1994,22 +1825,6 @@ class _QueuePopupState extends State<_QueuePopup> {
       orElse: () => _questions.first,
     );
     return current.subjectId;
-  }
-
-  Future<void> _loadMeta() async {
-    final exams = await widget.repo.exams();
-    final folders = await widget.repo.folders(subjectId: _currentSubjectId);
-    final subjects = await widget.repo.subjects();
-    // B9-2：补读标签（批量打标签下拉用；与整理表单同源 `repo.tags()`）。
-    final tags = await widget.repo.tags();
-    if (!mounted) return;
-    setState(() {
-      _examNames = {for (final e in exams) e.id: e.name};
-      _folders = folders;
-      _subjects = subjects;
-      _allTags = tags;
-      _batchFolderId ??= folders.isEmpty ? null : folders.first.id;
-    });
   }
 
   void _scrollToCurrent() {
@@ -2041,17 +1856,18 @@ class _QueuePopupState extends State<_QueuePopup> {
         list.sort((a, b) => a.createdAt.compareTo(b.createdAt));
       case 'subjectAsc':
         list.sort((a, b) {
-          // SR-P2-35：用文件顶部的共用 _subjectInitial，不再各一份。
-          final c = _subjectInitial(
+          // SR-P2-35：用 `organize_notifier.dart` 的共用 subjectInitial，
+          // 不再各一份。
+          final c = subjectInitial(
             a.subjectId,
-          ).compareTo(_subjectInitial(b.subjectId));
+          ).compareTo(subjectInitial(b.subjectId));
           return c != 0 ? c : b.createdAt.compareTo(a.createdAt);
         });
       case 'subjectDesc':
         list.sort((a, b) {
-          final c = _subjectInitial(
+          final c = subjectInitial(
             b.subjectId,
-          ).compareTo(_subjectInitial(a.subjectId));
+          ).compareTo(subjectInitial(a.subjectId));
           return c != 0 ? c : b.createdAt.compareTo(a.createdAt);
         });
       case 'timeDesc':
@@ -2351,7 +2167,7 @@ class _QueuePopupState extends State<_QueuePopup> {
   // B3：单删 / 批量删除确认都改模态弹窗（见 [_askDeleteOne] /
   // [_askBatchDelete]），不再用行内确认条。
   Future<void> _deleteOne(Question q) async {
-    await widget.repo.delete(q);
+    await widget.notifier.deleteQuestion(q);
     if (!mounted) return;
     setState(() {
       _questions.removeWhere((x) => x.id == q.id);
@@ -2423,32 +2239,23 @@ class _QueuePopupState extends State<_QueuePopup> {
     final selected = _selectedQuestions;
     // SR3-15：循环中途某题写库失败时，已保存的题也必须同步回弹窗内
     // 的 `_questions`，否则后续批量加文件夹 / 批量确认拿旧行整行
-    // 覆盖，会把刚落盘的标签抹掉。已保存的 id 记下来，同步放在
-    // finally 里保证执行；失败不抛到按钮回调，给“部分保存失败”提示。
-    final savedIds = <String>{};
-    try {
-      for (final q in selected) {
-        final tags = {...q.tags, tag}.toList();
-        await widget.repo.save(q.copyWith(tags: tags));
-        savedIds.add(q.id);
-      }
-    } catch (_) {
-      // 落到 finally 同步已保存子集，再由下面的分支报部分失败。
-    } finally {
-      // SR2-5：保存后把标签同步回弹窗内的 `_questions`（与
-      // `_batchAddFolder` 同款 `setState` map），否则同一次弹窗里
-      // 再做批量加文件夹 / 批量确认时，拿的仍是打标签前的旧
-      // `Question` 整行覆盖，标签被抹掉。
-      if (mounted && savedIds.isNotEmpty) {
-        setState(() {
-          _questions = _questions.map((q) {
-            if (savedIds.contains(q.id) && !q.tags.contains(tag)) {
-              return q.copyWith(tags: [...q.tags, tag]);
-            }
-            return q;
-          }).toList();
-        });
-      }
+    // 覆盖，会把刚落盘的标签抹掉。已保存的 id 由 Notifier 返回，
+    // 同步放在这里保证执行；失败不抛到按钮回调，给“部分保存失败”提示。
+    final result = await widget.notifier.batchTagQuestions(selected, tag);
+    final savedIds = result.savedIds;
+    // SR2-5：保存后把标签同步回弹窗内的 `_questions`（与
+    // `_batchAddFolder` 同款 `setState` map），否则同一次弹窗里
+    // 再做批量加文件夹 / 批量确认时，拿的仍是打标签前的旧
+    // `Question` 整行覆盖，标签被抹掉。
+    if (mounted && savedIds.isNotEmpty) {
+      setState(() {
+        _questions = _questions.map((q) {
+          if (savedIds.contains(q.id) && !q.tags.contains(tag)) {
+            return q.copyWith(tags: [...q.tags, tag]);
+          }
+          return q;
+        }).toList();
+      });
     }
     if (savedIds.length < selected.length) {
       widget.onNotify(
@@ -2466,20 +2273,8 @@ class _QueuePopupState extends State<_QueuePopup> {
       return;
     }
     final folder = _folders.firstWhere((f) => f.id == folderId);
-    var applied = 0;
-    var skipped = 0;
-    for (final q in _selectedQuestions) {
-      if (q.subjectId != folder.subjectId) {
-        skipped++;
-        continue;
-      }
-      if (!q.folderIds.contains(folderId)) {
-        await widget.repo.save(
-          q.copyWith(folderIds: [...q.folderIds, folderId]),
-        );
-      }
-      applied++;
-    }
+    final result =
+        await widget.notifier.batchAddFolders(_selectedQuestions, folder);
     if (!mounted) return;
     setState(() {
       _questions = _questions.map((q) {
@@ -2492,31 +2287,23 @@ class _QueuePopupState extends State<_QueuePopup> {
       }).toList();
     });
     widget.onNotify(
-      skipped > 0 ? '已加入 $applied 道，$skipped 道不是本科，跳过' : '已加入文件夹',
+      result.skipped > 0
+          ? '已加入 ${result.applied} 道，${result.skipped} 道不是本科，跳过'
+          : '已加入文件夹',
     );
   }
 
   Future<void> _submitBatchFolder() async {
     final name = _newBatchFolderCtrl.text.trim();
     if (name.isEmpty) return;
-    // SR-P2-36：整科同名预检（新建不传 excludeId；见 _submitNewFolder
-    // 注释——旧代码只查顶层同名，跨层同名靠 upsertFolder 的 StateError
-    // 兜底，这里同样预检 + 捕获）。
-    if (await widget.repo
-        .folderNameExistsInSubject(_currentSubjectId, name)) {
-      widget.onNotify('已经有了');
-      return;
-    }
-    final folder = Folder(
-      // SR-P2-28：id 用 newEntityId（毫秒 + 随机后缀），防同毫秒连点撞主键。
-      id: newEntityId('folder'),
-      name: name,
-      subjectId: _currentSubjectId,
-      sortOrder: _folders.length,
+    // SR-P2-36：整科同名预检 + StateError 兜底在 Notifier 里；
+    // 返回 null 即“已经有了”。
+    final folder = await widget.notifier.submitBatchFolder(
+      name,
+      _currentSubjectId,
+      _folders.length,
     );
-    try {
-      await widget.repo.saveFolder(folder);
-    } on StateError {
+    if (folder == null) {
       widget.onNotify('已经有了');
       return;
     }
@@ -2532,24 +2319,17 @@ class _QueuePopupState extends State<_QueuePopup> {
   /// 批量确认：只确认已选文件夹的题，缺文件夹的题拦下提示；
   /// 确认后关闭弹出层，父页刷新并按当前排序进下一道。
   Future<void> _batchConfirm() async {
-    final blocked = _selectedQuestions
-        .where((q) => q.folderIds.isEmpty)
-        .toList();
-    final ok = _selectedQuestions.where((q) => q.folderIds.isNotEmpty).toList();
-    for (final q in ok) {
-      await widget.repo.save(q.copyWith(isOrganized: true));
-    }
-    if (blocked.isNotEmpty) {
-      widget.onNotify('有 ${blocked.length} 道题没选文件夹，先补上');
+    final blocked =
+        await widget.notifier.batchConfirmQuestions(_selectedQuestions);
+    if (blocked > 0) {
+      widget.onNotify('有 $blocked 道题没选文件夹，先补上');
     }
     widget.onClose();
   }
 
   Future<void> _batchDelete() async {
     final selected = _selectedQuestions;
-    for (final q in selected) {
-      await widget.repo.delete(q);
-    }
+    await widget.notifier.batchDeleteQuestions(selected);
     if (!mounted) return;
     setState(() {
       _questions.removeWhere((q) => _selected.contains(q.id));
@@ -2842,7 +2622,6 @@ class _QueuePopupState extends State<_QueuePopup> {
     );
   }
 
-
   Widget _queueRow(Question q, String? currentId) {
     final scale = qmScaleOf(context);
     final palette = DesignTokens.of(Theme.of(context).brightness);
@@ -3037,7 +2816,6 @@ class _QueuePopupState extends State<_QueuePopup> {
       ),
     );
   }
-
 
   Widget _batchAddFolderForm() {
     final scale = qmScaleOf(context);

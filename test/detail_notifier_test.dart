@@ -1,0 +1,808 @@
+// ARCH-PLAN-A 第 3 阶段：DetailNotifier 单测（不启动 widget）。
+// 注入方式与 review_notifier_test.dart / organize_notifier_test.dart
+// 一致：ProviderContainer.test + repositoryProvider.overrideWithValue。
+// autoDispose 下单测要像页面 ref.watch 那样持一个监听保活（D-36：
+// 只 read 不监听时 build 里的 microtask 首查还没写回就被销毁），
+// 见 `_container`。首查直接调 `await notifier.load()`（与 review /
+// organize 单测同款），不等 build 里的 microtask。
+// 重框与自愈用例用真实 PNG + 磁盘临时目录（与 detail_page_test.dart
+// 的 SR2-3 / SR3-10 同款夹具），只测 Notifier 的业务返回值与落盘结果。
+import 'dart:io';
+import 'dart:ui' as ui;
+
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:quiz_master2/data/database.dart';
+import 'package:quiz_master2/data/repository.dart';
+import 'package:quiz_master2/models/models.dart';
+import 'package:quiz_master2/state/detail_notifier.dart';
+import 'package:quiz_master2/state/repository_provider.dart';
+
+Question _dq(
+  String id,
+  String title, {
+  String subjectId = 'math',
+  List<String> folderIds = const [],
+  String? examId,
+  List<String> knowledgePointIds = const [],
+  List<String> errorTypes = const [],
+  List<String> customErrorTypes = const [],
+  List<String> tags = const [],
+  String? answer,
+  String? explanation,
+  String? notes,
+  DateTime? createdAt,
+  bool isOrganized = true,
+  bool isArchived = false,
+  bool isFavorite = false,
+  bool reviewJoined = false,
+  String? sourcePath,
+  String? pageImagePath,
+  String? slicePath,
+  int? sliceWidth,
+  int? sliceHeight,
+  int? sourcePage,
+}) => Question(
+  id: id,
+  title: title,
+  subjectId: subjectId,
+  folderIds: folderIds,
+  examId: examId,
+  knowledgePointIds: knowledgePointIds,
+  errorTypes: errorTypes,
+  customErrorTypes: customErrorTypes,
+  tags: tags,
+  answer: answer,
+  explanation: explanation,
+  notes: notes,
+  createdAt: createdAt ?? DateTime(2026, 11, 8),
+  isOrganized: isOrganized,
+  isArchived: isArchived,
+  isFavorite: isFavorite,
+  reviewJoined: reviewJoined,
+  sliceKind: 'limit',
+  sliceText: '题：$title',
+  sourcePath: sourcePath,
+  sourceKind: sourcePath == null ? null : 'image',
+  pageImagePath: pageImagePath,
+  slicePath: slicePath,
+  sliceWidth: sliceWidth,
+  sliceHeight: sliceHeight,
+  sourcePage: sourcePage,
+);
+
+class FakeDetailNotifierRepo extends QuestionRepository {
+  FakeDetailNotifierRepo({
+    required List<Question> questions,
+    List<Folder> folderList = const [],
+    List<Exam> examList = const [],
+    List<KnowledgePoint> kpList = const [],
+    List<String> tagList = const [],
+    List<CauseRecord> records = const [],
+    List<({String result, DateTime reviewedAt})> history = const [],
+    List<Subject>? subjectsValue,
+  }) : questions = List.of(questions),
+       folderList = List.of(folderList),
+       examList = List.of(examList),
+       kpList = List.of(kpList),
+       tagList = List.of(tagList),
+       records = List.of(records),
+       history = List.of(history),
+       subjectsValue = subjectsValue ?? Subject.all,
+       super(AppDatabase.instance);
+
+  List<Question> questions;
+  List<Folder> folderList;
+  List<Exam> examList;
+  List<KnowledgePoint> kpList;
+  List<String> tagList;
+  List<CauseRecord> records;
+  List<({String result, DateTime reviewedAt})> history;
+  List<Subject> subjectsValue;
+
+  final List<Question> saved = [];
+  final List<String> deletedIds = [];
+  int syncCauseRecordsCalls = 0;
+
+  /// 最近一次 replaceQuestionBoxesAndSlice 收到的框（按题 id）。
+  final Map<String, List<QuestionBox>> replacedBoxes = {};
+
+  /// SR2-3：事务失败桩——置真时 replaceQuestionBoxesAndSlice 抛错，
+  /// 且不记框、不存题（与真实事务回滚语义对齐）。
+  bool replaceShouldThrow = false;
+  bool replaceCalled = false;
+
+  /// P2 §1.5.1 重框 / SR3-10 自愈用：同页全部框（目标题 + 他题），测试里预置。
+  List<QuestionBox> pageBoxes = [];
+
+  @override
+  Future<List<Subject>> subjects() async => List.of(subjectsValue);
+
+  @override
+  Future<Question?> questionById(String id) async =>
+      questions.where((q) => q.id == id).firstOrNull;
+
+  @override
+  Future<List<CauseRecord>> causeRecordsFor(String questionId) async =>
+      records.where((r) => r.questionId == questionId).toList();
+
+  @override
+  Future<List<({String result, DateTime reviewedAt})>> reviewHistory(
+    String questionId,
+  ) async => List.of(history);
+
+  @override
+  Future<List<Folder>> folders({String? subjectId}) async => subjectId == null
+      ? List.of(folderList)
+      : folderList.where((f) => f.subjectId == subjectId).toList();
+
+  @override
+  Future<List<Exam>> exams() async => List.of(examList);
+
+  @override
+  Future<List<String>> tags() async => List.of(tagList);
+
+  @override
+  Future<List<KnowledgePoint>> knowledgePoints() async => List.of(kpList);
+
+  @override
+  Future<void> save(Question question) async {
+    saved.add(question);
+    final i = questions.indexWhere((x) => x.id == question.id);
+    if (i >= 0) {
+      questions[i] = question;
+    } else {
+      questions.add(question);
+    }
+  }
+
+  @override
+  Future<void> syncCauseRecords(Question q) async {
+    syncCauseRecordsCalls++;
+  }
+
+  @override
+  Future<void> toggleFavorite(Question q) async {
+    await save(q.copyWith(isFavorite: !q.isFavorite));
+  }
+
+  @override
+  Future<void> archive(Question q, {bool archived = true}) async {
+    await save(q.copyWith(isArchived: archived));
+  }
+
+  @override
+  Future<void> delete(Question question) async {
+    deletedIds.add(question.id);
+    questions.removeWhere((x) => x.id == question.id);
+  }
+
+  @override
+  Future<bool> setReviewJoined(Question q, bool joined) async {
+    if (joined && q.allCauses.isEmpty) return false;
+    await save(q.copyWith(reviewJoined: joined));
+    return true;
+  }
+
+  @override
+  Future<void> addTag(String name) async {
+    if (!tagList.contains(name)) tagList.add(name);
+  }
+
+  @override
+  Future<void> saveFolder(Folder folder) async {
+    final i = folderList.indexWhere((x) => x.id == folder.id);
+    if (i >= 0) {
+      folderList[i] = folder;
+    } else {
+      folderList.add(folder);
+    }
+  }
+
+  @override
+  Future<bool> folderNameExistsInSubject(
+    String subjectId,
+    String name, {
+    String? excludeId,
+  }) async => folderList.any(
+    (f) => f.subjectId == subjectId && f.name == name && f.id != excludeId,
+  );
+
+  @override
+  Future<void> addKnowledgePoint(KnowledgePoint kp) async {
+    kpList.add(kp);
+  }
+
+  @override
+  Future<void> addExam(Exam e) async {
+    examList.add(e);
+  }
+
+  @override
+  Future<List<QuestionBox>> boxesForPageImage(String pageImagePath) async =>
+      List.of(pageBoxes);
+
+  @override
+  Future<void> replaceQuestionBoxesAndSlice(
+    String questionId,
+    List<QuestionBox> boxes, {
+    required String slicePath,
+    required int sliceWidth,
+    required int sliceHeight,
+  }) async {
+    replaceCalled = true;
+    if (replaceShouldThrow) throw StateError('事务失败（测试桩）');
+    replacedBoxes[questionId] = List.of(boxes);
+    final q = questions.where((x) => x.id == questionId).firstOrNull;
+    if (q != null) {
+      await save(
+        q.copyWith(
+          slicePath: slicePath,
+          sliceWidth: sliceWidth,
+          sliceHeight: sliceHeight,
+        ),
+      );
+    }
+  }
+}
+
+FakeDetailNotifierRepo _repo() {
+  final now = DateTime.now();
+  return FakeDetailNotifierRepo(
+    questions: [
+      _dq(
+        'q1',
+        '函数极限',
+        folderIds: const ['f1'],
+        examId: 'e1',
+        knowledgePointIds: const ['k1'],
+        errorTypes: const ['概念不清'],
+        customErrorTypes: const ['审题失误'],
+        tags: const ['易错'],
+        answer: '1',
+        explanation: 'lim(x→0) sin3x/x = 3。',
+        isFavorite: true,
+        reviewJoined: true,
+      ),
+      _dq('q2', '导数应用综合', errorTypes: const ['方法不会']),
+      _dq('q3', '定积分阴影面积', isOrganized: false),
+      _dq('q5', '无错因题'),
+    ],
+    folderList: const [
+      Folder(id: 'f1', name: '试卷', subjectId: 'math', sortOrder: 0),
+      Folder(id: 'f2', name: '平时作业', subjectId: 'math', sortOrder: 10),
+    ],
+    examList: [
+      Exam(id: 'e1', name: '高等数学期末试卷', date: DateTime(2026, 11, 10)),
+    ],
+    kpList: const [
+      KnowledgePoint(
+        id: 'k1',
+        subjectId: 'math',
+        chapter: '第一章 函数与极限',
+        name: '函数极限',
+      ),
+    ],
+    tagList: const ['易错', '常考'],
+    records: [
+      CauseRecord(
+        questionId: 'q1',
+        cause: '概念不清',
+        subjectId: 'math',
+        status: CauseStatus.inProgress,
+        solvedCount: 1,
+        joinedAt: now.subtract(const Duration(days: 2)),
+      ),
+    ],
+    history: [
+      (result: 'solved', reviewedAt: now.subtract(const Duration(days: 1))),
+      (result: 'unsolved', reviewedAt: now.subtract(const Duration(days: 2))),
+    ],
+  );
+}
+
+ProviderContainer _container(
+  FakeDetailNotifierRepo repo, {
+  String questionId = 'q1',
+  List<String> orderIds = const ['q1', 'q2', 'q3'],
+}) {
+  final container = ProviderContainer.test(
+    overrides: [
+      repositoryProvider.overrideWithValue(repo),
+      detailInitialProvider.overrideWithValue(
+        DetailInitial(questionId: questionId, orderIds: orderIds),
+      ),
+    ],
+  );
+  addTearDown(container.dispose);
+  // autoDispose 保活（D-36）：像页面 ref.watch 那样持一个监听，
+  // 否则 build 里的 microtask 首查还没写回就被销毁。
+  container.listen(detailProvider, (_, __) {});
+  return container;
+}
+
+DetailNotifier _notifier(ProviderContainer container) =>
+    container.read(detailProvider.notifier);
+
+/// 重框 / 自愈夹具：560×700 真实页图（与 detail_page_test.dart 同款）。
+late final Directory _testTmp;
+late final String _pagePngRel;
+
+({int width, int height}) _pngSize(List<int> bytes) {
+  int be32(int at) =>
+      (bytes[at] << 24) |
+      (bytes[at + 1] << 16) |
+      (bytes[at + 2] << 8) |
+      bytes[at + 3];
+  return (width: be32(16), height: be32(20));
+}
+
+void main() {
+  // 重框 / 自愈要走 `evictCachedFileImage`（PaintingBinding.imageCache），
+  // 纯 `test()` 里须先初始化 binding（widget 测试里本就已初始化）。
+  TestWidgetsFlutterBinding.ensureInitialized();
+  setUpAll(() async {
+    _testTmp = await Directory.systemTemp.createTemp('qm2-detail-notifier');
+    final recorder = ui.PictureRecorder();
+    final canvas = ui.Canvas(recorder);
+    canvas.drawRect(
+      const ui.Rect.fromLTWH(0, 0, 560, 700),
+      ui.Paint()..color = const ui.Color(0xFFFFFFFF),
+    );
+    final bar = ui.Paint()..color = const ui.Color(0xFF111111);
+    for (var i = 0; i < 8; i++) {
+      canvas.drawRect(ui.Rect.fromLTWH(40, 40 + i * 80, 480, 8), bar);
+    }
+    final img = await recorder.endRecording().toImage(560, 700);
+    final png = await img.toByteData(format: ui.ImageByteFormat.png);
+    img.dispose();
+    final pageDir = Directory('${_testTmp.path}/imports/rework-task');
+    await pageDir.create(recursive: true);
+    await File(
+      '${pageDir.path}/page.png',
+    ).writeAsBytes(png!.buffer.asUint8List());
+    _pagePngRel = 'imports/rework-task/page.png';
+    AppDatabase.testDataDirectory = _testTmp.path;
+  });
+
+  tearDownAll(() async {
+    AppDatabase.testDataDirectory = null;
+    await _testTmp.delete(recursive: true);
+  });
+
+  group('load', () {
+    test('读库进 state：当前题 + 错因记录 + 解决记录 + 元数据', () async {
+      final repo = _repo();
+      final container = _container(repo);
+      final notifier = _notifier(container);
+      await notifier.load();
+      final st = container.read(detailProvider);
+      expect(st.loading, isFalse);
+      expect(st.question?.id, 'q1');
+      expect(st.question?.title, '函数极限');
+      expect(st.records.length, 1);
+      expect(st.records.first.cause, '概念不清');
+      expect(st.history.length, 2);
+      expect(st.exams.length, 1);
+      expect(st.folders.length, 2);
+      expect(st.allTags, ['易错', '常考']);
+      expect(st.kps.length, 1);
+      expect(st.subjects, isNotEmpty);
+      expect(st.orderIds, ['q1', 'q2', 'q3']);
+      expect(st.currentId, 'q1');
+    });
+
+    test('题不存在：question 为 null，loading 照常结束', () async {
+      final repo = _repo();
+      final container = _container(repo, questionId: 'no-such');
+      final notifier = _notifier(container);
+      await notifier.load();
+      final st = container.read(detailProvider);
+      expect(st.loading, isFalse);
+      expect(st.question, isNull);
+      expect(st.records, isEmpty);
+      expect(st.history, isEmpty);
+    });
+
+    test('subjectOf：库里学科用库里的名与色，找不到回退 Subject.byId', () async {
+      final repo = _repo();
+      final container = _container(repo);
+      await _notifier(container).load();
+      final st = container.read(detailProvider);
+      expect(st.subjectOf('math').name, '数学');
+      expect(st.subjectOf('no-such').name, '数学');
+    });
+  });
+
+  group('编辑表单', () {
+    test('enterEdit：按当前题重建表单值，formResetKey 加一', () async {
+      final repo = _repo();
+      final container = _container(repo);
+      final notifier = _notifier(container);
+      await notifier.load();
+      final before = container.read(detailProvider).formResetKey;
+      notifier.enterEdit();
+      final st = container.read(detailProvider);
+      expect(st.formResetKey, before + 1);
+      expect(st.editBase?.id, 'q1');
+      expect(st.editErrorTypes, {'概念不清', '审题失误'});
+      expect(st.editCustomTypes, isEmpty);
+      expect(st.editFolders, {'f1'});
+      expect(st.editTags, {'易错'});
+      expect(st.editKps, {'k1'});
+      expect(st.editExamId, 'e1');
+    });
+
+    test('enterEdit：SR-P2-27 与固定枚举同名的自定义错因合并进固定项', () async {
+      final repo = _repo();
+      repo.questions[0] = repo.questions[0].copyWith(
+        errorTypes: const [],
+        customErrorTypes: const ['概念不清', '自己总结的'],
+      );
+      final container = _container(repo);
+      final notifier = _notifier(container);
+      await notifier.load();
+      notifier.enterEdit();
+      final st = container.read(detailProvider);
+      expect(st.editErrorTypes, {'概念不清'});
+      expect(st.editCustomTypes, {'自己总结的'});
+    });
+
+    test('saveEdit：标题/答案/解析/备注写库，同步错因记录，图片字段不抹', () async {
+      final repo = _repo();
+      repo.questions[0] = repo.questions[0].copyWith(
+        sourcePath: 'imports/x/page.png',
+        pageImagePath: _pagePngRel,
+        slicePath: 'slices/q1.png',
+        sliceWidth: 100,
+        sliceHeight: 50,
+      );
+      final container = _container(repo);
+      final notifier = _notifier(container);
+      await notifier.load();
+      notifier.enterEdit();
+      notifier.toggleEditFolder('f2');
+      await notifier.saveEdit(
+        title: '函数极限（改）',
+        answer: '3',
+        explanation: '新解析',
+        notes: '笔记',
+      );
+      final savedQ = repo.saved.lastWhere((q) => q.id == 'q1');
+      expect(savedQ.title, '函数极限（改）');
+      expect(savedQ.answer, '3');
+      expect(savedQ.explanation, '新解析');
+      expect(savedQ.notes, '笔记');
+      expect(savedQ.folderIds, containsAll(['f1', 'f2']));
+      expect(savedQ.sourcePath, 'imports/x/page.png');
+      expect(savedQ.pageImagePath, _pagePngRel);
+      expect(savedQ.slicePath, 'slices/q1.png');
+      expect(savedQ.sliceWidth, 100);
+      expect(repo.syncCauseRecordsCalls, 1);
+      expect(container.read(detailProvider).question?.title, '函数极限（改）');
+    });
+
+    test('saveEdit：空标题保留原标题，空答案/解析/备注存 null', () async {
+      final repo = _repo();
+      final container = _container(repo);
+      final notifier = _notifier(container);
+      await notifier.load();
+      notifier.enterEdit();
+      await notifier.saveEdit(
+        title: '   ',
+        answer: '',
+        explanation: '  ',
+        notes: '',
+      );
+      final savedQ = repo.saved.lastWhere((q) => q.id == 'q1');
+      expect(savedQ.title, '函数极限');
+      expect(savedQ.answer, isNull);
+      expect(savedQ.explanation, isNull);
+      expect(savedQ.notes, isNull);
+    });
+
+    test('saveEdit：无 editBase 时直接返回，不写库', () async {
+      final repo = _repo();
+      final container = _container(repo);
+      final notifier = _notifier(container);
+      await notifier.load();
+      await notifier.saveEdit(
+        title: 'x',
+        answer: '',
+        explanation: '',
+        notes: '',
+      );
+      expect(repo.saved, isEmpty);
+    });
+  });
+
+  group('收藏 / 归档 / 加入复习 / 切题 / 删除', () {
+    test('toggleFavorite：收藏翻转后重读', () async {
+      final repo = _repo();
+      final container = _container(repo);
+      final notifier = _notifier(container);
+      await notifier.load();
+      expect(container.read(detailProvider).question?.isFavorite, isTrue);
+      await notifier.toggleFavorite();
+      expect(container.read(detailProvider).question?.isFavorite, isFalse);
+    });
+
+    test('toggleArchive：归档后重读', () async {
+      final repo = _repo();
+      final container = _container(repo);
+      final notifier = _notifier(container);
+      await notifier.load();
+      await notifier.toggleArchive();
+      expect(container.read(detailProvider).question?.isArchived, isTrue);
+    });
+
+    test('toggleReviewJoined：无错因题返回 false，不写库', () async {
+      final repo = _repo();
+      final container = _container(repo, questionId: 'q5');
+      final notifier = _notifier(container);
+      await notifier.load();
+      expect(await notifier.toggleReviewJoined(), isFalse);
+      expect(repo.saved, isEmpty);
+    });
+
+    test('toggleReviewJoined：有错因题加入成功，再点取消加入', () async {
+      final repo = _repo();
+      final container = _container(repo, questionId: 'q2');
+      final notifier = _notifier(container);
+      await notifier.load();
+      expect(await notifier.toggleReviewJoined(), isTrue);
+      expect(container.read(detailProvider).question?.reviewJoined, isTrue);
+      expect(await notifier.toggleReviewJoined(), isTrue);
+      expect(container.read(detailProvider).question?.reviewJoined, isFalse);
+    });
+
+    test('goTo：切到 q2 并重读', () async {
+      final repo = _repo();
+      final container = _container(repo);
+      final notifier = _notifier(container);
+      await notifier.load();
+      await notifier.goTo('q2');
+      final st = container.read(detailProvider);
+      expect(st.currentId, 'q2');
+      expect(st.question?.title, '导数应用综合');
+    });
+
+    test('deleteCurrent：有下一题时返回下一题 id，来源列表去掉已删题', () async {
+      final repo = _repo();
+      final container = _container(repo);
+      final notifier = _notifier(container);
+      await notifier.load();
+      expect(await notifier.deleteCurrent(), 'q2');
+      expect(repo.deletedIds, ['q1']);
+      final st = container.read(detailProvider);
+      expect(st.orderIds, ['q2', 'q3']);
+      expect(st.currentId, 'q2');
+      expect(st.question?.id, 'q2');
+    });
+
+    test('deleteCurrent：末题返回 null', () async {
+      final repo = _repo();
+      final container = _container(
+        repo,
+        questionId: 'q3',
+        orderIds: const ['q1', 'q2', 'q3'],
+      );
+      final notifier = _notifier(container);
+      await notifier.load();
+      expect(await notifier.deleteCurrent(), isNull);
+      expect(repo.deletedIds, ['q3']);
+      expect(container.read(detailProvider).orderIds, ['q1', 'q2']);
+    });
+  });
+
+  group('内联新建', () {
+    test('submitNewTag：写库后重读并选进编辑表单', () async {
+      final repo = _repo();
+      final container = _container(repo);
+      final notifier = _notifier(container);
+      await notifier.load();
+      notifier.enterEdit();
+      await notifier.submitNewTag('高频');
+      final st = container.read(detailProvider);
+      expect(repo.tagList, contains('高频'));
+      expect(st.allTags, contains('高频'));
+      expect(st.editTags, contains('高频'));
+    });
+
+    test('submitNewFolder：新建进库并选进编辑表单；整科同名返回 null', () async {
+      final repo = _repo();
+      final container = _container(repo);
+      final notifier = _notifier(container);
+      await notifier.load();
+      notifier.enterEdit();
+      final id = await notifier.submitNewFolder('模拟卷', null);
+      expect(id, isNotNull);
+      expect(repo.folderList.any((f) => f.id == id), isTrue);
+      expect(container.read(detailProvider).editFolders, contains(id));
+      expect(await notifier.submitNewFolder('试卷', null), isNull);
+    });
+
+    test('submitNewKnowledgePoint / submitNewExam：新建并选进编辑表单', () async {
+      final repo = _repo();
+      final container = _container(repo);
+      final notifier = _notifier(container);
+      await notifier.load();
+      notifier.enterEdit();
+      final kpId = await notifier.submitNewKnowledgePoint(
+        '第一章 函数与极限',
+        '极限运算法则',
+      );
+      expect(repo.kpList.any((k) => k.id == kpId), isTrue);
+      expect(container.read(detailProvider).editKps, contains(kpId));
+      final examId = await notifier.submitNewExam('期中试卷');
+      expect(repo.examList.any((e) => e.id == examId), isTrue);
+      expect(container.read(detailProvider).editExamId, examId);
+    });
+
+    test('addCustomType：固定同名返回 true 并选中固定项；自定义返回 false', () async {
+      final repo = _repo();
+      final container = _container(repo);
+      final notifier = _notifier(container);
+      await notifier.load();
+      notifier.enterEdit();
+      expect(notifier.addCustomType('概念不清'), isTrue);
+      expect(
+        container.read(detailProvider).editCustomTypes,
+        isNot(contains('概念不清')),
+      );
+      expect(notifier.addCustomType('粗心大意'), isFalse);
+      expect(
+        container.read(detailProvider).editCustomTypes,
+        contains('粗心大意'),
+      );
+    });
+  });
+
+  group('重新框选 §1.5.1', () {
+    QuestionBox box(String id, String qid) => QuestionBox(
+      id: id,
+      layer: 1,
+      type: 'question',
+      x: 0.06,
+      y: 0.05,
+      w: 0.88,
+      h: 0.4,
+      page: 1,
+      questionId: qid,
+    );
+
+    test('applyReworkBoxes 成功：框替换、切片重裁落盘', () async {
+      final repo = _repo();
+      repo.questions[0] = repo.questions[0].copyWith(
+        pageImagePath: _pagePngRel,
+        sourcePath: _pagePngRel,
+        slicePath: 'slices/q1.png',
+        sliceWidth: 200,
+        sliceHeight: 100,
+      );
+      repo.pageBoxes = [box('q1-box', 'q1'), box('q2-box', 'q2')];
+      final container = _container(repo);
+      final notifier = _notifier(container);
+      await notifier.load();
+      final pageAbs = AppDatabase.resolveDataPath(_pagePngRel)!;
+      final outcome = await notifier.applyReworkBoxes(
+        [box('q1-box', 'q1')],
+        pageAbs,
+      );
+      expect(outcome, ReworkOutcome.success);
+      expect(repo.replacedBoxes['q1']?.length, 1);
+      final savedQ = repo.saved.lastWhere((q) => q.id == 'q1');
+      expect(savedQ.sliceWidth, 492);
+      expect(savedQ.sliceHeight, 280);
+      final sliceAbs = AppDatabase.resolveDataPath(savedQ.slicePath!);
+      expect(sliceAbs != null && File(sliceAbs).existsSync(), isTrue);
+    });
+
+    test('SR2-3：事务失败返回 saveFailed，旧切片字节完好、框与题不动', () async {
+      final slicesDir = Directory('${_testTmp.path}/slices');
+      await slicesDir.create(recursive: true);
+      final oldSliceFile = File('${slicesDir.path}/q1.png');
+      final oldBytes = File('${_testTmp.path}/$_pagePngRel').readAsBytesSync();
+      await oldSliceFile.writeAsBytes(oldBytes);
+      final repo = _repo();
+      repo.questions[0] = repo.questions[0].copyWith(
+        pageImagePath: _pagePngRel,
+        sourcePath: _pagePngRel,
+        slicePath: 'slices/q1.png',
+        sliceWidth: 560,
+        sliceHeight: 700,
+      );
+      repo.pageBoxes = [box('q1-box', 'q1')];
+      repo.replaceShouldThrow = true;
+      final container = _container(repo);
+      final notifier = _notifier(container);
+      await notifier.load();
+      repo.saved.clear();
+      final pageAbs = AppDatabase.resolveDataPath(_pagePngRel)!;
+      final outcome = await notifier.applyReworkBoxes(
+        [box('q1-box', 'q1')],
+        pageAbs,
+      );
+      expect(outcome, ReworkOutcome.saveFailed);
+      expect(repo.replaceCalled, isTrue);
+      expect(oldSliceFile.readAsBytesSync(), equals(oldBytes));
+      expect(
+        slicesDir.listSync().where((f) => f.path.contains('.tmp-')).isEmpty,
+        isTrue,
+      );
+      expect(repo.replacedBoxes.containsKey('q1'), isFalse);
+      expect(repo.saved.where((q) => q.id == 'q1'), isEmpty);
+    });
+
+    test('SR3-11：页图损坏返回 cropFailed，不调事务', () async {
+      final corruptFile = File('${_testTmp.path}/imports/rework-task/bad.png');
+      await corruptFile.writeAsBytes([0, 1, 2, 3, 4, 5, 6, 7]);
+      final repo = _repo();
+      repo.questions[0] = repo.questions[0].copyWith(
+        pageImagePath: 'imports/rework-task/bad.png',
+        sourcePath: 'imports/rework-task/bad.png',
+        slicePath: 'slices/q1.png',
+        sliceWidth: 200,
+        sliceHeight: 100,
+      );
+      repo.pageBoxes = [box('q1-box', 'q1')];
+      final container = _container(repo);
+      final notifier = _notifier(container);
+      await notifier.load();
+      final outcome = await notifier.applyReworkBoxes(
+        [box('q1-box', 'q1')],
+        corruptFile.path,
+      );
+      expect(outcome, ReworkOutcome.cropFailed);
+      expect(repo.replaceCalled, isFalse);
+    });
+  });
+
+  group('SR3-10 切片自愈', () {
+    test('打开页时切片尺寸与库里不符，按当前框重裁自愈', () async {
+      final slicesDir = Directory('${_testTmp.path}/slices');
+      await slicesDir.create(recursive: true);
+      final sliceFile = File('${slicesDir.path}/q1.png');
+      final oldBytes = File('${_testTmp.path}/$_pagePngRel').readAsBytesSync();
+      await sliceFile.writeAsBytes(oldBytes);
+      final repo = _repo();
+      repo.questions[0] = repo.questions[0].copyWith(
+        pageImagePath: _pagePngRel,
+        sourcePath: _pagePngRel,
+        slicePath: 'slices/q1.png',
+        sliceWidth: 200,
+        sliceHeight: 100,
+      );
+      repo.pageBoxes = [
+        QuestionBox(
+          id: 'q1-box',
+          layer: 1,
+          type: 'question',
+          x: 0.06,
+          y: 0.05,
+          w: 0.88,
+          h: 0.4,
+          page: 1,
+          questionId: 'q1',
+        ),
+      ];
+      final container = _container(repo);
+      final notifier = _notifier(container);
+      await notifier.load();
+      // 自愈是后台异步修复：轮询等它把库里尺寸改成重裁尺寸。
+      var healed = false;
+      for (var i = 0; i < 50 && !healed; i++) {
+        await Future<void>.delayed(const Duration(milliseconds: 200));
+        healed = repo.saved.any(
+          (q) => q.id == 'q1' && q.sliceWidth == 492,
+        );
+      }
+      expect(healed, isTrue);
+      expect(_pngSize(sliceFile.readAsBytesSync()).width, 492);
+      expect(_pngSize(sliceFile.readAsBytesSync()).height, 280);
+      final savedQ = repo.saved.lastWhere((q) => q.id == 'q1');
+      expect(savedQ.sliceWidth, 492);
+      expect(savedQ.sliceHeight, 280);
+    });
+  });
+}

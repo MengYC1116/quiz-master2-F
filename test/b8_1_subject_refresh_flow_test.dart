@@ -11,6 +11,7 @@
 // 这里用有界手动 pump（`_pumpUntil`：pump 看条件 + `runAsync` 切回
 // 真实异步等数据库完成 + 再 pump 渲染）等界面稳定，不用 pumpAndSettle。
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:quiz_master2/app.dart';
 import 'package:quiz_master2/data/database.dart';
@@ -73,7 +74,7 @@ Finder _deleteButtonFor(String name) {
 }
 
 /// 在学科管理页真实删掉一科：点行内“删除”→ 模态确认 → 点确认删除。
-/// 删完等到导航速览里该科消失（badgeVersion 监听驱动的刷新已落地），
+/// 删完等到导航速览里该科消失（变更事件驱动的角标刷新已落地），
 /// 再继续下一步——不断言数据库，只断言界面。
 Future<void> _deleteSubjectViaUi(WidgetTester tester, String name) async {
   final btn = _deleteButtonFor(name);
@@ -112,13 +113,12 @@ void main() {
     });
   });
 
-  testWidgets('B8-1 真实交互：删光三科后四处界面都不再出现已删学科',
-      (tester) async {
+  testWidgets('B8-1 真实交互：删光三科后四处界面都不再出现已删学科', (tester) async {
     tester.view.physicalSize = const Size(1280, 900);
     tester.view.devicePixelRatio = 1.0;
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
-    await tester.pumpWidget(const QuizMasterApp());
+    await tester.pumpWidget(const ProviderScope(child: QuizMasterApp()));
 
     // 1. 首页：导航速览里三科都在（删前基线，证明用例真的看到了它们）。
     await _pumpUntil(
@@ -161,10 +161,7 @@ void main() {
       () => find.text('还没有学科').evaluate().isNotEmpty,
       reason: '收集中心未显示无学科提示',
     );
-    expect(
-      find.text('还没有学科：先去「学科管理」添加一个，再回来导入。'),
-      findsOneWidget,
-    );
+    expect(find.text('还没有学科：先去「学科管理」添加一个，再回来导入。'), findsOneWidget);
     await tester.tap(find.byKey(const Key('collect-subject-select')));
     await tester.pump(const Duration(milliseconds: 200));
     for (final name in ['数学', '英语', '政治']) {
@@ -195,7 +192,7 @@ void main() {
       expect(find.text(name), findsNothing);
     }
 
-    // 收尾：等在途的 _refreshBadges / saveLastRoute 落定再结束——
+    // 收尾：等在途的角标重读 / saveLastRoute 落定再结束——
     // 它们是未 await 的异步写读，若测试体结束、tearDown 关库时仍在途，
     // 查询会报 database closed（偶发失败，见本文件调试记录）。
     for (var i = 0; i < 3; i++) {

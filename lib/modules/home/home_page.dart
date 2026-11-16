@@ -41,16 +41,27 @@
 // 1.00/1.15/1.30 全覆盖（字号只由全局 TextScaler 缩放一次，布局尺寸
 // 按 [qmScaleOf] 乘一次），不用 `Transform.scale`，不用图标字体。
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../data/repository.dart';
 import '../../models/exam_event.dart';
 import '../../models/models.dart';
+import '../../state/home_provider.dart';
+import '../../state/repository_provider.dart';
 import '../../theme/app_theme.dart';
 import '../../widgets/uikit.dart';
 
 /// 首页：问候 + 焦点大卡片（要复习的数量）+ 继续上次 + 快速收集 +
 /// 各学科要复习 / 待整理概览，学科按库里的 subjects 表显示（入库顺序）。
-class HomePage extends StatefulWidget {
+///
+/// ARCH-PLAN-A 第 2 阶段 A 路：业务数据（继续上次、每学科待复习/待复查/
+/// 已解决数、最近考试倒计时）收进 [homeProvider]（`lib/state/
+/// home_provider.dart`）；本页只留 widget 与纯界面临时状态（两条横幅
+/// 的“已关闭”标志）。`repo` 构造参数保留——`app.dart` 仍按老样子传，
+/// 本页在 build 里用一层 `ProviderScope` 把它以
+/// `repositoryProvider.overrideWithValue(widget.repo)` 交进依赖图，
+/// 不再直接调 `repo` 的方法；问候语仍由应用层经构造器传 `settings` 进来。
+class HomePage extends ConsumerStatefulWidget {
   const HomePage({
     super.key,
     required this.repo,
@@ -92,116 +103,15 @@ class HomePage extends StatefulWidget {
       '但这次手动备份没有完成。请清理磁盘后在「设置」中重新备份。';
 
   @override
-  State<HomePage> createState() => _HomePageState();
+  ConsumerState<HomePage> createState() => _HomePageState();
 }
 
-class _HomePageState extends State<HomePage> {
-  Map<String, int>? _revCounts;
-  Map<String, int>? _pendingCounts;
-  // B8-1：空表是删光学科后的合法状态，不再回退预设三科
-  //（回退就是首页学科格仍显示数学/英语/政治的原因）。
-  List<Subject> _subjects = const [];
-  // 库里找学科：新学科用库里的名；找不到才回退 Subject.byId
-  //（数学兜底，只发生在数据不一致时）。P0B1 扫尾：副标题与焦点卡
-  // 以前直接 Subject.byId，新学科显示成“数学”。
-  Subject _subjectOf(String id) => _subjects.firstWhere(
-        (s) => s.id == id,
-        orElse: () => Subject.byId(id),
-      );
-  int _duePending = 0;
-  int _dueRecheck = 0;
-  ({String kind, String subjectId, String title})? _recent;
-  // B11-9：最近一场考试（无考试时为 null，不显示倒计时条）。
-  ExamEvent? _nearestExam;
-  bool _loading = true;
+class _HomePageState extends ConsumerState<HomePage> {
+  // 纯界面临时状态，留页面本地（不进 Provider）：两条横幅的“已关闭”标志。
   bool _errorDismissed = false;
   // _load() 读库失败态（SR-P2-48）：报告 / 学科页同款——失败不一直
   // 转圈，出错误横幅 + 重试；已加载过内容时留住旧内容。
-  bool _loadError = false;
   bool _loadErrorDismissed = false;
-  bool _hasLoaded = false;
-
-  @override
-  void initState() {
-    super.initState();
-    _load();
-  }
-
-  Future<void> _load() async {
-    try {
-      final results = await Future.wait([
-        widget.repo.homeRevCounts(),
-        widget.repo.pendingOrganizeBySubject(),
-        widget.repo.recentTask(),
-        widget.repo.dueToday(),
-        widget.repo.causeRecords(),
-        // B2：学科格按库里的 subjects 表显示全部学科（入库顺序），
-        // 不再写死 Subject.all 三科。
-        widget.repo.subjects(),
-        // B11-9：考试事件列表（首页只取最近一场做倒计时）。
-        widget.repo.examEvents(),
-      ]);
-      if (!mounted) return;
-      final due = results[3] as List<Question>;
-      final records = results[4] as List<CauseRecord>;
-      final byQ = <String, List<CauseRecord>>{};
-      for (final r in records) {
-        (byQ[r.questionId] ??= []).add(r);
-      }
-      // 待解决 / 复查拆分（HTML homeRevCounts）：有未解决错因的题计
-      // 待解决；只有复查到期的题计复查；两者之和 = 要复习总数。
-      // 与错题本封面三数同一共享分类（SR-P1-1）：
-      // QuestionRepository.reviewBucketOf，不再本页各自定义。
-      var pending = 0;
-      var recheck = 0;
-      for (final q in due) {
-        final rs = byQ[q.id] ?? const <CauseRecord>[];
-        switch (QuestionRepository.reviewBucketOf(rs)) {
-          case ReviewBucket.pending:
-            pending++;
-          case ReviewBucket.recheck:
-            recheck++;
-          case ReviewBucket.solved:
-          case ReviewBucket.none:
-            // dueToday 只返回 pending / recheck 两类；防御性分支，
-            // 万一混入也不计入总数。
-            break;
-        }
-      }
-      setState(() {
-        _revCounts = results[0] as Map<String, int>;
-        _pendingCounts = results[1] as Map<String, int>;
-        _recent = results[2] as ({String kind, String subjectId, String title})?;
-        final subjects = results[5] as List<Subject>;
-        _subjects = subjects;
-        _nearestExam =
-            nearestExamEvent(results[6] as List<ExamEvent>);
-        _duePending = pending;
-        _dueRecheck = recheck;
-        _loading = false;
-        _loadError = false;
-        _hasLoaded = true;
-      });
-    } catch (_) {
-      // 读库失败：不一直转圈（SR-P2-48），出错误横幅 + 重试入口。
-      if (!mounted) return;
-      setState(() {
-        _loading = false;
-        _loadError = true;
-        _loadErrorDismissed = false;
-      });
-    }
-  }
-
-  Future<void> _retryLoad() async {
-    setState(() {
-      _loading = true;
-      _loadError = false;
-    });
-    await _load();
-  }
-
-  int get _totalDue => _duePending + _dueRecheck;
 
   /// 最近任务的 kind 归一化：线上代码写 'organize' / 'collect'，
   /// 但演示数据种子（`database.dart` 的 `_seedDemo`）写的是中文
@@ -213,8 +123,8 @@ class _HomePageState extends State<HomePage> {
         _ => 'review',
       };
 
-  void _resumeRecent() {
-    switch (_normalizedKind(_recent?.kind ?? '')) {
+  void _resumeRecent(({String kind, String subjectId, String title})? recent) {
+    switch (_normalizedKind(recent?.kind ?? '')) {
       case 'organize':
         widget.onGoOrganize();
       case 'collect':
@@ -227,6 +137,23 @@ class _HomePageState extends State<HomePage> {
 
   @override
   Widget build(BuildContext context) {
+    // 构造器接进来的 repo（应用层传的单例库 / 测试传的 FakeRepo）只在
+    // 这里交进 Riverpod 依赖图：`homeProvider` 的 Notifier 经
+    // `repositoryProvider` 拿库；本页不再直接调 `repo` 的方法。
+    // 内层 Consumer 的 ref 才属于这层 scope（外层 `ref` 拿不到 override
+    // 后的库），读状态与调 `retry()` 都用内层 ref。
+    return ProviderScope(
+      overrides: [repositoryProvider.overrideWithValue(widget.repo)],
+      child: Consumer(
+        builder: (context, ref, _) {
+          final home = ref.watch(homeProvider);
+          return _buildBody(context, ref, home);
+        },
+      ),
+    );
+  }
+
+  Widget _buildBody(BuildContext context, WidgetRef ref, HomeState home) {
     final palette = DesignTokens.of(Theme.of(context).brightness);
     final scale = qmScaleOf(context);
     return SingleChildScrollView(
@@ -246,10 +173,10 @@ class _HomePageState extends State<HomePage> {
           ),
           SizedBox(height: 3 * scale),
           Text(
-            _recent == null
+            home.recent == null
                 ? '上次停在：还没有记录'
-                : '上次停在：${_kindPageName(_recent!.kind)} · '
-                    '${_subjectOf(_recent!.subjectId).name}「${_recent!.title}」',
+                : '上次停在：${_kindPageName(home.recent!.kind)} · '
+                    '${home.subjectOf(home.recent!.subjectId).name}「${home.recent!.title}」',
             style: TextStyle(
               fontSize: DesignTokens.bodySmallFontSize,
               color: palette.muted,
@@ -267,42 +194,46 @@ class _HomePageState extends State<HomePage> {
               },
             ),
           // 读库失败（SR-P2-48）：不一直转圈，出错误横幅 + 重试。
-          if (_loadError && !_loadErrorDismissed)
+          if (home.loadError && !_loadErrorDismissed)
             QmBanner(
               tone: QmBannerTone.error,
               message: '首页数据读取失败，已显示上次成功加载的内容。',
               actions: [
-                QmBannerAction(label: '重试', onPressed: _retryLoad),
+                QmBannerAction(
+                  label: '重试',
+                  onPressed: () =>
+                      ref.read(homeProvider.notifier).retry(),
+                ),
               ],
               onDismiss: () => setState(() => _loadErrorDismissed = true),
             ),
           // B11-9 考试倒计时：最近一场考试，点按进设置页的考试管理。
           // 无考试时不显示，不占位置、不破坏布局 C。
-          if (_nearestExam != null && !_loading) ...[
+          if (home.nearestExam != null && !home.loading) ...[
             _ExamCountdownStrip(
               scale: scale,
               palette: palette,
-              event: _nearestExam!,
+              event: home.nearestExam!,
               onTap: widget.onGoSettings,
             ),
             SizedBox(height: DesignTokens.focusCardMarginBottom * scale),
           ],
           // 焦点大卡片 layout C。
-          if (_loading)
+          if (home.loading)
             _FocusCardLoading(scale: scale)
-          else if (_totalDue == 0)
+          else if (home.totalDue == 0)
             _FocusCardEmpty(scale: scale, palette: palette)
           else
             _FocusCard(
               scale: scale,
               palette: palette,
-              totalDue: _totalDue,
-              duePending: _duePending,
-              dueRecheck: _dueRecheck,
-              recent: _recent,
-              subjects: _subjects,
+              totalDue: home.totalDue,
+              duePending: home.duePending,
+              dueRecheck: home.dueRecheck,
+              recent: home.recent,
+              subjects: home.subjects,
               onTapCard: widget.onGoReview,
-              onResume: _resumeRecent,
+              onResume: () => _resumeRecent(home.recent),
               onGoCollect: widget.onGoCollect,
             ),
           SizedBox(height: DesignTokens.focusCardMarginBottom * scale),
@@ -319,13 +250,13 @@ class _HomePageState extends State<HomePage> {
           SizedBox(height: 4 * scale),
           // 首次加载即失败时不显示全 0 的学科格（_hasLoaded 守门），
           // 只留问候 + 错误横幅 + 重试。
-          if (!_loading && _hasLoaded)
+          if (!home.loading && home.hasLoaded)
             _BottomGrid(
               scale: scale,
               palette: palette,
-              subjects: _subjects,
-              revCounts: _revCounts ?? const {},
-              pendingCounts: _pendingCounts ?? const {},
+              subjects: home.subjects,
+              revCounts: home.revCounts,
+              pendingCounts: home.pendingCounts,
               onGoCollect: widget.onGoCollect,
               onGoWrongbook: widget.onGoWrongbook,
               onGoReview: widget.onGoReview,

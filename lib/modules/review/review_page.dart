@@ -14,10 +14,26 @@
 // 业务口径沿用基线（repository.recordSelfCheck / saveRemedy /
 // reviewState；不改 Schema、不改状态机）；旧翻卡模型不复活，
 // 不出现 1/3/7/14 天旧复习状态。
+//
+// ARCH-PLAN-A 第 3 阶段：业务数据 + 会话状态收进 [reviewProvider]
+// （`lib/state/review_notifier.dart`）；本页只留 widget 与纯界面
+// 临时状态——补救输入框的控制器。`repo` 构造参数保留——`app.dart`
+// 仍按老样子传，本页在 build 里包一层 `ProviderScope` 把它以
+// `repositoryProvider.overrideWithValue(widget.repo)` 交进依赖图，
+// 页内不再直接调 `repo` 的方法；内层 Consumer 的 ref 才属于这层
+// scope。补救输入框的清空：原 `_beginCause` / `_skipCurrent` 里
+// 的 `_remedyController.clear()` 改由 `_ReviewView` 按
+// `ReviewState.sessionCauseKey` 变化清一次（新错因开始的信号）。
+// 会话细粒度重建：列表 / 会话头 / 步骤指示 / 四步各只订阅自己
+// 要的字段（`ref.watch(reviewProvider.select(...))`）——自查点选
+// 只重建自查步，不重建整个会话。
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../data/repository.dart';
 import '../../models/models.dart';
+import '../../state/repository_provider.dart';
+import '../../state/review_notifier.dart';
 import '../../theme/app_theme.dart';
 import '../../widgets/uikit.dart';
 import '../../widgets/widgets.dart';
@@ -41,153 +57,50 @@ class ReviewPage extends StatefulWidget {
   State<ReviewPage> createState() => _ReviewPageState();
 }
 
-/// 一条“题 × 错因”解决记录（列表分组里的一项）。
-class _CauseItem {
-  _CauseItem({required this.question, required this.record});
-
-  final Question question;
-  final CauseRecord record;
-}
-
-/// 列表分组：学科 × 错因（HTML `causeGroups()` / `curedGroups()`）。
-class _CauseGroup {
-  _CauseGroup({
-    required this.subjectId,
-    required this.cause,
-    required this.firstJoined,
-  });
-
-  final String subjectId;
-  final String cause;
-  final List<_CauseItem> items = [];
-  DateTime firstJoined;
-
-  /// 组状态（HTML `revListHTML` 的 stTxt 口径）：全已解决 → 已解决；
-  /// 有待解决 → 待解决；其余 → 解决中。
-  CauseStatus get status {
-    if (items.every((it) => it.record.status == CauseStatus.solved)) {
-      return CauseStatus.solved;
-    }
-    if (items.any((it) => it.record.status == CauseStatus.pending)) {
-      return CauseStatus.pending;
-    }
-    return CauseStatus.inProgress;
-  }
-
-  bool get hasRecheck => items.any((it) => it.record.isRecheckDue);
-}
-
-/// 会话块：一道题 + 它本轮要治的错因（HTML `REV2.blocks`）。
-class _CauseBlock {
-  _CauseBlock({required this.questionId, required this.causes});
-
-  final String questionId;
-  final List<String> causes;
-}
-
-/// 本轮一条状态变化（总结页每行）。
-class _SessionChange {
-  _SessionChange({
-    required this.questionTitle,
-    required this.subjectName,
-    required this.cause,
-    required this.before,
-    required this.after,
-    this.recheckDate,
-    required this.note,
-  });
-
-  final String questionTitle;
-  final String subjectName;
-  final String cause;
-  final String before;
-  final String after;
-  final DateTime? recheckDate;
-  final String note;
-}
-
-/// 已保存的断点（解析后的“上次解决到一半”）。
-class _ResumeInfo {
-  _ResumeInfo({
-    required this.blocks,
-    required this.blockIndex,
-    required this.causeIndex,
-  });
-
-  final List<_CauseBlock> blocks;
-  final int blockIndex;
-  final int causeIndex;
-}
-
-enum _Phase { recall, remedy, redo, check }
-
-const _stepLabels = ['① 看错因', '② 写补救', '③ 重做', '④ 自查'];
-
 class _ReviewPageState extends State<ReviewPage> {
-  AppSettings _settings = AppSettings.defaults;
-  // 学科顺序表：读库 subjects（B2 补充；以前写死 Subject.all，
-  // 新学科在排序里无索引位、筛选下拉里也没有）。B8-1 扫尾：空表是
-  // 删光学科后的合法状态，不再回退预设三科；首帧与读库后都以真实
-  // 列表为准，空就是空。
-  List<Subject> _subjects = const [];
-  // 库里找学科：新学科用库里的名与色；找不到才回退 Subject.byId
-  //（数学兜底，只发生在数据不一致时）。
-  Subject _subjectOf(String id) => _subjects.firstWhere(
-        (s) => s.id == id,
-        orElse: () => Subject.byId(id),
-      );
-  List<_CauseGroup> _groups = [];
-  List<_CauseGroup> _curedGroups = [];
-  List<Question> _notJoined = [];
-  // 每题待治的错因记录（按题内错因顺序），会话建块用。
-  Map<String, List<CauseRecord>> _pendingByQ = {};
-  bool _loading = true;
-  // _load() 读库失败态（SR-P2-48）：报告 / 学科页同款——失败不一直
-  // 转圈，出错误横幅 + 重试；已加载过内容时留住旧内容。
-  bool _loadError = false;
-  bool _errorDismissed = false;
-  bool _hasLoaded = false;
+  @override
+  Widget build(BuildContext context) {
+    // 构造器接进来的 repo（应用层传的单例库 / 测试传的 FakeRepo）只在
+    // 这里交进 Riverpod 依赖图：`reviewProvider` 的 Notifier 经
+    // `repositoryProvider` 拿库；本页不再直接调 `repo` 的方法。
+    // 初始学科筛选同样经 `reviewInitialProvider` 注入（见 D-35 的
+    // `wrongbookInitialProvider` 模式）；内层 Consumer 的 ref 才
+    // 属于这层 scope。
+    return ProviderScope(
+      overrides: [
+        repositoryProvider.overrideWithValue(widget.repo),
+        reviewInitialProvider.overrideWithValue(
+          ReviewInitial(subjectId: widget.initialSubjectId),
+        ),
+      ],
+      child: _ReviewView(
+        onOpenDetail: widget.onOpenDetail,
+        onGoWrongbook: widget.onGoWrongbook,
+      ),
+    );
+  }
+}
 
-  String? _subjectFilter;
-  String _causeFilter = '全部';
-  int _page = 1;
-  // P0B2：每页条数是本页本地状态（与错题本一致），只在打开时从设置
-  // 默认值读一次初值；下拉改动不写库、不改设置默认值。_load() 在会话
-  // 结束、暂停回列表时也会跑，用标志守住初值，只首次取默认
-  //（SR-P1-12：否则页内改好的页数会被弹回默认值）。
-  int _pageSize = AppSettings.defaults.pageSize;
-  bool _pageSizeInitialized = false;
-  String? _openCuredKey;
-  _ResumeInfo? _resume;
-  // 已解决区独立分页（SR-P2-47，与待解决列表同一每页条数），0-based。
-  int _curedPage = 0;
-  // 未加入盒默认只列前 10 道（SR-P2-47），点开看全部。
-  bool _notJoinedExpanded = false;
+/// 复习页内层：持有补救输入框控制器，按会话模式切换列表 / 会话 / 总结。
+class _ReviewView extends ConsumerStatefulWidget {
+  const _ReviewView({
+    required this.onOpenDetail,
+    required this.onGoWrongbook,
+  });
 
-  // ---- 会话状态 ----
-  bool _inSession = false;
-  bool _showSummary = false;
-  List<_CauseBlock> _blocks = [];
-  int _bi = 0;
-  int _ci = 0;
-  _Phase _phase = _Phase.recall;
-  final _remedyController = TextEditingController();
-  bool _answerShown = false;
-  final Map<String, String> _checks = {};
-  final Map<String, int> _skips = {};
-  int _curedNow = 0;
-  final List<_SessionChange> _changes = [];
-  int _summaryRemaining = 0;
-  String _scopeLabel = '全部待解决错因';
-  bool _saveError = false;
-  Map<String, List<({String result, DateTime reviewedAt})>> _historyByQ = {};
+  final Future<void> Function(Question q, List<String> orderIds) onOpenDetail;
+  final VoidCallback onGoWrongbook;
 
   @override
-  void initState() {
-    super.initState();
-    _subjectFilter = widget.initialSubjectId;
-    _load();
-  }
+  ConsumerState<_ReviewView> createState() => _ReviewViewState();
+}
+
+class _ReviewViewState extends ConsumerState<_ReviewView> {
+  final _remedyController = TextEditingController();
+
+  /// 上次见过的 `sessionCauseKey`：变了说明新错因开始（或会话进出），
+  /// 补救输入框清一次（原 `_beginCause` / `_skipCurrent` 里的 clear）。
+  String _seenCauseKey = '';
 
   @override
   void dispose() {
@@ -195,709 +108,151 @@ class _ReviewPageState extends State<ReviewPage> {
     super.dispose();
   }
 
-  Future<void> _load() async {
-    try {
-      final settings = await widget.repo.settings();
-      final subjects = await widget.repo.subjects();
-      final subjectList = subjects;
-      final questions = await widget.repo.all(includeArchived: true);
-      final records = await widget.repo.causeRecords();
-      final byQ = <String, List<CauseRecord>>{};
-      for (final r in records) {
-        (byQ[r.questionId] ??= []).add(r);
-      }
-      final pendingByQ = <String, List<CauseRecord>>{};
-      final pendingGroups = <String, _CauseGroup>{};
-      final curedGroups = <String, _CauseGroup>{};
-      final notJoined = <Question>[];
-      for (final q in questions) {
-        // “还没加入复习的题”只列真能加进复习的题（SR-P2-39）：
-        // 未整理的题没有加入入口、无错因的题加不进（setReviewJoined
-        // 错因为空返回 false），列出来只会让人白跑一趟详情页。
-        if (!q.reviewJoined &&
-            q.isOrganized &&
-            !q.isArchived &&
-            q.allCauses.isNotEmpty) {
-          notJoined.add(q);
-        }
-      // B6：复习主列表排除已归档题（与 HTML `qInReview` 口径一致；
-      // 未加入列表上面一行已排除了归档）。归档题的解决记录保留在
-      // 库里（不删），取消归档后重新出现。
-      if (!q.reviewJoined || !q.isOrganized || q.isArchived) continue;
-      final rs = byQ[q.id];
-      if (rs == null || rs.isEmpty) continue;
-      // 题内错因按题目本身的错因顺序排。
-      final order = q.allCauses;
-      final sorted = [...rs]
-        ..sort((a, b) =>
-            order.indexOf(a.cause).compareTo(order.indexOf(b.cause)));
-      final pending = sorted
-          .where((r) => r.status != CauseStatus.solved || r.isRecheckDue)
-          .toList();
-      if (pending.isNotEmpty) pendingByQ[q.id] = pending;
-      for (final r in sorted) {
-        final key = '${q.subjectId}|${r.cause}';
-        final isPending =
-            r.status != CauseStatus.solved || r.isRecheckDue;
-        final target = isPending ? pendingGroups : curedGroups;
-        final g = target.putIfAbsent(
-          key,
-          () => _CauseGroup(
-            subjectId: q.subjectId,
-            cause: r.cause,
-            firstJoined: r.joinedAt,
-          ),
-        );
-        g.items.add(_CauseItem(question: q, record: r));
-        if (r.joinedAt.isBefore(g.firstJoined)) {
-          g.firstJoined = r.joinedAt;
-        }
-      }
-    }
-    int groupCompare(_CauseGroup a, _CauseGroup b) {
-      if (settings.reviewSort == 'subject') {
-        final order = {
-          for (var i = 0; i < subjectList.length; i++)
-            subjectList[i].id: i,
-        };
-        final c = (order[a.subjectId] ?? 99)
-            .compareTo(order[b.subjectId] ?? 99);
-        if (c != 0) return c;
-      }
-      return a.firstJoined.compareTo(b.firstJoined);
-    }
-
-    final sortedPending = pendingGroups.values.toList()..sort(groupCompare);
-    final sortedCured = curedGroups.values.toList()..sort(groupCompare);
-
-    // 断点：校验保存的队列是否还有待治项，无效则清掉（陈旧断点回收）。
-    _ResumeInfo? resume;
-    final state = await widget.repo.reviewState();
-    if (state != null) {
-      final pendingKeys = <ReviewQueueItem>{
-        for (final rs in pendingByQ.values)
-          for (final r in rs)
-            ReviewQueueItem(questionId: r.questionId, cause: r.cause),
-      };
-      final valid =
-          state.queue.where(pendingKeys.contains).toList();
-      if (valid.isEmpty) {
-        await widget.repo.clearReviewState();
-      } else {
-        final blocks = _blocksFromFlat(valid);
-        final pos = state.position.clamp(0, valid.length - 1);
-        var seen = 0;
-        var bi = 0;
-        var ci = 0;
-        for (var i = 0; i < blocks.length; i++) {
-          if (pos < seen + blocks[i].causes.length) {
-            bi = i;
-            ci = pos - seen;
-            break;
-          }
-          seen += blocks[i].causes.length;
-        }
-        resume = _ResumeInfo(blocks: blocks, blockIndex: bi, causeIndex: ci);
-      }
-    }
-    if (!mounted) return;
-    setState(() {
-      _settings = settings;
-      if (!_pageSizeInitialized) {
-        _pageSize = settings.pageSize;
-        _pageSizeInitialized = true;
-      }
-      _subjects = subjectList;
-      _groups = sortedPending;
-      _curedGroups = sortedCured;
-      // SR2-34：错因筛选的当前值可能在详情页删题 / 归档后失效——选项
-      // 来自现存分组的 _allCauses；唯一带该错因的题没了之后，旧值
-      // 不在选项里，直接喂给 DropdownButton 会断言。无效时回落到
-      // “全部”；下拉处另有就地 effectiveValue 兜底。
-      if (_causeFilter != '全部' && !_allCauses.contains(_causeFilter)) {
-        _causeFilter = '全部';
-      }
-      _notJoined = notJoined;
-      _pendingByQ = pendingByQ;
-      _resume = resume;
-      _loading = false;
-      _loadError = false;
-      _hasLoaded = true;
-    });
-    } catch (_) {
-      // 读库失败：不一直转圈（SR-P2-48），出错误横幅 + 重试入口。
-      if (!mounted) return;
-      setState(() {
-        _loading = false;
-        _loadError = true;
-        _errorDismissed = false;
-      });
-    }
-  }
-
-  Future<void> _retryLoad() async {
-    setState(() {
-      _loading = true;
-      _loadError = false;
-    });
-    await _load();
-  }
-
-  /// 扁平队列（ReviewQueueItem 顺序）→ 按题分块（连续同题合并）。
-  List<_CauseBlock> _blocksFromFlat(List<ReviewQueueItem> flat) {
-    final blocks = <_CauseBlock>[];
-    for (final entry in flat) {
-      if (blocks.isNotEmpty &&
-          blocks.last.questionId == entry.questionId) {
-        blocks.last.causes.add(entry.cause);
-      } else {
-        blocks.add(
-            _CauseBlock(questionId: entry.questionId, causes: [entry.cause]));
-      }
-    }
-    return blocks;
-  }
-
-  List<_CauseGroup> _filterGroups(List<_CauseGroup> groups) {
-    var list = groups;
-    if (_subjectFilter != null) {
-      list =
-          list.where((g) => g.subjectId == _subjectFilter).toList();
-    }
-    if (_causeFilter != '全部') {
-      list = list.where((g) => g.cause == _causeFilter).toList();
-    }
-    return list;
-  }
-
-  List<_CauseGroup> get _filtered => _filterGroups(_groups);
-  List<_CauseGroup> get _filteredCured => _filterGroups(_curedGroups);
-
-  int get _totalPages {
-    final n = (_filtered.length / _pageSize).ceil();
-    return n < 1 ? 1 : n;
-  }
-
-  List<_CauseGroup> get _pageGroups {
-    final list = _filtered;
-    final page = _page.clamp(1, _totalPages);
-    final start = (page - 1) * _pageSize;
-    final end = (start + _pageSize).clamp(0, list.length);
-    if (start >= list.length) return const [];
-    return list.sublist(start, end);
-  }
-
-  void _resetPage() {
-    _page = 1;
-    _curedPage = 0;
-  }
-
-  List<String> get _allCauses {
-    final set = <String>{};
-    for (final g in [..._groups, ..._curedGroups]) {
-      set.add(g.cause);
-    }
-    final fixed = ErrorTypes.fixed.where(set.contains).toList();
-    final rest = set.where((c) => !ErrorTypes.fixed.contains(c)).toList()
-      ..sort();
-    return [...fixed, ...rest];
-  }
-
-  /// 元信息行计数（不过滤，HTML `revListHTML` 口径）。
-  /// B9-4（Meng 2026-11-15 ~19:43 裁决：与角标 / 首页统一，按题数）：
-  /// 三数按题互斥拆分，复用 `QuestionRepository.reviewBucketOf`
-  /// 的共享口径——一道题按其全部错因记录只落一个桶：
-  /// - 待解决 / 解决中：桶为 pending 的题数（≥1 个错因未解决）；
-  /// - 复查：桶为 recheck 的题数（全部已解决且 ≥1 条到复查时间）；
-  /// - 已解决：桶为 solved 的题数（全部已解决且无一条到复查时间）。
-  /// 不会双计 / 漏计：`_load` 里一条记录只进 `_groups` 或
-  /// `_curedGroups` 其中一边（isPending 分流），两边按题汇总后
-  /// 才是该题的全部记录；多错因一题只计 1 道。已归档题不进两边，
-  /// 与角标 / 首页口径一致（取消归档后重新计入）。
-  (int pend, int check, int cured) get _metaCounts {
-    final byQ = <String, List<CauseRecord>>{};
-    for (final g in [..._groups, ..._curedGroups]) {
-      for (final it in g.items) {
-        (byQ[it.question.id] ??= []).add(it.record);
-      }
-    }
-    var pend = 0;
-    var check = 0;
-    var cured = 0;
-    for (final records in byQ.values) {
-      switch (QuestionRepository.reviewBucketOf(records)) {
-        case ReviewBucket.pending:
-          pend++;
-        case ReviewBucket.recheck:
-          check++;
-        case ReviewBucket.solved:
-          cured++;
-        case ReviewBucket.none:
-          break;
-      }
-    }
-    return (pend, check, cured);
-  }
-
-  // ---------- 会话 ----------
-
-  /// 从筛选后的分组建会话块：分组选中的题（按分组顺序首次出现），
-  /// 每题只带筛选命中的错因（SR-P2-49 决定 (b)）——错因是出现在
-  /// 传入分组里的那些；从某组点“开始解决”时只带该组的错因
-  /// （`onlyCause`），该题的其他待治错因留待下次，不再一并治愈。
-  List<_CauseBlock> _buildBlocks(List<_CauseGroup> groups,
-      {String? onlyCause}) {
-    final allowed = <String, Set<String>>{};
-    for (final g in groups) {
-      for (final it in g.items) {
-        (allowed[it.question.id] ??= {}).add(g.cause);
-      }
-    }
-    final seen = <String>{};
-    final blocks = <_CauseBlock>[];
-    for (final g in groups) {
-      for (final it in g.items) {
-        final qid = it.question.id;
-        if (seen.contains(qid)) continue;
-        seen.add(qid);
-        final causes = _pendingByQ[qid];
-        if (causes == null || causes.isEmpty) continue;
-        final picked = causes
-            .map((r) => r.cause)
-            .where((c) => (allowed[qid] ?? const {}).contains(c))
-            .where((c) => onlyCause == null || c == onlyCause)
-            .toList();
-        if (picked.isEmpty) continue;
-        blocks.add(_CauseBlock(questionId: qid, causes: picked));
-      }
-    }
-    // 每会话错因数（设置 5/10/不限）：按列表顺序只取前 N 个错因。
-    final limit = _settings.causesPerSession;
-    if (limit > 0) {
-      var left = limit;
-      final limited = <_CauseBlock>[];
-      for (final b in blocks) {
-        if (left <= 0) break;
-        final take = b.causes.take(left).toList();
-        if (take.isNotEmpty) {
-          limited.add(_CauseBlock(questionId: b.questionId, causes: take));
-          left -= take.length;
-        }
-      }
-      return limited;
-    }
-    return blocks;
-  }
-
-  Future<void> _loadHistoryForSession() async {
-    final map = <String, List<({String result, DateTime reviewedAt})>>{};
-    for (final b in _blocks) {
-      map[b.questionId] ??= await widget.repo.reviewHistory(b.questionId);
-    }
-    if (!mounted) return;
-    setState(() => _historyByQ = map);
-  }
-
-  Future<void> _startSession({_CauseGroup? fromGroup, bool resume = false}) async {
-    List<_CauseBlock> blocks;
-    var bi = 0;
-    var ci = 0;
-    String scopeLabel;
-    if (resume && _resume != null) {
-      blocks = _resume!.blocks;
-      bi = _resume!.blockIndex;
-      ci = _resume!.causeIndex;
-      // 断点恢复条的范围文案（SR-P2-57）：按保存队列的实际范围写，
-      // 不再一律写“全部待解决错因”。
-      scopeLabel = _scopeLabelForBlocks(blocks);
-    } else {
-      blocks = _buildBlocks(_filtered, onlyCause: fromGroup?.cause);
-      if (blocks.isEmpty) return;
-      if (fromGroup != null) {
-        // 跳到首个含该组错因的块（HTML `data-r2-start-group` 口径）。
-        for (var i = 0; i < blocks.length; i++) {
-          final qid = blocks[i].questionId;
-          final q = _questionOf(qid);
-          if (q != null &&
-              q.subjectId == fromGroup.subjectId &&
-              blocks[i].causes.contains(fromGroup.cause)) {
-            bi = i;
-            break;
-          }
-        }
-        // SR3-17：按组进会话的文案按实际块集算（_scopeLabelForBlocks），
-        // 不再一律按该组写。块集是（当前筛选 × 该错因）：跨学科同错因
-        // 时自动退为“错因「…」”；单科单错因时仍是“学科名 · 错因”。
-        // causesPerSession 截断后的块集也被如实描述（截断后可能不含
-        // 该组任何题，旧文案仍写该组是同一类失真）。
-        scopeLabel = _scopeLabelForBlocks(blocks);
-      } else {
-        scopeLabel = _scopeLabelForFilters();
-      }
-    }
-    if (blocks.isEmpty) return;
-    setState(() {
-      _blocks = blocks;
-      _bi = bi;
-      _ci = ci;
-      _phase = _Phase.recall;
-      _checks.clear();
-      _skips.clear();
-      _curedNow = 0;
-      _changes.clear();
-      _answerShown = !_settings.redoAnswerHidden;
-      _scopeLabel = scopeLabel;
-      _saveError = false;
-      _inSession = true;
-      _showSummary = false;
-    });
-    _beginCause();
-    await _loadHistoryForSession();
-  }
-
-  /// 新开会话的范围文案：按当前学科 / 错因筛选写（SR-P2-57）。
-  String _scopeLabelForFilters() {
-    final subject =
-        _subjectFilter == null ? null : _subjectOf(_subjectFilter!).name;
-    if (subject != null && _causeFilter != '全部') {
-      return '$subject · $_causeFilter';
-    }
-    if (_causeFilter != '全部') return '错因「$_causeFilter」';
-    if (subject != null) return '$subject这一科';
-    return '全部待解决错因';
-  }
-
-  /// 断点队列的范围文案（SR-P2-57）：按队列里实际的学科 / 错因写。
-  String _scopeLabelForBlocks(List<_CauseBlock> blocks) {
-    final subjects = <String>{};
-    final causes = <String>{};
-    for (final b in blocks) {
-      final q = _questionOf(b.questionId);
-      if (q != null) subjects.add(_subjectOf(q.subjectId).name);
-      causes.addAll(b.causes);
-    }
-    if (subjects.length == 1 && causes.length == 1) {
-      return '${subjects.single} · ${causes.single}';
-    }
-    if (subjects.length == 1) return '${subjects.single}这一科';
-    if (causes.length == 1) return '错因「${causes.single}」';
-    return '全部待解决错因';
-  }
-
-  Question? _questionOf(String questionId) {
-    for (final g in [..._groups, ..._curedGroups]) {
-      for (final it in g.items) {
-        if (it.question.id == questionId) return it.question;
-      }
-    }
-    return null;
-  }
-
-  _CauseBlock get _currentBlock => _blocks[_bi];
-
-  Question? get _currentQuestion => _questionOf(_currentBlock.questionId);
-
-  String get _currentCause => _currentBlock.causes[_ci];
-
-  CauseRecord? _recordOf(String questionId, String cause) {
-    final rs = _pendingByQ[questionId];
-    if (rs != null) {
-      for (final r in rs) {
-        if (r.cause == cause) return r;
-      }
-    }
-    for (final g in _curedGroups) {
-      for (final it in g.items) {
-        if (it.question.id == questionId && it.record.cause == cause) {
-          return it.record;
-        }
-      }
-    }
-    return null;
-  }
-
-  void _beginCause() {
-    _remedyController.clear();
-    _answerShown = !_settings.redoAnswerHidden;
-    _phase = _Phase.recall;
-  }
-
-  /// 扁平队列 + 当前位置（暂停保存用，与基线 `review_state` 同格式）。
-  (List<ReviewQueueItem>, int) _flatQueue() {
-    final flat = <ReviewQueueItem>[];
-    var pos = 0;
-    for (var i = 0; i < _blocks.length; i++) {
-      for (var j = 0; j < _blocks[i].causes.length; j++) {
-        if (i == _bi && j == _ci) pos = flat.length;
-        flat.add(ReviewQueueItem(
-            questionId: _blocks[i].questionId, cause: _blocks[i].causes[j]));
-      }
-    }
-    return (flat, pos);
-  }
-
-  Future<void> _pauseSession() async {
-    final (queue, position) = _flatQueue();
-    await widget.repo.saveReviewState(queue: queue, position: position);
-    if (!mounted) return;
-    setState(() => _inSession = false);
-    await _load();
-  }
-
-  Future<void> _backToList() async {
-    await widget.repo.clearReviewState();
-    if (!mounted) return;
-    setState(() {
-      _inSession = false;
-      _showSummary = false;
-    });
-    await _load();
-  }
-
-  void _advanceBlock() {
-    _bi++;
-    if (_bi >= _blocks.length) {
-      _finishSession();
-      return;
-    }
-    _ci = 0;
-    _checks.clear();
-    setState(_beginCause);
-  }
-
-  Future<void> _finishSession() async {
-    await widget.repo.clearReviewState();
-    final records = await widget.repo.causeRecords();
-    final questions = await widget.repo.all(includeArchived: true);
-    final joinedIds = {
-      for (final q in questions)
-        // B6：与主列表同口径，已归档题不计入剩余（记录保留，取消归档回来）。
-        if (q.reviewJoined && q.isOrganized && !q.isArchived) q.id,
-    };
-    final remaining = records
-        .where((r) =>
-            joinedIds.contains(r.questionId) &&
-            (r.status != CauseStatus.solved || r.isRecheckDue))
-        .length;
-    if (!mounted) return;
-    setState(() {
-      _summaryRemaining = remaining;
-      _showSummary = true;
-    });
-    await _load();
-  }
-
-  void _skipCurrent() {
-    final qid = _currentBlock.questionId;
-    final cause = _currentCause;
-    final key = '$qid|$cause';
-    final count = (_skips[key] ?? 0) + 1;
-    _skips[key] = count;
-    setState(() {
-      _currentBlock.causes.removeAt(_ci);
-      if (count < _settings.skipLimit) {
-        // 第 1 次跳过：追加单错因块到队尾。
-        _blocks.add(_CauseBlock(questionId: qid, causes: [cause]));
-      }
-      // 第 2 次跳过：留到下次（本轮不再出现）。
-      if (_currentBlock.causes.isEmpty) {
-        _blocks.removeAt(_bi);
-        _ci = 0;
-        _phase = _Phase.recall;
-        if (_bi >= _blocks.length) {
-          _finishSession();
-          return;
-        }
-      } else {
-        if (_ci >= _currentBlock.causes.length) {
-          // 跳过的是本块最后一个错因：块里剩下的错因都已走完
-          // ①② 步，直接进第 ③ 步重做。_ci 仍钳回块内末位
-          //（_buildSession 取 _currentCause 查记录，越界会抛
-          // RangeError），但不再回到 recall 重新呈现该错因
-          //（SR-P1-13：补救已写完，不应倒退）。
-          _ci = _currentBlock.causes.length - 1;
-          _phase = _Phase.redo;
-        } else {
-          _phase = _Phase.recall;
-        }
-      }
-      _remedyController.clear();
-      _answerShown = !_settings.redoAnswerHidden;
-    });
-  }
-
-  Future<void> _nextFromRemedy() async {
-    final record = _recordOf(_currentBlock.questionId, _currentCause);
-    if (record != null && _remedyController.text.trim().isNotEmpty) {
-      await widget.repo.saveRemedy(record, _remedyController.text);
-    }
-    if (!mounted) return;
-    setState(() {
-      if (_ci < _currentBlock.causes.length - 1) {
-        _ci++;
-        _beginCause();
-      } else {
-        _phase = _Phase.redo;
-        _answerShown = !_settings.redoAnswerHidden;
-      }
-    });
-  }
-
-  Future<void> _finishQuestion() async {
-    final block = _currentBlock;
-    final q = _currentQuestion;
-    if (q == null) {
-      _advanceBlock();
-      return;
-    }
-    for (final cause in block.causes) {
-      final choiceLabel = _checks[cause];
-      if (choiceLabel == null) continue;
-      // 自查按钮存的是中文文案，仓库要 solved / unsolved / unsure 编码。
-      final choice = switch (choiceLabel) {
-        '已解决' => 'solved',
-        '未解决' => 'unsolved',
-        _ => 'unsure',
-      };
-      final record = _recordOf(block.questionId, cause);
-      if (record == null) continue;
-      final before = record.status.label;
-      final wasRecheck = record.isRecheckDue;
-      if (choice == 'unsure') {
-        // 不确定不算，不改记录；总结里留一行说明。
-        _changes.add(_SessionChange(
-          questionTitle: q.title,
-          subjectName: _subjectOf(q.subjectId).name,
-          cause: cause,
-          before: before,
-          after: before,
-          note: '选了不确定，不算，下次重新练这道题再自查一次',
-        ));
-        continue;
-      }
-      late CauseRecord updated;
-      try {
-        updated = await widget.repo.recordSelfCheck(
-          record,
-          choice,
-          cureChecks: _settings.cureChecks,
-          recheckIntervalDays: _settings.recheckIntervalDays,
-          // 待定1：复查通过不加计数（HTML 口径）。
-          isRecheck: wasRecheck,
-        );
-      } catch (_) {
-        if (!mounted) return;
-        setState(() => _saveError = true);
-        return;
-      }
-      final after = updated.status.label;
-      String note;
-      if (wasRecheck) {
-        note = choice == 'solved'
-            ? '复查通过，下次复查 ${_fmtDate(updated.recheckDate!)}'
-            : '复查没过，打回解决中';
-      } else if (choice == 'solved') {
-        note = updated.status == CauseStatus.solved
-            ? '已解决，下次复查 ${_fmtDate(updated.recheckDate!)}'
-            : '还差 ${_settings.cureChecks - updated.solvedCount} 次「已解决」解决';
-      } else {
-        note = '错因未解决，继续解决（答对了题也不算掌握）';
-      }
-      if (before != '已解决' && after == '已解决') _curedNow++;
-      _changes.add(_SessionChange(
-        questionTitle: q.title,
-        subjectName: _subjectOf(q.subjectId).name,
-        cause: cause,
-        before: before,
-        after: after,
-        recheckDate:
-            updated.status == CauseStatus.solved ? updated.recheckDate : null,
-        note: note,
-      ));
-    }
-    if (!mounted) return;
-    _advanceBlock();
-  }
-
-  String _fmtDate(DateTime d) =>
-      '${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
-
-  String _fmtMd(DateTime d) => '${d.month}-${d.day}';
-
-  String _historyLabel(String r) => switch (r) {
-        'solved' => '已解决',
-        'unsolved' => '未解决',
-        _ => '不确定',
-      };
-
-  // ---------- 构建 ----------
-
   @override
   Widget build(BuildContext context) {
-    if (_loading) {
+    // 只订阅模式切换要的四个字段：自查点选（只改 `checks`）不会
+    // 让整页重建，只有自查步自己重建。
+    final (loading, inSession, showSummary, causeKey) =
+        ref.watch(reviewProvider.select(
+      (s) => (s.loading, s.inSession, s.showSummary, s.sessionCauseKey),
+    ));
+    if (causeKey != _seenCauseKey) {
+      _seenCauseKey = causeKey;
+      // build 里不直接改控制器（会触 TextField 的监听重建），
+      // 下一帧再清；测试里 `pumpAndSettle` 后已是清空后的状态。
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _remedyController.clear();
+      });
+    }
+    if (loading) {
       return const Center(child: CircularProgressIndicator());
     }
-    if (_inSession) {
-      return _showSummary ? _buildSummary() : _buildSession();
+    if (inSession) {
+      // 原 build 的口径：会话中先判总结（`_showSummary ? _buildSummary()
+      // : _buildSession()`），会话结束出总结页时 `inSession` 仍为真，
+      // 不能先按 `inSession` 直接回会话视图。
+      if (showSummary) return const _SummaryView();
+      return _SessionView(
+        remedyController: _remedyController,
+        onOpenDetail: widget.onOpenDetail,
+      );
     }
-    return _buildList();
+    if (showSummary) return const _SummaryView();
+    return _ListView(onGoWrongbook: widget.onGoWrongbook);
   }
+}
 
-  Widget _centered(Widget child) {
-    final scale = qmScaleOf(context);
-    return SingleChildScrollView(
-      padding: DesignTokens.scaled(scale).contentPadding,
-      child: Align(
-        alignment: Alignment.topCenter,
-        child: ConstrainedBox(
-          constraints: BoxConstraints(
-            maxWidth: DesignTokens.reviewContentMaxWidth * scale,
-          ),
-          child: child,
+Widget _centered(BuildContext context, Widget child) {
+  final scale = qmScaleOf(context);
+  return SingleChildScrollView(
+    padding: DesignTokens.scaled(scale).contentPadding,
+    child: Align(
+      alignment: Alignment.topCenter,
+      child: ConstrainedBox(
+        constraints: BoxConstraints(
+          maxWidth: DesignTokens.reviewContentMaxWidth * scale,
         ),
+        child: child,
       ),
-    );
-  }
+    ),
+  );
+}
 
-  Widget _buildList() {
+String _historyLabel(String r) => switch (r) {
+      'solved' => '已解决',
+      'unsolved' => '未解决',
+      _ => '不确定',
+    };
+
+/// 下拉（HTML `.nb-fsel`：36 高、13.5px、line-strong 边、圆角 10；
+/// 与错题本 `_styledDropdown` 同款）。
+Widget _styledDropdown<T>(
+  BuildContext context, {
+  required T? value,
+  required List<DropdownMenuItem<T>> items,
+  required ValueChanged<T?> onChanged,
+}) {
+  final scale = qmScaleOf(context);
+  final palette = DesignTokens.of(Theme.of(context).brightness);
+  return Container(
+    height: 36 * scale,
+    padding: EdgeInsets.symmetric(horizontal: 10 * scale),
+    decoration: BoxDecoration(
+      color: palette.surface,
+      border: Border.all(color: palette.lineStrong),
+      borderRadius: BorderRadius.circular(10 * scale),
+    ),
+    child: DropdownButtonHideUnderline(
+      child: DropdownButton<T>(
+        value: value,
+        isExpanded: true,
+        icon: const QmGlyph(QmGlyphs.chevronDown, size: 14),
+        style: TextStyle(
+          fontSize: DesignTokens.filterSelectFontSize,
+          color: palette.ink,
+        ),
+        items: items,
+        onChanged: onChanged,
+      ),
+    ),
+  );
+}
+
+// ---------- 列表 ----------
+
+/// 复习列表（分组、筛选、分页、已解决区、未加入盒、恢复条）。
+class _ListView extends ConsumerWidget {
+  const _ListView({required this.onGoWrongbook});
+
+  final VoidCallback onGoWrongbook;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final st = ref.watch(reviewProvider);
+    final notifier = ref.read(reviewProvider.notifier);
     final scale = qmScaleOf(context);
-    final pageGroups = _pageGroups;
-    final (pendCount, checkCount, curedCount) = _metaCounts;
-    final hasData = _groups.isNotEmpty || _curedGroups.isNotEmpty;
+    final pageGroups = st.pageGroups;
+    final (pendCount, checkCount, curedCount) = st.metaCounts;
+    final hasData = st.groups.isNotEmpty || st.curedGroups.isNotEmpty;
     return _centered(
+      context,
       Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text('复习', style: Theme.of(context).textTheme.titleLarge),
           SizedBox(height: 14 * scale),
           // 读库失败（SR-P2-48）：出错误横幅 + 重试，已有内容留住。
-          if (_loadError && !_errorDismissed)
+          if (st.loadError && !st.errorDismissed)
             Padding(
               padding: EdgeInsets.only(bottom: 14 * scale),
               child: QmBanner(
                 tone: QmBannerTone.error,
                 message: '复习数据读取失败，已显示上次成功加载的内容。',
                 actions: [
-                  QmBannerAction(label: '重试', onPressed: _retryLoad),
+                  QmBannerAction(
+                    label: '重试',
+                    onPressed: notifier.retryLoad,
+                  ),
                 ],
-                onDismiss: () => setState(() => _errorDismissed = true),
+                onDismiss: notifier.dismissLoadError,
               ),
             ),
           // 首次加载即失败（从未成功加载过）：横幅之外再给一个显眼的
           // 重试按钮，不只留空列表。
-          if (_loadError && !_hasLoaded)
+          if (st.loadError && !st.hasLoaded)
             Padding(
               padding: EdgeInsets.only(bottom: 14 * scale),
               child: QmButton(
                 label: '重新加载',
-                onPressed: _retryLoad,
+                onPressed: notifier.retryLoad,
               ),
             ),
-          if (_resume != null && _groups.isNotEmpty) _buildResumeBar(),
-          if (_resume == null && _groups.isNotEmpty) ...[
+          if (st.resume != null && st.groups.isNotEmpty)
+            _buildResumeBar(context, ref, st),
+          if (st.resume == null && st.groups.isNotEmpty) ...[
             QmButton(
               label: '开始解决',
-              onPressed: () => _startSession(),
+              onPressed: () => notifier.startSession(),
             ),
             SizedBox(height: 14 * scale),
           ],
@@ -907,28 +262,28 @@ class _ReviewPageState extends State<ReviewPage> {
               description:
                   '在题目详情的「复习记录」里点「加入复习」，这道题的错因才会到这里来解决。',
               actionLabel: '去错题本选题',
-              onAction: widget.onGoWrongbook,
+              onAction: onGoWrongbook,
             ),
           ] else ...[
-            _buildMetaRow(pendCount, checkCount, curedCount),
-            _buildToolbar(),
+            _buildMetaRow(context, st, pendCount, checkCount, curedCount),
+            _buildToolbar(context, ref, st),
             if (pageGroups.isNotEmpty) ...[
-              _buildPendHead(),
-              ..._pageGroups.map(_buildGroupRow),
-              _buildPager(),
-            ] else if (_groups.isNotEmpty) ...[
+              _buildPendHead(context),
+              ...pageGroups.map((g) => _buildGroupRow(context, ref, g)),
+              _buildPager(context, ref, st),
+            ] else if (st.groups.isNotEmpty) ...[
               _DetailBox(
                 child: const Text('当前筛选下没有待解决错因，换个学科 / 错因试试。'),
               ),
             ],
-            if (_filteredCured.isNotEmpty) ...[
+            if (st.filteredCured.isNotEmpty) ...[
               SizedBox(height: 14 * scale),
-              _buildCuredSection(),
+              _buildCuredSection(context, ref, st),
             ],
           ],
-          if (_notJoined.isNotEmpty) ...[
+          if (st.notJoined.isNotEmpty) ...[
             SizedBox(height: 14 * scale),
-            _buildNotJoinedBox(),
+            _buildNotJoinedBox(context, ref, st),
           ],
         ],
       ),
@@ -936,14 +291,14 @@ class _ReviewPageState extends State<ReviewPage> {
   }
 
   /// “上次解决到一半”恢复条（HTML `revListHTML` 的 detailbox）。
-  Widget _buildResumeBar() {
+  Widget _buildResumeBar(BuildContext context, WidgetRef ref, ReviewState st) {
     final scale = qmScaleOf(context);
-    final resume = _resume!;
+    final notifier = ref.read(reviewProvider.notifier);
+    final resume = st.resume!;
     final block = resume.blocks[resume.blockIndex];
-    final q = _questionOf(block.questionId);
+    final q = st.questionOf(block.questionId);
     final cause = block.causes[resume.causeIndex];
-    final subjectName =
-        q == null ? '' : _subjectOf(q.subjectId).name;
+    final subjectName = q == null ? '' : st.subjectOf(q.subjectId).name;
     return Padding(
       padding: EdgeInsets.only(bottom: 14 * scale),
       child: _DetailBox(
@@ -971,16 +326,12 @@ class _ReviewPageState extends State<ReviewPage> {
               children: [
                 QmButton(
                   label: '继续解决',
-                  onPressed: () => _startSession(resume: true),
+                  onPressed: () => notifier.startSession(resume: true),
                 ),
                 QmButton(
                   label: '从头开始',
                   variant: QmButtonVariant.secondary,
-                  onPressed: () async {
-                    await widget.repo.clearReviewState();
-                    _resume = null;
-                    await _startSession();
-                  },
+                  onPressed: notifier.startOver,
                 ),
               ],
             ),
@@ -990,7 +341,13 @@ class _ReviewPageState extends State<ReviewPage> {
     );
   }
 
-  Widget _buildMetaRow(int pend, int check, int cured) {
+  Widget _buildMetaRow(
+    BuildContext context,
+    ReviewState st,
+    int pend,
+    int check,
+    int cured,
+  ) {
     final scale = qmScaleOf(context);
     final palette = DesignTokens.of(Theme.of(context).brightness);
     final metaStyle = TextStyle(
@@ -1021,7 +378,7 @@ class _ReviewPageState extends State<ReviewPage> {
             QmStatusPill.tone(label: '复查 $check 道', tone: QmTone.error),
           Text('已解决 $cured 道', style: metaStyle),
           Text(
-            _settings.reviewSort == 'subject'
+            st.settings.reviewSort == 'subject'
                 ? '列表按学科排（数学 / 英语 / 政治），同一科里先加入的先解决'
                 : '列表按加入时间排，先加入的先解决',
             style: metaStyle,
@@ -1031,9 +388,10 @@ class _ReviewPageState extends State<ReviewPage> {
     );
   }
 
-  Widget _buildToolbar() {
+  Widget _buildToolbar(BuildContext context, WidgetRef ref, ReviewState st) {
     final scale = qmScaleOf(context);
     final palette = DesignTokens.of(Theme.of(context).brightness);
+    final notifier = ref.read(reviewProvider.notifier);
     final labelStyle = TextStyle(
       fontSize: DesignTokens.filterCellLabelFontSize,
       fontWeight: FontWeight.w700,
@@ -1050,37 +408,34 @@ class _ReviewPageState extends State<ReviewPage> {
           SizedBox(
             width: 120 * scale,
             child: _styledDropdown<String>(
-              value: _subjectFilter ?? '全部',
+              context,
+              value: st.subjectFilter ?? '全部',
               items: [
                 const DropdownMenuItem(value: '全部', child: Text('全部')),
-                for (final s in _subjects)
+                for (final s in st.subjects)
                   DropdownMenuItem(value: s.id, child: Text(s.name)),
               ],
-              onChanged: (v) => setState(() {
-                _subjectFilter = v == '全部' ? null : v;
-                _resetPage();
-              }),
+              onChanged: (v) =>
+                  notifier.setSubjectFilter(v == '全部' ? null : v),
             ),
           ),
           Text('错因', style: labelStyle),
           SizedBox(
             width: 160 * scale,
             child: _styledDropdown<String>(
-              // SR2-34：就地 effectiveValue——与 _load 里的复位双防线；
+              context,
+              // SR2-34：就地 effectiveValue——与 load 里的复位双防线；
               // _causeFilter 失效时显示“全部”，不在 build 里写回状态。
-              value: _causeFilter == '全部' ||
-                      _allCauses.contains(_causeFilter)
-                  ? _causeFilter
+              value: st.causeFilter == '全部' ||
+                      st.allCauses.contains(st.causeFilter)
+                  ? st.causeFilter
                   : '全部',
               items: [
                 const DropdownMenuItem(value: '全部', child: Text('全部')),
-                for (final c in _allCauses)
+                for (final c in st.allCauses)
                   DropdownMenuItem(value: c, child: Text(c)),
               ],
-              onChanged: (v) => setState(() {
-                _causeFilter = v ?? '全部';
-                _resetPage();
-              }),
+              onChanged: (v) => notifier.setCauseFilter(v ?? '全部'),
             ),
           ),
         ],
@@ -1088,7 +443,7 @@ class _ReviewPageState extends State<ReviewPage> {
     );
   }
 
-  Widget _buildPendHead() {
+  Widget _buildPendHead(BuildContext context) {
     final scale = qmScaleOf(context);
     final palette = DesignTokens.of(Theme.of(context).brightness);
     return Padding(
@@ -1110,10 +465,14 @@ class _ReviewPageState extends State<ReviewPage> {
     );
   }
 
-  Widget _buildGroupRow(_CauseGroup g) {
+  Widget _buildGroupRow(BuildContext context, WidgetRef ref, CauseGroup g) {
     final scale = qmScaleOf(context);
     final palette = DesignTokens.of(Theme.of(context).brightness);
-    final subject = _subjectOf(g.subjectId);
+    final notifier = ref.read(reviewProvider.notifier);
+    // 组所在学科名与色取自当前 state（build 时 ref.watch 已订阅整份
+    // state，列表重建与原来整页 setState 同范围）。
+    final st = ref.read(reviewProvider);
+    final subject = st.subjectOf(g.subjectId);
     final subjectName = subject.name;
     final titles = g.items.map((it) => it.question.title).join('、');
     return Container(
@@ -1178,18 +537,19 @@ class _ReviewPageState extends State<ReviewPage> {
             label: '开始解决',
             size: QmButtonSize.small,
             variant: QmButtonVariant.secondary,
-            onPressed: () => _startSession(fromGroup: g),
+            onPressed: () => notifier.startSession(fromGroup: g),
           ),
         ],
       ),
     );
   }
 
-  Widget _buildPager() {
+  Widget _buildPager(BuildContext context, WidgetRef ref, ReviewState st) {
     final scale = qmScaleOf(context);
     final palette = DesignTokens.of(Theme.of(context).brightness);
-    final totalPages = _totalPages;
-    final page = _page.clamp(1, totalPages);
+    final notifier = ref.read(reviewProvider.notifier);
+    final totalPages = st.totalPages;
+    final page = st.page.clamp(1, totalPages);
     return Container(
       margin: EdgeInsets.only(top: DesignTokens.pagerMarginTop * scale),
       padding: EdgeInsets.only(top: DesignTokens.pagerPaddingTop * scale),
@@ -1202,7 +562,7 @@ class _ReviewPageState extends State<ReviewPage> {
         crossAxisAlignment: WrapCrossAlignment.center,
         children: [
           Text(
-            '共 ${_filtered.length} 条 · 第 $page / $totalPages 页',
+            '共 ${st.filtered.length} 条 · 第 $page / $totalPages 页',
             style: TextStyle(
               fontSize: DesignTokens.pagerFontSize,
               color: palette.muted,
@@ -1222,11 +582,12 @@ class _ReviewPageState extends State<ReviewPage> {
               SizedBox(
                 width: 84 * scale,
                 child: _styledDropdown<int>(
-                  value: _pageSize,
+                  context,
+                  value: st.pageSize,
                   // 当前值恒在选项里：设置只会存 10/20/30/40/50，
                   // 但容错——万一库里是别的值也别让下拉断言。
                   items: () {
-                    final sizes = {10, 20, 30, 40, 50, _pageSize}.toList()
+                    final sizes = {10, 20, 30, 40, 50, st.pageSize}.toList()
                       ..sort();
                     return sizes
                         .map((n) =>
@@ -1237,11 +598,8 @@ class _ReviewPageState extends State<ReviewPage> {
                     if (v == null) return;
                     // P0B2：本地行为（与错题本一致）——只改本页 _pageSize
                     // 并回第 1 页，不写库、不改设置默认值；
-                    // 初值只在首次 _load 里从设置默认值读（SR-P1-12）。
-                    setState(() {
-                      _pageSize = v;
-                      _resetPage();
-                    });
+                    // 初值只在首次 load 里从设置默认值读（SR-P1-12）。
+                    notifier.setPageSize(v);
                   },
                 ),
               ),
@@ -1266,7 +624,7 @@ class _ReviewPageState extends State<ReviewPage> {
                 size: QmButtonSize.small,
                 variant: QmButtonVariant.secondary,
                 onPressed:
-                    page > 1 ? () => setState(() => _page = page - 1) : null,
+                    page > 1 ? () => notifier.setPage(page - 1) : null,
               ),
               if (totalPages > 1)
                 for (var p = 1; p <= totalPages; p++)
@@ -1277,14 +635,14 @@ class _ReviewPageState extends State<ReviewPage> {
                         ? QmButtonVariant.primary
                         : QmButtonVariant.plain,
                     onPressed:
-                        p == page ? null : () => setState(() => _page = p),
+                        p == page ? null : () => notifier.setPage(p),
                   ),
               QmButton(
                 label: '下一页',
                 size: QmButtonSize.small,
                 variant: QmButtonVariant.secondary,
                 onPressed: page < totalPages
-                    ? () => setState(() => _page = page + 1)
+                    ? () => notifier.setPage(page + 1)
                     : null,
               ),
             ],
@@ -1294,15 +652,17 @@ class _ReviewPageState extends State<ReviewPage> {
     );
   }
 
-  Widget _buildCuredSection() {
+  Widget _buildCuredSection(
+      BuildContext context, WidgetRef ref, ReviewState st) {
     final scale = qmScaleOf(context);
     final palette = DesignTokens.of(Theme.of(context).brightness);
     // 已解决区也分页（SR-P2-47）：与待解决列表同一每页条数，
     // 不再全量渲染到底。
-    final groups = _filteredCured;
-    final totalPages = (groups.length / _pageSize).ceil().clamp(1, 9999);
-    final page = _curedPage.clamp(0, totalPages - 1);
-    final items = groups.skip(page * _pageSize).take(_pageSize).toList();
+    final groups = st.filteredCured;
+    final totalPages = (groups.length / st.pageSize).ceil().clamp(1, 9999);
+    final page = st.curedPage.clamp(0, totalPages - 1);
+    final items =
+        groups.skip(page * st.pageSize).take(st.pageSize).toList();
     return Container(
       margin:
           EdgeInsets.only(bottom: DesignTokens.reviewCuredMarginBottom * scale),
@@ -1326,7 +686,7 @@ class _ReviewPageState extends State<ReviewPage> {
               border: Border(bottom: BorderSide(color: palette.line)),
             ),
             child: Text(
-              '已解决的错因（点一行看解决记录 · 已解决满 ${_settings.recheckIntervalDays} 天会自动回到上面的列表复查）',
+              '已解决的错因（点一行看解决记录 · 已解决满 ${st.settings.recheckIntervalDays} 天会自动回到上面的列表复查）',
               style: TextStyle(
                 fontSize: DesignTokens.reviewPendHeadFontSize,
                 fontWeight: FontWeight.w700,
@@ -1335,7 +695,7 @@ class _ReviewPageState extends State<ReviewPage> {
               ),
             ),
           ),
-          for (final g in items) _buildCuredRow(g),
+          for (final g in items) _buildCuredRow(context, ref, st, g),
           if (totalPages > 1)
             Container(
               padding: EdgeInsets.symmetric(
@@ -1360,7 +720,9 @@ class _ReviewPageState extends State<ReviewPage> {
                     size: QmButtonSize.small,
                     variant: QmButtonVariant.secondary,
                     onPressed: page > 0
-                        ? () => setState(() => _curedPage = page - 1)
+                        ? () => ref
+                            .read(reviewProvider.notifier)
+                            .setCuredPage(page - 1)
                         : null,
                   ),
                   SizedBox(width: 6 * scale),
@@ -1369,7 +731,9 @@ class _ReviewPageState extends State<ReviewPage> {
                     size: QmButtonSize.small,
                     variant: QmButtonVariant.secondary,
                     onPressed: page < totalPages - 1
-                        ? () => setState(() => _curedPage = page + 1)
+                        ? () => ref
+                            .read(reviewProvider.notifier)
+                            .setCuredPage(page + 1)
                         : null,
                   ),
                 ],
@@ -1380,19 +744,20 @@ class _ReviewPageState extends State<ReviewPage> {
     );
   }
 
-  Widget _buildCuredRow(_CauseGroup g) {
+  Widget _buildCuredRow(
+      BuildContext context, WidgetRef ref, ReviewState st, CauseGroup g) {
     final scale = qmScaleOf(context);
     final palette = DesignTokens.of(Theme.of(context).brightness);
     final key = '${g.subjectId}|${g.cause}';
-    final open = _openCuredKey == key;
-    final subject = _subjectOf(g.subjectId);
+    final open = st.openCuredKey == key;
+    final subject = st.subjectOf(g.subjectId);
     final subjectName = subject.name;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         InkWell(
           onTap: () =>
-              setState(() => _openCuredKey = open ? null : key),
+              ref.read(reviewProvider.notifier).toggleCured(key),
           child: Container(
             padding: EdgeInsets.symmetric(
               vertical: DesignTokens.reviewCuredHeadPaddingV * scale,
@@ -1482,9 +847,12 @@ class _ReviewPageState extends State<ReviewPage> {
 
   String _curedDetail(CauseRecord r) {
     final parts = <String>[];
-    if (r.lastCheck != null) parts.add('解决于 ${_fmtDate(r.lastCheck!)}');
+    if (r.lastCheck != null) {
+      parts.add('解决于 ${formatReviewDate(r.lastCheck!)}');
+    }
     if (r.recheckDate != null) {
-      parts.add('下次复查 ${_fmtDate(r.recheckDate!)}（${_fmtMd(r.recheckDate!)}）');
+      parts.add(
+          '下次复查 ${formatReviewDate(r.recheckDate!)}（${formatReviewMd(r.recheckDate!)}）');
     }
     var text = parts.join(' · ');
     if (r.remedyHistory.isNotEmpty) {
@@ -1493,18 +861,19 @@ class _ReviewPageState extends State<ReviewPage> {
     return text;
   }
 
-  Widget _buildNotJoinedBox() {
+  Widget _buildNotJoinedBox(
+      BuildContext context, WidgetRef ref, ReviewState st) {
     // 按学科分行；超过 10 道默认只列前 10 道，可展开看全部（SR-P2-47）。
-    // 列出来的都是真能加入复习的题（见 _load 的 notJoined 过滤）。
+    // 列出来的都是真能加入复习的题（见 load 的 notJoined 过滤）。
     final bySubject = <String, List<Question>>{};
-    for (final q in _notJoined) {
+    for (final q in st.notJoined) {
       (bySubject[q.subjectId] ??= []).add(q);
     }
     final ordered = <String>[
-      for (final s in _subjects)
+      for (final s in st.subjects)
         if (bySubject.containsKey(s.id)) s.id,
       for (final id in bySubject.keys)
-        if (!_subjects.any((s) => s.id == id)) id,
+        if (!st.subjects.any((s) => s.id == id)) id,
     ];
     const shownLimit = 10;
     var shown = 0;
@@ -1512,15 +881,15 @@ class _ReviewPageState extends State<ReviewPage> {
     for (final sid in ordered) {
       final names = <String>[];
       for (final q in bySubject[sid]!) {
-        if (!_notJoinedExpanded && shown >= shownLimit) break;
+        if (!st.notJoinedExpanded && shown >= shownLimit) break;
         names.add('「${q.title}」');
         shown++;
       }
       if (names.isEmpty) continue;
-      lines.add(Text('${_subjectOf(sid).name}${names.join('、')}'));
-      if (!_notJoinedExpanded && shown >= shownLimit) break;
+      lines.add(Text('${st.subjectOf(sid).name}${names.join('、')}'));
+      if (!st.notJoinedExpanded && shown >= shownLimit) break;
     }
-    final total = _notJoined.length;
+    final total = st.notJoined.length;
     return _DetailBox(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -1534,16 +903,17 @@ class _ReviewPageState extends State<ReviewPage> {
           if (total > shownLimit) ...[
             SizedBox(height: 6 * qmScaleOf(context)),
             QmButton(
-              label: _notJoinedExpanded ? '收起' : '展开全部（共 $total 道）',
+              label: st.notJoinedExpanded ? '收起' : '展开全部（共 $total 道）',
               size: QmButtonSize.small,
               variant: QmButtonVariant.secondary,
-              onPressed: () =>
-                  setState(() => _notJoinedExpanded = !_notJoinedExpanded),
+              onPressed: () => ref
+                  .read(reviewProvider.notifier)
+                  .toggleNotJoinedExpanded(),
             ),
           ],
           SizedBox(height: 6 * qmScaleOf(context)),
           Text(
-            '到这些题的题目详情「复习记录」里点「加入复习」才会进来；归档的题不出现在复习列表里；错因全部解决的题会自动离开列表，${_settings.recheckIntervalDays} 天后回来复查。',
+            '到这些题的题目详情「复习记录」里点「加入复习」才会进来；归档的题不出现在复习列表里；错因全部解决的题会自动离开列表，${st.settings.recheckIntervalDays} 天后回来复查。',
             style: TextStyle(
               fontSize: DesignTokens.bodySmallFontSize,
               color: DesignTokens.of(Theme.of(context).brightness).muted,
@@ -1553,41 +923,92 @@ class _ReviewPageState extends State<ReviewPage> {
       ),
     );
   }
+}
 
-  // ---------- 会话 ----------
+// ---------- 会话 ----------
 
-  Widget _buildSession() {
-    final q = _currentQuestion;
-    if (_blocks.isEmpty || q == null) return _buildSummary();
-    final block = _currentBlock;
-    final record = _recordOf(block.questionId, _currentCause);
-    final subjectName = _subjectOf(q.subjectId).name;
+/// 会话视图：头信息 + 步骤指示 + 当前步。只订阅 `phase`（步切换）
+/// 与“当前题是否还在”（详情里删题后切总结页）；自查点选只改
+/// `checks`，这里不订阅、不重建。
+class _SessionView extends ConsumerWidget {
+  const _SessionView({
+    required this.remedyController,
+    required this.onOpenDetail,
+  });
+
+  final TextEditingController remedyController;
+  final Future<void> Function(Question q, List<String> orderIds) onOpenDetail;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    // 题没了（会话里进详情删题）：切到总结页（原 `_buildSession`
+    // 开头的 `if (_blocks.isEmpty || q == null) return _buildSummary()`）。
+    final gone = ref.watch(reviewProvider.select(
+      (s) => !s.hasCurrentBlock || s.currentQuestion == null,
+    ));
+    if (gone) return const _SummaryView();
+    final phase = ref.watch(reviewProvider.select((s) => s.phase));
     return _centered(
+      context,
       Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          if (_saveError)
-            QmBanner(
-              tone: QmBannerTone.error,
-              message: '复习记录保存失败，本次自查还没有存下。请重试，或重启应用后再复习。',
-              onDismiss: () => setState(() => _saveError = false),
-            ),
-          _buildSessionMeta(q, subjectName),
+          _SessionSaveErrorBanner(),
+          _SessionMeta(onOpenDetail: onOpenDetail),
           SizedBox(height: 12 * qmScaleOf(context)),
-          _buildStepIndicator(),
+          _StepIndicator(phase: phase),
           SizedBox(height: 12 * qmScaleOf(context)),
-          if (_phase == _Phase.recall || _phase == _Phase.remedy)
-            _buildCauseMeta(record),
-          if (_phase == _Phase.recall) _buildStepCause(q),
-          if (_phase == _Phase.remedy) _buildStepRemedy(record),
-          if (_phase == _Phase.redo) _buildStepRedo(q),
-          if (_phase == _Phase.check) _buildStepCheck(block),
+          if (phase == ReviewPhase.recall || phase == ReviewPhase.remedy)
+            const _CauseMeta(),
+          if (phase == ReviewPhase.recall) const _StepCause(),
+          if (phase == ReviewPhase.remedy)
+            _StepRemedy(controller: remedyController),
+          if (phase == ReviewPhase.redo) const _StepRedo(),
+          if (phase == ReviewPhase.check) const _StepCheck(),
         ],
       ),
     );
   }
+}
 
-  Widget _buildSessionMeta(Question q, String subjectName) {
+/// 自查保存失败横幅（只订阅 `saveError`）。
+class _SessionSaveErrorBanner extends ConsumerWidget {
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final saveError = ref.watch(reviewProvider.select((s) => s.saveError));
+    if (!saveError) return const SizedBox.shrink();
+    return QmBanner(
+      tone: QmBannerTone.error,
+      message: '复习记录保存失败，本次自查还没有存下。请重试，或重启应用后再复习。',
+      onDismiss: () =>
+          ref.read(reviewProvider.notifier).dismissSaveError(),
+    );
+  }
+}
+
+/// 会话头：第几道题 · 范围文案、题名、详情入口、暂停。
+class _SessionMeta extends ConsumerWidget {
+  const _SessionMeta({required this.onOpenDetail});
+
+  final Future<void> Function(Question q, List<String> orderIds) onOpenDetail;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    // 选择器必须空安全：跳过把末块拿掉的瞬时态里当前题已为空，
+    // 但父级切总结页的重建还没跑，选择器会先被求值——抛错会污染通知。
+    final meta = ref.watch(reviewProvider.select((s) {
+      final q = s.currentQuestion;
+      if (q == null) return null;
+      return (
+        s.bi,
+        s.blocks.length,
+        s.scopeLabel,
+        q,
+        s.subjectOf(q.subjectId).name,
+      );
+    }));
+    if (meta == null) return const SizedBox.shrink();
+    final (bi, total, scopeLabel, question, subjectName) = meta;
     final scale = qmScaleOf(context);
     final palette = DesignTokens.of(Theme.of(context).brightness);
     final metaStyle = TextStyle(
@@ -1600,11 +1021,11 @@ class _ReviewPageState extends State<ReviewPage> {
       crossAxisAlignment: WrapCrossAlignment.center,
       children: [
         Text(
-          '第 ${_bi + 1} / ${_blocks.length} 道题 · $_scopeLabel',
+          '第 ${bi + 1} / $total 道题 · $scopeLabel',
           style: metaStyle,
         ),
         Text(
-          '$subjectName · ${sliceKindLabel(q.sliceKind)}｜${q.title}',
+          '$subjectName · ${sliceKindLabel(question.sliceKind)}｜${question.title}',
           style: metaStyle,
         ),
         QmButton(
@@ -1612,31 +1033,41 @@ class _ReviewPageState extends State<ReviewPage> {
           size: QmButtonSize.small,
           variant: QmButtonVariant.secondary,
           onPressed: () async {
+            final st = ref.read(reviewProvider);
+            final q = st.currentQuestion!;
             final orderIds =
-                _blocks.map((b) => b.questionId).toList();
-            await widget.onOpenDetail(q, orderIds);
-            await _load();
+                st.blocks.map((b) => b.questionId).toList();
+            await onOpenDetail(q, orderIds);
+            await ref.read(reviewProvider.notifier).load();
           },
         ),
         QmButton(
           label: '暂停',
           size: QmButtonSize.small,
           variant: QmButtonVariant.secondary,
-          onPressed: _pauseSession,
+          onPressed: () =>
+              ref.read(reviewProvider.notifier).pauseSession(),
         ),
       ],
     );
   }
+}
 
-  Widget _buildStepIndicator() {
+class _StepIndicator extends StatelessWidget {
+  const _StepIndicator({required this.phase});
+
+  final ReviewPhase phase;
+
+  @override
+  Widget build(BuildContext context) {
     final scale = qmScaleOf(context);
     final palette = DesignTokens.of(Theme.of(context).brightness);
-    final stepIdx = _phase.index;
+    final stepIdx = phase.index;
     return Wrap(
       spacing: 6 * scale,
       runSpacing: 6 * scale,
       children: [
-        for (var i = 0; i < _stepLabels.length; i++)
+        for (var i = 0; i < stepLabels.length; i++)
           Container(
             padding: EdgeInsets.symmetric(
               horizontal: 12 * scale,
@@ -1650,7 +1081,7 @@ class _ReviewPageState extends State<ReviewPage> {
               borderRadius: BorderRadius.circular(999 * scale),
             ),
             child: Text(
-              _stepLabels[i],
+              stepLabels[i],
               style: TextStyle(
                 fontSize: DesignTokens.reviewStepFontSize,
                 fontWeight: FontWeight.w700,
@@ -1661,11 +1092,36 @@ class _ReviewPageState extends State<ReviewPage> {
       ],
     );
   }
+}
 
-  Widget _buildCauseMeta(CauseRecord? record) {
+/// ①② 步的错因头：本题第几个错因、错因名、状态、复查标记、自查进度。
+class _CauseMeta extends ConsumerWidget {
+  const _CauseMeta();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    // 选择器必须空安全（见 `_SessionMeta`）：块被跳空的瞬时态里
+    // `currentBlock` 会越界，父级切总结页的重建还没跑。
+    final m = ref.watch(reviewProvider.select((s) {
+      if (!s.hasCurrentBlock) return null;
+      final block = s.currentBlock;
+      final cause = block.causes[s.ci];
+      final record = s.recordOf(block.questionId, cause);
+      return (
+        s.ci,
+        block.causes.length,
+        cause,
+        record?.status,
+        record?.solvedCount,
+        record?.isRecheckDue,
+        s.settings.cureChecks,
+      );
+    }));
+    if (m == null) return const SizedBox.shrink();
+    final (ci, total, cause, status, solvedCount, isRecheckDue, cureChecks) =
+        m;
     final scale = qmScaleOf(context);
     final palette = DesignTokens.of(Theme.of(context).brightness);
-    final block = _currentBlock;
     return Padding(
       padding: EdgeInsets.only(bottom: 12 * scale),
       child: Wrap(
@@ -1674,31 +1130,31 @@ class _ReviewPageState extends State<ReviewPage> {
         crossAxisAlignment: WrapCrossAlignment.center,
         children: [
           Text(
-            '本题错因 ${_ci + 1} / ${block.causes.length}',
+            '本题错因 ${ci + 1} / $total',
             style: TextStyle(
               fontSize: DesignTokens.reviewMetaFontSize,
               color: palette.muted,
             ),
           ),
           Text(
-            _currentCause,
+            cause,
             style: TextStyle(
               fontSize: DesignTokens.bodySmallFontSize,
               fontWeight: FontWeight.w700,
               color: palette.ink,
             ),
           ),
-          if (record != null)
-            QmStatusPill.cause(switch (record.status) {
+          if (status != null)
+            QmStatusPill.cause(switch (status) {
               CauseStatus.pending => QmCauseStatus.pending,
               CauseStatus.inProgress => QmCauseStatus.inProgress,
               CauseStatus.solved => QmCauseStatus.solved,
             }),
-          if (record != null && record.isRecheckDue)
+          if (isRecheckDue == true)
             QmStatusPill.tone(label: '复查 · 用原来这道题', tone: QmTone.error),
-          if (record != null)
+          if (solvedCount != null)
             Text(
-              '自查「已解决」${record.solvedCount} / ${_settings.cureChecks} 次',
+              '自查「已解决」$solvedCount / $cureChecks 次',
               style: TextStyle(
                 fontSize: DesignTokens.reviewMetaFontSize,
                 color: palette.muted,
@@ -1708,19 +1164,37 @@ class _ReviewPageState extends State<ReviewPage> {
       ),
     );
   }
+}
 
-  Widget _buildStepCause(Question q) {
+/// ① 看错因：题图 + 备注 + 上次自查。
+class _StepCause extends ConsumerWidget {
+  const _StepCause();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    // 选择器必须空安全（见 `_SessionMeta`）。
+    final m = ref.watch(reviewProvider.select((s) {
+      final q = s.currentQuestion;
+      if (q == null) return null;
+      final history = s.historyByQ[q.id];
+      return (
+        q,
+        history == null || history.isEmpty ? null : history.first,
+        s.subjectOf(q.subjectId),
+      );
+    }));
+    if (m == null) return const SizedBox.shrink();
+    final (question, lastCheck, subject) = m;
     final scale = qmScaleOf(context);
-    final history = _historyByQ[q.id];
-    final lastCheck = history == null || history.isEmpty ? null : history.first;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         QuestionSlice(
-          question: q,
-          subject: _subjectOf(q.subjectId),
+          question: question,
+          subject: subject,
           maxHeight: 220,
-          onTap: () => showQuestionZoomDialog(context, q, returnLabel: '复习'),
+          onTap: () =>
+              showQuestionZoomDialog(context, question, returnLabel: '复习'),
         ),
         SizedBox(height: 12 * scale),
         _DetailBox(
@@ -1728,15 +1202,15 @@ class _ReviewPageState extends State<ReviewPage> {
             children: [
               _KvRow(
                 label: '备注',
-                value: (q.notes == null || q.notes!.isEmpty)
+                value: (question.notes == null || question.notes!.isEmpty)
                     ? '待补充'
-                    : q.notes!,
+                    : question.notes!,
               ),
               if (lastCheck != null)
                 _KvRow(
                   label: '上次自查',
                   value:
-                      '${_fmtDate(lastCheck.reviewedAt)} · 「${_historyLabel(lastCheck.result)}」',
+                      '${formatReviewDate(lastCheck.reviewedAt)} · 「${_historyLabel(lastCheck.result)}」',
                 ),
             ],
           ),
@@ -1744,22 +1218,45 @@ class _ReviewPageState extends State<ReviewPage> {
         SizedBox(height: DesignTokens.reviewActsMarginTop * scale),
         _SessionActions(
           primaryLabel: '下一步：写补救',
-          onPrimary: () => setState(() => _phase = _Phase.remedy),
+          onPrimary: () => ref
+              .read(reviewProvider.notifier)
+              .setPhase(ReviewPhase.remedy),
           secondaryLabel: '跳过该题',
-          onSecondary: _skipCurrent,
+          onSecondary: () =>
+              ref.read(reviewProvider.notifier).skipCurrent(),
         ),
       ],
     );
   }
+}
 
-  Widget _buildStepRemedy(CauseRecord? record) {
-    final scale = qmScaleOf(context);
-    final palette = DesignTokens.of(Theme.of(context).brightness);
-    final lastRemedy =
+/// ② 写补救：上次补救 + 输入框。输入框控制器在 `_ReviewView`，
+/// 新错因开始时由它按 `sessionCauseKey` 变化清空。
+class _StepRemedy extends ConsumerWidget {
+  const _StepRemedy({required this.controller});
+
+  final TextEditingController controller;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    // 选择器必须空安全（见 `_SessionMeta`）。
+    final m = ref.watch(reviewProvider.select((s) {
+      if (!s.hasCurrentBlock) return null;
+      final block = s.currentBlock;
+      final cause = block.causes[s.ci];
+      final record = s.recordOf(block.questionId, cause);
+      return (
+        cause,
         record == null || record.remedyHistory.isEmpty
             ? null
-            : record.remedyHistory.first;
-    final isLastCause = _ci >= _currentBlock.causes.length - 1;
+            : record.remedyHistory.first,
+        s.ci >= block.causes.length - 1,
+      );
+    }));
+    if (m == null) return const SizedBox.shrink();
+    final (cause, lastRemedy, isLastCause) = m;
+    final scale = qmScaleOf(context);
+    final palette = DesignTokens.of(Theme.of(context).brightness);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -1786,7 +1283,7 @@ class _ReviewPageState extends State<ReviewPage> {
           TextSpan(
             children: [
               TextSpan(
-                text: '这次怎么补「$_currentCause」',
+                text: '这次怎么补「$cause」',
                 style: TextStyle(
                   fontSize: DesignTokens.detailFieldLabelFontSize,
                   fontWeight: FontWeight.w700,
@@ -1805,7 +1302,7 @@ class _ReviewPageState extends State<ReviewPage> {
         ),
         SizedBox(height: 5 * scale),
         TextField(
-          controller: _remedyController,
+          controller: controller,
           maxLines: 4,
           style: TextStyle(
             fontSize: DesignTokens.reviewRemedyFontSize,
@@ -1840,30 +1337,48 @@ class _ReviewPageState extends State<ReviewPage> {
         SizedBox(height: DesignTokens.reviewActsMarginTop * scale),
         _SessionActions(
           primaryLabel: isLastCause ? '下一步：重做' : '下一步：下个错因',
-          onPrimary: _nextFromRemedy,
+          onPrimary: () => ref
+              .read(reviewProvider.notifier)
+              .nextFromRemedy(controller.text),
           secondaryLabel: '跳过',
-          onSecondary: _skipCurrent,
+          onSecondary: () =>
+              ref.read(reviewProvider.notifier).skipCurrent(),
         ),
       ],
     );
   }
+}
 
-  Widget _buildStepRedo(Question q) {
+/// ③ 重做：题图 + 答案显隐。
+class _StepRedo extends ConsumerWidget {
+  const _StepRedo();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    // 选择器必须空安全（见 `_SessionMeta`）。
+    final m = ref.watch(reviewProvider.select((s) {
+      final q = s.currentQuestion;
+      if (q == null) return null;
+      return (q, s.answerShown, s.subjectOf(q.subjectId));
+    }));
+    if (m == null) return const SizedBox.shrink();
+    final (question, answerShown, subject) = m;
     final scale = qmScaleOf(context);
     final palette = DesignTokens.of(Theme.of(context).brightness);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         QuestionSlice(
-          question: q,
-          subject: _subjectOf(q.subjectId),
+          question: question,
+          subject: subject,
           maxHeight: 220,
-          onTap: () => showQuestionZoomDialog(context, q, returnLabel: '复习'),
+          onTap: () =>
+              showQuestionZoomDialog(context, question, returnLabel: '复习'),
         ),
         SizedBox(height: 6 * scale),
         Center(
           child: Text(
-            _answerShown
+            answerShown
                 ? '答案显示着（设置里选的默认显示）：对照答案把这道题重做一遍'
                 : '答案遮着：自己把这道题重做一遍，再点开答案对照',
             style: TextStyle(
@@ -1872,22 +1387,23 @@ class _ReviewPageState extends State<ReviewPage> {
             ),
           ),
         ),
-        if (_answerShown) ...[
+        if (answerShown) ...[
           SizedBox(height: 12 * scale),
           _DetailBox(
             child: Column(
               children: [
                 _KvRow(
                   label: '答案',
-                  value: (q.answer == null || q.answer!.isEmpty)
+                  value: (question.answer == null || question.answer!.isEmpty)
                       ? '待补充（未填写，如实显示）'
-                      : q.answer!,
+                      : question.answer!,
                 ),
                 _KvRow(
                   label: '解析',
-                  value: (q.explanation == null || q.explanation!.isEmpty)
+                  value: (question.explanation == null ||
+                          question.explanation!.isEmpty)
                       ? '待补充（未填写，如实显示）'
-                      : q.explanation!,
+                      : question.explanation!,
                 ),
               ],
             ),
@@ -1895,27 +1411,49 @@ class _ReviewPageState extends State<ReviewPage> {
         ],
         SizedBox(height: DesignTokens.reviewActsMarginTop * scale),
         _SessionActions(
-          primaryLabel: _answerShown ? '下一步：自查' : '看答案',
-          onPrimary: () => setState(() {
-            if (_answerShown) {
-              _phase = _Phase.check;
-              _checks.clear();
+          primaryLabel: answerShown ? '下一步：自查' : '看答案',
+          onPrimary: () {
+            final notifier = ref.read(reviewProvider.notifier);
+            if (answerShown) {
+              notifier.enterCheck();
             } else {
-              _answerShown = true;
+              notifier.setAnswerShown(true);
             }
-          }),
-          secondaryLabel: _answerShown ? '遮住答案' : null,
-          onSecondary:
-              _answerShown ? () => setState(() => _answerShown = false) : null,
+          },
+          secondaryLabel: answerShown ? '遮住答案' : null,
+          onSecondary: answerShown
+              ? () =>
+                  ref.read(reviewProvider.notifier).setAnswerShown(false)
+              : null,
         ),
       ],
     );
   }
+}
 
-  Widget _buildStepCheck(_CauseBlock block) {
+/// ④ 自查：本块全部错因同屏自查。只订阅当前块 + 自查选择 +
+/// 块下标 / 块数——点选只重建本步，不重建整个会话；每错因的
+/// 状态 / 次数用 `ref.read` 的当前快照渲染（自查步内记录不变，
+/// 记录变化时块一定跟着变，已在订阅里）。
+class _StepCheck extends ConsumerWidget {
+  const _StepCheck();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    // 选择器必须空安全（见 `_SessionMeta`）：块被跳空的瞬时态里
+    // `currentBlock` 会越界，父级切总结页的重建还没跑。
+    final sel = ref.watch(reviewProvider.select((s) => (
+          s.hasCurrentBlock ? s.currentBlock : null,
+          s.checks,
+          s.bi,
+          s.blocks.length,
+        )));
+    final (block, checks, bi, total) = sel;
+    if (block == null) return const SizedBox.shrink();
+    final st = ref.read(reviewProvider);
     final scale = qmScaleOf(context);
     final allChecked =
-        block.causes.every((c) => _checks.containsKey(c));
+        block.causes.every((c) => checks.containsKey(c));
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -1924,22 +1462,31 @@ class _ReviewPageState extends State<ReviewPage> {
           style: const TextStyle(fontSize: 14),
         ),
         SizedBox(height: 10 * scale),
-        for (final cause in block.causes) _buildCheckBox(cause),
+        for (final cause in block.causes)
+          _buildCheckBox(context, ref, st, block, checks, cause),
         SizedBox(height: DesignTokens.reviewActsMarginTop * scale),
         _SessionActions(
-          primaryLabel: _bi < _blocks.length - 1 ? '下一题' : '看总结',
-          onPrimary: allChecked ? _finishQuestion : () {},
+          primaryLabel: bi < total - 1 ? '下一题' : '看总结',
+          onPrimary: () =>
+              ref.read(reviewProvider.notifier).finishQuestion(),
           primaryEnabled: allChecked,
         ),
       ],
     );
   }
 
-  Widget _buildCheckBox(String cause) {
+  Widget _buildCheckBox(
+    BuildContext context,
+    WidgetRef ref,
+    ReviewState st,
+    CauseBlock block,
+    Map<String, String> checks,
+    String cause,
+  ) {
     final scale = qmScaleOf(context);
     final palette = DesignTokens.of(Theme.of(context).brightness);
-    final record = _recordOf(_currentBlock.questionId, cause);
-    final selected = _checks[cause];
+    final record = st.recordOf(block.questionId, cause);
+    final selected = checks[cause];
     return Padding(
       padding: EdgeInsets.only(top: 10 * scale),
       child: _DetailBox(
@@ -1967,7 +1514,7 @@ class _ReviewPageState extends State<ReviewPage> {
                   }),
                 if (record != null)
                   Text(
-                    '「已解决」${record.solvedCount} / ${_settings.cureChecks} 次',
+                    '「已解决」${record.solvedCount} / ${st.settings.cureChecks} 次',
                     style: TextStyle(
                       fontSize: DesignTokens.reviewMetaFontSize,
                       color: palette.muted,
@@ -1989,7 +1536,9 @@ class _ReviewPageState extends State<ReviewPage> {
                     variant: selected == op
                         ? QmButtonVariant.primary
                         : QmButtonVariant.secondary,
-                    onPressed: () => setState(() => _checks[cause] = op),
+                    onPressed: () => ref
+                        .read(reviewProvider.notifier)
+                        .setCheck(cause, op),
                   ),
               ],
             ),
@@ -2008,10 +1557,23 @@ class _ReviewPageState extends State<ReviewPage> {
       ),
     );
   }
+}
 
-  Widget _buildSummary() {
+// ---------- 总结 ----------
+
+/// 本轮复习总结（只订阅总结要的三个数）。
+class _SummaryView extends ConsumerWidget {
+  const _SummaryView();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final (curedNow, summaryRemaining, changes) =
+        ref.watch(reviewProvider.select(
+      (s) => (s.curedNow, s.summaryRemaining, s.changes),
+    ));
     final scale = qmScaleOf(context);
     return _centered(
+      context,
       Column(
         crossAxisAlignment: CrossAxisAlignment.center,
         children: [
@@ -2032,12 +1594,12 @@ class _ReviewPageState extends State<ReviewPage> {
                     children: [
                       const TextSpan(text: '今天解决了 '),
                       TextSpan(
-                        text: '$_curedNow',
+                        text: '$curedNow',
                         style: const TextStyle(fontWeight: FontWeight.w700),
                       ),
                       const TextSpan(text: ' 个错因 · 还有 '),
                       TextSpan(
-                        text: '$_summaryRemaining',
+                        text: '$summaryRemaining',
                         style: const TextStyle(fontWeight: FontWeight.w700),
                       ),
                       const TextSpan(text: ' 个未解决，留在列表里接着解决'),
@@ -2045,7 +1607,7 @@ class _ReviewPageState extends State<ReviewPage> {
                   ),
                 ),
                 SizedBox(height: 8 * scale),
-                if (_changes.isEmpty)
+                if (changes.isEmpty)
                   Text(
                     '这一轮还没有自查记录。',
                     style: TextStyle(
@@ -2055,56 +1617,24 @@ class _ReviewPageState extends State<ReviewPage> {
                     ),
                   )
                 else
-                  for (final c in _changes)
+                  for (final c in changes)
                     _KvRow(
                       label: '${c.subjectName} · ${c.cause}',
                       value:
                           '「${c.questionTitle}」：${c.before} → ${c.after}'
-                          '${c.recheckDate != null ? ' · 下次复查 ${_fmtDate(c.recheckDate!)}（${_fmtMd(c.recheckDate!)}）' : ''}'
+                          '${c.recheckDate != null ? ' · 下次复查 ${formatReviewDate(c.recheckDate!)}（${formatReviewMd(c.recheckDate!)}）' : ''}'
                           ' · ${c.note}',
                     ),
                 SizedBox(height: 12 * scale),
                 QmButton(
                   label: '回复习列表',
-                  onPressed: _backToList,
+                  onPressed: () =>
+                      ref.read(reviewProvider.notifier).backToList(),
                 ),
               ],
             ),
           ),
         ],
-      ),
-    );
-  }
-
-  /// 下拉（HTML `.nb-fsel`：36 高、13.5px、line-strong 边、圆角 10；
-  /// 与错题本 `_styledDropdown` 同款）。
-  Widget _styledDropdown<T>({
-    required T? value,
-    required List<DropdownMenuItem<T>> items,
-    required ValueChanged<T?> onChanged,
-  }) {
-    final scale = qmScaleOf(context);
-    final palette = DesignTokens.of(Theme.of(context).brightness);
-    return Container(
-      height: 36 * scale,
-      padding: EdgeInsets.symmetric(horizontal: 10 * scale),
-      decoration: BoxDecoration(
-        color: palette.surface,
-        border: Border.all(color: palette.lineStrong),
-        borderRadius: BorderRadius.circular(10 * scale),
-      ),
-      child: DropdownButtonHideUnderline(
-        child: DropdownButton<T>(
-          value: value,
-          isExpanded: true,
-          icon: const QmGlyph(QmGlyphs.chevronDown, size: 14),
-          style: TextStyle(
-            fontSize: DesignTokens.filterSelectFontSize,
-            color: palette.ink,
-          ),
-          items: items,
-          onChanged: onChanged,
-        ),
       ),
     );
   }

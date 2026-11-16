@@ -9,7 +9,7 @@ import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import '../models/exam_event.dart';
 import '../models/models.dart';
 import '../services/zip_archive.dart';
-import 'badge_notifier.dart';
+import 'data_change_events.dart';
 import 'demo_data.dart';
 // B4：database.dart 拆分——AppDatabase 类与对外接口保留在此文件，
 // 实现按职责拆到以下 part 文件（同一库，共享库私有成员；纯重构，

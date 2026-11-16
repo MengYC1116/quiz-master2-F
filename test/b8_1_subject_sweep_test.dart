@@ -252,7 +252,6 @@ void main() {
           ),
           questionId: 'q1',
           orderIds: const ['q1'],
-          onChanged: () {},
         ),
       );
       // 标题是拼串「学科 · 题型｜题名」（_buildTitle）；题图占位里还有
@@ -267,7 +266,6 @@ void main() {
           repo: _SweepDetailRepo(questions: const [], subjects: const []),
           questionId: 'q1',
           orderIds: const ['q1'],
-          onChanged: () {},
         ),
       );
       expect(find.text('这道题不存在了'), findsOneWidget);

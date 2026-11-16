@@ -1416,7 +1416,6 @@ Future<void> _pumpDetail(WidgetTester tester, {required _DetailFakeRepo repo}) a
           questionId: 'q1',
           orderIds: const ['q1'],
           sourceLabel: '错题本',
-          onChanged: () {},
         ),
       ),
     ),

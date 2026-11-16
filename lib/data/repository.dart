@@ -1,4 +1,5 @@
 import '../data/database.dart';
+import '../data/data_change_events.dart';
 import '../models/exam_event.dart';
 import '../models/models.dart';
 import '../services/import_service.dart';
@@ -110,26 +111,32 @@ class QuestionRepository {
     for (final r in records) {
       (byQ[r.questionId] ??= []).add(r);
     }
-    var joined = 0;
-    var skipped = 0;
-    var failed = 0;
-    for (final q in questions) {
-      if (!hasJoinableCause(q, byQ[q.id] ?? const [])) {
-        skipped++;
-        continue;
-      }
-      try {
-        final ok = await setReviewJoined(q, true);
-        if (ok) {
-          joined++;
-        } else {
+    // Stage 4：批量提交只发一个事件（方案 §四）——逐题 setReviewJoined
+    // 各发一个事件时由 scope 合并成一个发出去；全跳过时一个事件都不发。
+    // 仍调虚方法 setReviewJoined（单测 FakeRepo 靠覆写它，见
+    // test/b11_6_batch_review_test.dart），不直接调 db 静态方法。
+    return DataChangeBus.instance.scope(() async {
+      var joined = 0;
+      var skipped = 0;
+      var failed = 0;
+      for (final q in questions) {
+        if (!hasJoinableCause(q, byQ[q.id] ?? const [])) {
           skipped++;
+          continue;
         }
-      } catch (_) {
-        failed++;
+        try {
+          final ok = await setReviewJoined(q, true);
+          if (ok) {
+            joined++;
+          } else {
+            skipped++;
+          }
+        } catch (_) {
+          failed++;
+        }
       }
-    }
-    return (joined: joined, skipped: skipped, failed: failed);
+      return (joined: joined, skipped: skipped, failed: failed);
+    });
   }
 
   /// 批量取消加入复习（B11-6）：与详情页单个取消同语义——只把
@@ -139,22 +146,25 @@ class QuestionRepository {
   Future<({int cancelled, int skipped, int failed})> cancelReviewBatch(
     List<Question> questions,
   ) async {
-    var cancelled = 0;
-    var skipped = 0;
-    var failed = 0;
-    for (final q in questions) {
-      if (!q.reviewJoined) {
-        skipped++;
-        continue;
+    // Stage 4：批量提交只发一个事件（方案 §四，见 joinReviewBatch）。
+    return DataChangeBus.instance.scope(() async {
+      var cancelled = 0;
+      var skipped = 0;
+      var failed = 0;
+      for (final q in questions) {
+        if (!q.reviewJoined) {
+          skipped++;
+          continue;
+        }
+        try {
+          await setReviewJoined(q, false);
+          cancelled++;
+        } catch (_) {
+          failed++;
+        }
       }
-      try {
-        await setReviewJoined(q, false);
-        cancelled++;
-      } catch (_) {
-        failed++;
-      }
-    }
-    return (cancelled: cancelled, skipped: skipped, failed: failed);
+      return (cancelled: cancelled, skipped: skipped, failed: failed);
+    });
   }
 
   /// 同步某题的解决记录与它当前的错因：删掉已不在错因里的记录，

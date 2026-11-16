@@ -6,22 +6,41 @@
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:quiz_master2/data/database.dart';
 import 'package:quiz_master2/data/repository.dart';
 import 'package:quiz_master2/models/models.dart';
 import 'package:quiz_master2/modules/settings/settings_page.dart';
+import 'package:quiz_master2/state/repository_provider.dart';
 import 'package:quiz_master2/theme/app_theme.dart';
 import 'package:quiz_master2/widgets/uikit.dart';
 
 class FakeSettingsRepo extends QuestionRepository {
-  FakeSettingsRepo(
-      {this.questionCount = 9,
-      this.orphanFiles = const [],
-      this.storageUsage = (importsBytes: 0, slicesBytes: 0)})
-      : super(AppDatabase.instance);
+  FakeSettingsRepo({
+    this.questionCount = 9,
+    this.orphanFiles = const [],
+    this.storageUsage = (importsBytes: 0, slicesBytes: 0),
+    AppSettings? settings,
+  }) : settingsValue = settings ?? AppSettings.defaults,
+       super(AppDatabase.instance);
 
   int questionCount;
+
+  /// Stage 1：设置页经 settingsProvider 读写设置，Fake 在此
+  /// 提供初始值并记录每一次保存（原 `onSettingsChanged` 回调的
+  /// 观察点改到这里；断言口径不变，仍是“保存了什么设置”）。
+  AppSettings settingsValue;
+  final List<AppSettings> savedSettings = [];
+
+  @override
+  Future<AppSettings> settings() async => settingsValue;
+
+  @override
+  Future<void> saveSettings(AppSettings s) async {
+    settingsValue = s;
+    savedSettings.add(s);
+  }
 
   /// P3：孤儿扫描的 canned 结果（默认无孤儿）。
   List<OrphanFile> orphanFiles;
@@ -41,10 +60,10 @@ class FakeSettingsRepo extends QuestionRepository {
 
   @override
   Future<({int deletedCount, int freedBytes})> deleteOrphanFiles(
-      List<String> relativePaths) async {
+    List<String> relativePaths,
+  ) async {
     cleanedPaths = relativePaths;
-    final freed =
-        orphanFiles.fold(0, (sum, f) => sum + f.bytes);
+    final freed = orphanFiles.fold(0, (sum, f) => sum + f.bytes);
     return (deletedCount: relativePaths.length, freedBytes: freed);
   }
 
@@ -77,29 +96,31 @@ Future<List<AppSettings>> pumpSettings(
   tester.view.devicePixelRatio = 1.0;
   addTearDown(tester.view.resetPhysicalSize);
   addTearDown(tester.view.resetDevicePixelRatio);
-  final applied = <AppSettings>[];
+  // Stage 1：设置页经 settingsProvider 读写设置，FakeRepo 用
+  // ProviderScope override 注入（原 settings / onSettingsChanged
+  // 构造参数已删除，保存的观察点是 repo.savedSettings）。
+  final effectiveRepo = repo ?? FakeSettingsRepo(settings: settings);
+  final applied = effectiveRepo.savedSettings;
   await tester.pumpWidget(
-    MaterialApp(
-      theme: AppTheme.light(scale: scale),
-      darkTheme: AppTheme.dark(scale: scale),
-      themeMode:
-          brightness == Brightness.dark ? ThemeMode.dark : ThemeMode.light,
-      home: Builder(
-        builder: (context) {
-          final data = MediaQuery.of(context);
-          return MediaQuery(
-            data: data.copyWith(textScaler: TextScaler.linear(scale)),
-            child: Scaffold(
-              body: SettingsPage(
-                key: UniqueKey(),
-                repo: repo ?? FakeSettingsRepo(),
-                settings: settings,
-                onSettingsChanged: (s) async => applied.add(s),
-                loadFailed: loadFailed,
+    ProviderScope(
+      overrides: [repositoryProvider.overrideWithValue(effectiveRepo)],
+      child: MaterialApp(
+        theme: AppTheme.light(scale: scale),
+        darkTheme: AppTheme.dark(scale: scale),
+        themeMode: brightness == Brightness.dark
+            ? ThemeMode.dark
+            : ThemeMode.light,
+        home: Builder(
+          builder: (context) {
+            final data = MediaQuery.of(context);
+            return MediaQuery(
+              data: data.copyWith(textScaler: TextScaler.linear(scale)),
+              child: Scaffold(
+                body: SettingsPage(key: UniqueKey(), loadFailed: loadFailed),
               ),
-            ),
-          );
-        },
+            );
+          },
+        ),
       ),
     ),
   );
@@ -154,8 +175,7 @@ void main() {
       expect(applied.last.themeMode, 'dark');
     });
 
-    testWidgets('字体三段切换：点特大回调 fontSize=extraLarge',
-        (tester) async {
+    testWidgets('字体三段切换：点特大回调 fontSize=extraLarge', (tester) async {
       final applied = await pumpSettings(tester);
       await openGroup(tester, '外观');
       await tester.tap(find.text('特大'));
@@ -163,12 +183,10 @@ void main() {
       expect(applied.last.fontSize, 'extraLarge');
     });
 
-    testWidgets('问候语：保存新问候语，恢复默认回“今天也要加油呀”',
-        (tester) async {
+    testWidgets('问候语：保存新问候语，恢复默认回“今天也要加油呀”', (tester) async {
       final applied = await pumpSettings(tester);
       await openGroup(tester, '外观');
-      expect(find.textContaining('首页现在显示的是：「今天也要加油呀」'),
-          findsOneWidget);
+      expect(find.textContaining('首页现在显示的是：「今天也要加油呀」'), findsOneWidget);
       await tester.enterText(find.byType(TextField), '数学必胜');
       await tester.tap(find.text('保存问候语'));
       await tester.pumpAndSettle();
@@ -196,8 +214,7 @@ void main() {
       expect(find.text('手动加入：在题目详情点「加入复习」。'), findsOneWidget);
     });
 
-    testWidgets('复查间隔/自查次数/每轮错因数/跳过次数切换',
-        (tester) async {
+    testWidgets('复查间隔/自查次数/每轮错因数/跳过次数切换', (tester) async {
       final applied = await pumpSettings(tester);
       await openGroup(tester, '复习');
       await tester.tap(find.text('14 天'));
@@ -214,8 +231,7 @@ void main() {
       expect(applied.last.skipLimit, 1);
     });
 
-    testWidgets('重做答案默认：点默认显示回调 redoAnswerHidden=false',
-        (tester) async {
+    testWidgets('重做答案默认：点默认显示回调 redoAnswerHidden=false', (tester) async {
       final applied = await pumpSettings(tester);
       await openGroup(tester, '复习');
       await tester.tap(find.text('默认显示'));
@@ -223,8 +239,7 @@ void main() {
       expect(applied.last.redoAnswerHidden, isFalse);
     });
 
-    testWidgets('通知提醒：点关回调 notifyEnabled=false，提醒时间禁用',
-        (tester) async {
+    testWidgets('通知提醒：点关回调 notifyEnabled=false，提醒时间禁用', (tester) async {
       final applied = await pumpSettings(tester);
       await openGroup(tester, '复习');
       expect(find.text('20:00'), findsOneWidget);
@@ -233,8 +248,7 @@ void main() {
       expect(applied.last.notifyEnabled, isFalse);
     });
 
-    testWidgets('复习列表默认排序：点按学科回调 reviewSort=subject',
-        (tester) async {
+    testWidgets('复习列表默认排序：点按学科回调 reviewSort=subject', (tester) async {
       final applied = await pumpSettings(tester);
       await openGroup(tester, '复习');
       await tester.tap(find.text('按学科'));
@@ -260,8 +274,7 @@ void main() {
 
     // SR-P0-2：设置页“默认排序”不再提供列表下拉没有的 'subject'，
     // 改为与列表页一致的 subj-asc / subj-desc 两项。
-    testWidgets('默认排序：学科首字母 A→Z / Z→A 回调 subj-asc / subj-desc',
-        (tester) async {
+    testWidgets('默认排序：学科首字母 A→Z / Z→A 回调 subj-asc / subj-desc', (tester) async {
       final applied = await pumpSettings(tester);
       await openGroup(tester, '错题本');
       await tester.tap(find.text('学科首字母 A → Z'));
@@ -275,23 +288,23 @@ void main() {
 
     test('AppSettings 归一：旧值 subject → subj-asc，未知值 → new', () {
       expect(
-          AppSettings.fromMap(const {'wrongbookSort': 'subject'})
-              .wrongbookSort,
-          'subj-asc');
+        AppSettings.fromMap(const {'wrongbookSort': 'subject'}).wrongbookSort,
+        'subj-asc',
+      );
       expect(
-          AppSettings.fromMap(const {'wrongbookSort': 'bogus'})
-              .wrongbookSort,
-          'new');
+        AppSettings.fromMap(const {'wrongbookSort': 'bogus'}).wrongbookSort,
+        'new',
+      );
       expect(
-          AppSettings.defaults
-              .copyWith(wrongbookSort: 'subject')
-              .wrongbookSort,
-          'subj-asc');
+        AppSettings.defaults.copyWith(wrongbookSort: 'subject').wrongbookSort,
+        'subj-asc',
+      );
       expect(
-          AppSettings.defaults
-              .copyWith(wrongbookSort: 'status-desc')
-              .wrongbookSort,
-          'status-desc');
+        AppSettings.defaults
+            .copyWith(wrongbookSort: 'status-desc')
+            .wrongbookSort,
+        'status-desc',
+      );
     });
 
     testWidgets('启动页切换与关于', (tester) async {
@@ -322,14 +335,12 @@ void main() {
       // 预览取决于真实数据目录内容：无缓存显示“没有可清理的缓存”，
       // 有缓存显示“临时文件 N 个、缩略图缓存 M 张，共约 X MB”。
       final empty = find.text('现在没有可清理的缓存。').evaluate().isNotEmpty;
-      final preview =
-          find.textContaining('临时文件').evaluate().isNotEmpty;
+      final preview = find.textContaining('临时文件').evaluate().isNotEmpty;
       expect(empty || preview, isTrue);
       expect(tester.takeException(), isNull);
     });
 
-    testWidgets('SR-P2-50 缓存预览递归扫子目录：深层 thumb 目录与 .tmp 文件都计入',
-        (tester) async {
+    testWidgets('SR-P2-50 缓存预览递归扫子目录：深层 thumb 目录与 .tmp 文件都计入', (tester) async {
       final prev = AppDatabase.testDataDirectory;
       // testWidgets 体内异步文件 IO 会在 FakeAsync 下挂起（本批另两名工人
       // 已探针证实），此处改同步 IO；扫描逻辑本身另有纯 Dart 脚本验证。
@@ -342,20 +353,16 @@ void main() {
       });
       AppDatabase.testDataDirectory = tmp.path;
       // 藏在子目录下：旧实现只扫顶层一层，这两个都发现不了。
-      Directory('${tmp.path}/work/thumb-cache')
-          .createSync(recursive: true);
-      File('${tmp.path}/work/thumb-cache/a.png')
-          .writeAsBytesSync([0, 1, 2]);
+      Directory('${tmp.path}/work/thumb-cache').createSync(recursive: true);
+      File('${tmp.path}/work/thumb-cache/a.png').writeAsBytesSync([0, 1, 2]);
       Directory('${tmp.path}/work/deep').createSync(recursive: true);
       File('${tmp.path}/work/deep/x.tmp').writeAsStringSync('tmp');
       await pumpSettings(tester);
       await openGroup(tester, '数据');
-      expect(find.textContaining('临时文件 1 个、缩略图缓存 1 张'),
-          findsOneWidget);
+      expect(find.textContaining('临时文件 1 个、缩略图缓存 1 张'), findsOneWidget);
     });
 
-    testWidgets('SR3-19 缓存预览：failed 目录递归进、文件逐个计，清理数按文件算',
-        (tester) async {
+    testWidgets('SR3-19 缓存预览：failed 目录递归进、文件逐个计，清理数按文件算', (tester) async {
       final prev = AppDatabase.testDataDirectory;
       final tmp = Directory.systemTemp.createTempSync('b7-sr3-19-cache-');
       addTearDown(() {
@@ -374,13 +381,10 @@ void main() {
       await openGroup(tester, '数据');
       // 预览行只写临时/缩略图两数（failed 不单列），只断言它出现；
       // failed 个数写在下面的备注行里，是本条的判据。
-      expect(find.textContaining('临时文件 0 个、缩略图缓存 0 张'),
-          findsOneWidget);
-      expect(find.textContaining('其中含导入失败的残留文件 2 个'),
-          findsOneWidget);
+      expect(find.textContaining('临时文件 0 个、缩略图缓存 0 张'), findsOneWidget);
+      expect(find.textContaining('其中含导入失败的残留文件 2 个'), findsOneWidget);
       // 清理按钮与行标题同名，用 QmButton 精确定位。
-      final clearButton =
-          find.widgetWithText(QmButton, '清理缓存');
+      final clearButton = find.widgetWithText(QmButton, '清理缓存');
       await tester.ensureVisible(clearButton);
       await tester.pumpAndSettle();
       await tester.tap(clearButton);
@@ -389,7 +393,8 @@ void main() {
       var cleared = false;
       for (var i = 0; i < 30 && !cleared; i++) {
         await tester.runAsync(
-            () => Future<void>.delayed(const Duration(milliseconds: 100)));
+          () => Future<void>.delayed(const Duration(milliseconds: 100)),
+        );
         await tester.pump();
         cleared = find.text('已清理 2 项缓存').evaluate().isNotEmpty;
       }
@@ -398,7 +403,8 @@ void main() {
 
     testWidgets('P3 空间占用：显示原图/切片分项与上限 2GB', (tester) async {
       final repo = FakeSettingsRepo(
-          storageUsage: (importsBytes: 2048, slicesBytes: 1024));
+        storageUsage: (importsBytes: 2048, slicesBytes: 1024),
+      );
       await pumpSettings(tester, repo: repo);
       await openGroup(tester, '数据');
       expect(find.text('空间占用'), findsOneWidget);
@@ -409,11 +415,15 @@ void main() {
     });
 
     testWidgets('P3 孤儿清理：有孤儿时预览，确认后清理并提示', (tester) async {
-      final repo = FakeSettingsRepo(orphanFiles: [
-        const OrphanFile(relativePath: 'slices/orphan.png', bytes: 2048),
-        const OrphanFile(
-            relativePath: 'imports/task-9/original.jpg', bytes: 1024),
-      ]);
+      final repo = FakeSettingsRepo(
+        orphanFiles: [
+          const OrphanFile(relativePath: 'slices/orphan.png', bytes: 2048),
+          const OrphanFile(
+            relativePath: 'imports/task-9/original.jpg',
+            bytes: 1024,
+          ),
+        ],
+      );
       await pumpSettings(tester, repo: repo);
       await openGroup(tester, '数据');
       expect(find.text('孤儿清理'), findsOneWidget);
@@ -438,7 +448,8 @@ void main() {
       await openGroup(tester, '数据');
       expect(find.textContaining('没有无用文件'), findsOneWidget);
       final button = tester.widget<QmButton>(
-          find.ancestor(of: find.text('清理无用文件'), matching: find.byType(QmButton)));
+        find.ancestor(of: find.text('清理无用文件'), matching: find.byType(QmButton)),
+      );
       expect(button.onPressed, isNull);
     });
   });
@@ -455,8 +466,7 @@ void main() {
     testWidgets('亮/深 × 三档无溢出', (tester) async {
       for (final brightness in [Brightness.light, Brightness.dark]) {
         for (final scale in [1.0, 1.15, 1.3]) {
-          await pumpSettings(tester,
-              brightness: brightness, scale: scale);
+          await pumpSettings(tester, brightness: brightness, scale: scale);
           for (final group in ['外观', '复习', '错题本', '数据', '启动与关于']) {
             await openGroup(tester, group);
           }

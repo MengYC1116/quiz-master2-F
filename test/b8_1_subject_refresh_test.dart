@@ -3,8 +3,8 @@
 // 根因：各页 `_load()` 与外壳 `_refreshBadges()` 在 subjects 表为空时
 // 回退 `Subject.all` 预设三科——新库建表时已预置三科（db_schema `_seed`），
 // 表空只发生在用户删光学科后，回退就是幽灵行/幽灵下拉项/幽灵书。
-// 修法：空表就是空（各页直接用库里的列表）；删学科已 bump badgeVersion
-//（`deleteSubject`），外壳经监听即时刷新，无需新通道。
+// 修法：空表就是空（各页直接用库里的列表）；删学科发含 `badges` 的
+// 变更事件（`deleteSubject`），角标 Provider 经订阅即时刷新，无需新通道。
 // 用 FakeRepo，不碰真实数据库；无文件 IO。
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';

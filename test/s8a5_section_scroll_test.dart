@@ -15,10 +15,12 @@
 // 测整应用；app.dart 本身的改动以 Linux 真机前后截图为直接证据
 // （见 docs/ui-replication/S8A5-SECTION-SCROLL-REPORT.md §5）。
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:quiz_master2/models/models.dart';
 import 'package:quiz_master2/modules/settings/settings_page.dart';
+import 'package:quiz_master2/state/repository_provider.dart';
 import 'package:quiz_master2/theme/app_theme.dart';
+
 import 'settings_page_test.dart' show FakeSettingsRepo;
 
 Future<void> pumpShellRow(
@@ -29,41 +31,42 @@ Future<void> pumpShellRow(
   tester.view.devicePixelRatio = 1.0;
   addTearDown(tester.view.resetPhysicalSize);
   addTearDown(tester.view.resetDevicePixelRatio);
+  // Stage 1：设置页经 settingsProvider 读写设置，Fake 用
+  // ProviderScope override 注入（原 settings / onSettingsChanged
+  // 构造参数已删除）。
+  final repo = FakeSettingsRepo();
   await tester.pumpWidget(
-    MaterialApp(
-      theme: AppTheme.light(scale: 1.0),
-      darkTheme: AppTheme.dark(scale: 1.0),
-      themeMode: ThemeMode.dark,
-      home: Scaffold(
-        body: Stack(
-          children: [
-            const Positioned.fill(child: SizedBox()),
-            Positioned.fill(
-              child: Row(
-                crossAxisAlignment: alignment,
-                children: [
-                  Container(
-                    width: 216,
-                    color: const Color(0xFF21262E),
-                    child: const Column(
-                      children: [SizedBox(height: 700)],
+    ProviderScope(
+      overrides: [repositoryProvider.overrideWithValue(repo)],
+      child: MaterialApp(
+        theme: AppTheme.light(scale: 1.0),
+        darkTheme: AppTheme.dark(scale: 1.0),
+        themeMode: ThemeMode.dark,
+        home: Scaffold(
+          body: Stack(
+            children: [
+              const Positioned.fill(child: SizedBox()),
+              Positioned.fill(
+                child: Row(
+                  crossAxisAlignment: alignment,
+                  children: [
+                    Container(
+                      width: 216,
+                      color: const Color(0xFF21262E),
+                      child: const Column(children: [SizedBox(height: 700)]),
                     ),
-                  ),
-                  Expanded(
-                    child: Container(
-                      color: const Color(0xFF262B33),
-                      padding: const EdgeInsets.fromLTRB(30, 26, 30, 26),
-                      child: SettingsPage(
-                        repo: FakeSettingsRepo(),
-                        settings: AppSettings.defaults,
-                        onSettingsChanged: (_) async {},
+                    Expanded(
+                      child: Container(
+                        color: const Color(0xFF262B33),
+                        padding: const EdgeInsets.fromLTRB(30, 26, 30, 26),
+                        child: const SettingsPage(),
                       ),
                     ),
-                  ),
-                ],
+                  ],
+                ),
               ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     ),
@@ -86,15 +89,19 @@ void main() {
     // 展开「外观」：内容变高，标题与滚动偏移都不应动。
     await tester.tap(find.text('外观'));
     await tester.pumpAndSettle();
-    expect(tester.getTopLeft(find.text('设置')).dy,
-        moreOrLessEquals(titleBefore, epsilon: 1.0));
+    expect(
+      tester.getTopLeft(find.text('设置')).dy,
+      moreOrLessEquals(titleBefore, epsilon: 1.0),
+    );
     expect(scrollOffset(tester), 0.0);
 
     // 再点「复习」：上方「外观」收起、下方「复习」展开，标题仍不动。
     await tester.tap(find.text('复习'));
     await tester.pumpAndSettle();
-    expect(tester.getTopLeft(find.text('设置')).dy,
-        moreOrLessEquals(titleBefore, epsilon: 1.0));
+    expect(
+      tester.getTopLeft(find.text('设置')).dy,
+      moreOrLessEquals(titleBefore, epsilon: 1.0),
+    );
     expect(scrollOffset(tester), 0.0);
   });
 

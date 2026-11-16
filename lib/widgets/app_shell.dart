@@ -28,7 +28,7 @@
 //   接 UI Kit 时去掉页内边距后落到准确的 26/30。
 //
 // 角标口径（沿用基线 / repository 现有口径，不改 repository）：
-// - 收集 = 待框选 + 待整理（`CollectPage.countPendingBox` 的
+// - 收集 = 待框选 + 待整理（`BadgeCounts.countPendingBox` 的
 //   待框选 + 修框中任务数 + `pendingOrganizeCount` 未整理题数）；
 // - 整理 = 待整理（`pendingOrganizeCount`）；
 // - 复习 = 要复习题数（B9-3：`homeRevCounts` 各科之和 =
@@ -37,8 +37,10 @@
 // - 学科速览待复习与首页焦点卡同一口径（`homeRevCounts`：手动加入复习
 //   且已整理且至少一个错因未解决或已到复查时间，数题不数错因）；
 //   待整理按学科实时算（`pendingOrganizeBySubject`），不照搬 HTML
-//   写死的演示数字。角标由 `app.dart` 的 `_refreshBadges`
-//   （`badgeVersion` 监听）刷新后以参数传入本组件。
+//   写死的演示数字。角标由 `badgeCountsProvider`（`lib/state/`，
+//   订阅 `DataChangeBus`、收到含 `badges` 的事件后重算）提供，
+//   根组件 `ref.watch` 后以参数传入本组件（Stage 4，旧
+//   `_refreshBadges` + `badgeVersion` 链已删除）。
 // - 学科速览行只展示、不跳转（HTML 原型里 `subjrow` 只有悬停态，
 //   无跳转行为）；点科名去错题本请走首页学科格 / 错题本入口。
 //

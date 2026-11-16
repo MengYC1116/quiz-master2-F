@@ -413,7 +413,14 @@ extension AppDatabaseQuestions on AppDatabase {
         conflictAlgorithm: ConflictAlgorithm.replace,
       );
     }
-    bumpBadgeVersion();
+    // Stage 4：补救历史是复习记录；行不存在时整行 INSERT 可能新建一条
+    // 待解决记录，会影响角标——沿用旧 bump 口径，两种 kind 都发。
+    DataChangeBus.instance.emit(
+      DataChangeEvent(
+        kinds: const {DataChangeKind.badges, DataChangeKind.reviewRecords},
+        questionId: r.questionId,
+      ),
+    );
   }
 
   /// SR-P2-8：手动加入 / 取消加入复习（实例版）：题行 + 错因记录
@@ -422,7 +429,14 @@ extension AppDatabaseQuestions on AppDatabase {
   Future<bool> setReviewJoined(Question q, bool joined) async {
     final d = await db;
     final ok = await AppDatabase.setReviewJoinedInto(d, q, joined);
-    if (ok) bumpBadgeVersion();
+    if (ok) {
+      DataChangeBus.instance.emit(
+        DataChangeEvent(
+          kinds: const {DataChangeKind.badges, DataChangeKind.reviewRecords},
+          questionId: q.id,
+        ),
+      );
+    }
     return ok;
   }
 
@@ -456,8 +470,15 @@ extension AppDatabaseQuestions on AppDatabase {
       recheckIntervalDays: recheckIntervalDays,
       isRecheck: isRecheck,
     );
-    // “不确定”不写库，也不 bump。
-    if (result != 'unsure') bumpBadgeVersion();
+    // “不确定”不写库，也不发事件。
+    if (result != 'unsure') {
+      DataChangeBus.instance.emit(
+        DataChangeEvent(
+          kinds: const {DataChangeKind.badges, DataChangeKind.reviewRecords},
+          questionId: questionId,
+        ),
+      );
+    }
     return written;
   }
 
@@ -514,12 +535,28 @@ extension AppDatabaseQuestions on AppDatabase {
   Future<void> upsertQuestion(Question q) async {
     final d = await db;
     await AppDatabase.upsertQuestionInto(d, q);
-    bumpBadgeVersion();
+    DataChangeBus.instance.emit(
+      DataChangeEvent(
+        kinds: const {DataChangeKind.badges, DataChangeKind.questions},
+        questionId: q.id,
+      ),
+    );
   }
 
   Future<void> deleteQuestion(String id) async {
     final d = await db;
     await AppDatabase.deleteQuestionFrom(d, id);
-    bumpBadgeVersion();
+    // 删题同事务删掉该题的解决记录与自查历史（见 _deleteQuestionTxn），
+    // 角标与题目列表之外，复习记录也变了。
+    DataChangeBus.instance.emit(
+      DataChangeEvent(
+        kinds: const {
+          DataChangeKind.badges,
+          DataChangeKind.questions,
+          DataChangeKind.reviewRecords,
+        },
+        questionId: id,
+      ),
+    );
   }
 }

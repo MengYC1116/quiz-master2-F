@@ -3,6 +3,7 @@
 // 考试事件与试卷完全脱钩（独立数据，见 lib/models/exam_event.dart）。
 // 测试一律用内存库 / FakeRepo，不碰真实库。
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:quiz_master2/data/database.dart';
 import 'package:quiz_master2/data/repository.dart';
@@ -10,6 +11,7 @@ import 'package:quiz_master2/models/exam_event.dart';
 import 'package:quiz_master2/models/models.dart';
 import 'package:quiz_master2/modules/home/home_page.dart';
 import 'package:quiz_master2/modules/settings/settings_page.dart';
+import 'package:quiz_master2/state/repository_provider.dart';
 import 'package:quiz_master2/theme/app_theme.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
@@ -55,10 +57,7 @@ void main() {
         _event('e0', '期中', DateTime(2026, 11, 15)),
       ];
       expect(nearestExamEvent(events, today)?.id, 'e0');
-      expect(
-        nearestExamEvent(events.sublist(0, 2), today)?.id,
-        'e1',
-      );
+      expect(nearestExamEvent(events.sublist(0, 2), today)?.id, 'e1');
     });
 
     test('最近一场：过期不参与竞争（有未来场时）', () {
@@ -116,10 +115,14 @@ void main() {
       expect(ExamEvent.fromJson(e.toJson()), isNotNull);
       expect(ExamEvent.fromJson(e.toJson())?.name, '期末考试');
       expect(ExamEvent.fromJson(e.toJson())?.date, DateTime(2026, 11, 20));
-      expect(ExamEvent.fromJson({'id': '', 'name': 'x', 'date': '2026-11-20'}),
-          isNull);
-      expect(ExamEvent.fromJson({'id': 'e', 'name': 'x', 'date': 'not-a-date'}),
-          isNull);
+      expect(
+        ExamEvent.fromJson({'id': '', 'name': 'x', 'date': '2026-11-20'}),
+        isNull,
+      );
+      expect(
+        ExamEvent.fromJson({'id': 'e', 'name': 'x', 'date': 'not-a-date'}),
+        isNull,
+      );
       expect(ExamEvent.fromJson({'id': 'e', 'date': '2026-11-20'}), isNull);
       expect(ExamEvent.fromJson('nope'), isNull);
     });
@@ -163,7 +166,7 @@ void main() {
         'key': AppDatabase.examEventsKey,
         'value':
             '[{"id":"ok","name":"期末","date":"2026-12-25"},'
-                '{"id":"","name":"坏行","date":"2026-12-25"}]',
+            '{"id":"","name":"坏行","date":"2026-12-25"}]',
       }, conflictAlgorithm: ConflictAlgorithm.replace);
       final partial = await AppDatabase.loadExamEventsFrom(db);
       expect(partial.map((e) => e.id).toList(), ['ok']);
@@ -178,10 +181,7 @@ void main() {
       expect(await repo.examEvents(), isEmpty);
       await repo.saveExamEvent(_event('e2', '期末', DateTime(2026, 12, 25)));
       await repo.saveExamEvent(_event('e1', '期中', DateTime(2026, 11, 20)));
-      expect(
-        (await repo.examEvents()).map((e) => e.id).toList(),
-        ['e1', 'e2'],
-      );
+      expect((await repo.examEvents()).map((e) => e.id).toList(), ['e1', 'e2']);
       // 改名 + 改日期：同 id 覆盖，顺序按新日期重排。
       await repo.saveExamEvent(_event('e1', '期中考试', DateTime(2026, 12, 1)));
       final renamed = await repo.examEvents();
@@ -189,10 +189,7 @@ void main() {
       expect(renamed.first.name, '期中考试');
       // 删 e1：e2 不动。
       await repo.deleteExamEvent('e1');
-      expect(
-        (await repo.examEvents()).map((e) => e.id).toList(),
-        ['e2'],
-      );
+      expect((await repo.examEvents()).map((e) => e.id).toList(), ['e2']);
       // 删不存在的 id：不抛错、不动列表。
       await repo.deleteExamEvent('nope');
       expect((await repo.examEvents()).length, 1);
@@ -264,9 +261,7 @@ void main() {
     testWidgets('改日期：选日期后列表日期与倒计时更新', (tester) async {
       final now = DateTime.now();
       final repo = _FakeExamRepo()
-        ..events = [
-          _event('e1', '期末', DateTime(now.year, now.month, 10)),
-        ];
+        ..events = [_event('e1', '期末', DateTime(now.year, now.month, 10))];
       await _pumpSettings(tester, repo: repo);
       await _openGroup(tester, '考试');
       await tester.tap(find.byKey(const Key('exam-change-date-e1')));
@@ -337,29 +332,20 @@ void main() {
 
     testWidgets('10 天后：显示倒计时，不标红', (tester) async {
       final date = _day(DateTime.now().add(const Duration(days: 10)));
-      await _pumpHome(
-        tester,
-        events: [_event('e1', '期末考试', date)],
-      );
+      await _pumpHome(tester, events: [_event('e1', '期末考试', date)]);
       expect(find.text('距离 期末考试 还有 10 天'), findsOneWidget);
       _expectCountdownColor(tester, '距离 期末考试 还有 10 天', isRed: false);
     });
 
     testWidgets('今天：显示“今天考试”，标红', (tester) async {
-      await _pumpHome(
-        tester,
-        events: [_event('e1', '期末考试', DateTime.now())],
-      );
+      await _pumpHome(tester, events: [_event('e1', '期末考试', DateTime.now())]);
       expect(find.text('今天 期末考试'), findsOneWidget);
       _expectCountdownColor(tester, '今天 期末考试', isRed: true);
     });
 
     testWidgets('已过期：显示“已考完”，不标红', (tester) async {
       final date = _day(DateTime.now().subtract(const Duration(days: 2)));
-      await _pumpHome(
-        tester,
-        events: [_event('e1', '期末考试', date)],
-      );
+      await _pumpHome(tester, events: [_event('e1', '期末考试', date)]);
       expect(find.text('期末考试 已考完'), findsOneWidget);
       _expectCountdownColor(tester, '期末考试 已考完', isRed: false);
     });
@@ -387,10 +373,7 @@ void _expectCountdownColor(
 }) {
   final widget = tester.widget<Text>(find.text(text));
   final palette = DesignTokens.of(Brightness.light);
-  expect(
-    widget.style?.color,
-    isRed ? palette.errInk : palette.ink,
-  );
+  expect(widget.style?.color, isRed ? palette.errInk : palette.ink);
 }
 
 // ---------- 测试用 Fake ----------
@@ -401,6 +384,18 @@ class _FakeExamRepo extends QuestionRepository {
   _FakeExamRepo() : super(AppDatabase.instance);
 
   List<ExamEvent> events = [];
+
+  /// Stage 1：设置页经 settingsProvider 读设置，Fake 返回默认值
+  /// （考试管理本身不改设置；保存如发生也只记在内存里）。
+  AppSettings settingsValue = AppSettings.defaults;
+
+  @override
+  Future<AppSettings> settings() async => settingsValue;
+
+  @override
+  Future<void> saveSettings(AppSettings s) async {
+    settingsValue = s;
+  }
 
   @override
   Future<List<ExamEvent>> examEvents() async {
@@ -425,8 +420,7 @@ class _FakeExamRepo extends QuestionRepository {
   }
 
   @override
-  Future<List<Question>> all({bool includeArchived = false}) async =>
-      const [];
+  Future<List<Question>> all({bool includeArchived = false}) async => const [];
 }
 
 Future<void> _pumpSettings(
@@ -438,16 +432,16 @@ Future<void> _pumpSettings(
   tester.view.devicePixelRatio = 1.0;
   addTearDown(tester.view.resetPhysicalSize);
   addTearDown(tester.view.resetDevicePixelRatio);
+  // Stage 1：设置页经 settingsProvider 读写设置，Fake 用
+  // ProviderScope override 注入（原 settings / onSettingsChanged
+  // 构造参数已删除）。
+  final effectiveRepo = repo ?? _FakeExamRepo();
   await tester.pumpWidget(
-    MaterialApp(
-      theme: AppTheme.light(scale: 1.0),
-      home: Scaffold(
-        body: SettingsPage(
-          repo: repo ?? _FakeExamRepo(),
-          settings: AppSettings.defaults,
-          onSettingsChanged: (_) async {},
-          initialOpenGroup: initialOpenGroup,
-        ),
+    ProviderScope(
+      overrides: [repositoryProvider.overrideWithValue(effectiveRepo)],
+      child: MaterialApp(
+        theme: AppTheme.light(scale: 1.0),
+        home: Scaffold(body: SettingsPage(initialOpenGroup: initialOpenGroup)),
       ),
     ),
   );

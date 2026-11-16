@@ -19,6 +19,7 @@
 // testWidgets 体跑在 fake async 里，真实 ffi 数据库的 Future
 // 须用 `tester.runAsync` 切回真实异步等它完成。
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:quiz_master2/app.dart';
 import 'package:quiz_master2/data/database.dart';
@@ -46,8 +47,9 @@ Future<void> _pumpNav(
     MaterialApp(
       theme: AppTheme.light(),
       darkTheme: AppTheme.dark(),
-      themeMode:
-          brightness == Brightness.dark ? ThemeMode.dark : ThemeMode.light,
+      themeMode: brightness == Brightness.dark
+          ? ThemeMode.dark
+          : ThemeMode.light,
       home: Scaffold(
         body: SizedBox(
           height: 720,
@@ -124,10 +126,7 @@ Future<QuestionRepository> _seedMemoryRepo() async {
 }
 
 /// 已整理、已加入复习的题：q1 带 2 个错因，q2 带 1 个错因。
-Question _joinedQuestion(
-  String id, {
-  required List<String> errorTypes,
-}) =>
+Question _joinedQuestion(String id, {required List<String> errorTypes}) =>
     Question(
       id: id,
       title: '数学 · 第$id题',
@@ -168,17 +167,14 @@ Future<List<CauseRecord>> _recordsFor(
   WidgetTester tester,
   QuestionRepository repo,
   String questionId,
-) async =>
-    (await tester.runAsync(() => repo.causeRecordsFor(questionId)))!;
+) async => (await tester.runAsync(() => repo.causeRecordsFor(questionId)))!;
 
 void main() {
   group('A：AppNavBar 复习角标', () {
-    testWidgets('reviewBadge=N 显示 N，accent 底（不是灰档）',
-        (tester) async {
+    testWidgets('reviewBadge=N 显示 N，accent 底（不是灰档）', (tester) async {
       await _pumpNav(tester, reviewBadge: 3);
       expect(find.text('3'), findsOneWidget);
-      expect(_badgeDecoration(tester, '3').color,
-          DesignTokens.light.accent);
+      expect(_badgeDecoration(tester, '3').color, DesignTokens.light.accent);
     });
 
     testWidgets('reviewBadge=0 时不渲染', (tester) async {
@@ -193,8 +189,10 @@ void main() {
 
     testWidgets('选中复习页时角标用 badgeSelected token', (tester) async {
       await _pumpNav(tester, route: '/review', reviewBadge: 3);
-      expect(_badgeDecoration(tester, '3').color,
-          DesignTokens.light.badgeSelectedBg);
+      expect(
+        _badgeDecoration(tester, '3').color,
+        DesignTokens.light.badgeSelectedBg,
+      );
       final text = tester.widget<Text>(find.text('3'));
       expect(text.style?.color, DesignTokens.light.badgeSelectedFg);
     });
@@ -216,11 +214,10 @@ void main() {
       tester.view.devicePixelRatio = 1.0;
       addTearDown(tester.view.resetPhysicalSize);
       addTearDown(tester.view.resetDevicePixelRatio);
-      await tester.pumpWidget(const QuizMasterApp());
+      await tester.pumpWidget(const ProviderScope(child: QuizMasterApp()));
     }
 
-    testWidgets('多错因一题只计 1：两道待复习题（q1 有 2 个待解决错因）角标是 2 不是 3',
-        (tester) async {
+    testWidgets('多错因一题只计 1：两道待复习题（q1 有 2 个待解决错因）角标是 2 不是 3', (tester) async {
       await pumpApp(tester);
       await _pumpUntil(
         tester,
@@ -237,10 +234,7 @@ void main() {
       expect(due.map((q) => q.id), unorderedEquals(['q1', 'q2']));
       final q1Records = await _recordsFor(tester, repo, 'q1');
       expect(q1Records.length, 2);
-      expect(
-        q1Records.where((r) => r.status != CauseStatus.solved).length,
-        2,
-      );
+      expect(q1Records.where((r) => r.status != CauseStatus.solved).length, 2);
       final q2Records = await _recordsFor(tester, repo, 'q2');
       expect(q2Records.length, 1);
 
@@ -271,8 +265,7 @@ void main() {
       expect(tester.takeException(), isNull);
     });
 
-    testWidgets('治愈一条后角标即减一：不进复习页、只切导航，角标已更新',
-        (tester) async {
+    testWidgets('治愈一条后角标即减一：不进复习页、只切导航，角标已更新', (tester) async {
       await pumpApp(tester);
       await _pumpUntil(
         tester,
@@ -283,8 +276,8 @@ void main() {
       // 治愈 q1 的两个错因（每条两次“已解决”自查）：q1 整题治愈，
       // 桶落 solved，不再计入要复习；q2 仍待解决，角标应变 1。
       // 自查走仓库方法（与复习页会话内同一 recordSelfCheck 入口），
-      // 不打开复习页——角标靠 recordSelfCheck 的 bumpBadgeVersion
-      // + badgeVersion 监听刷新。
+      // 不打开复习页——角标靠 recordSelfCheck 的变更事件
+      // + badgeCountsProvider 订阅刷新。
       for (final rec in await _recordsFor(tester, repo, 'q1')) {
         await _cureCause(tester, repo, rec);
       }
@@ -325,8 +318,10 @@ void main() {
 
       // 取消 q1 的加入复习（记录保留，桶不再计入要复习）。
       final q1 = await tester.runAsync(() => repo.questionById('q1'));
-      expect(await tester.runAsync(() => repo.setReviewJoined(q1!, false)),
-          isTrue);
+      expect(
+        await tester.runAsync(() => repo.setReviewJoined(q1!, false)),
+        isTrue,
+      );
       await _goNav(tester, '收集中心');
       await _goNav(tester, '首页');
       await _pumpUntil(

@@ -7,23 +7,23 @@ part of 'wrongbook_page.dart';
 
 // 书内列表视图：列表页、工具条、筛选面板、批量条、大卡片 / 紧凑行 / 归档行、分页与已归档视图。
 
-extension _WrongbookListBuild on _WrongbookPageState {
+extension _WrongbookListBuild on _WrongbookViewState {
   Widget _buildList() {
-    final all = _filteredAll();
-    final totalPages = (all.length / _pageSize).ceil().clamp(1, 9999);
-    final page = _page.clamp(0, totalPages - 1);
-    final start = page * _pageSize;
-    final items = all.skip(start).take(_pageSize).toList();
+    final all = _s.filteredAll();
+    final totalPages = (all.length / _s.pageSize).ceil().clamp(1, 9999);
+    final page = _s.page.clamp(0, totalPages - 1);
+    final start = page * _s.pageSize;
+    final items = all.skip(start).take(_s.pageSize).toList();
     final orderIds = all.map((q) => q.id).toList();
-    final subject = _subjectId == null ? null : _subjectOf(_subjectId!);
-    final folder = _folderId == null
+    final subject = _s.subjectId == null ? null : _s.subjectOf(_s.subjectId!);
+    final folder = _s.folderId == null
         ? null
-        : _folders.firstWhere(
-            (f) => f.id == _folderId!,
+        : _s.folders.firstWhere(
+            (f) => f.id == _s.folderId!,
             orElse: () =>
-                Folder(id: _folderId!, name: '', subjectId: _subjectId ?? ''),
+                Folder(id: _s.folderId!, name: '', subjectId: _s.subjectId ?? ''),
           );
-    final title = _inBookArchived
+    final title = _s.inBookArchived
         ? '${subject?.name ?? ''} · 错题本'
         : folder != null && folder.name.isNotEmpty
         ? subject != null
@@ -48,8 +48,8 @@ extension _WrongbookListBuild on _WrongbookPageState {
                 label: '← 目录',
                 variant: QmButtonVariant.plain,
                 onPressed: () {
-                  if (_subjectId != null) {
-                    _openDirectory(_subjectId!);
+                  if (_sr.subjectId != null) {
+                    _openDirectory(_sr.subjectId!);
                   } else {
                     _openShelf();
                   }
@@ -65,10 +65,10 @@ extension _WrongbookListBuild on _WrongbookPageState {
           ),
           _pageSubtitle('这一科的题目列表，点一道题进题目详情；筛选里没有文件夹，文件夹在目录页选。'),
           _buildListToolbar(),
-          if (_filterOpen) _buildFilterPanel(),
-          if (!_inBookArchived) _buildMasteredNote(),
-          if (_inBookArchived) _buildArchBar(all.length),
-          if (_batchMode && !_inBookArchived) _buildBatchBar(all),
+          if (_s.filterOpen) _buildFilterPanel(),
+          if (!_s.inBookArchived) _buildMasteredNote(),
+          if (_s.inBookArchived) _buildArchBar(all.length),
+          if (_s.batchMode && !_s.inBookArchived) _buildBatchBar(all),
           _buildListBody(items, orderIds),
           if (all.isNotEmpty) _buildPagination(all.length, totalPages, page),
           // B8-9：页尾留白——分页器是页内最后一个元素，滚到底时它贴着
@@ -86,10 +86,10 @@ extension _WrongbookListBuild on _WrongbookPageState {
   /// 紧凑行 / 归档行共用一张白卡。
   Widget _buildListBody(List<Question> items, List<String> orderIds) {
     if (items.isEmpty) return _buildListEmpty();
-    if (_inBookArchived) {
+    if (_s.inBookArchived) {
       return _listSurface(child: _buildArchivedRows(items, orderIds));
     }
-    if (_viewMode == 'large') return _buildLargeCards(items, orderIds);
+    if (_s.viewMode == 'large') return _buildLargeCards(items, orderIds);
     return _listSurface(child: _buildCompactRows(items, orderIds));
   }
 
@@ -111,25 +111,6 @@ extension _WrongbookListBuild on _WrongbookPageState {
       child: child,
     );
   }
-
-  /// 当前范围（学科 / 文件夹子树）里已整理、未归档的题数——不含
-  /// 搜索 / 筛选与“已掌握默认隐藏”的影响：为 0 才说明范围本身是空的。
-  int _scopeQuestionCount() {
-    final folderIds = _folderId == null ? null : _subtreeIds(_folderId!);
-    return _questions
-        .where(
-          (q) =>
-              q.isOrganized &&
-              !q.isArchived &&
-              (_subjectId == null || q.subjectId == _subjectId) &&
-              (folderIds == null ||
-                  q.folderIds.any((id) => folderIds.contains(id))),
-        )
-        .length;
-  }
-
-  bool _hasSearchOrFilter() =>
-      _search.trim().isNotEmpty || _activeFilterCount() > 0;
 
   /// 空状态文案三分法（B8-9 必修）：
   /// - 已归档视图空 → 归档文案（旧文案不动）；
@@ -154,23 +135,24 @@ extension _WrongbookListBuild on _WrongbookPageState {
     VoidCallback? onSecondaryAction,
   })
   _emptyCopy() {
-    if (_inBookArchived) {
+    if (_s.inBookArchived) {
       return (
         title: '这一本里还没有归档的题',
         desc: '归档的题会放在这里，随时能恢复回错题本。',
         action: '返回题目列表',
-        onAction: () => _update(() => _inBookArchived = false),
+        onAction: () =>
+            _n.update((st) => st.copyWith(inBookArchived: false)),
         secondaryAction: null,
         onSecondaryAction: null,
       );
     }
-    if (_scopeQuestionCount() == 0) {
-      final back = _folderId != null || _subjectId != null
+    if (_s.scopeQuestionCount() == 0) {
+      final back = _s.folderId != null || _s.subjectId != null
           ? (
               label: '返回目录',
               go: () {
-                if (_subjectId != null) {
-                  _openDirectory(_subjectId!);
+                if (_sr.subjectId != null) {
+                  _openDirectory(_sr.subjectId!);
                 } else {
                   _openShelf();
                 }
@@ -187,7 +169,7 @@ extension _WrongbookListBuild on _WrongbookPageState {
               onSecondaryAction: widget.onGoOrganize!,
             )
           : null;
-      if (_folderId != null) {
+      if (_s.folderId != null) {
         return (
           title: '这个文件夹还是空的',
           desc: '这里还没有整理进来的题。去收集中心拍一道题，或去整理工作台把待整理的题归到这个文件夹。',
@@ -197,7 +179,7 @@ extension _WrongbookListBuild on _WrongbookPageState {
           onSecondaryAction: collectGo?.onSecondaryAction,
         );
       }
-      if (_subjectId != null) {
+      if (_s.subjectId != null) {
         return (
           title: '这科里还没有错题',
           desc: '这科里还没有整理进来的题。去收集中心拍一道题，或去整理工作台把待整理的题归进来。',
@@ -216,15 +198,14 @@ extension _WrongbookListBuild on _WrongbookPageState {
         onSecondaryAction: collectGo?.onSecondaryAction,
       );
     }
-    if (!_hasSearchOrFilter()) {
+    if (!_s.hasSearchOrFilter()) {
       return (
         title: '这里的题错因都已解决',
         desc: '错因全部解决的题默认不显示，在「筛选」里把错因状态选成「已解决」就能看到它们。',
         action: '看看已解决的题',
-        onAction: () => _update(() {
-          _filterCauseStatus = 'solved';
-          _page = 0;
-        }),
+        onAction: () => _n.update(
+          (st) => st.copyWith(filterCauseStatus: 'solved', page: 0),
+        ),
         secondaryAction: null,
         onSecondaryAction: null,
       );
@@ -255,7 +236,7 @@ extension _WrongbookListBuild on _WrongbookPageState {
   Widget _buildListToolbar() {
     final scale = qmScaleOf(context);
     final palette = DesignTokens.of(Theme.of(context).brightness);
-    final filterCount = _activeFilterCount();
+    final filterCount = _s.activeFilterCount();
     // HTML `.toolbar` 是 flex-wrap：窄窗 / 大字号时换行，不溢出。
     return Padding(
       padding: EdgeInsets.only(bottom: 12 * scale),
@@ -278,24 +259,23 @@ extension _WrongbookListBuild on _WrongbookPageState {
                   vertical: 9 * scale,
                 ),
               ),
-              onChanged: (v) => _update(() {
-                _search = v;
-                _page = 0;
-              }),
+              onChanged: (v) => _n.setSearch(v),
             ),
           ),
           QmChip(
             label: filterCount > 0
-                ? '筛选（已选 $filterCount）${_filterOpen ? ' ▴' : ' ▾'}'
-                : '筛选${_filterOpen ? ' ▴' : ' ▾'}',
-            selected: _filterOpen,
-            onTap: () => _update(() => _filterOpen = !_filterOpen),
+                ? '筛选（已选 $filterCount）${_s.filterOpen ? ' ▴' : ' ▾'}'
+                : '筛选${_s.filterOpen ? ' ▴' : ' ▾'}',
+            selected: _s.filterOpen,
+            onTap: () => _n.update(
+              (st) => st.copyWith(filterOpen: !st.filterOpen),
+            ),
           ),
           QmChip(label: '重置', onTap: _resetFilters),
           SizedBox(
             width: 200 * scale,
             child: _styledDropdown<String>(
-              value: _sort,
+              value: _s.sort,
               items: const [
                 DropdownMenuItem(value: 'new', child: Text('排序：时间 新 → 旧')),
                 DropdownMenuItem(value: 'old', child: Text('排序：时间 旧 → 新')),
@@ -316,32 +296,31 @@ extension _WrongbookListBuild on _WrongbookPageState {
                   child: Text('排序：错因状态 已解决 → 待解决'),
                 ),
               ],
-              onChanged: (v) => _update(() {
-                if (v != null) {
-                  _sort = v;
-                  _page = 0;
-                }
-              }),
+              onChanged: (v) {
+                if (v != null) _n.setSort(v);
+              },
             ),
           ),
           QmChip(
             label: '大卡片',
-            selected: _viewMode == 'large',
-            onTap: () => _update(() => _viewMode = 'large'),
+            selected: _s.viewMode == 'large',
+            onTap: () => _n.setViewMode('large'),
           ),
           QmChip(
             label: '紧凑列表',
-            selected: _viewMode == 'compact',
-            onTap: () => _update(() => _viewMode = 'compact'),
+            selected: _s.viewMode == 'compact',
+            onTap: () => _n.setViewMode('compact'),
           ),
-          if (!_inBookArchived)
+          if (!_s.inBookArchived)
             QmChip(
               label: '批量操作',
-              selected: _batchMode,
-              onTap: () => _update(() {
-                _batchMode = !_batchMode;
-                _selected.clear();
-              }),
+              selected: _s.batchMode,
+              onTap: () => _n.update(
+                (st) => st.copyWith(
+                  batchMode: !st.batchMode,
+                  selected: const <String>{},
+                ),
+              ),
             ),
         ],
       ),
@@ -352,16 +331,16 @@ extension _WrongbookListBuild on _WrongbookPageState {
     final scale = qmScaleOf(context);
     final palette = DesignTokens.of(Theme.of(context).brightness);
     final errorTypes = <String>{...ErrorTypes.fixed};
-    for (final q in _questions) {
+    for (final q in _s.questions) {
       errorTypes.addAll(q.allCauses);
     }
-    // SR2-34：与批量条同款防线——_filterErrorType 可能在详情页删题后
+    // SR2-34：与批量条同款防线——_s.filterErrorType 可能在详情页删题后
     // 失效（唯一带某自定义错因的题被删），不在 build 里写回状态；
     // _load 里另有复位（见 wrongbook_page.dart _load），这里兜住
     // _load 之前 / 之外的重建。
     final effectiveErrorType =
-        _filterErrorType != null && errorTypes.contains(_filterErrorType)
-            ? _filterErrorType
+        _s.filterErrorType != null && errorTypes.contains(_s.filterErrorType)
+            ? _s.filterErrorType
             : null;
     Widget cell(String label, Widget control) {
       return Column(
@@ -404,19 +383,16 @@ extension _WrongbookListBuild on _WrongbookPageState {
                 cell(
                   '试卷（来源）',
                   _styledDropdown<String>(
-                    value: _filterExamId,
+                    value: _s.filterExamId,
                     items: [
                       const DropdownMenuItem<String>(
                         value: null,
                         child: Text('全部'),
                       ),
-                      for (final e in _exams)
+                      for (final e in _s.exams)
                         DropdownMenuItem(value: e.id, child: Text(e.name)),
                     ],
-                    onChanged: (v) => _update(() {
-                      _filterExamId = v;
-                      _applyFilterChange(_filteredAll());
-                    }),
+                    onChanged: (v) => _n.setFilterExamId(v),
                   ),
                 ),
                 cell(
@@ -431,33 +407,27 @@ extension _WrongbookListBuild on _WrongbookPageState {
                       for (final t in errorTypes)
                         DropdownMenuItem(value: t, child: Text(t)),
                     ],
-                    onChanged: (v) => _update(() {
-                      _filterErrorType = v;
-                      _applyFilterChange(_filteredAll());
-                    }),
+                    onChanged: (v) => _n.setFilterErrorType(v),
                   ),
                 ),
                 cell(
                   '收集时间',
                   _styledDropdown<String>(
-                    value: _filterTimeRange,
+                    value: _s.filterTimeRange,
                     items: const [
                       DropdownMenuItem(value: 'all', child: Text('收集时间：全部')),
                       DropdownMenuItem(value: 'week', child: Text('最近一周')),
                       DropdownMenuItem(value: 'month', child: Text('最近 30 天')),
                     ],
-                    onChanged: (v) => _update(() {
-                      if (v != null) {
-                        _filterTimeRange = v;
-                        _applyFilterChange(_filteredAll());
-                      }
-                    }),
+                    onChanged: (v) {
+                      if (v != null) _n.setFilterTimeRange(v);
+                    },
                   ),
                 ),
                 cell(
                   '错因状态',
                   _styledDropdown<String>(
-                    value: _filterCauseStatus,
+                    value: _s.filterCauseStatus,
                     items: const [
                       DropdownMenuItem(value: 'all', child: Text('全部')),
                       DropdownMenuItem(value: 'pending', child: Text('待解决')),
@@ -465,12 +435,9 @@ extension _WrongbookListBuild on _WrongbookPageState {
                       DropdownMenuItem(value: 'solved', child: Text('已解决')),
                       DropdownMenuItem(value: 'recheck', child: Text('复查')),
                     ],
-                    onChanged: (v) => _update(() {
-                      if (v != null) {
-                        _filterCauseStatus = v;
-                        _applyFilterChange(_filteredAll());
-                      }
-                    }),
+                    onChanged: (v) {
+                      if (v != null) _n.setFilterCauseStatus(v);
+                    },
                   ),
                 ),
               ];
@@ -501,40 +468,27 @@ extension _WrongbookListBuild on _WrongbookPageState {
           _filterOptionRow(
             label: '标签',
             children: [
-              for (final t in _allTags)
+              for (final t in _s.allTags)
                 QmChip(
                   label: '#$t',
-                  selected: _filterTags.contains(t),
-                  onTap: () => _update(() {
-                    if (_filterTags.contains(t)) {
-                      _filterTags.remove(t);
-                    } else {
-                      _filterTags.add(t);
-                    }
-                    _applyFilterChange(_filteredAll());
-                  }),
+                  selected: _s.filterTags.contains(t),
+                  onTap: () => _n.toggleFilterTag(t),
                 ),
-              for (final kpId in _filterKpIds)
+              for (final kpId in _s.filterKpIds)
                 QmChip(
                   label:
-                      '知识点：${_kps.firstWhere(
+                      '知识点：${_s.kps.firstWhere(
                         (k) => k.id == kpId,
                         orElse: () => const KnowledgePoint(id: '', subjectId: '', chapter: '', name: ''),
                       ).name}',
                   selected: true,
-                  onDelete: () => _update(() {
-                    _filterKpIds.remove(kpId);
-                    _applyFilterChange(_filteredAll());
-                  }),
+                  onDelete: () => _n.removeFilterKpId(kpId),
                 ),
-              if (_filterCauseName != null)
+              if (_s.filterCauseName != null)
                 QmChip(
-                  label: '错因：$_filterCauseName',
+                  label: '错因：$_s.filterCauseName',
                   selected: true,
-                  onDelete: () => _update(() {
-                    _filterCauseName = null;
-                    _applyFilterChange(_filteredAll());
-                  }),
+                  onDelete: () => _n.clearFilterCauseName(),
                 ),
             ],
           ),
@@ -544,34 +498,24 @@ extension _WrongbookListBuild on _WrongbookPageState {
               label: '收起筛选',
               variant: QmButtonVariant.plain,
               size: QmButtonSize.small,
-              onPressed: () => _update(() => _filterOpen = false),
+              onPressed: () =>
+                  _n.update((st) => st.copyWith(filterOpen: false)),
             ),
             children: [
               QmChip(
                 label: '仅收藏',
-                selected: _filterFavorite,
-                onTap: () => _update(() {
-                  _filterFavorite = !_filterFavorite;
-                  _applyFilterChange(_filteredAll());
-                }),
+                selected: _s.filterFavorite,
+                onTap: () => _n.toggleFilterFavorite(),
               ),
               QmChip(
                 label: '仅逾期',
-                selected: _filterOverdue,
-                onTap: () => _update(() {
-                  _filterOverdue = !_filterOverdue;
-                  _applyFilterChange(_filteredAll());
-                }),
+                selected: _s.filterOverdue,
+                onTap: () => _n.toggleFilterOverdue(),
               ),
               QmChip(
                 label: '已归档',
-                selected: _inBookArchived,
-                onTap: () => _update(() {
-                  _inBookArchived = !_inBookArchived;
-                  _page = 0;
-                  _selected.clear();
-                  _batchMode = false;
-                }),
+                selected: _s.inBookArchived,
+                onTap: () => _n.toggleInBookArchived(),
               ),
             ],
           ),
@@ -628,25 +572,25 @@ extension _WrongbookListBuild on _WrongbookPageState {
   /// 计数与当前列表范围同口径（SR-P2-38 决定 (a)）：在文件夹列表里
   /// 只数该文件夹子树里的已掌握题，不再用整科数。
   Widget _buildMasteredNote() {
-    if (_filterCauseStatus == 'solved') return const SizedBox.shrink();
-    final folderIds = _folderId == null ? null : _subtreeIds(_folderId!);
-    final hidden = _questions
+    if (_s.filterCauseStatus == 'solved') return const SizedBox.shrink();
+    final folderIds = _s.folderId == null ? null : _s.subtreeIds(_s.folderId!);
+    final hidden = _s.questions
         .where(
           (q) =>
               q.isOrganized &&
               !q.isArchived &&
-              (_subjectId == null || q.subjectId == _subjectId) &&
+              (_s.subjectId == null || q.subjectId == _s.subjectId) &&
               (folderIds == null ||
                   q.folderIds.any((id) => folderIds.contains(id))) &&
-              _isMastered(q),
+              _s.isMastered(q),
         )
         .length;
     if (hidden == 0) return const SizedBox.shrink();
     final scale = qmScaleOf(context);
     final palette = DesignTokens.of(Theme.of(context).brightness);
-    final scope = _folderId != null
+    final scope = _s.folderId != null
         ? '这个文件夹里'
-        : (_subjectId == null ? '' : '这科');
+        : (_s.subjectId == null ? '' : '这科');
     return Padding(
       padding: EdgeInsets.only(bottom: 10 * scale),
       child: Text(
@@ -682,10 +626,9 @@ extension _WrongbookListBuild on _WrongbookPageState {
             label: '← 返回题目列表',
             variant: QmButtonVariant.plain,
             size: QmButtonSize.small,
-            onPressed: () => _update(() {
-              _inBookArchived = false;
-              _page = 0;
-            }),
+            onPressed: () => _n.update(
+              (st) => st.copyWith(inBookArchived: false, page: 0),
+            ),
           ),
         ],
       ),
@@ -695,16 +638,16 @@ extension _WrongbookListBuild on _WrongbookPageState {
   Widget _buildBatchBar(List<Question> all) {
     final scale = qmScaleOf(context);
     final palette = DesignTokens.of(Theme.of(context).brightness);
-    final selInList = all.where((q) => _selected.contains(q.id)).length;
+    final selInList = all.where((q) => _s.selected.contains(q.id)).length;
     final allChecked = all.isNotEmpty && selInList == all.length;
     final someChecked = selInList > 0 && selInList < all.length;
-    final options = _batchFolderOptions();
+    final options = _s.batchFolderOptions();
     // 下拉的当前值必须在选项里：存量值失效（文件夹被删）时回落到首项，
     // 不在 build 里写回状态。
-    final batchFolderId = options.any((f) => f.id == _batchFolderId)
-        ? _batchFolderId
+    final batchFolderId = options.any((f) => f.id == _s.batchFolderId)
+        ? _s.batchFolderId
         : (options.isNotEmpty ? options.first.id : null);
-    final hasSelection = _selected.isNotEmpty;
+    final hasSelection = _s.selected.isNotEmpty;
     return Container(
       margin: EdgeInsets.only(bottom: 12 * scale),
       padding: EdgeInsets.symmetric(
@@ -739,13 +682,13 @@ extension _WrongbookListBuild on _WrongbookPageState {
             ],
           ),
           Text(
-            '已选 ${_selected.length} 道',
+            '已选 ${_s.selected.length} 道',
             style: const TextStyle(fontWeight: FontWeight.w800),
           ),
           // 跨学科列表（错因/知识点筛选进来）没有归属学科，批量移
           // 文件夹的目标下拉是空的（SR-P2-41）：进批量模式就说明，
           // 别等用户点了才发现移不了。
-          if (_subjectId == null)
+          if (_s.subjectId == null)
             Text(
               '跨学科列表不能批量移文件夹：先打开一本书，再批量移',
               style: TextStyle(fontSize: 12.5, color: palette.muted),
@@ -763,22 +706,24 @@ extension _WrongbookListBuild on _WrongbookPageState {
                 value: batchFolderId,
                 items: [
                   for (final f in options)
-                    DropdownMenuItem(value: f.id, child: Text(_folderLabel(f))),
+                    DropdownMenuItem(value: f.id, child: Text(_s.folderLabel(f))),
                 ],
-                onChanged: (v) => _update(() {
-                  if (v != null) _batchFolderId = v;
-                }),
+                onChanged: (v) {
+                  if (v != null) {
+                    _n.update((st) => st.copyWith(batchFolderId: v));
+                  }
+                },
               ),
             ),
           QmButton(
-            label: _folderId != null ? '批量移入文件夹' : '批量加入文件夹',
+            label: _s.folderId != null ? '批量移入文件夹' : '批量加入文件夹',
             variant: QmButtonVariant.plain,
             size: QmButtonSize.small,
             onPressed: hasSelection && options.isNotEmpty
                 ? () => _batchMoveToFolder(batchFolderId)
                 : null,
           ),
-          if (_folderId != null)
+          if (_s.folderId != null)
             QmButton(
               label: '批量移出当前文件夹',
               variant: QmButtonVariant.plain,
@@ -800,7 +745,7 @@ extension _WrongbookListBuild on _WrongbookPageState {
           // B11-6：批量加入 / 取消加入复习。加入复习只加未解决的错因，
           // 已治愈的不重复加入（判定在 repository.joinReviewBatch）；
           // “全部加入复习”作用域 = 当前筛选出的全部题（all 是
-          // _filteredAll() 的结果，与“全选当前结果”同口径），不是
+          // _s.filteredAll() 的结果，与“全选当前结果”同口径），不是
           // 全库、也不限当前页，不用先勾选。
           QmButton(
             label: '加入复习',
@@ -831,19 +776,21 @@ extension _WrongbookListBuild on _WrongbookPageState {
             variant: QmButtonVariant.plain,
             size: QmButtonSize.small,
             onPressed: hasSelection
-                ? () => _update(() {
-                    _selected.clear();
-                  })
+                ? () => _n.update(
+                    (st) => st.copyWith(selected: const <String>{}),
+                  )
                 : null,
           ),
           QmButton(
             label: '退出批量',
             variant: QmButtonVariant.plain,
             size: QmButtonSize.small,
-            onPressed: () => _update(() {
-              _batchMode = false;
-              _selected.clear();
-            }),
+            onPressed: () => _n.update(
+              (st) => st.copyWith(
+                batchMode: false,
+                selected: const <String>{},
+              ),
+            ),
           ),
         ],
       ),
@@ -898,12 +845,12 @@ extension _WrongbookListBuild on _WrongbookPageState {
       children: [
         QuestionSlice(
           question: q,
-          subject: _subjectOf(q.subjectId),
+          subject: _s.subjectOf(q.subjectId),
           maxHeight: 160 * scale,
           fixedHeight: true,
           onTap: () async {
             await widget.onOpenDetail(q, orderIds);
-            await _load();
+            await _n.load();
           },
         ),
         Positioned(
@@ -941,7 +888,7 @@ extension _WrongbookListBuild on _WrongbookPageState {
             ),
           ),
         ),
-        if (_batchMode)
+        if (_s.batchMode)
           Positioned(
             top: 9 * scale,
             left: DesignTokens.cardCheckLeft * scale,
@@ -951,14 +898,8 @@ extension _WrongbookListBuild on _WrongbookPageState {
                 borderRadius: BorderRadius.circular(5 * scale),
               ),
               child: Checkbox(
-                value: _selected.contains(q.id),
-                onChanged: (v) => _update(() {
-                  if (v == true) {
-                    _selected.add(q.id);
-                  } else {
-                    _selected.remove(q.id);
-                  }
-                }),
+                value: _s.selected.contains(q.id),
+                onChanged: (v) => _n.toggleSelected(q.id, v == true),
               ),
             ),
           ),
@@ -983,11 +924,11 @@ extension _WrongbookListBuild on _WrongbookPageState {
   Widget _buildCompactRow(Question q, List<String> orderIds) {
     final scale = qmScaleOf(context);
     final palette = DesignTokens.of(Theme.of(context).brightness);
-    final nextRecheck = _nextRecheckOf(q);
+    final nextRecheck = _s.nextRecheckOf(q);
     return InkWell(
       onTap: () async {
         await widget.onOpenDetail(q, orderIds);
-        await _load();
+        await _n.load();
       },
       borderRadius: BorderRadius.circular(6 * scale),
       child: Padding(
@@ -1000,25 +941,19 @@ extension _WrongbookListBuild on _WrongbookPageState {
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            if (_batchMode)
+            if (_s.batchMode)
               Padding(
                 padding: EdgeInsets.only(right: 8 * scale),
                 child: Checkbox(
-                  value: _selected.contains(q.id),
-                  onChanged: (v) => _update(() {
-                    if (v == true) {
-                      _selected.add(q.id);
-                    } else {
-                      _selected.remove(q.id);
-                    }
-                  }),
+                  value: _s.selected.contains(q.id),
+                  onChanged: (v) => _n.toggleSelected(q.id, v == true),
                 ),
               ),
             GestureDetector(
               onTap: () => showQuestionZoomDialog(context, q),
               child: CompactSliceThumb(
                 question: q,
-                subject: _subjectOf(q.subjectId),
+                subject: _s.subjectOf(q.subjectId),
               ),
             ),
             SizedBox(width: 12 * scale),
@@ -1042,7 +977,7 @@ extension _WrongbookListBuild on _WrongbookPageState {
                     runSpacing: 4 * scale,
                     crossAxisAlignment: WrapCrossAlignment.center,
                     children: [
-                      for (final (cause, status) in _causeStatusesOf(q))
+                      for (final (cause, status) in _s.causeStatusesOf(q))
                         _causePill(cause, status),
                       Text(
                         '下次复查 ${nextRecheck == null ? '—' : '${nextRecheck.month}月${nextRecheck.day}日'}',
@@ -1077,12 +1012,12 @@ extension _WrongbookListBuild on _WrongbookPageState {
   }
 
   /// 紧凑行 / 归档行明细行（HTML `.nb-prow .d`）：学科名着学科色
-  ///（纸面取浅色档），其余取纸面次级色。学科取库里的 `_subjects`
+  ///（纸面取浅色档），其余取纸面次级色。学科取库里的 `_s.subjects`
   ///（B2 补充；以前 `Subject.byId` 未知 id 回退到数学名 +
   /// `subjectInk` 不传存色落到数学色）。
   Widget _prowMetaLine(Question q) {
     final palette = DesignTokens.of(Theme.of(context).brightness);
-    final subject = _subjects.firstWhere(
+    final subject = _s.subjects.firstWhere(
       (s) => s.id == q.subjectId,
       orElse: () => Subject.byId(q.subjectId),
     );
@@ -1151,7 +1086,7 @@ extension _WrongbookListBuild on _WrongbookPageState {
     return InkWell(
       onTap: () async {
         await widget.onOpenDetail(q, orderIds);
-        await _load();
+        await _n.load();
       },
       borderRadius: BorderRadius.circular(6 * scale),
       child: Padding(
@@ -1168,7 +1103,7 @@ extension _WrongbookListBuild on _WrongbookPageState {
               onTap: () => showQuestionZoomDialog(context, q),
               child: CompactSliceThumb(
                 question: q,
-                subject: _subjectOf(q.subjectId),
+                subject: _s.subjectOf(q.subjectId),
               ),
             ),
             SizedBox(width: 12 * scale),
@@ -1234,16 +1169,13 @@ extension _WrongbookListBuild on _WrongbookPageState {
           SizedBox(
             width: 76 * scale,
             child: _styledDropdown<int>(
-              value: _pageSize,
+              value: _s.pageSize,
               items: [10, 20, 30, 40, 50]
                   .map((n) => DropdownMenuItem(value: n, child: Text('$n')))
                   .toList(),
-              onChanged: (v) => _update(() {
-                if (v != null) {
-                  _pageSize = v;
-                  _page = 0;
-                }
-              }),
+              onChanged: (v) {
+                if (v != null) _n.setPageSize(v);
+              },
             ),
           ),
           SizedBox(width: 4 * scale),
@@ -1253,7 +1185,9 @@ extension _WrongbookListBuild on _WrongbookPageState {
             label: '上一页',
             variant: QmButtonVariant.plain,
             size: QmButtonSize.small,
-            onPressed: page > 0 ? () => _update(() => _page = page - 1) : null,
+            onPressed: page > 0
+                ? () => _n.update((st) => st.copyWith(page: page - 1))
+                : null,
           ),
           SizedBox(width: 6 * scale),
           if (totalPages > 1)
@@ -1263,7 +1197,7 @@ extension _WrongbookListBuild on _WrongbookPageState {
                 i + 1,
                 selected: i == page,
                 onTap: () {
-                  _update(() => _page = i);
+                  _n.update((st) => st.copyWith(page: i));
                 },
               ),
             ],
@@ -1273,7 +1207,7 @@ extension _WrongbookListBuild on _WrongbookPageState {
             variant: QmButtonVariant.plain,
             size: QmButtonSize.small,
             onPressed: page < totalPages - 1
-                ? () => _update(() => _page = page + 1)
+                ? () => _n.update((st) => st.copyWith(page: page + 1))
                 : null,
           ),
         ],
@@ -1284,15 +1218,15 @@ extension _WrongbookListBuild on _WrongbookPageState {
   // ----- 已归档（书架顶部入口，跨学科） -----
 
   Widget _buildArchived() {
-    final archived = _questions.where((q) => q.isArchived).toList()
+    final archived = _s.questions.where((q) => q.isArchived).toList()
       ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
     final orderIds = archived.map((q) => q.id).toList();
     // 跨学科已归档视图也分页（SR-P2-46，与书内列表同一分页器，
     // 默认 10 条）：归档是只增不减的冷数据，全量渲染会越拖越长。
     // 搜索暂缓（先补分页）。
-    final totalPages = (archived.length / _pageSize).ceil().clamp(1, 9999);
-    final page = _page.clamp(0, totalPages - 1);
-    final items = archived.skip(page * _pageSize).take(_pageSize).toList();
+    final totalPages = (archived.length / _s.pageSize).ceil().clamp(1, 9999);
+    final page = _s.page.clamp(0, totalPages - 1);
+    final items = archived.skip(page * _s.pageSize).take(_s.pageSize).toList();
     final scale = qmScaleOf(context);
     return SingleChildScrollView(
       padding: EdgeInsets.zero,
