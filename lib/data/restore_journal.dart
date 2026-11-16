@@ -265,7 +265,7 @@ class RestoreJournal {
 /// 原子替换函数签名（与 [atomicReplaceFile] 同形）。
 /// 返回 0 表示成功，否则为平台错误码（Windows 为 Win32 错误码，
 /// Linux 为 errno）。注入用：测试以此模拟 ReplaceFileW 的
-/// 1176 / 1177 / 1178 三种部分失败状态。
+/// 1175 / 1176 / 1177 三种部分失败状态。
 typedef AtomicReplaceFn = Future<int> Function({
   required String target,
   required String replacement,
@@ -412,7 +412,7 @@ class RestoreJournalStore {
   /// - 正式日志存在但损坏：抛 [JournalCorruptException]，停下并保留
   ///   现场，不 fallback 到备份（损坏原因须人工核对，静默用备份会
   ///   掩盖“正式日志为何损坏”）。
-  /// - 正式日志缺失：按 1178 语义按磁盘实际状态分派——临时新日志有效
+  /// - 正式日志缺失：按 1177 语义按磁盘实际状态分派——临时新日志有效
   ///   则安装为正式日志（完成被中断的替换，备份位置的原日志保留）；
   ///   临时损坏则丢弃临时、从备份恢复原日志；两者皆无则从备份恢复；
   ///   三处均无有效日志时返回 null（无进行中的恢复，正常启动）；
@@ -492,7 +492,7 @@ class RestoreJournalStore {
   /// 替换失败后的分派处理（B-NEW-17）。
   ///
   /// 只按磁盘实际状态分派，不按错误码分派：实测错误码可能为 0 但文件
-  /// 根本没动，1177 也须先核查位置再决定按 1176 还是 1178 处理。
+  /// 根本没动，1176 也须先核查位置再决定按 1175 还是 1177 处理。
   /// 正常返回表示本次更新已完成（正式日志就是要写入的那一份）；
   /// 抛 [JournalUpdateException] 表示本次更新中止（原日志已保留或
   /// 已从备份恢复，调用方不得进入下一恢复阶段）。
@@ -502,7 +502,7 @@ class RestoreJournalStore {
     final tmpExists = tmpFile.existsSync();
 
     if (formalExists) {
-      // 1176 语义：原日志仍在正式路径、临时新日志仍在临时位置。
+      // 1175 语义：原日志仍在正式路径、临时新日志仍在临时位置。
       if (!tmpExists) {
         throw JournalUpdateException(
           '原子替换失败（错误码 $code），正式日志仍在且完整，'
@@ -545,7 +545,7 @@ class RestoreJournalStore {
       );
     }
     if (tmpExists) {
-      // 1178 语义：原日志在备份、替换文件在临时、正式路径暂时不存在。
+      // 1177 语义：原日志在备份、替换文件在临时、正式路径暂时不存在。
       try {
         await validateFile(tmpFile);
       } on JournalCorruptException {

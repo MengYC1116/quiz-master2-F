@@ -482,8 +482,23 @@ layer-2 行保留不动，编辑器读到时直接丢弃）；③ `docs/代码�
 - 验证方式：Meng 在自己 Win11 电脑上跑验证程序 `~/workspace/win11-verify/verify.dart`（Dart 3.13.7 windows_x64），工作目录 `%TEMP%\qm2-win11-verify-*`，只写临时文件，不碰真实演示库、不联网。结果文件 `~/workspace/win11-verify/win11-verify-result.txt`，汇总 4/6 通过；两项 FAIL 均为预期内的有效验证结论，不是阻塞项。
 - [1/6] rename FAIL（有效结论）：Dart `File.rename` 替换已存在目标抛 `PathAccessException (errno 5 拒绝访问)`。结论：**`File.rename` 在 Win11 上绝对不能当原子替换用**。恢复日志原子替换在 Windows 上必须走 FFI 调 `ReplaceFileW`（带备份文件）；Linux 上用同文件系统 `rename(2)`。“先删旧日志、再普通重命名新日志”的两步方式禁止。
 - [2/6] replace PASS：`ReplaceFileW` 成功路径——正式日志为完整新版 v2、备份 `restore-journal.json.bak` 为完整旧版 v1、tmp 已消失。
-- [3/6] inject PASS（安全属性成立，错误码与预期不符是重要发现）：锁住正式日志后 `ReplaceFileW` 返回错误码 **0**（预期 1176）；锁住临时日志返回 **32**（预期 1177）；预置备份 + 锁临时返回 **32**（1178 未触发，预期内）。三次注入后正式日志均未损坏丢失。结论：**恢复代码不得只凭 Win32 错误码推断文件位置——实测出现过错误码读到 0 但文件根本没动**。失败后一律先实地核查正式日志、备份、临时三处文件的实际状态，再按 B-NEW-17 的逐状态规则处理。
-- [4/6] layouts PASS 6/6：L-1176（正式 v1 + 临时 v2 → 重试安装成功）、L-1178（正式缺失 + 备份 v1 + 临时 v2 → 安装临时）、L-1178b（正式缺失 + 备份 v1 + 临时损坏 → 从备份恢复原日志）、L-1176b（正式 v1 + 临时损坏 → 丢弃临时保正式）、L-first（首次创建只有临时 → 同卷 rename 安装）、L-none（三处均无有效日志 → 明确拒绝，不得继续）。三状态布局的恢复动作均按 B-NEW-17 验证通过。
+- [3/6] inject PASS（安全属性成立，错误码与预期不符是重要发现）：锁住正式日志后 `ReplaceFileW` 返回错误码 **0**（预期 1175）；锁住临时日志返回 **32**（预期 1176）；预置备份 + 锁临时返回 **32**（1177 未触发，预期内）。三次注入后正式日志均未损坏丢失。结论：**恢复代码不得只凭 Win32 错误码推断文件位置——实测出现过错误码读到 0 但文件根本没动**。失败后一律先实地核查正式日志、备份、临时三处文件的实际状态，再按 B-NEW-17 的逐状态规则处理。
+- [4/6] layouts PASS 6/6：L-1175（正式 v1 + 临时 v2 → 重试安装成功）、L-1177（正式缺失 + 备份 v1 + 临时 v2 → 安装临时）、L-1177b（正式缺失 + 备份 v1 + 临时损坏 → 从备份恢复原日志）、L-1175b（正式 v1 + 临时损坏 → 丢弃临时保正式）、L-first（首次创建只有临时 → 同卷 rename 安装）、L-none（三处均无有效日志 → 明确拒绝，不得继续）。三状态布局的恢复动作均按 B-NEW-17 验证通过。
 - [5/6] fsyncdir FAIL（预期内，不阻断）：`GENERIC_READ` 打开目录句柄后 `FlushFileBuffers` 报错误 5。实现约束：**改用 `GENERIC_READ|GENERIC_WRITE` 打开目录句柄再试；仍失败则只记录、不阻断本次日志更新**（B-NEW-16：故障保证只覆盖进程强制终止，不承诺断电恢复）。
 - [6/6] killtest PASS：循环更新中 `taskkill /F` 强制杀进程，重启后正式日志仍为完整版本 v40（非旧即新，无半截）。
 - 门禁结论：B Stage 2 可以启动（Meng 2026-11-16 21:50 发回验证结果；一揽子授权 2026-11-16 09:54 已覆盖本阶段执行，推送仍需另行批准）。实现必须遵守的三条硬约束：① Windows 原子替换走 FFI `ReplaceFileW`（恒带备份，同卷），Linux 走同文件系统 rename；② 失败后先核查三处文件实际状态再分派，绝不只凭错误码；③ 父目录 fsync 用 `GENERIC_READ|GENERIC_WRITE` 重试，失败只记不阻断。另：验证程序本身修过一个 bug——`Utf16` / `toNativeUtf16` / `malloc` 在 `package:ffi` 不在 `dart:ffi`（初版 analyze 25 个错，加 `package:ffi` import + `pubspec.yaml` 的 `ffi: ^2.1.0` 后通过，验证包 v2）。
+
+## D-47 — GPT 关口 P1-01 修正：ReplaceFileW 错误码整体错一位（2026-11-16，B Stage 2 推送后，GPT 复审 FAIL 唯一项）
+
+- GPT 结论：2026-11-16 23:55 出结论 FAIL，唯一阻断项 P1-01。主 agent 已按微软定义与代码 grep 独立核实，GPT 是对的。
+- 微软定义（WinError.h）：1175 (0x497) = ERROR_UNABLE_TO_REMOVE_REPLACED；1176 (0x498) = ERROR_UNABLE_TO_MOVE_REPLACEMENT；1177 (0x499) = ERROR_UNABLE_TO_MOVE_REPLACEMENT_2；1178 (0x49A) = ERROR_JOURNAL_DELETE_IN_PROGRESS，与 ReplaceFileW 无关。
+- 错位原因：实现写的是 1176/1177/1178，整体错一位；常量、注释、测试、D-46 预期码同错。状态机逻辑本身（按磁盘实际状态分派、不得只凭错误码推断）是对的，只错数字。21:50 门禁实测读到的是 0 和 32，从未读到过 117x，所以错位一直没暴露。
+- 修正内容：
+  - `lib/data/journal_ffi.dart:125-127` 三个常量改为 1175/1176/1177（名不变），注释 120-122 同步。
+  - `lib/data/restore_journal.dart` 注释 5 处（268、415、495、505、548）按正确码重写。核查：分派逻辑 `_handleReplaceFailure` 只按磁盘实际状态（正式/备份/临时存在性）分派，错误码只进异常信息；三处常量定义后无任何按数字分派之处，无需改逻辑。
+  - `test/b2_restore_journal_test.dart`：注入码与用例名全部按 1175/1176/1177 重写（布局名同步 L-1175/L-1176/L-1177）。重点：1175（REMOVE_REPLACED）之前完全没覆盖到，本次补上。
+  - D-46 的预期码与布局名同步纠正（[3/6] 预期 1175/1176/1177；[4/6] L-1175/L-1177/L-1177b/L-1175b）。
+  - 未改：计划草稿 `ARCH-PLAN-B-DRIFT-DRAFT.md`（只用常量名、无数字，本身正确）；`gpt-review-b2.md` 原文不动（材料里的码随代码一起纠正，GPT 复审以修正后代码为准）；Win11 验证包由另一路按正确码重做（`win11-verify-b2-kit.zip`）。
+- 验证：目标测试 `b2_restore_journal` + `b2_restore_flow` 42/42；串行全量 **1246/1246**（EXIT=0，9 分 36 秒，日志 `~/workspace/b2-work/b2-p101-fix-full.log`，0 个 `[E]`）；`flutter analyze` No issues found；schema 测试通过（`user_version=2`，17 条 DDL 逐字一致，diff 0）；演示库 md5 未变（`8f7f9c64…`，跑前已备份到 `~/workspace/demo-db-backup/quiz-master2.db.b2-p101-gate`）。
+- 残留核查：仓库内（lib/test/decision-log/计划草稿）已无 1178 当 ReplaceFileW 状态；1178 仅存于 `gpt-review-b2.md` 原文（按任务要求不改）与旧验证包 `verify.dart`（另一路重做中）。
+- 状态：修正未推，等 Meng 批；B3 暂缓；GPT 复审只审 P1-01 这一个修复点（Meng 2026-11-16 23:57 定）；Win11 真机完整恢复验证明天（2026-11-17）做，验证包已备好，等修正推上去后再跑。

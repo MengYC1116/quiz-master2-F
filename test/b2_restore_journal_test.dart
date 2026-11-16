@@ -271,9 +271,9 @@ void main() {
   });
 
   group('⑭ 三状态故障注入（B-NEW-17）', () {
-    test('1176：正式仍在 + 临时有效 → 重试一次，仍失败则中止、原日志保留', () async {
+    test('1175：正式仍在 + 临时有效 → 重试一次，仍失败则中止、原日志保留', () async {
       final v1 = await store.writeInitial(_journal(dir: dir));
-      final injected = _storeWithFake(dir, [1176, 1176]);
+      final injected = _storeWithFake(dir, [1175, 1175]);
       store = injected.store;
       final fake = injected.fake;
       await expectLater(
@@ -287,10 +287,10 @@ void main() {
       expect((await _readFormal(store)).checksum, v1.checksum);
     });
 
-    test('1176 重试成功：正式变新版', () async {
+    test('1175 重试成功：正式变新版', () async {
       await store.writeInitial(_journal(dir: dir));
-      // 第一次返回 1176（不动磁盘），第二次真的执行替换并返回 0。
-      final injected = _storeWithFake(dir, [1176, 0]);
+      // 第一次返回 1175（不动磁盘），第二次真的执行替换并返回 0。
+      final injected = _storeWithFake(dir, [1175, 0]);
       store = injected.store;
       final fake = injected.fake;
       final v2 = await store.updateStage(
@@ -301,12 +301,12 @@ void main() {
       expect((await _readFormal(store)).checksum, v2.checksum);
     });
 
-    test('1176 且临时已损坏：丢弃临时、保留原日志', () async {
+    test('1175 且临时已损坏：丢弃临时、保留原日志', () async {
       final v1 = await store.writeInitial(_journal(dir: dir));
-      // fake 在调用时把 tmp 写坏，再返回 1176。
+      // fake 在调用时把 tmp 写坏，再返回 1175。
       final injected = _storeWithFake(
         dir,
-        [1176],
+        [1175],
         onCall: (index, s) {
           if (index == 0) {
             s.tmpFile.writeAsStringSync('garbage{{{');
@@ -326,9 +326,9 @@ void main() {
       expect((await _readFormal(store)).checksum, v1.checksum);
     });
 
-    test('1177 按磁盘状态分派（a）：原日志仍在正式路径 → 按 1176 处理', () async {
+    test('1176 按磁盘状态分派（a）：原日志仍在正式路径 → 按 1175 处理', () async {
       final v1 = await store.writeInitial(_journal(dir: dir));
-      final injected = _storeWithFake(dir, [1177, 1177]);
+      final injected = _storeWithFake(dir, [1176, 1176]);
       store = injected.store;
       final fake = injected.fake;
       await expectLater(
@@ -337,21 +337,21 @@ void main() {
         ),
         throwsA(isA<JournalUpdateException>()),
       );
-      expect(fake.calls, 2, reason: '按 1176 处理：重试一次');
+      expect(fake.calls, 2, reason: '按 1175 处理：重试一次');
       expect((await _readFormal(store)).checksum, v1.checksum);
     });
 
-    test('1177 按磁盘状态分派（b）：原日志在备份位置 → 按 1178 处理', () async {
-      // 预摆 1178 布局：正式缺失、备份有完整原日志、临时待写入。
+    test('1176 按磁盘状态分派（b）：原日志在备份位置 → 按 1177 处理', () async {
+      // 预摆 1177 布局：正式缺失、备份有完整原日志、临时待写入。
       final v1 = _journal(dir: dir);
       await _writeRaw(store.backupFile, v1.toCanonicalJson());
-      final injected = _storeWithFake(dir, [1177]);
+      final injected = _storeWithFake(dir, [1176]);
       store = injected.store;
       final fake = injected.fake;
       final v2 = await store.updateStage(
         _journal(dir: dir, stage: RestoreStage.snapshotReady),
       );
-      expect(fake.calls, 1, reason: '按 1178 处理：不重试，直接安装临时日志');
+      expect(fake.calls, 1, reason: '按 1177 处理：不重试，直接安装临时日志');
       expect(v2.stage, RestoreStage.snapshotReady);
       expect((await _readFormal(store)).checksum, v2.checksum);
       // 备份位置的原日志保留。
@@ -361,10 +361,10 @@ void main() {
       );
     });
 
-    test('1178：正式缺失 + 备份原日志 + 临时有效 → 安装临时为正式，备份保留', () async {
+    test('1177：正式缺失 + 备份原日志 + 临时有效 → 安装临时为正式，备份保留', () async {
       final v1 = _journal(dir: dir);
       await _writeRaw(store.backupFile, v1.toCanonicalJson());
-      final injected = _storeWithFake(dir, [1178]);
+      final injected = _storeWithFake(dir, [1177]);
       store = injected.store;
       final fake = injected.fake;
       final v2 = await store.updateStage(
@@ -379,12 +379,12 @@ void main() {
       );
     });
 
-    test('1178 且临时损坏：丢弃临时、从备份恢复原日志并校验', () async {
+    test('1177 且临时损坏：丢弃临时、从备份恢复原日志并校验', () async {
       final v1 = _journal(dir: dir);
       await _writeRaw(store.backupFile, v1.toCanonicalJson());
       final injected = _storeWithFake(
         dir,
-        [1178],
+        [1177],
         onCall: (index, s) {
           if (index == 0) {
             s.tmpFile.writeAsStringSync('{{{broken');

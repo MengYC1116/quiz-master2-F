@@ -117,14 +117,14 @@ class _Kernel32 {
 _Kernel32? _kernel32;
 
 /// Windows 上 ReplaceFileW 的部分失败状态（B-NEW-17）：
-/// 1176 ERROR_UNABLE_TO_REMOVE_REPLACED、
-/// 1177 ERROR_UNABLE_TO_MOVE_REPLACEMENT、
-/// 1178 ERROR_UNABLE_TO_MOVE_REPLACEMENT_2。
+/// 1175 ERROR_UNABLE_TO_REMOVE_REPLACED、
+/// 1176 ERROR_UNABLE_TO_MOVE_REPLACEMENT、
+/// 1177 ERROR_UNABLE_TO_MOVE_REPLACEMENT_2。
 /// 调用方（restore_journal.dart）不得只凭错误码推断文件位置，
 /// 必须先实地核查正式日志、备份、临时三处文件的实际状态再分派。
-const int errorUnableToRemoveReplaced = 1176;
-const int errorUnableToMoveReplacement = 1177;
-const int errorUnableToMoveReplacement2 = 1178;
+const int errorUnableToRemoveReplaced = 1175;
+const int errorUnableToMoveReplacement = 1176;
+const int errorUnableToMoveReplacement2 = 1177;
 
 // ---------------------------------------------------------------------------
 // Linux：libc 绑定（只用于父目录 fsync；原子替换走 Dart File.rename）
