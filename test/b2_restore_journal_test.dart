@@ -527,69 +527,79 @@ void main() {
     });
   });
 
-  group('⑪ 日志原子替换中断（Linux，子进程 SIGKILL）', () {
-    test('循环更新中杀掉：重启后正式日志非旧即新、内容完整、无半截 JSON', () async {
-      final workerDir = await _tempDir();
-      addTearDown(() async {
+  // Windows 上跳过：本组用 ProcessSignal.sigkill 杀子进程，Windows 不支持
+  // SIGKILL；且 _dartExecutable 在 Windows 上会选中 Flutter SDK bin/dart
+  //（Unix shell 脚本），Process.start 报“不是有效的 Win32 应用程序”。
+  // Windows 等价覆盖是 Win11 验证包 [7/8] killtest（taskkill），见 D-48。
+  group(
+    '⑪ 日志原子替换中断（Linux，子进程 SIGKILL）',
+    () {
+      test('循环更新中杀掉：重启后正式日志非旧即新、内容完整、无半截 JSON', () async {
+        final workerDir = await _tempDir();
+        addTearDown(() async {
+          try {
+            await workerDir.delete(recursive: true);
+          } catch (_) {}
+        });
+        final proc = await _startWorker(workerDir, 'loop');
         try {
-          await workerDir.delete(recursive: true);
-        } catch (_) {}
-      });
-      final proc = await _startWorker(workerDir, 'loop');
-      try {
-        final reached = await _waitForLine(
-          proc,
-          (line) => line.startsWith('VERSION='),
-          atLeast: 50,
-        );
-        expect(reached, isTrue, reason: 'worker 未跑到 VERSION=50');
-        proc.kill(ProcessSignal.sigkill);
-        await proc.exitCode.timeout(const Duration(seconds: 10));
-        final formal = File(p.join(workerDir.path, restoreJournalFileName));
-        expect(await formal.exists(), isTrue, reason: '日志不得缺失');
-        // 内容完整：JSON 可解析、校验和通过、任务号单调可辨。
-        final journal = await store.validateFile(formal);
-        expect(journal.taskId, matches(RegExp(r'^kill-loop-\d+$')));
-        final v = int.parse(journal.taskId.substring('kill-loop-'.length));
-        expect(v, greaterThanOrEqualTo(50));
-        // 启动恢复同样认出这份有效日志。
-        final recovered = await RestoreJournalStore(dataDir: workerDir)
-            .locateAndRecover();
-        expect(recovered!.checksum, journal.checksum);
-      } finally {
-        _killQuietly(proc);
-      }
-    }, timeout: const Timeout(Duration(minutes: 2)));
+          final reached = await _waitForLine(
+            proc,
+            (line) => line.startsWith('VERSION='),
+            atLeast: 50,
+          );
+          expect(reached, isTrue, reason: 'worker 未跑到 VERSION=50');
+          proc.kill(ProcessSignal.sigkill);
+          await proc.exitCode.timeout(const Duration(seconds: 10));
+          final formal = File(p.join(workerDir.path, restoreJournalFileName));
+          expect(await formal.exists(), isTrue, reason: '日志不得缺失');
+          // 内容完整：JSON 可解析、校验和通过、任务号单调可辨。
+          final journal = await store.validateFile(formal);
+          expect(journal.taskId, matches(RegExp(r'^kill-loop-\d+$')));
+          final v = int.parse(journal.taskId.substring('kill-loop-'.length));
+          expect(v, greaterThanOrEqualTo(50));
+          // 启动恢复同样认出这份有效日志。
+          final recovered = await RestoreJournalStore(dataDir: workerDir)
+              .locateAndRecover();
+          expect(recovered!.checksum, journal.checksum);
+        } finally {
+          _killQuietly(proc);
+        }
+      }, timeout: const Timeout(Duration(minutes: 2)));
 
-    test('临时已写、替换尚未完成时杀掉：正式日志仍为旧版且完整', () async {
-      final workerDir = await _tempDir();
-      addTearDown(() async {
+      test('临时已写、替换尚未完成时杀掉：正式日志仍为旧版且完整', () async {
+        final workerDir = await _tempDir();
+        addTearDown(() async {
+          try {
+            await workerDir.delete(recursive: true);
+          } catch (_) {}
+        });
+        final proc = await _startWorker(workerDir, 'write-tmp-only');
         try {
-          await workerDir.delete(recursive: true);
-        } catch (_) {}
-      });
-      final proc = await _startWorker(workerDir, 'write-tmp-only');
-      try {
-        final written = await _waitForLine(
-          proc,
-          (line) => line == 'TMP_WRITTEN',
-          atLeast: 1,
-        );
-        expect(written, isTrue, reason: 'worker 未写好 tmp');
-        proc.kill(ProcessSignal.sigkill);
-        await proc.exitCode.timeout(const Duration(seconds: 10));
-        final store2 = RestoreJournalStore(dataDir: workerDir);
-        final formal = await _readFormal(store2);
-        expect(formal.taskId, 'kill-loop-7');
-        // 启动恢复：正式仍是旧版，残留 tmp 被丢弃。
-        final recovered = await store2.locateAndRecover();
-        expect(recovered!.taskId, 'kill-loop-7');
-        expect(await store2.tmpFile.exists(), isFalse);
-      } finally {
-        _killQuietly(proc);
-      }
-    }, timeout: const Timeout(Duration(minutes: 2)));
-  });
+          final written = await _waitForLine(
+            proc,
+            (line) => line == 'TMP_WRITTEN',
+            atLeast: 1,
+          );
+          expect(written, isTrue, reason: 'worker 未写好 tmp');
+          proc.kill(ProcessSignal.sigkill);
+          await proc.exitCode.timeout(const Duration(seconds: 10));
+          final store2 = RestoreJournalStore(dataDir: workerDir);
+          final formal = await _readFormal(store2);
+          expect(formal.taskId, 'kill-loop-7');
+          // 启动恢复：正式仍是旧版，残留 tmp 被丢弃。
+          final recovered = await store2.locateAndRecover();
+          expect(recovered!.taskId, 'kill-loop-7');
+          expect(await store2.tmpFile.exists(), isFalse);
+        } finally {
+          _killQuietly(proc);
+        }
+      }, timeout: const Timeout(Duration(minutes: 2)));
+    },
+    skip: Platform.isWindows
+        ? 'Linux-only：子进程 SIGKILL，Windows 不支持；Windows 等价覆盖见 Win11 验证包 [7/8] killtest（taskkill）'
+        : false,
+  );
 }
 
 // ---------------------------------------------------------------------------
