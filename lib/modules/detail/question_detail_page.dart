@@ -180,6 +180,15 @@ class _DetailViewState extends ConsumerState<_DetailView> {
   final _explanationFocus = FocusNode();
   final _notesFocus = FocusNode();
 
+  /// FR-15：弹窗内建的控制器改字段持有——不能在 `showDialog` await
+  /// 返回后立即 dispose：弹窗退出动画仍在重建 TextField，立即释放
+  /// 会抛 “A TextEditingController was used after being disposed”
+  /// （实测，见批报告）。字段持有后：下次打开同种弹窗时先释放上一个
+  /// （此时上一个弹窗早已完全关闭——弹窗是模态的，函数 await 返回后
+  /// 页面按钮要等退出动画结束才能再点到），页面 dispose 时释放最后一个。
+  TextEditingController? _askTextCtrl;
+  TextEditingController? _newKpNameCtrl;
+
   DetailNotifier get _notifier => ref.read(detailProvider.notifier);
 
   /// 当前业务状态（build 里 `ref.watch` 订阅后，构建方法内用它读值）。
@@ -191,6 +200,8 @@ class _DetailViewState extends ConsumerState<_DetailView> {
     _answerCtrl.dispose();
     _explanationCtrl.dispose();
     _notesCtrl.dispose();
+    _askTextCtrl?.dispose();
+    _newKpNameCtrl?.dispose();
     _titleFocus.dispose();
     _answerFocus.dispose();
     _explanationFocus.dispose();
@@ -276,9 +287,6 @@ class _DetailViewState extends ConsumerState<_DetailView> {
     // 本页不再回调外壳手动刷角标（onChanged 已删）。
   }
 
-  /// §1.5.1 重新框选：加载同页全部 1 层框——目标题的框可编辑，
-  /// 同页其他题的框只读（重叠校验对所有框生效）；取消丢弃本次修改。
-  /// 页图缺失时不开编辑器（§6 第 6 条）。
   /// §1.5.1 重新框选：加载同页全部 1 层框——目标题的框可编辑，
   /// 同页其他题的框只读（重叠校验对所有框生效）；取消丢弃本次修改。
   /// 页图缺失时不开编辑器（§6 第 6 条）。编辑器弹窗在页面开，
@@ -557,7 +565,9 @@ class _DetailViewState extends ConsumerState<_DetailView> {
   // ---------- inline 新建 ----------
 
   Future<String?> _askText(String title, {String? hint}) async {
-    final ctrl = TextEditingController();
+    // FR-15：字段持有（见字段注释）；开新弹窗前释放上一个。
+    _askTextCtrl?.dispose();
+    final ctrl = _askTextCtrl = TextEditingController();
     final value = await showDialog<String>(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -652,7 +662,9 @@ class _DetailViewState extends ConsumerState<_DetailView> {
         .toSet()
         .toList();
     String chapter = chapters.isEmpty ? '' : chapters.first;
-    final nameCtrl = TextEditingController();
+    // FR-15：字段持有（见字段注释）；开新弹窗前释放上一个。
+    _newKpNameCtrl?.dispose();
+    final nameCtrl = _newKpNameCtrl = TextEditingController();
     final name = await showDialog<String>(
       context: context,
       builder: (ctx) => StatefulBuilder(
@@ -1114,7 +1126,9 @@ class _DetailViewState extends ConsumerState<_DetailView> {
   Widget _buildMetaStrip(Question q) {
     final scale = qmScaleOf(context);
     final subject = _st.subjectOf(q.subjectId);
-    final folders = _st.folders.where((f) => q.folderIds.contains(f.id)).toList();
+    final folders = _st.folders
+        .where((f) => q.folderIds.contains(f.id))
+        .toList();
     final chips = <Widget>[
       for (final f in folders)
         _metaChip(f.name, tinted: true, subject: subject),
@@ -1395,8 +1409,12 @@ class _DetailViewState extends ConsumerState<_DetailView> {
             (e) => e.id == q.examId!,
             orElse: () => Exam(id: q.examId!, name: ''),
           );
-    final folders = _st.folders.where((f) => q.folderIds.contains(f.id)).toList();
-    final kps = _st.kps.where((k) => q.knowledgePointIds.contains(k.id)).toList();
+    final folders = _st.folders
+        .where((f) => q.folderIds.contains(f.id))
+        .toList();
+    final kps = _st.kps
+        .where((k) => q.knowledgePointIds.contains(k.id))
+        .toList();
     final subject = _st.subjectOf(q.subjectId);
     return _formGrid([
       _Field('学科（不能改）', _valueText(subject.name), hint: '导入时选定，详情和整理台都不能改'),
@@ -1411,7 +1429,15 @@ class _DetailViewState extends ConsumerState<_DetailView> {
         kps.isEmpty
             ? _supplement('knowledgePoints')
             : _valueText(
-                kps.map((k) => '${subject.name} › ${k.name}').join('；'),
+                // FR-16：信息区与编辑芯片同款，补章节（学科 › 章节 · 知识点名）；
+                // 章节为空时回落到只有知识点名，不留悬空的“·”。
+                kps
+                    .map(
+                      (k) => k.chapter.isEmpty
+                          ? '${subject.name} › ${k.name}'
+                          : '${subject.name} › ${k.chapter} · ${k.name}',
+                    )
+                    .join('；'),
               ),
       ),
       _Field(
@@ -1463,7 +1489,9 @@ class _DetailViewState extends ConsumerState<_DetailView> {
 
   Widget _buildInfoEdit(Question q) {
     final scale = qmScaleOf(context);
-    final subjectKps = _st.kps.where((k) => k.subjectId == q.subjectId).toList();
+    final subjectKps = _st.kps
+        .where((k) => k.subjectId == q.subjectId)
+        .toList();
     final subjectFolders = _st.folders
         .where((f) => f.subjectId == q.subjectId)
         .toList();
@@ -1840,12 +1868,14 @@ class _DetailViewState extends ConsumerState<_DetailView> {
       _Field(
         '解决次数',
         _valueText(
-          '共解决错因 ${_st.history.length} 次 · 自查「已解决」$nOk 次 · 「未解决 / 不确定」$nBad 次（同一错因在同一道题上两次「已解决」算已解决）',
+          '共自查 ${_st.history.length} 次 · 自查「已解决」$nOk 次 · 「未解决 / 不确定」$nBad 次（同一错因在同一道题上两次「已解决」算已解决）',
         ),
       ),
       _Field(
         '解决记录（全部）',
-        _st.history.isEmpty ? _buildEmptyHistory() : Column(
+        _st.history.isEmpty
+            ? _buildEmptyHistory()
+            : Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   for (final h in _st.history)
@@ -1911,7 +1941,7 @@ class _DetailViewState extends ConsumerState<_DetailView> {
       }).length;
       final stTxt = pending > 0
           ? '已加入复习 · 还有 $pending 个错因未解决'
-          : '已加入复习 · 错因已全部解决，满 7 天自动回来复查';
+          : '已加入复习 · 错因已全部解决，满 ${_st.recheckIntervalDays} 天自动回来复查';
       return Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [

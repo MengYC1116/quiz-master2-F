@@ -101,6 +101,12 @@ class FakeExportRepo extends QuestionRepository {
 
   @override
   Future<List<Subject>> subjects() async => Subject.all;
+
+  // FR-09（D-88）：DetailNotifier.load() 多读 repo.settings()；FakeRepo
+  // 不覆写会落到基类读真实 Drift 库，测试 fake async 里永不完成，
+  // loading 一直 true、转圈拖死 pumpAndSettle。
+  @override
+  Future<AppSettings> settings() async => AppSettings.defaults;
 }
 
 /// 导出服务的假实现：三个外部边界（剪贴板写、另存为对话框、

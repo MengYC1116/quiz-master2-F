@@ -16,7 +16,7 @@ import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
-import 'package:flutter/painting.dart' show FileImage;
+import 'package:flutter/painting.dart' show FileImage, PaintingBinding;
 
 import '../models/models.dart';
 
@@ -26,10 +26,7 @@ import '../models/models.dart';
 /// 180°：(x, y) → (1 - x, 1 - y)；270°：(x, y) → (y, 1 - x)。
 /// 用途：页已旋转 θ 后点“恢复自动框”——检测在原页上跑、
 /// 结果是原页坐标，进框列表前必须先做这个变换，否则错位。
-QuestionBox rotateBoxToRotatedPage(
-  QuestionBox box,
-  int degreesClockwise,
-) {
+QuestionBox rotateBoxToRotatedPage(QuestionBox box, int degreesClockwise) {
   final deg = ((degreesClockwise % 360) + 360) % 360;
   final x = box.x, y = box.y, w = box.w, h = box.h;
   late final double nx, ny, nw, nh;
@@ -87,10 +84,7 @@ QuestionBox rotateBoxToRotatedPage(
 }
 
 /// [rotateBoxToRotatedPage] 的逆变换：旋转后页坐标 → 原页坐标。
-QuestionBox unrotateBoxFromRotatedPage(
-  QuestionBox box,
-  int degreesClockwise,
-) =>
+QuestionBox unrotateBoxFromRotatedPage(QuestionBox box, int degreesClockwise) =>
     rotateBoxToRotatedPage(box, (360 - degreesClockwise) % 360);
 
 /// 把图片字节顺时针旋转 [degreesClockwise] 后编码为 PNG 返回。
@@ -127,8 +121,7 @@ Future<Uint8List> rotateImageBytes(
         canvas.rotate(3 * math.pi / 2);
     }
     canvas.drawImage(src, ui.Offset.zero, ui.Paint());
-    final out =
-        await recorder.endRecording().toImage(newW, newH);
+    final out = await recorder.endRecording().toImage(newW, newH);
     try {
       final data = await out.toByteData(format: ui.ImageByteFormat.png);
       return data!.buffer.asUint8List();
@@ -151,13 +144,17 @@ Future<Uint8List> rotateImageBytes(
     if (bytes[i] != signature[i]) return null;
   }
   // IHDR 块：长度在 [8..12)，类型在 [12..16) 应为 'IHDR'。
-  if (bytes[12] != 0x49 || bytes[13] != 0x48 ||
-      bytes[14] != 0x44 || bytes[15] != 0x52) {
+  if (bytes[12] != 0x49 ||
+      bytes[13] != 0x48 ||
+      bytes[14] != 0x44 ||
+      bytes[15] != 0x52) {
     return null;
   }
   int be32(int at) =>
-      (bytes[at] << 24) | (bytes[at + 1] << 16) |
-      (bytes[at + 2] << 8) | bytes[at + 3];
+      (bytes[at] << 24) |
+      (bytes[at + 1] << 16) |
+      (bytes[at + 2] << 8) |
+      bytes[at + 3];
   final width = be32(16);
   final height = be32(20);
   if (width <= 0 || height <= 0) return null;
@@ -174,10 +171,8 @@ Future<({Uint8List png, int width, int height})> cropBoxPng(
   try {
     final left = (box.x * src.width).round().clamp(0, src.width);
     final top = (box.y * src.height).round().clamp(0, src.height);
-    final right =
-        ((box.x + box.w) * src.width).round().clamp(0, src.width);
-    final bottom =
-        ((box.y + box.h) * src.height).round().clamp(0, src.height);
+    final right = ((box.x + box.w) * src.width).round().clamp(0, src.width);
+    final bottom = ((box.y + box.h) * src.height).round().clamp(0, src.height);
     final w = right - left, h = bottom - top;
     if (w <= 0 || h <= 0) {
       throw ArgumentError('框 $box 落在页图外，裁不出切片');
@@ -187,18 +182,18 @@ Future<({Uint8List png, int width, int height})> cropBoxPng(
     canvas.drawImageRect(
       src,
       ui.Rect.fromLTWH(
-          left.toDouble(), top.toDouble(), w.toDouble(), h.toDouble()),
+        left.toDouble(),
+        top.toDouble(),
+        w.toDouble(),
+        h.toDouble(),
+      ),
       ui.Rect.fromLTWH(0, 0, w.toDouble(), h.toDouble()),
       ui.Paint(),
     );
     final out = await recorder.endRecording().toImage(w, h);
     try {
       final data = await out.toByteData(format: ui.ImageByteFormat.png);
-      return (
-        png: data!.buffer.asUint8List(),
-        width: w,
-        height: h,
-      );
+      return (png: data!.buffer.asUint8List(), width: w, height: h);
     } finally {
       out.dispose();
     }
@@ -210,19 +205,24 @@ Future<({Uint8List png, int width, int height})> cropBoxPng(
 /// P2 确认时的组合操作：页图先按 [degreesClockwise] 烘焙旋转，
 /// 再把原页坐标的 [boxInOriginalCoords] 换算到旋转后坐标系裁剪。
 /// 返回烘焙后页图与切片（切片内容应与原页直接裁剪一致）。
-Future<({
-  Uint8List bakedPagePng,
-  Uint8List slicePng,
-  int sliceWidth,
-  int sliceHeight,
-})> cropRotatedSlice(
+Future<
+  ({
+    Uint8List bakedPagePng,
+    Uint8List slicePng,
+    int sliceWidth,
+    int sliceHeight,
+  })
+>
+cropRotatedSlice(
   Uint8List pageBytes,
   QuestionBox boxInOriginalCoords,
   int degreesClockwise,
 ) async {
   final baked = await rotateImageBytes(pageBytes, degreesClockwise);
-  final rotatedBox =
-      rotateBoxToRotatedPage(boxInOriginalCoords, degreesClockwise);
+  final rotatedBox = rotateBoxToRotatedPage(
+    boxInOriginalCoords,
+    degreesClockwise,
+  );
   final slice = await cropBoxPng(baked, rotatedBox);
   return (
     bakedPagePng: baked,
@@ -298,13 +298,10 @@ int? readJpegExifOrientation(Uint8List bytes) {
   }
 }
 
-int? _readTiffOrientation(
-    Uint8List bytes, int tiffStart, int tiffLen) {
+int? _readTiffOrientation(Uint8List bytes, int tiffStart, int tiffLen) {
   if (tiffLen < 8 || tiffStart + 8 > bytes.length) return null;
-  final littleEndian =
-      bytes[tiffStart] == 0x49 && bytes[tiffStart + 1] == 0x49;
-  final bigEndian =
-      bytes[tiffStart] == 0x4D && bytes[tiffStart + 1] == 0x4D;
+  final littleEndian = bytes[tiffStart] == 0x49 && bytes[tiffStart + 1] == 0x49;
+  final bigEndian = bytes[tiffStart] == 0x4D && bytes[tiffStart + 1] == 0x4D;
   if (!littleEndian && !bigEndian) return null;
 
   int u16(int off) {
@@ -374,7 +371,7 @@ int? exifOrientationToClockwiseDegrees(int orientation) {
 /// 自动转正，所以这里**只解码再编码**，绝不按角度再转一次——
 /// 多转一次会把正向图又转歪（小样初版即因此失败）。
 Future<({Uint8List bytes, int orientation, bool wasNormalized})>
-    normalizeExifImageBytes(Uint8List bytes) async {
+normalizeExifImageBytes(Uint8List bytes) async {
   final orientation = readJpegExifOrientation(bytes) ?? 1;
   final degrees = exifOrientationToClockwiseDegrees(orientation);
   if (degrees == null || degrees == 0) {
@@ -395,5 +392,27 @@ Future<({Uint8List bytes, int orientation, bool wasNormalized})>
 
 /// 重切图 / 页图替换后清掉 [FileImage] 缓存，再读到的是新图。
 /// P2 重切图覆盖同名文件、旋转烘焙换页图后都要先调这个再读。
-Future<bool> evictCachedFileImage(String path) =>
-    FileImage(File(path)).evict();
+///
+/// FR-05：只清裸 FileImage 键不够——带 cacheWidth 的渲染（QuestionSlice /
+/// CompactSliceThumb）走 ResizeImage 缓存键；ResizeImageKey 是私有的、
+/// 构造不出来，且各渲染点的 cacheWidth 随 maxHeight × dpr 变化、无法
+/// 逐个枚举。所以这里在清裸键之后再清整个图片缓存：重框确认 / 切片自愈
+/// 是偶发操作，本地图片重解码成本可忽略；正在显示的旧图由切片 Image 的
+/// ValueKey（写盘时间 + 大小）强制重建，见 widgets.dart 的 _sliceImageKey。
+/// 返回值仍是裸键是否命中（与旧口径一致；清全缓存不计入返回值）。
+///
+/// FR-05（续）：只调 `clear()` 还不够——`clear()` 不清 live 图片：
+/// 旧切片正显示在某处时，旧图仍以 live 条目留在缓存里；重建后旧态
+/// 卸载，旧图回落 keepAlive，新解析又命中它。所以再调
+/// `clearLiveImages()`：它只摘掉缓存加在 completer 上的追踪回调，
+/// 不动正在显示的图片本身（widget 自己的监听还在，旧图照常显示到
+/// 卸载）；此后新解析查不到旧条目，才会重新读盘。副作用是全应用
+/// 正在显示的图片都失去 live 追踪，之后切页回来会重新读盘——偶发
+/// 操作，可接受。
+Future<bool> evictCachedFileImage(String path) async {
+  final evicted = await FileImage(File(path)).evict();
+  final cache = PaintingBinding.instance.imageCache;
+  cache.clear();
+  cache.clearLiveImages();
+  return evicted;
+}

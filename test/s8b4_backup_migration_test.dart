@@ -101,7 +101,11 @@ void main() {
         'VALUES (?, ?, ?, ?)',
         variables: [
           Variable.withInt(1),
-          Variable.withString('["q-math-1"]'),
+          // FR-07：queue 的规范形状是 q/c 对象数组（encodeQueue 只写
+          // 这种形状；B3 黄金夹具同款）。旧种子 '["q-math-1"]' 是字符串
+          // 数组，应用从未写过这种形状，decode 也会把它静默丢成空——
+          // 校验层按规范形状拒绝它是正确的，这里改种子为规范值。
+          Variable.withString('[{"q":"q-math-1","c":"计算错误"}]'),
           Variable.withInt(0),
           Variable.withInt(1),
         ],

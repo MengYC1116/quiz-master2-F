@@ -168,6 +168,20 @@ class FakeWrongbookNotifierRepo extends QuestionRepository {
     questions.removeWhere((e) => e.id == question.id);
   }
 
+  /// FR-37：整批删除（Fake 版按“整批”语义：先记下要删的 id，一次
+  /// 从列表里去掉；`failBatchDelete` 为真时整批抛错、一道都不删，
+  /// 与数据层“中途失败整批回滚”同口径）。
+  bool failBatchDelete = false;
+  final List<String> batchDeletedIds = [];
+
+  @override
+  Future<void> deleteQuestions(List<Question> questionsToDelete) async {
+    if (failBatchDelete) throw StateError('模拟批量删题失败');
+    batchDeletedIds.addAll(questionsToDelete.map((q) => q.id));
+    final ids = questionsToDelete.map((q) => q.id).toSet();
+    questions.removeWhere((e) => ids.contains(e.id));
+  }
+
   @override
   Future<void> saveFolder(Folder folder) async {
     final i = folderList.indexWhere((e) => e.id == folder.id);
@@ -614,5 +628,83 @@ void main() {
     expect(s3.view, WrongbookView.list);
     expect(s3.sort, 'old');
     expect(s3.filterCauseName, '概念不清');
+  });
+
+  test('FR-08：错题本学科首字母按拼音表算，化学 H；生物排在数学前', () {
+    final st = WrongbookState(
+      subjects: [
+        Subject.math,
+        Subject(id: 'chem', name: '化学', color: Subject.math.color, icon: '化'),
+        Subject(id: 'bio', name: '生物', color: Subject.math.color, icon: '生'),
+      ],
+    );
+    expect(st.subjectInitial('chem'), 'H');
+    expect(st.subjectInitial('math'), 'S');
+    expect(st.subjectPinyinKey('bio'), 'SW');
+    expect(
+      st.subjectKeyCompare(
+        _wbq('qb', subjectId: 'bio'),
+        _wbq('qm', subjectId: 'math'),
+      ),
+      lessThan(0),
+    );
+    expect(
+      st.subjectKeyCompare(
+        _wbq('qc', subjectId: 'chem'),
+        _wbq('qm', subjectId: 'math'),
+      ),
+      lessThan(0),
+    );
+  });
+
+  group('FR-37 错题本批量删除：整批一个事务', () {
+    test('全部成功：一次调 deleteQuestions，报“已删除 2 道”，两道全删', () async {
+      final (repo, notifier, container) = await _setUp(
+        initial: const WrongbookInitial(subjectId: 'math'),
+      );
+      addTearDown(container.dispose);
+      notifier.openList(subjectId: 'math', folderId: null);
+      notifier.update((s) => s.copyWith(selected: {'q1', 'q3'}));
+      final msg = await notifier.batchDeleteConfirmed();
+      expect(msg, contains('已删除 2 道'));
+      expect(repo.batchDeletedIds, ['q1', 'q3']);
+      expect(
+        container.read(wrongbookProvider).questions.any((q) => q.id == 'q1'),
+        isFalse,
+      );
+      expect(
+        container.read(wrongbookProvider).questions.any((q) => q.id == 'q3'),
+        isFalse,
+      );
+      expect(container.read(wrongbookProvider).selected, isEmpty);
+    });
+
+    test('整批失败：一道都不删，报“2 道保存失败”，选中的题全在库里', () async {
+      final (repo, notifier, container) = await _setUp(
+        initial: const WrongbookInitial(subjectId: 'math'),
+      );
+      addTearDown(container.dispose);
+      repo.failBatchDelete = true;
+      notifier.openList(subjectId: 'math', folderId: null);
+      notifier.update((s) => s.copyWith(selected: {'q1', 'q3'}));
+      final msg = await notifier.batchDeleteConfirmed();
+      expect(msg, contains('2 道保存失败'));
+      expect(repo.batchDeletedIds, isEmpty);
+      expect(repo.questions.any((q) => q.id == 'q1'), isTrue);
+      expect(repo.questions.any((q) => q.id == 'q3'), isTrue);
+    });
+
+    test('选中含已不在列表的 id：missing 计 1，其余照常删', () async {
+      final (repo, notifier, container) = await _setUp(
+        initial: const WrongbookInitial(subjectId: 'math'),
+      );
+      addTearDown(container.dispose);
+      notifier.openList(subjectId: 'math', folderId: null);
+      notifier.update((s) => s.copyWith(selected: {'q1', 'qx'}));
+      final msg = await notifier.batchDeleteConfirmed();
+      expect(msg, contains('已删除 1 道'));
+      expect(msg, contains('1 道已不在列表里，跳过'));
+      expect(repo.batchDeletedIds, ['q1']);
+    });
   });
 }

@@ -85,6 +85,8 @@ Future<List<ExamEvent>> loadExamEventsFromImpl(QuizDatabase db) async {
 /// B11-9 考试倒计时：写考试事件列表（可单测版）。
 /// 整表替换（列表很小，用户手管几场考试；增删改都在 repository 层
 /// 读-改-写回）。空列表也写一行 `[]`（与“无行”同义，读出来都是空）。
+/// 注意：整表替换会丢掉原始 JSON 里的未知/坏行——单条增删改不要走
+/// 这里，走 [mutateExamEventsRawIntoImpl]（FR-38/FR-39）。
 Future<void> saveExamEventsIntoImpl(
   QuizDatabase db,
   List<ExamEvent> events,
@@ -95,6 +97,64 @@ Future<void> saveExamEventsIntoImpl(
     jsonEncode(events.map((e) => e.toJson()).toList()),
   );
 }
+
+/// FR-38/FR-39：考试事件单条改动（新增/改名/改日期/删除）的原子入口。
+/// 读-改-写回在同一个 `db.transaction` 内完成：Drift 会把同一连接
+/// 上的事务串行执行，两次并发写不再交错丢改动（FR-38；旧写法是
+/// repository 层先 load、再改、再 saveExamEvents，读与写之间无保护）。
+/// 改动函数直接操作原始 JSON 数组（FR-39）：只改动目标行（按 id 匹配
+/// 的 Map），未知/坏行原样保留、随新数组一起写回——读时 `whereType`
+/// 跳过坏行是“读时容忍”，写时不再把它永久清掉。整段 JSON 不是数组
+/// 或非法 JSON 时按空列表起步（与 [loadExamEventsFromImpl] 的坏
+/// JSON 按空列表口径一致；整段已坏到无法解析时无行可保留）。
+Future<void> mutateExamEventsRawIntoImpl(
+  QuizDatabase db,
+  List<Object?> Function(List<Object?> raw) mutate,
+) async {
+  await db.transaction(() async {
+    final raw = await _settingValueInto(db, AppDatabase.examEventsKey);
+    List<Object?> current;
+    if (raw == null || raw.isEmpty) {
+      current = <Object?>[];
+    } else {
+      try {
+        final decoded = jsonDecode(raw);
+        current =
+            decoded is List ? List<Object?>.from(decoded) : <Object?>[];
+      } catch (_) {
+        current = <Object?>[];
+      }
+    }
+    final next = mutate(current);
+    await _upsertSettingInto(
+      db,
+      AppDatabase.examEventsKey,
+      jsonEncode(next),
+    );
+  });
+}
+
+/// FR-38/FR-39：考试事件单条保存（可单测版）：在原始 JSON 数组上按
+/// id 改动目标行（同 id 覆盖、新 id 追加），其余行原样保留。
+Future<void> saveExamEventIntoImpl(QuizDatabase db, ExamEvent e) =>
+    mutateExamEventsRawIntoImpl(db, (raw) {
+      final next = List<Object?>.from(raw);
+      final i = next.indexWhere((x) => x is Map && x['id'] == e.id);
+      if (i >= 0) {
+        next[i] = e.toJson();
+      } else {
+        next.add(e.toJson());
+      }
+      return next;
+    });
+
+/// FR-38/FR-39：考试事件单条删除（可单测版）：在原始 JSON 数组上按
+/// id 删行，其余行（包括未知/坏行）原样保留。
+Future<void> deleteExamEventIntoImpl(QuizDatabase db, String id) =>
+    mutateExamEventsRawIntoImpl(
+      db,
+      (raw) => raw.where((x) => !(x is Map && x['id'] == id)).toList(),
+    );
 
 /// B11-10 今日小结：今天已整理题数的 settings 表值格式与口径（纯函数，
 /// 便于单测；DB 读写见下面的 load/bumpOrganizedToday*IntoImpl）。
@@ -231,6 +291,22 @@ extension AppDatabaseSettings on AppDatabase {
   /// B11-9 考试倒计时：读考试事件列表（settings 表 `examEvents` 键）。
   Future<List<ExamEvent>> loadExamEvents() async =>
       AppDatabase.loadExamEventsFrom(await db);
+
+  /// FR-38/FR-39：考试事件单条保存 / 删除（走原始 JSON 行改动 +
+  /// 同一事务，见 `saveExamEventIntoImpl`；成功后发一次 `{settings}` 事件）。
+  Future<void> saveExamEvent(ExamEvent e) async {
+    await AppDatabase.saveExamEventFrom(await db, e);
+    DataChangeBus.instance.emit(
+      const DataChangeEvent(kinds: {DataChangeKind.settings}),
+    );
+  }
+
+  Future<void> deleteExamEvent(String id) async {
+    await AppDatabase.deleteExamEventFrom(await db, id);
+    DataChangeBus.instance.emit(
+      const DataChangeEvent(kinds: {DataChangeKind.settings}),
+    );
+  }
 
   /// B11-9 考试倒计时：写考试事件列表（整表替换）。
   Future<void> saveExamEvents(List<ExamEvent> events) async {

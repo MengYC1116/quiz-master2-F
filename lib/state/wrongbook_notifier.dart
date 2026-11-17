@@ -30,6 +30,7 @@ import '../data/data_change_events.dart';
 import '../data/repository.dart';
 import '../models/models.dart';
 import 'repository_provider.dart';
+import 'subject_sort.dart';
 
 /// 错题本页的状态 Provider（ARCH-PLAN-A 第 2 阶段）。
 /// 书架 / 目录 / 列表三个子页共用一个 Provider。
@@ -683,150 +684,21 @@ class WrongbookState {
   }
 
   // ---------- 学科首字母（SR-P2-37 / SR2-32，原页面同款） ----------
+  // FR-08：实现在 `subject_sort.dart`，与整理页共用一份（拼音表 +
+  // 首字母 + 拼音串 + 比较）；此处只按学科 id 取名后委托。
 
-  String subjectInitial(String subjectId) {
-    final name = subjectOf(subjectId).name.trim();
-    // SR2-32：空名回退到 '{'（排在 Z 之后、最后），不再回退 '' 置顶。
-    if (name.isEmpty) return '{';
-    final first = name[0];
-    if (first.codeUnitAt(0) < 128) return first.toUpperCase();
-    return _pinyinInitials[first] ?? first;
-  }
+  String subjectInitial(String subjectId) =>
+      subjectInitialForName(subjectOf(subjectId).name);
 
-  /// 学科名逐字转首字母串（SR2-32：同首字母平局按它排，不再按 Unicode
-  /// 码点比全名——“生物” SHENGWU 排在“数学” SHUXUE 前面才是拼音序）。
-  /// 表外汉字仍回退为原字比较（码点序，不是拼音序，注释写明）；
-  /// 拉丁字母直接取大写。空名返回 ''，与回退到 '{' 的首字母一致排最后。
-  String subjectPinyinKey(String subjectId) {
-    final name = subjectOf(subjectId).name.trim();
-    if (name.isEmpty) return '';
-    final buf = StringBuffer();
-    for (var i = 0; i < name.length; i++) {
-      final ch = name[i];
-      if (ch.codeUnitAt(0) < 128) {
-        buf.write(ch.toUpperCase());
-      } else {
-        buf.write(_pinyinInitials[ch] ?? ch);
-      }
-    }
-    return buf.toString();
-  }
+  String subjectPinyinKey(String subjectId) =>
+      subjectPinyinKeyForName(subjectOf(subjectId).name);
 
   /// 学科首字母 + 全名拼音首字母串比较（时间平局由调用方另行处理）。
-  int subjectKeyCompare(Question a, Question b) {
-    final c = subjectInitial(a.subjectId)
-        .compareTo(subjectInitial(b.subjectId));
-    if (c != 0) return c;
-    final k = subjectPinyinKey(a.subjectId)
-        .compareTo(subjectPinyinKey(b.subjectId));
-    if (k != 0) return k;
-    return subjectOf(a.subjectId).name.compareTo(subjectOf(b.subjectId).name);
-  }
+  int subjectKeyCompare(Question a, Question b) => compareSubjectNames(
+    subjectOf(a.subjectId).name,
+    subjectOf(b.subjectId).name,
+  );
 }
-
-/// 学科首字母（SR-P2-37）：按学科名首字算，不按 id 写死。
-/// 常见学科首字有拼音首字母表（数学 S / 英语 Y / 政治 Z / 化学 H /
-/// 物理 W ……）；拉丁字母开头直接取大写；表外汉字回退为该字本身
-///（仍可区分排序，不再统一落到同一档）。
-const _pinyinInitials = {
-  '数': 'S',
-  '英': 'Y',
-  '政': 'Z',
-  '语': 'Y',
-  '文': 'W',
-  '化': 'H',
-  '物': 'W',
-  '生': 'S',
-  '地': 'D',
-  '历': 'L',
-  '史': 'S',
-  '外': 'W',
-  '体': 'T',
-  '音': 'Y',
-  '美': 'M',
-  '计': 'J',
-  '高': 'G',
-  '大': 'D',
-  '普': 'P',
-  '专': 'Z',
-  '马': 'M',
-  '思': 'S',
-  '法': 'F',
-  '经': 'J',
-  '管': 'G',
-  '工': 'G',
-  '农': 'N',
-  '医': 'Y',
-  '药': 'Y',
-  '心': 'X',
-  '教': 'J',
-  '育': 'Y',
-  '科': 'K',
-  '技': 'J',
-  '信': 'X',
-  '电': 'D',
-  '机': 'J',
-  '土': 'T',
-  '建': 'J',
-  '交': 'J',
-  '商': 'S',
-  '金': 'J',
-  '财': 'C',
-  '会': 'K',
-  '审': 'S',
-  '统': 'T',
-  '概': 'G',
-  '率': 'L',
-  '线': 'X',
-  '代': 'D',
-  '微': 'W',
-  '积': 'J',
-  '分': 'F',
-  '函': 'H',
-  '导': 'D',
-  '极': 'J',
-  '限': 'X',
-  '复': 'F',
-  '变': 'B',
-  '常': 'C',
-  '偏': 'P',
-  '军': 'J',
-  '哲': 'Z',
-  '逻': 'L',
-  '伦': 'L',
-  '日': 'R',
-  '德': 'D',
-  '毛': 'M',
-  '中': 'Z',
-  '形': 'X',
-  '操': 'C',
-  '离': 'L',
-  '网': 'W',
-  '据': 'J',
-  '云': 'Y',
-  '智': 'Z',
-  '能': 'N',
-  '自': 'Z',
-  '动': 'D',
-  '控': 'K',
-  '仪': 'Y',
-  '传': 'C',
-  '感': 'G',
-  '环': 'H',
-  '资': 'Z',
-  '源': 'Y',
-  '矿': 'K',
-  '测': 'C',
-  '汽': 'Q',
-  '航': 'H',
-  '天': 'T',
-  '海': 'H',
-  '护': 'H',
-  '临': 'L',
-  '影': 'Y',
-  '营': 'Y',
-  '材': 'C',
-};
 
 /// 批量结果汇总提示（SR-P2-41）：成功 / 跨科跳过 / 已不在列表 /
 /// 保存失败各计一次，操作完一次说清，不再静默。
@@ -1719,27 +1591,32 @@ class WrongbookNotifier extends Notifier<WrongbookState> {
     );
   }
 
+  /// FR-37（Meng 裁决口径 (b)）：批量删除整批一个事务——先在 state 里
+  /// 分出已不在列表的题（missing），其余一次调 `repo.deleteQuestions`
+  /// （数据层整批事务）；整体成功则 okN 全计，整体失败则 failed 全计、
+  /// 库里一道都不删（中途失败整批回滚，不再是逐题事务 + 部分删除）。
   Future<String> batchDeleteConfirmed() async {
-    // D-42 + Stage 4：repo 入口处捕获一次；批量提交只发一个事件。
+    // D-42 + Stage 4：repo 入口处捕获一次；批量提交只发一个事件
+    // （deleteQuestionsBatch 成功后自发一次合并事件，不再另包 scope）。
     final repo = _repo;
-    var okN = 0;
+    final qs = <Question>[];
     var missing = 0;
-    var failed = 0;
-    await DataChangeBus.instance.scope(() async {
-      for (final id in state.selected.toList()) {
-        final q = state.questionById(id);
-        if (q == null) {
-          missing++;
-          continue;
-        }
-        try {
-          await repo.delete(q);
-          okN++;
-        } catch (_) {
-          failed++;
-        }
+    for (final id in state.selected.toList()) {
+      final q = state.questionById(id);
+      if (q == null) {
+        missing++;
+      } else {
+        qs.add(q);
       }
-    });
+    }
+    var okN = 0;
+    var failed = 0;
+    try {
+      await repo.deleteQuestions(qs);
+      okN = qs.length;
+    } catch (_) {
+      failed = qs.length;
+    }
     state = state.copyWith(selected: const {});
     await load();
     return batchResultMessage('删除', okN, missing, failed);

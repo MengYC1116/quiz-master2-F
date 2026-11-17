@@ -96,6 +96,12 @@ class _SweepDetailRepo extends QuestionRepository {
   @override
   Future<List<Subject>> subjects() async => List.of(subjectsValue);
 
+  // FR-09（D-88）：DetailNotifier.load() 多读 repo.settings()；FakeRepo
+  // 不覆写会落到基类读真实 Drift 库，测试 fake async 里永不完成，
+  // loading 一直 true、转圈拖死 pumpAndSettle。
+  @override
+  Future<AppSettings> settings() async => AppSettings.defaults;
+
   @override
   Future<Question?> questionById(String id) async =>
       questions.where((q) => q.id == id).firstOrNull;

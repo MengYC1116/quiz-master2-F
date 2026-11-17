@@ -47,6 +47,18 @@ class BackupRestoreException implements Exception {
   String toString() => 'BackupRestoreException: $message';
 }
 
+/// 备份文件读不到（文件被删 / 无权限等），与“文件不是备份”区分提示。
+/// FR-43：解析备份时读不到文件即按此口径抛（与设置页 parseRestoreFile
+/// 同口径）。恢复不再按路径重读文件（GPT-P1），不再需要重读入口。
+class RestoreFileReadException implements Exception {
+  const RestoreFileReadException(this.path);
+
+  final String path;
+
+  @override
+  String toString() => 'RestoreFileReadException: $path';
+}
+
 /// §4.5：一个孤儿文件——`imports/` / `slices/` 下没有任何
 /// questions / collect_tasks 行引用的文件。
 class OrphanFile {
@@ -482,6 +494,12 @@ class AppDatabase {
 
   static Future<void> deleteQuestionFrom(QuizDatabase db, String id) =>
       deleteQuestionFromImpl(db, id);
+
+  /// FR-37：批量删题，整批一个事务（见 [deleteQuestionsBatchFromImpl]）。
+  static Future<void> deleteQuestionsBatchFrom(
+    QuizDatabase db,
+    List<String> ids,
+  ) => deleteQuestionsBatchFromImpl(db, ids);
   // -- db_settings.dart --
 
   static String normalizeRecentKind(String kind) =>
@@ -512,10 +530,15 @@ class AppDatabase {
     String? dataDir,
   }) => scanOrphanFilesFromImpl(db, dataDir: dataDir);
 
-  static Future<({int deletedCount, int freedBytes})> deleteOrphanFiles(
+  static Future<
+    ({int deletedCount, int freedBytes, int skippedReferencedCount})
+  >
+  deleteOrphanFiles(
     List<String> relativePaths, {
     String? dataDir,
-  }) => deleteOrphanFilesImpl(relativePaths, dataDir: dataDir);
+    // FR-06(a)：传了就删除前重算引用，仍被引用的跳过；不传保持旧行为。
+    QuizDatabase? db,
+  }) => deleteOrphanFilesImpl(relativePaths, dataDir: dataDir, db: db);
   // -- db_collect.dart --
 
   static Future<void> insertQuestionBoxInto(QuizDatabase db, QuestionBox b) =>
@@ -608,6 +631,19 @@ class AppDatabase {
     QuizDatabase db,
     List<ExamEvent> events,
   ) => saveExamEventsIntoImpl(db, events);
+
+  /// FR-38/FR-39：考试事件单条保存 / 删除（可单测版）：在原始 JSON
+  /// 数组上按 id 改动目标行，其余行原样保留；读-改-写回在同一事务内。
+  static Future<void> saveExamEventFrom(QuizDatabase db, ExamEvent e) =>
+      saveExamEventIntoImpl(db, e);
+
+  static Future<void> deleteExamEventFrom(QuizDatabase db, String id) =>
+      deleteExamEventIntoImpl(db, id);
+
+  static Future<void> mutateExamEventsRawFrom(
+    QuizDatabase db,
+    List<Object?> Function(List<Object?> raw) mutate,
+  ) => mutateExamEventsRawIntoImpl(db, mutate);
 
   /// B11-10 今日小结：读今天已整理题数（settings 表 `organizedToday` 键）。
   static Future<int> loadOrganizedTodayFrom(QuizDatabase db, {DateTime? now}) =>

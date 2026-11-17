@@ -667,4 +667,193 @@ void main() {
       expect(second, first);
     });
   });
+
+  group('FR-20 可选 int 列小数被拒（_ri/_riN 不再静默截断）', () {
+    test('questions.review_count 写 2.5：拒绝恢复，原库不动', () async {
+      final db = await openMemoryDb();
+      final golden = await readGoldenJson();
+      final tampered = jsonDecode(jsonEncode(golden)) as Map<String, dynamic>;
+      final questions = tampered['questions'] as List;
+      (questions.first as Map)['review_count'] = 2.5;
+      await expectLater(
+        () => AppDatabase.importBackupJsonInto(db, tampered),
+        throwsA(isA<BackupRestoreException>()),
+      );
+      expect(await AppDatabase.allQuestionsFrom(db), isEmpty);
+    });
+
+    test('collect_tasks.page_count 写 1.5：拒绝恢复', () async {
+      final db = await openMemoryDb();
+      final golden = await readGoldenJson();
+      final tampered = jsonDecode(jsonEncode(golden)) as Map<String, dynamic>;
+      final tasks = tampered['collect_tasks'] as List;
+      (tasks.first as Map)['page_count'] = 1.5;
+      await expectLater(
+        () => AppDatabase.importBackupJsonInto(db, tampered),
+        throwsA(isA<BackupRestoreException>()),
+      );
+      expect(await AppDatabase.allCollectTasksFrom(db), isEmpty);
+    });
+
+    test('整数值 double（review_count 2.0）放行：同一数值，不是猜测转换', () async {
+      final db = await openMemoryDb();
+      final golden = await readGoldenJson();
+      final tampered = jsonDecode(jsonEncode(golden)) as Map<String, dynamic>;
+      final questions = tampered['questions'] as List;
+      (questions.first as Map)['review_count'] = 2.0;
+      await AppDatabase.importBackupJsonInto(db, tampered);
+      final q = (await AppDatabase.allQuestionsFrom(db))
+          .singleWhere((q) => q.id == 'q-rich-1');
+      expect(q.reviewCount, 2);
+    });
+  });
+
+  group('FR-21 JSON 列缺键走 Value.absent()（旧口径存储表示）', () {
+    test('缺 JSON 列的行恢复后是 \'\' 而不是 \'[]\'；page_rotations 缺键仍是 \'{}\'', () async {
+      final db = await openMemoryDb();
+      final golden = await readGoldenJson();
+      final tampered = jsonDecode(jsonEncode(golden)) as Map<String, dynamic>;
+      // q-legacy-1 行删掉 5 个 questions JSON 列。
+      final legacyQ = (tampered['questions'] as List).cast<Map>().singleWhere(
+        (r) => r['id'] == 'q-legacy-1',
+      );
+      for (final col in [
+        'folder_ids',
+        'knowledge_ids',
+        'error_types',
+        'custom_error_types',
+        'tags',
+      ]) {
+        legacyQ.remove(col);
+      }
+      // q-legacy-1 的错因行删 remedy_history。
+      final legacyCause = (tampered['cause_records'] as List)
+          .cast<Map>()
+          .singleWhere((r) => r['question_id'] == 'q-legacy-1');
+      legacyCause.remove('remedy_history');
+      // task-legacy 行删 page_rotations；review_state 行删 queue。
+      final legacyTask = (tampered['collect_tasks'] as List)
+          .cast<Map>()
+          .singleWhere((r) => r['id'] == 'task-legacy');
+      legacyTask.remove('page_rotations');
+      final stateRow = (tampered['review_state'] as List).cast<Map>().single;
+      stateRow.remove('queue');
+
+      await AppDatabase.importBackupJsonInto(db, tampered);
+
+      // 缺键行恢复后是 DDL 默认值 ''（旧口径），不是规范值 '[]'；
+      // 键在但值是 '' 的行仍按 D-51 编回 '[]'（见“存储表示规范化”组对照）。
+      for (final col in [
+        'folder_ids',
+        'knowledge_ids',
+        'error_types',
+        'custom_error_types',
+        'tags',
+      ]) {
+        expect(
+          await rawString(db, 'questions', "id = 'q-legacy-1'", col),
+          '',
+          reason: 'q-legacy-1.$col 缺键应落 DDL 默认 \'\'',
+        );
+      }
+      expect(
+        await rawString(
+          db,
+          'cause_records',
+          "question_id = 'q-legacy-1'",
+          'remedy_history',
+        ),
+        '',
+      );
+      // page_rotations 缺键时新旧一致，都是 '{}'（DDL 默认值）。
+      expect(
+        await rawString(
+          db,
+          'collect_tasks',
+          "id = 'task-legacy'",
+          'page_rotations',
+        ),
+        '{}',
+      );
+      expect(await rawString(db, 'review_state', 'id = 1', 'queue'), '');
+      // 业务值仍为空集合（语义等价）。
+      final qLegacy = (await AppDatabase.allQuestionsFrom(db))
+          .singleWhere((q) => q.id == 'q-legacy-1');
+      expect(qLegacy.folderIds, isEmpty);
+      expect(qLegacy.tags, isEmpty);
+      final state = await db.select(db.reviewState).getSingle();
+      expect(state.queue, isEmpty);
+    });
+  });
+
+  group('FR-23 域外值备份被拒（枚举/布尔白名单）', () {
+    test('cause_records.status 写域外值：拒绝恢复，原库不动', () async {
+      final db = await openMemoryDb();
+      final golden = await readGoldenJson();
+      final tampered = jsonDecode(jsonEncode(golden)) as Map<String, dynamic>;
+      final causes = tampered['cause_records'] as List;
+      (causes.first as Map)['status'] = 'weird';
+      await expectLater(
+        () => AppDatabase.importBackupJsonInto(db, tampered),
+        throwsA(isA<BackupRestoreException>()),
+      );
+      expect(await db.select(db.causeRecords).get(), isEmpty);
+    });
+
+    test('questions.is_organized 写 2：拒绝恢复，原库不动', () async {
+      final db = await openMemoryDb();
+      final golden = await readGoldenJson();
+      final tampered = jsonDecode(jsonEncode(golden)) as Map<String, dynamic>;
+      final questions = tampered['questions'] as List;
+      (questions.first as Map)['is_organized'] = 2;
+      await expectLater(
+        () => AppDatabase.importBackupJsonInto(db, tampered),
+        throwsA(isA<BackupRestoreException>()),
+      );
+      expect(await AppDatabase.allQuestionsFrom(db), isEmpty);
+    });
+
+    test('合法值对照：status solved、布尔列 0/1 能恢复', () async {
+      final db = await openMemoryDb();
+      final golden = await readGoldenJson();
+      final tampered = jsonDecode(jsonEncode(golden)) as Map<String, dynamic>;
+      final causes = tampered['cause_records'] as List;
+      (causes.first as Map)['status'] = 'solved';
+      final questions = tampered['questions'] as List;
+      (questions.first as Map)['is_organized'] = 1;
+      (questions.first as Map)['is_favorite'] = 0;
+      await AppDatabase.importBackupJsonInto(db, tampered);
+      final causesBack = await db.select(db.causeRecords).get();
+      expect(
+        causesBack.singleWhere((c) => c.questionId == 'q-rich-1').status,
+        'solved',
+      );
+    });
+  });
+
+  group('FR-40 备份里两份 backup.json：恢复层拒绝', () {
+    test('含两个 backup.json 的 zip 被拒绝，原库不动', () async {
+      final db = await openMemoryDb();
+      final tmp = await Directory.systemTemp.createTemp('b3-fr40-');
+      addTearDown(() async => tmp.delete(recursive: true));
+      final golden = await readGoldenJson();
+      final other = jsonDecode(jsonEncode(golden)) as Map<String, dynamic>;
+      ((other['questions'] as List).first as Map)['title'] = '另一份题目数据';
+      final zip = buildZip([
+        ZipEntryData('backup.json', utf8.encode(jsonEncode(golden))),
+        ZipEntryData('backup.json', utf8.encode(jsonEncode(other))),
+      ]);
+      await expectLater(
+        () => AppDatabase.importBackupZipInto(db, zip, dataDir: tmp.path),
+        throwsA(
+          isA<BackupRestoreException>().having(
+            (e) => e.message,
+            'message',
+            contains('备份里有两份题目数据'),
+          ),
+        ),
+      );
+      expect(await AppDatabase.allQuestionsFrom(db), isEmpty);
+    });
+  });
 }

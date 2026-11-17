@@ -874,6 +874,56 @@ void main() {
       expect(repo.deletedTaskIds, isEmpty);
     });
 
+    testWidgets('FR-03 重叠框标红 + 横幅点名是哪几道框，确认仍被拦', (tester) async {
+      final repo = FakeRepo([
+        task(
+          't-needbox',
+          '待框选文件.pdf · 第1页 · 第1题',
+          status: CollectStatus.needBox,
+        ),
+      ]);
+      await pumpCollect(tester, repo: repo);
+      await openEditor(tester, '修框');
+      final box = editorBoxHandle('题级框 1');
+      await tester.ensureVisible(box);
+      await tester.pumpAndSettle();
+      final boxRect = tester.getRect(box);
+      final pageW = boxRect.width / 0.88;
+      final pageH = boxRect.height / 0.85;
+      final origin = Offset(
+        boxRect.left - 0.06 * pageW,
+        boxRect.top - 0.05 * pageH,
+      );
+      await tester.dragFrom(
+        origin + Offset(0.05 * pageW, 0.05 * pageH),
+        Offset(0.6 * pageW, 0.6 * pageH),
+      );
+      await tester.pumpAndSettle();
+      // 横幅点名是哪几道框重叠（不含旧文案“有框重叠了，”前缀）。
+      // 横幅是 Text.rich（标题+正文同一 Text），用 textContaining 匹配。
+      expect(find.textContaining('框重叠'), findsOneWidget);
+      expect(find.textContaining('第 1、2 道题的框叠在一起，请调开再确认。'), findsOneWidget);
+      expect(find.textContaining('有框重叠了'), findsNothing);
+      // 重叠的两道框标红（边框取亮色 errInk），其余框不变。
+      final errInk = DesignTokens.of(Brightness.light).errInk;
+      final redBorders = find.descendant(
+        of: find.byKey(const Key('box-editor-canvas')),
+        matching: find.byWidgetPredicate((w) {
+          if (w is Container && w.decoration is BoxDecoration) {
+            final border = (w.decoration as BoxDecoration).border;
+            return border is Border && border.top.color == errInk;
+          }
+          return false;
+        }),
+      );
+      expect(redBorders, findsNWidgets(2));
+      // 确认仍被拦下。
+      await tester.tap(find.text('确认修框，拆成 2 个待整理任务'));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('修框 ·'), findsOneWidget);
+      expect(repo.deletedTaskIds, isEmpty);
+    });
+
     testWidgets('删掉全部框后出无框提示，确认不可点', (tester) async {
       final repo = FakeRepo([
         task(

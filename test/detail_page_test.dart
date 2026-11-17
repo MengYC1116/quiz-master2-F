@@ -8,6 +8,7 @@
 import 'dart:io';
 import 'dart:ui' as ui;
 
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:quiz_master2/data/database.dart';
@@ -86,6 +87,8 @@ class FakeDetailRepo extends QuestionRepository {
     List<CauseRecord> records = const [],
     List<({String result, DateTime reviewedAt})> history = const [],
     List<Subject>? subjectsValue,
+    // FR-09：复查间隔桩（默认 7 天）；`load()` 读它拼“满 N 天”文案。
+    AppSettings? settingsValue,
   }) : questions = List.of(questions),
        folderList = List.of(folderList),
        examList = List.of(examList),
@@ -94,6 +97,7 @@ class FakeDetailRepo extends QuestionRepository {
        records = List.of(records),
        history = List.of(history),
        subjectsValue = subjectsValue ?? Subject.all,
+       settingsValue = settingsValue ?? AppSettings.defaults,
        super(AppDatabase.instance);
 
   List<Question> questions;
@@ -104,6 +108,12 @@ class FakeDetailRepo extends QuestionRepository {
   List<CauseRecord> records;
   List<({String result, DateTime reviewedAt})> history;
   List<Subject> subjectsValue;
+
+  /// FR-09：复查间隔桩（默认 7 天）。
+  AppSettings settingsValue;
+
+  @override
+  Future<AppSettings> settings() async => settingsValue;
 
   @override
   Future<List<Subject>> subjects() async => List.of(subjectsValue);
@@ -551,8 +561,21 @@ void main() {
       expect(find.text('来源'), findsOneWidget);
       expect(find.text('来自试卷：高等数学期末试卷'), findsOneWidget);
       expect(find.text('#易错 #常考'), findsOneWidget);
-      expect(find.text('数学 › 函数极限'), findsOneWidget);
+      expect(find.text('数学 › 第一章 函数与极限 · 函数极限'), findsOneWidget);
       expect(find.text('概念不清'), findsNWidgets(2)); // 副标题 + 错误类型行
+    });
+
+    testWidgets('FR-16：章节为空时知识点只显示“学科 › 知识点名”', (tester) async {
+      final repo = detailRepo();
+      repo.kpList[0] = const KnowledgePoint(
+        id: 'k1',
+        subjectId: 'math',
+        chapter: '',
+        name: '函数极限',
+      );
+      await pumpDetail(tester, repo: repo);
+      await openSection(tester, '题目信息');
+      expect(find.text('数学 › 函数极限'), findsOneWidget);
     });
 
     testWidgets('空字段显示待补充', (tester) async {
@@ -574,10 +597,37 @@ void main() {
       expect(find.text('概念不清'), findsNWidgets(2)); // 副标题 + 复习记录行
       expect(find.text('解决中'), findsNWidgets(2)); // 副标题 pill + 复习记录 pill
       expect(find.text('解决次数 1'), findsOneWidget);
-      expect(find.textContaining('共解决错因 2 次 · 自查「已解决」1 次'), findsOneWidget);
+      expect(find.textContaining('共自查 2 次 · 自查「已解决」1 次'), findsOneWidget);
       expect(find.text('解决记录（全部）'), findsOneWidget);
       expect(find.textContaining('已解决'), findsWidgets);
       expect(find.textContaining('未解决'), findsWidgets);
+    });
+
+    testWidgets('FR-09：复查间隔 3 天时文案写“满 3 天自动回来复查”', (tester) async {
+      final repo = detailRepo();
+      // q1 的错因全部解决后才显示这句文案（默认库里 q1 还有 1 个未解决）。
+      repo.records[0] = repo.records[0].copyWith(
+        status: CauseStatus.solved,
+        solvedCount: 2,
+      );
+      repo.settingsValue = AppSettings.defaults.copyWith(
+        recheckIntervalDays: 3,
+      );
+      await pumpDetail(tester, repo: repo);
+      await openSection(tester, '复习记录');
+      expect(find.text('已加入复习 · 错因已全部解决，满 3 天自动回来复查'), findsOneWidget);
+      expect(find.textContaining('满 7 天自动回来复查'), findsNothing);
+    });
+
+    testWidgets('FR-09：默认间隔 7 天时文案仍是“满 7 天自动回来复查”', (tester) async {
+      final repo = detailRepo();
+      repo.records[0] = repo.records[0].copyWith(
+        status: CauseStatus.solved,
+        solvedCount: 2,
+      );
+      await pumpDetail(tester, repo: repo);
+      await openSection(tester, '复习记录');
+      expect(find.text('已加入复习 · 错因已全部解决，满 7 天自动回来复查'), findsOneWidget);
     });
 
     testWidgets('未加入题：加入复习，点后变取消加入复习', (tester) async {
@@ -788,7 +838,7 @@ void main() {
       // 确认：重裁切片是真实文件 IO + 图片解码，须在 runAsync 内
       // 反复 pump + 真实延时推进（collect_page_test 的同款做法）。
       await tester.runAsync(() async {
-        await tester.tap(find.text('确认修框，去整理'));
+        await tester.tap(find.text('确认重新框选'));
         for (var i = 0; i < 20; i++) {
           await tester.pump();
           await Future<void>.delayed(const Duration(milliseconds: 200));
@@ -856,10 +906,8 @@ void main() {
         for (var i = 0; i < 75; i++) {
           await tester.pump();
           try {
-            final healed =
-                pngSize(oldSliceFile.readAsBytesSync()).width == 492;
-            final saved =
-                repo.saved.any((q) => q.id == 'q1');
+            final healed = pngSize(oldSliceFile.readAsBytesSync()).width == 492;
+            final saved = repo.saved.any((q) => q.id == 'q1');
             if (healed && saved) break;
           } catch (_) {
             // 文件正被重写、解不出来时继续等。
@@ -882,11 +930,13 @@ void main() {
       // 改成按条件轮询——失败提示出现且 .tmp 临时文件清干净才继续，
       // 后面的断言本身不变。
       await tester.runAsync(() async {
-        await tester.tap(find.text('确认修框，去整理'));
+        await tester.tap(find.text('确认重新框选'));
         for (var i = 0; i < 50; i++) {
           await tester.pump();
-          final failedShown =
-              find.text('重新框选失败：保存失败，请重试').evaluate().isNotEmpty;
+          final failedShown = find
+              .text('重新框选失败：保存失败，请重试')
+              .evaluate()
+              .isNotEmpty;
           final tmpGone = slicesDir
               .listSync()
               .where((f) => f.path.contains('.tmp-'))
@@ -951,7 +1001,7 @@ void main() {
       expect(find.textContaining('题级框 1'), findsWidgets);
       // 直接确认：框不丢失（仍是源页的 1 个题级框）。
       await tester.runAsync(() async {
-        await tester.tap(find.text('确认修框，去整理'));
+        await tester.tap(find.text('确认重新框选'));
         for (var i = 0; i < 20; i++) {
           await tester.pump();
           await Future<void>.delayed(const Duration(milliseconds: 200));
@@ -970,6 +1020,97 @@ void main() {
       await pumpDetail(tester, repo: detailRepo());
       await openSection(tester, '题目信息');
       expect(find.text('重新框选这道题'), findsNothing);
+    });
+
+    testWidgets('FR-04(a) 重框模式禁画新框：右键/触摸都画不出新框，确认后仍一框', (tester) async {
+      final repo = detailRepo();
+      repo.questions[0] = repo.questions[0].copyWith(
+        pageImagePath: _pagePngRel,
+        sourcePath: _pagePngRel,
+        slicePath: 'slices/q1.png',
+        sliceWidth: 200,
+        sliceHeight: 100,
+      );
+      repo.pageBoxes = [
+        QuestionBox(
+          id: 'q1-box',
+          layer: 1,
+          type: 'question',
+          x: 0.06,
+          y: 0.05,
+          w: 0.88,
+          h: 0.4,
+          page: 1,
+          questionId: 'q1',
+        ),
+        QuestionBox(
+          id: 'q2-box',
+          layer: 1,
+          type: 'question',
+          x: 0.1,
+          y: 0.55,
+          w: 0.5,
+          h: 0.35,
+          page: 1,
+          questionId: 'q2',
+        ),
+      ];
+      await pumpDetail(tester, repo: repo);
+      await openSection(tester, '题目信息');
+      await tapText(tester, '重新框选这道题');
+      expect(find.textContaining('修框 ·'), findsOneWidget);
+      // 右键画框与相关提示在重框下隐藏：工具条与底部提示不再写右键画框。
+      expect(find.textContaining('右键拖出新框'), findsNothing);
+      expect(find.textContaining('不能再画新框'), findsWidgets);
+      // 页内几何：用目标框矩形反推页原点与页尺寸。
+      final box = find.byKey(const Key('editor-box-q1-box'));
+      await tester.ensureVisible(box);
+      await tester.pumpAndSettle();
+      final boxRect = tester.getRect(box);
+      final pageW = boxRect.width / 0.88;
+      final pageH = boxRect.height / 0.4;
+      final origin = Offset(
+        boxRect.left - 0.06 * pageW,
+        boxRect.top - 0.05 * pageH,
+      );
+      // 右键在空白处（右下角，避开只读框）拖出新框：应画不出来。
+      final gesture = await tester.startGesture(
+        origin + Offset(0.7 * pageW, 0.65 * pageH),
+        kind: ui.PointerDeviceKind.mouse,
+        buttons: kSecondaryMouseButton,
+      );
+      await gesture.moveBy(Offset(0.15 * pageW, 0.1 * pageH));
+      await gesture.moveBy(Offset(0.05 * pageW, 0.05 * pageH));
+      await tester.pumpAndSettle();
+      await gesture.up();
+      await tester.pumpAndSettle();
+      expect(find.textContaining('题级框 2'), findsNothing);
+      expect(find.textContaining('本页 2 道题'), findsNothing);
+      // 触摸拖动同样画不出新框。
+      await tester.dragFrom(
+        origin + Offset(0.7 * pageW, 0.65 * pageH),
+        Offset(0.2 * pageW, 0.15 * pageH),
+      );
+      await tester.pumpAndSettle();
+      expect(find.textContaining('题级框 2'), findsNothing);
+      // 目标框仍可选中（移动/缩放入口未禁）。
+      await tester.tap(box);
+      await tester.pumpAndSettle();
+      expect(find.textContaining('题级框 1 · 已选中'), findsWidgets);
+      // 确认：库里仍只有一个题级框（原框未被顶掉）。
+      await tester.runAsync(() async {
+        await tester.tap(find.text('确认重新框选'));
+        for (var i = 0; i < 20; i++) {
+          await tester.pump();
+          await Future<void>.delayed(const Duration(milliseconds: 200));
+        }
+        await tester.pumpAndSettle();
+      });
+      await tester.pumpAndSettle();
+      expect(find.textContaining('修框 ·'), findsNothing);
+      final replaced = repo.replacedBoxes['q1'];
+      expect(replaced, isNotNull);
+      expect(replaced!.where((b) => b.layer == 1).length, 1);
     });
   });
 
@@ -1079,7 +1220,7 @@ void main() {
       // 编辑器打开后把页图写坏（同步 IO，不走 fake async）。
       corruptFile.writeAsBytesSync([0, 1, 2, 3, 4, 5, 6, 7]);
       await tester.runAsync(() async {
-        await tester.tap(find.text('确认修框，去整理'));
+        await tester.tap(find.text('确认重新框选'));
         for (var i = 0; i < 20; i++) {
           await tester.pump();
           await Future<void>.delayed(const Duration(milliseconds: 200));

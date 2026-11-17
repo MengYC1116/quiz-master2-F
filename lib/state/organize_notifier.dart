@@ -44,21 +44,19 @@ import '../data/data_change_events.dart';
 import '../data/repository.dart';
 import '../models/models.dart';
 import 'repository_provider.dart';
+import 'subject_sort.dart';
 
 /// 整理页业务状态的 Provider：页面出现即读库（见 [OrganizeNotifier.build]）。
+/// FR-19：声明 `dependencies: [repositoryProvider]`（D-49 同款，见
+/// homeProvider 注释）。
 final organizeProvider =
     NotifierProvider.autoDispose<OrganizeNotifier, OrganizeState>(
       OrganizeNotifier.new,
+      dependencies: [repositoryProvider],
     );
 
-/// 学科首字母：数学 S / 英语 Y / 政治 Z。
-/// 整理页排序（本文件 `_sorted`）与队列弹窗（`organize_page.dart`
-/// 的 `_filtered`）共用（SR-P2-35：原来两处各一份，一字相同）。
-String subjectInitial(String subjectId) => switch (subjectId) {
-  'english' => 'Y',
-  'politics' => 'Z',
-  _ => 'S',
-};
+/// 整理页学科排序的学科名来源见 `_sorted`（FR-08：与错题本共用
+/// `subject_sort.dart` 的拼音表版实现，不再按 id 写死三科）。
 
 /// `copyWith` 里“显式置 null”与“不改”的区分标记。
 const _unset = Object();
@@ -247,23 +245,29 @@ class OrganizeState {
 }
 
 /// 按排序键排队列（原 `_sortQueue` 的比较器原样搬移）。
-List<Question> _sorted(List<Question> list, String sort) {
+/// FR-08：学科排序与错题本共用 `subject_sort.dart` 的拼音表版比较
+///（`compareSubjectNames`：首字母 → 拼音串 → 原名）；新学科不再
+/// 一律落到 'S' 档。`subjects` 是读库的学科表（找不到的 id 回退
+/// `Subject.byId`，只发生在数据不一致时）。
+List<Question> _sorted(
+  List<Question> list,
+  String sort,
+  List<Subject> subjects,
+) {
+  final names = {for (final s in subjects) s.id: s.name};
+  String nameOf(String id) => names[id] ?? Subject.byId(id).name;
   final sorted = [...list];
   switch (sort) {
     case 'timeAsc':
       sorted.sort((a, b) => a.createdAt.compareTo(b.createdAt));
     case 'subjectAsc':
       sorted.sort((a, b) {
-        final c = subjectInitial(
-          a.subjectId,
-        ).compareTo(subjectInitial(b.subjectId));
+        final c = compareSubjectNames(nameOf(a.subjectId), nameOf(b.subjectId));
         return c != 0 ? c : b.createdAt.compareTo(a.createdAt);
       });
     case 'subjectDesc':
       sorted.sort((a, b) {
-        final c = subjectInitial(
-          b.subjectId,
-        ).compareTo(subjectInitial(a.subjectId));
+        final c = compareSubjectNames(nameOf(b.subjectId), nameOf(a.subjectId));
         return c != 0 ? c : b.createdAt.compareTo(a.createdAt);
       });
     case 'timeDesc':
@@ -335,7 +339,7 @@ class OrganizeNotifier extends Notifier<OrganizeState> {
     }
     state = state.copyWith(
       hasAnyQuestion: all.isNotEmpty,
-      queue: _sorted(pending, state.sort),
+      queue: _sorted(pending, state.sort, subjects),
       index: index,
       exams: exams,
       kps: kps,
@@ -478,8 +482,14 @@ class OrganizeNotifier extends Notifier<OrganizeState> {
         explanation: explanation,
         notes: notes,
       );
-      await repo.save(updated);
-      await repo.syncCauseRecords(updated);
+      // FR-02：save 先发角标事件、syncCauseRecords 后写库时，角标重读
+      // 可能抢在同步提交前（错因同步改变复习归属时角标滞后一次）；
+      // 与 joinReviewBatch 同款用 scope 包起来，事件在同步提交后
+      // 才合并发出一次。
+      await DataChangeBus.instance.scope(() async {
+        await repo.save(updated);
+        await repo.syncCauseRecords(updated);
+      });
       final i = state.queue.indexWhere((x) => x.id == q.id);
       if (i >= 0) {
         final queue = [...state.queue];
@@ -523,14 +533,18 @@ class OrganizeNotifier extends Notifier<OrganizeState> {
       organized: true,
     );
     // D-42：repo 入口处捕获一次（保存 + 同步错因记录 + 记最近任务跨多次 await）。
+    // FR-02：与 saveCurrent 同款，save + 同步 + 记最近任务包进一个
+    // scope，角标事件只在全部提交后发一次。
     final repo = _repo;
-    await repo.save(updated);
-    await repo.syncCauseRecords(updated);
-    await repo.saveRecentTask(
-      kind: '整理',
-      subjectId: q.subjectId,
-      title: q.title,
-    );
+    await DataChangeBus.instance.scope(() async {
+      await repo.save(updated);
+      await repo.syncCauseRecords(updated);
+      await repo.saveRecentTask(
+        kind: '整理',
+        subjectId: q.subjectId,
+        title: q.title,
+      );
+    });
     await refresh();
   }
 
@@ -554,7 +568,7 @@ class OrganizeNotifier extends Notifier<OrganizeState> {
   void applyQueueSort(String sort) {
     state = state.copyWith(
       sort: sort,
-      queue: _sorted(state.queue, sort),
+      queue: _sorted(state.queue, sort, state.subjects),
       index: 0,
     );
     loadForm();
@@ -611,10 +625,7 @@ class OrganizeNotifier extends Notifier<OrganizeState> {
     );
     await _repo.addExam(exam);
     if (_disposed) return;
-    state = state.copyWith(
-      exams: [...state.exams, exam],
-      examId: exam.id,
-    );
+    state = state.copyWith(exams: [...state.exams, exam], examId: exam.id);
   }
 
   /// 新建标签（原 `_submitNewTag`）：写库后追加进标签表并选上这道题。
@@ -712,9 +723,7 @@ class OrganizeNotifier extends Notifier<OrganizeState> {
           continue;
         }
         if (!q.folderIds.contains(folder.id)) {
-          await repo.save(
-            q.copyWith(folderIds: [...q.folderIds, folder.id]),
-          );
+          await repo.save(q.copyWith(folderIds: [...q.folderIds, folder.id]));
         }
         applied++;
       }
@@ -756,10 +765,8 @@ class OrganizeNotifier extends Notifier<OrganizeState> {
   /// `isOrganized: true`，不同步错因记录、不记最近任务
   ///（原代码同款，与单题 `_confirmCurrent` 不同）。
   Future<int> batchConfirmQuestions(List<Question> selected) async {
-    final blocked =
-        selected.where((q) => q.folderIds.isEmpty).toList();
-    final ok =
-        selected.where((q) => q.folderIds.isNotEmpty).toList();
+    final blocked = selected.where((q) => q.folderIds.isEmpty).toList();
+    final ok = selected.where((q) => q.folderIds.isNotEmpty).toList();
     // D-42 + Stage 4：repo 入口处捕获一次；批量提交只发一个事件。
     final repo = _repo;
     await DataChangeBus.instance.scope(() async {
@@ -770,15 +777,37 @@ class OrganizeNotifier extends Notifier<OrganizeState> {
     return blocked.length;
   }
 
-  /// 批量删除（原 `_batchDelete`）：逐题写库；弹出层随后把
-  /// 这些题从自己的 `_questions` 快照里去掉并清空勾选。
-  Future<void> batchDeleteQuestions(List<Question> selected) async {
+  /// 批量删除（原 `_batchDelete`）：与错题本同款逐题 try/catch 计数
+  /// （FR-36）：每题先按 id 查库——已不在库里的计 missing；删除成功
+  /// 计 ok、抛错计 failed，继续下一题；返回 (ok, missing, failed,
+  /// 已删 id 集)，页面按实际结果同步本地列表并提示，不再无条件
+  /// 全删（旧写法：循环 `await repo.delete(q)` 无 try/catch、无计数
+  /// 返回，中途抛错后页面仍把已删的题留在列表里、用户收不到反馈）。
+  /// 注意：本方法是逐题删除（每题各自一个事务），与错题本 FR-37
+  /// 的整批事务不同——整理页批量删除仍保留逐题容错语义。
+  Future<({int ok, int missing, int failed, Set<String> deletedIds})>
+  batchDeleteQuestions(List<Question> selected) async {
     // D-42 + Stage 4：repo 入口处捕获一次；批量提交只发一个事件。
     final repo = _repo;
+    var ok = 0;
+    var missing = 0;
+    var failed = 0;
+    final deletedIds = <String>{};
     await DataChangeBus.instance.scope(() async {
       for (final q in selected) {
-        await repo.delete(q);
+        if (await repo.questionById(q.id) == null) {
+          missing++;
+          continue;
+        }
+        try {
+          await repo.delete(q);
+          ok++;
+          deletedIds.add(q.id);
+        } catch (_) {
+          failed++;
+        }
       }
     });
+    return (ok: ok, missing: missing, failed: failed, deletedIds: deletedIds);
   }
 }

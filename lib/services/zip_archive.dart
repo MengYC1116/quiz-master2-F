@@ -108,10 +108,8 @@ int crc32(List<int> bytes) {
 
 // ---------- 写 ----------
 
-int _dosTime(DateTime t) =>
-    (t.hour << 11) | (t.minute << 5) | (t.second ~/ 2);
-int _dosDate(DateTime t) =>
-    ((t.year - 1980) << 9) | (t.month << 5) | t.day;
+int _dosTime(DateTime t) => (t.hour << 11) | (t.minute << 5) | (t.second ~/ 2);
+int _dosDate(DateTime t) => ((t.year - 1980) << 9) | (t.month << 5) | t.day;
 
 /// 把若干条目打包成一个 ZIP（deflate 压缩）。条目名须已通过
 /// [validateZipEntryName]（否则抛 [ZipFormatException]）。
@@ -133,11 +131,11 @@ List<int> buildZip(List<ZipEntryData> entries, {DateTime? modified}) {
 
     void u16(int v) => out.add([v & 0xFF, (v >> 8) & 0xFF]);
     void u32(int v) => out.add([
-          v & 0xFF,
-          (v >> 8) & 0xFF,
-          (v >> 16) & 0xFF,
-          (v >> 24) & 0xFF,
-        ]);
+      v & 0xFF,
+      (v >> 8) & 0xFF,
+      (v >> 16) & 0xFF,
+      (v >> 24) & 0xFF,
+    ]);
     // Local file header.
     out.add([0x50, 0x4B, 0x03, 0x04]);
     u16(20); // version needed (deflate)
@@ -155,11 +153,11 @@ List<int> buildZip(List<ZipEntryData> entries, {DateTime? modified}) {
 
     void cu16(int v) => central.add([v & 0xFF, (v >> 8) & 0xFF]);
     void cu32(int v) => central.add([
-          v & 0xFF,
-          (v >> 8) & 0xFF,
-          (v >> 16) & 0xFF,
-          (v >> 24) & 0xFF,
-        ]);
+      v & 0xFF,
+      (v >> 8) & 0xFF,
+      (v >> 16) & 0xFF,
+      (v >> 24) & 0xFF,
+    ]);
     // Central directory header.
     central.add([0x50, 0x4B, 0x01, 0x02]);
     cu16(20); // version made by
@@ -185,12 +183,8 @@ List<int> buildZip(List<ZipEntryData> entries, {DateTime? modified}) {
   final centralBytes = central.takeBytes();
   out.add(centralBytes);
   void u16(int v) => out.add([v & 0xFF, (v >> 8) & 0xFF]);
-  void u32(int v) => out.add([
-        v & 0xFF,
-        (v >> 8) & 0xFF,
-        (v >> 16) & 0xFF,
-        (v >> 24) & 0xFF,
-      ]);
+  void u32(int v) =>
+      out.add([v & 0xFF, (v >> 8) & 0xFF, (v >> 16) & 0xFF, (v >> 24) & 0xFF]);
   // End of central directory.
   out.add([0x50, 0x4B, 0x05, 0x06]);
   u16(0);
@@ -213,12 +207,13 @@ int _readU32(List<int> b, int off) =>
 /// 任一条目名非法（见 [validateZipEntryName]）或结构损坏 → 抛
 /// [ZipFormatException]，调用方拒绝整个包。另设解压后总大小上限
 /// （默认 4GB，防 zip 炸弹；合法备份上限 2GB，不会触及）。
-/// SR2-17：重名文件条目直接抛错——旧写法不判重，同名条目两次进位，
-/// 第二遍 staging 文件已被 rename 走、`staged.rename(dest.path)` 因
-/// 源文件不存在抛 FileSystemException，恢复入口又把它归为“文件写
-/// 不进去”，把结构损坏误报成磁盘问题。例外是 `backup.json` 重名：
-/// 恢复取最后一个，进位循环又跳过它，不触发本问题，故仍放行（调用
-/// 方按“取最后一个”处理）。
+/// SR2-17：重名文件条目即结构损坏（FR-40：`backup.json` 重名也一样，
+/// 不再放行——之前放行、调用方取最后一个，两份内容不同的题目数据会静默
+/// 按后一份恢复、无任何提示；现在直接拒绝并提示“备份里有两份题目数据”）。
+/// SR3-1：判重键是归一化 + 小写折叠后的条目名——`//` / `/.` /
+/// `\` / 大小写变体在文件系统上是同一文件，原始字符串判重会
+/// 放行，恢复进位时第二遍 rename 因源文件已被第一遍 rename 走
+/// 而抛错，又被误报为“文件写不进去”（SR2-17 的误报回归）。
 /// SR3-1：判重键是归一化后的条目名再小写折叠（见 [normalizeZipEntryName]），
 /// 仅用于比较，不改存名与落盘路径；单条变体（如单独一个 `slices//q1.png`）
 /// 不重名，照常读出，落盘由路径解析折叠。
@@ -231,7 +226,10 @@ int _readU32(List<int> b, int off) =>
 ///   占满内存再触发上限）；
 /// - 无文件条目（空 zip / 只含目录条目）直接抛错，不再静默返回 []。
 /// 不支持 ZIP64（尺寸字段为 0xFFFFFFFF 时抛错）与多盘。
-List<ZipEntryData> readZip(List<int> bytes, {int maxTotalBytes = 4 * 1024 * 1024 * 1024}) {
+List<ZipEntryData> readZip(
+  List<int> bytes, {
+  int maxTotalBytes = 4 * 1024 * 1024 * 1024,
+}) {
   if (!isZipBytes(bytes)) {
     throw ZipFormatException('不是 ZIP 文件');
   }
@@ -244,12 +242,14 @@ List<ZipEntryData> readZip(List<int> bytes, {int maxTotalBytes = 4 * 1024 * 1024
     if (entry.name.endsWith('/')) continue; // 目录条目跳过
     final bad = validateZipEntryName(entry.name);
     if (bad != null) throw ZipFormatException('备份里有非法路径：$bad');
-    // SR2-17：重名文件条目即结构损坏（`backup.json` 除外，见上）。
+    // SR2-17：重名文件条目即结构损坏（FR-40：backup.json 重名也拒绝）。
     // SR3-1：判重键是归一化 + 小写折叠后的条目名——`//` / `/.` /
     // `\` / 大小写变体在文件系统上是同一文件，原始字符串判重会
     // 放行，恢复进位时第二遍 rename 抛错又被误报为“文件写不进去”。
-    if (entry.name != 'backup.json' &&
-        !seenNames.add(normalizeZipEntryName(entry.name).toLowerCase())) {
+    if (!seenNames.add(normalizeZipEntryName(entry.name).toLowerCase())) {
+      if (normalizeZipEntryName(entry.name).toLowerCase() == 'backup.json') {
+        throw ZipFormatException('备份里有两份题目数据（backup.json 重复）');
+      }
       throw ZipFormatException('ZIP 里有重复条目：${entry.name}');
     }
     if ((entry.flags & 0x01) != 0) {
@@ -257,9 +257,7 @@ List<ZipEntryData> readZip(List<int> bytes, {int maxTotalBytes = 4 * 1024 * 1024
     }
     // 解压前预判：累计 rawSize 超上限即拒绝，不先解压占内存。
     if (total + entry.rawSize > maxTotalBytes) {
-      throw ZipFormatException(
-        '备份解压后超过 ${_formatLimit(maxTotalBytes)}，拒绝恢复',
-      );
+      throw ZipFormatException('备份解压后超过 ${_formatLimit(maxTotalBytes)}，拒绝恢复');
     }
     final dataStart = _localDataStart(bytes, entry);
     if (dataStart + entry.compSize > bytes.length) {

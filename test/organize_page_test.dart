@@ -25,18 +25,17 @@ Question q(
   String? examId,
   DateTime? createdAt,
   bool isOrganized = false,
-}) =>
-    Question(
-      id: id,
-      title: title,
-      subjectId: subjectId,
-      folderIds: folderIds,
-      examId: examId,
-      sliceKind: sliceKind,
-      sliceText: sliceText,
-      createdAt: createdAt ?? DateTime(2026, 11, 8),
-      isOrganized: isOrganized,
-    );
+}) => Question(
+  id: id,
+  title: title,
+  subjectId: subjectId,
+  folderIds: folderIds,
+  examId: examId,
+  sliceKind: sliceKind,
+  sliceText: sliceText,
+  createdAt: createdAt ?? DateTime(2026, 11, 8),
+  isOrganized: isOrganized,
+);
 
 class FakeOrganizeRepo extends QuestionRepository {
   FakeOrganizeRepo({
@@ -46,8 +45,8 @@ class FakeOrganizeRepo extends QuestionRepository {
     this.kpList = const [],
     this.tagList = const [],
     List<Subject>? subjectsValue,
-  })  : subjectsValue = subjectsValue ?? Subject.all,
-        super(AppDatabase.instance);
+  }) : subjectsValue = subjectsValue ?? Subject.all,
+       super(AppDatabase.instance);
 
   List<Question> questions;
   List<Folder> folderList;
@@ -70,10 +69,9 @@ class FakeOrganizeRepo extends QuestionRepository {
       List.of(questions);
 
   @override
-  Future<List<Folder>> folders({String? subjectId}) async =>
-      subjectId == null
-          ? List.of(folderList)
-          : folderList.where((f) => f.subjectId == subjectId).toList();
+  Future<List<Folder>> folders({String? subjectId}) async => subjectId == null
+      ? List.of(folderList)
+      : folderList.where((f) => f.subjectId == subjectId).toList();
 
   @override
   Future<List<Exam>> exams() async => List.of(examList);
@@ -102,7 +100,17 @@ class FakeOrganizeRepo extends QuestionRepository {
   }
 
   @override
+  Future<Question?> questionById(String id) async =>
+      questions.where((x) => x.id == id).firstOrNull;
+
+  /// FR-36：指定 id 的 delete 抛错（批量删除部分失败路径用）。
+  final Set<String> failDeleteIds = {};
+
+  @override
   Future<void> delete(Question question) async {
+    if (failDeleteIds.contains(question.id)) {
+      throw StateError('模拟删题失败');
+    }
     deletedIds.add(question.id);
     questions.removeWhere((x) => x.id == question.id);
   }
@@ -120,13 +128,9 @@ class FakeOrganizeRepo extends QuestionRepository {
     String subjectId,
     String name, {
     String? excludeId,
-  }) async =>
-      folderList.any(
-        (f) =>
-            f.subjectId == subjectId &&
-            f.name == name &&
-            f.id != excludeId,
-      );
+  }) async => folderList.any(
+    (f) => f.subjectId == subjectId && f.name == name && f.id != excludeId,
+  );
 
   @override
   Future<void> addExam(Exam exam) async {
@@ -156,8 +160,7 @@ class FakeOrganizeRepo extends QuestionRepository {
   List<Question> dueTodayValue = const [];
 
   @override
-  Future<int> organizedTodayCount({DateTime? now}) async =>
-      organizedTodayValue;
+  Future<int> organizedTodayCount({DateTime? now}) async => organizedTodayValue;
 
   @override
   Future<List<Question>> dueToday({bool includeArchived = false}) async =>
@@ -165,60 +168,54 @@ class FakeOrganizeRepo extends QuestionRepository {
 }
 
 FakeOrganizeRepo threeQuestionRepo() => FakeOrganizeRepo(
-      questions: [
-        q('q1', '函数极限', createdAt: DateTime(2026, 11, 8)),
-        q(
-          'q2',
-          '导数综合',
-          sliceKind: 'function',
-          sliceText: '题：设 f(x) = x³ − 3x² + 2。\n（1）求 f(x) 的单调区间与极值；',
-          folderIds: const ['f1'],
-          examId: 'e1',
-          createdAt: DateTime(2026, 11, 5),
-        ),
-        q(
-          'q3',
-          '阅读主旨',
-          subjectId: 'english',
-          sliceKind: 'material',
-          sliceText: '题：The new evidence ______ the original hypothesis.',
-          createdAt: DateTime(2026, 11, 3),
-        ),
-      ],
-      folderList: const [
-        Folder(id: 'f1', name: '试卷', subjectId: 'math'),
-        Folder(id: 'f2', name: '平时作业', subjectId: 'math'),
-        Folder(id: 'f3', name: '试卷', subjectId: 'english'),
-      ],
-      examList: [
-        Exam(
-          id: 'e1',
-          name: '高等数学期末试卷',
-          date: DateTime(2026, 11, 10),
-        ),
-      ],
-      kpList: const [
-        KnowledgePoint(
-          id: 'k1',
-          subjectId: 'math',
-          chapter: '第一章 函数与极限',
-          name: '函数极限',
-        ),
-        KnowledgePoint(
-          id: 'k2',
-          subjectId: 'math',
-          chapter: '第一章 函数与极限',
-          name: '导数概念',
-        ),
-        KnowledgePoint(
-          id: 'k3',
-          subjectId: 'english',
-          chapter: '阅读理解',
-          name: '主旨大意',
-        ),
-      ],
-      tagList: const ['易错', '常考'],
-    );
+  questions: [
+    q('q1', '函数极限', createdAt: DateTime(2026, 11, 8)),
+    q(
+      'q2',
+      '导数综合',
+      sliceKind: 'function',
+      sliceText: '题：设 f(x) = x³ − 3x² + 2。\n（1）求 f(x) 的单调区间与极值；',
+      folderIds: const ['f1'],
+      examId: 'e1',
+      createdAt: DateTime(2026, 11, 5),
+    ),
+    q(
+      'q3',
+      '阅读主旨',
+      subjectId: 'english',
+      sliceKind: 'material',
+      sliceText: '题：The new evidence ______ the original hypothesis.',
+      createdAt: DateTime(2026, 11, 3),
+    ),
+  ],
+  folderList: const [
+    Folder(id: 'f1', name: '试卷', subjectId: 'math'),
+    Folder(id: 'f2', name: '平时作业', subjectId: 'math'),
+    Folder(id: 'f3', name: '试卷', subjectId: 'english'),
+  ],
+  examList: [Exam(id: 'e1', name: '高等数学期末试卷', date: DateTime(2026, 11, 10))],
+  kpList: const [
+    KnowledgePoint(
+      id: 'k1',
+      subjectId: 'math',
+      chapter: '第一章 函数与极限',
+      name: '函数极限',
+    ),
+    KnowledgePoint(
+      id: 'k2',
+      subjectId: 'math',
+      chapter: '第一章 函数与极限',
+      name: '导数概念',
+    ),
+    KnowledgePoint(
+      id: 'k3',
+      subjectId: 'english',
+      chapter: '阅读理解',
+      name: '主旨大意',
+    ),
+  ],
+  tagList: const ['易错', '常考'],
+);
 
 Future<void> pumpOrganize(
   WidgetTester tester, {
@@ -238,8 +235,9 @@ Future<void> pumpOrganize(
     MaterialApp(
       theme: AppTheme.light(scale: scale),
       darkTheme: AppTheme.dark(scale: scale),
-      themeMode:
-          brightness == Brightness.dark ? ThemeMode.dark : ThemeMode.light,
+      themeMode: brightness == Brightness.dark
+          ? ThemeMode.dark
+          : ThemeMode.light,
       home: Builder(
         builder: (context) {
           final data = MediaQuery.of(context);
@@ -272,11 +270,9 @@ Future<void> openQueue(WidgetTester tester) async {
 /// 队列弹窗内各题行的 Checkbox（不含列表顶栏的“全选”三态框，
 /// B9-2：全选框 `tristate == true`，行内框是默认 `false`）。
 Finder popupCheckboxes(WidgetTester tester) => find.descendant(
-      of: find.byKey(const Key('organize-queue-popup')),
-      matching: find.byWidgetPredicate(
-        (w) => w is Checkbox && w.tristate != true,
-      ),
-    );
+  of: find.byKey(const Key('organize-queue-popup')),
+  matching: find.byWidgetPredicate((w) => w is Checkbox && w.tristate != true),
+);
 
 /// B6-P1 SR2-26：写库失败模拟——`failSave` 打开后 `save` 一律抛错，
 /// 其余调用仍走内存假实现。开关留在测试手里：先正常打开队列、再
@@ -284,14 +280,14 @@ Finder popupCheckboxes(WidgetTester tester) => find.descendant(
 /// `_applyQueueSort` 的失败路径。
 class FailingSaveRepo extends FakeOrganizeRepo {
   FailingSaveRepo(FakeOrganizeRepo base)
-      : super(
-          questions: base.questions,
-          folderList: base.folderList,
-          examList: base.examList,
-          kpList: base.kpList,
-          tagList: base.tagList,
-          subjectsValue: base.subjectsValue,
-        );
+    : super(
+        questions: base.questions,
+        folderList: base.folderList,
+        examList: base.examList,
+        kpList: base.kpList,
+        tagList: base.tagList,
+        subjectsValue: base.subjectsValue,
+      );
 
   bool failSave = false;
 
@@ -304,8 +300,7 @@ class FailingSaveRepo extends FakeOrganizeRepo {
 
 void main() {
   group('整理工作台正常态', () {
-    testWidgets('H 布局：左图右表、顶栏队列 + 当前整理、页内无边距、无 Icon',
-        (tester) async {
+    testWidgets('H 布局：左图右表、顶栏队列 + 当前整理、页内无边距、无 Icon', (tester) async {
       await pumpOrganize(tester);
       expect(find.text('整理工作台'), findsOneWidget);
       expect(find.text('队列'), findsOneWidget);
@@ -313,10 +308,8 @@ void main() {
       expect(find.textContaining('当前整理：'), findsOneWidget);
       expect(find.textContaining('数学 · 函数极限'), findsOneWidget);
       // 左图在左、右表单在右。
-      final sliceX =
-          tester.getTopLeft(find.byType(QuestionSlice)).dx;
-      final folderX =
-          tester.getTopLeft(find.text('文件夹（归类）')).dx;
+      final sliceX = tester.getTopLeft(find.byType(QuestionSlice)).dx;
+      final folderX = tester.getTopLeft(find.text('文件夹（归类）')).dx;
       expect(sliceX, lessThan(folderX));
       // 页内无边距：外壳已给 26/30。
       final scroll = tester.widget<SingleChildScrollView>(
@@ -326,8 +319,7 @@ void main() {
       expect(find.byType(Icon), findsNothing);
     });
 
-    testWidgets('待补充行只数必填项；文件夹必填，缺了确认被拦下',
-        (tester) async {
+    testWidgets('待补充行只数必填项；文件夹必填，缺了确认被拦下', (tester) async {
       final repo = threeQuestionRepo();
       await pumpOrganize(tester, repo: repo);
       expect(find.textContaining('本题待补充 1 项（只数必填）'), findsOneWidget);
@@ -336,10 +328,7 @@ void main() {
       await tester.tap(find.text('确认整理，去下一道'));
       await tester.pumpAndSettle();
       expect(find.text('先选文件夹'), findsOneWidget);
-      expect(
-        repo.saved.where((x) => x.isOrganized),
-        isEmpty,
-      );
+      expect(repo.saved.where((x) => x.isOrganized), isEmpty);
     });
 
     testWidgets('选文件夹后确认整理，进下一道（按时间降序）', (tester) async {
@@ -352,10 +341,7 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(find.text('确认整理，去下一道'));
       await tester.pumpAndSettle();
-      expect(
-        repo.saved.any((x) => x.id == 'q1' && x.isOrganized),
-        isTrue,
-      );
+      expect(repo.saved.any((x) => x.id == 'q1' && x.isOrganized), isTrue);
       expect(find.textContaining('数学 · 导数综合'), findsOneWidget);
       expect(find.text('还剩 2 道'), findsOneWidget);
     });
@@ -372,8 +358,7 @@ void main() {
       expect(repo.lastRecentKind, '整理');
     });
 
-    testWidgets('切题自动保存：填了答案再点下一道，答案已落库',
-        (tester) async {
+    testWidgets('切题自动保存：填了答案再点下一道，答案已落库', (tester) async {
       final repo = threeQuestionRepo();
       await pumpOrganize(tester, repo: repo);
       await tester.ensureVisible(find.text('答案 · 解析 · 笔记（可选）'));
@@ -381,18 +366,14 @@ void main() {
       await tester.tap(find.text('答案 · 解析 · 笔记（可选）'));
       await tester.pumpAndSettle();
       final answerField = find.byWidgetPredicate(
-        (w) =>
-            w is TextField && w.decoration?.hintText == '还没想好可留空',
+        (w) => w is TextField && w.decoration?.hintText == '还没想好可留空',
       );
       await tester.enterText(answerField, '答案：1');
       await tester.ensureVisible(find.text('下一道'));
       await tester.pumpAndSettle();
       await tester.tap(find.text('下一道'));
       await tester.pumpAndSettle();
-      expect(
-        repo.saved.any((x) => x.id == 'q1' && x.answer == '答案：1'),
-        isTrue,
-      );
+      expect(repo.saved.any((x) => x.id == 'q1' && x.answer == '答案：1'), isTrue);
       expect(find.textContaining('数学 · 导数综合'), findsOneWidget);
     });
 
@@ -406,8 +387,7 @@ void main() {
       expect(find.text('切片图'), findsWidgets);
     });
 
-    testWidgets('放大浮层：点图弹出、纸面居中完整可见、带比例 pill，关闭回到整理台',
-        (tester) async {
+    testWidgets('放大浮层：点图弹出、纸面居中完整可见、带比例 pill，关闭回到整理台', (tester) async {
       await pumpOrganize(tester);
       await tester.tap(find.byType(QuestionSlice));
       await tester.pumpAndSettle();
@@ -417,8 +397,12 @@ void main() {
       // 徽标 132%。纸面渲染中心须与视口中心重合（±3px），且整张
       // 纸面在视口内（无裁切）。
       expect(find.text('132%'), findsOneWidget);
-      final paperRect = tester.getRect(find.descendant(
-          of: find.byType(Dialog), matching: find.byType(QuestionSlice)));
+      final paperRect = tester.getRect(
+        find.descendant(
+          of: find.byType(Dialog),
+          matching: find.byType(QuestionSlice),
+        ),
+      );
       final viewerRect = tester.getRect(find.byType(InteractiveViewer));
       final viewerCenter = tester.getCenter(find.byType(InteractiveViewer));
       expect((paperRect.center.dx - viewerCenter.dx).abs(), lessThan(3));
@@ -434,8 +418,7 @@ void main() {
       expect(find.text('整题图 · 放大查看'), findsNothing);
     });
 
-    testWidgets('分类补充：知识点树多选、自定义错误类型、预置标签',
-        (tester) async {
+    testWidgets('分类补充：知识点树多选、自定义错误类型、预置标签', (tester) async {
       await pumpOrganize(tester);
       await tester.ensureVisible(find.text('分类补充（可选）'));
       await tester.pumpAndSettle();
@@ -448,17 +431,13 @@ void main() {
       await tester.tap(find.text('函数极限'));
       await tester.pumpAndSettle();
       final kpChip = tester.widget<QmChip>(
-        find.byWidgetPredicate(
-          (w) => w is QmChip && w.label == '函数极限',
-        ),
+        find.byWidgetPredicate((w) => w is QmChip && w.label == '函数极限'),
       );
       expect(kpChip.selected, isTrue);
       expect(find.textContaining('已选 1 个'), findsWidgets);
       // 自定义错误类型。
       final customField = find.byWidgetPredicate(
-        (w) =>
-            w is TextField &&
-            w.decoration?.hintText == '自定义错误类型…（枚举之外的情况）',
+        (w) => w is TextField && w.decoration?.hintText == '自定义错误类型…（枚举之外的情况）',
       );
       await tester.enterText(customField, '公式记混');
       await tester.tap(find.text('添加并选上'));
@@ -468,15 +447,12 @@ void main() {
       await tester.tap(find.text('需重做'));
       await tester.pumpAndSettle();
       final tagChip = tester.widget<QmChip>(
-        find.byWidgetPredicate(
-          (w) => w is QmChip && w.label == '需重做',
-        ),
+        find.byWidgetPredicate((w) => w is QmChip && w.label == '需重做'),
       );
       expect(tagChip.selected, isTrue);
     });
 
-    testWidgets('来源：试卷下拉可新建（带日期可选），建完自动归属',
-        (tester) async {
+    testWidgets('来源：试卷下拉可新建（带日期可选），建完自动归属', (tester) async {
       final repo = threeQuestionRepo();
       await pumpOrganize(tester, repo: repo);
       await tester.ensureVisible(find.text('来源（可选）'));
@@ -488,9 +464,7 @@ void main() {
       await tester.tap(find.text('＋ 添加新试卷…').last);
       await tester.pumpAndSettle();
       final nameField = find.byWidgetPredicate(
-        (w) =>
-            w is TextField &&
-            w.decoration?.hintText == '试卷名，如：高等数学期末试卷',
+        (w) => w is TextField && w.decoration?.hintText == '试卷名，如：高等数学期末试卷',
       );
       await tester.enterText(nameField, '数学月考卷');
       await tester.tap(find.text('添加'));
@@ -501,8 +475,7 @@ void main() {
   });
 
   group('队列弹出层 D 极简式', () {
-    testWidgets('单行 + 详情只在当前题下展开；默认时间降序',
-        (tester) async {
+    testWidgets('单行 + 详情只在当前题下展开；默认时间降序', (tester) async {
       await pumpOrganize(tester);
       await openQueue(tester);
       expect(find.text('函数极限'), findsOneWidget);
@@ -544,8 +517,7 @@ void main() {
       await pumpOrganize(tester);
       await openQueue(tester);
       final searchField = find.byWidgetPredicate(
-        (w) =>
-            w is TextField && w.decoration?.hintText == '搜题名、学科、试卷',
+        (w) => w is TextField && w.decoration?.hintText == '搜题名、学科、试卷',
       );
       await tester.enterText(searchField, '函数');
       await tester.pumpAndSettle();
@@ -558,8 +530,7 @@ void main() {
       expect(find.text('没找到这道题，换个词试试'), findsOneWidget);
     });
 
-    testWidgets('批量条只在勾选时出现；取消清勾选，条消失',
-        (tester) async {
+    testWidgets('批量条只在勾选时出现；取消清勾选，条消失', (tester) async {
       await pumpOrganize(tester);
       await openQueue(tester);
       expect(find.textContaining('批量操作 · 已选'), findsNothing);
@@ -583,16 +554,13 @@ void main() {
       await tester.tap(find.text('批量打标签'));
       await tester.pumpAndSettle();
       expect(
-        repo.saved.any(
-          (x) => x.id == 'q1' && x.tags.contains('需重做'),
-        ),
+        repo.saved.any((x) => x.id == 'q1' && x.tags.contains('需重做')),
         isTrue,
       );
       expect(find.textContaining('已给 1 道题打上 #需重做'), findsOneWidget);
     });
 
-    testWidgets('SR3-15：批量打标签中途写库失败，已保存题的标签仍在快照里、后续批量加文件夹不丢',
-        (tester) async {
+    testWidgets('SR3-15：批量打标签中途写库失败，已保存题的标签仍在快照里、后续批量加文件夹不丢', (tester) async {
       final repo = threeQuestionRepo();
       repo.failSaveIds.add('q2');
       await pumpOrganize(tester, repo: repo);
@@ -641,13 +609,37 @@ void main() {
       expect(find.textContaining('批量操作 · 已选'), findsNothing);
     });
 
+    testWidgets('FR-36：批量删除中途一道失败，失败的题留在列表里、有汇总提示',
+        (tester) async {
+      final repo = threeQuestionRepo();
+      // 队列按时间降序：q1、q2；让 q2 的删除抛错。
+      repo.failDeleteIds.add('q2');
+      await pumpOrganize(tester, repo: repo);
+      await openQueue(tester);
+      await tester.tap(popupCheckboxes(tester).first);
+      await tester.pumpAndSettle();
+      await tester.tap(popupCheckboxes(tester).at(1));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('批量删除'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('确认删除'));
+      await tester.pumpAndSettle();
+      expect(repo.deletedIds, ['q1']);
+      // q1 已删（列表里没了），q2 删失败（还在列表里）。
+      expect(find.text('函数极限'), findsNothing);
+      expect(find.text('导数综合'), findsOneWidget);
+      expect(find.textContaining('已删除 1 道'), findsOneWidget);
+      expect(find.textContaining('1 道保存失败'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+
     testWidgets('单行删除也要确认；取消则不删', (tester) async {
       final repo = threeQuestionRepo();
       await pumpOrganize(tester, repo: repo);
       await openQueue(tester);
       await tester.tap(find.text('删除').last);
       await tester.pumpAndSettle();
-      expect(find.text('确认删除这道题？'), findsOneWidget);
+      expect(find.text('删了就没了，确定吗？'), findsOneWidget);
       expect(repo.deletedIds, isEmpty);
       await tester.tap(find.text('取消'));
       await tester.pumpAndSettle();
@@ -694,8 +686,7 @@ void main() {
       await tester.tap(find.text('答案 · 解析 · 笔记（可选）'));
       await tester.pumpAndSettle();
       final answerField = find.byWidgetPredicate(
-        (w) =>
-            w is TextField && w.decoration?.hintText == '还没想好可留空',
+        (w) => w is TextField && w.decoration?.hintText == '还没想好可留空',
       );
       await tester.enterText(answerField, '答案：1');
       await tester.pumpAndSettle();
@@ -768,9 +759,7 @@ void main() {
       await pumpOrganize(
         tester,
         repo: FakeOrganizeRepo(
-          questions: [
-            q('q1', '函数极限', isOrganized: true),
-          ],
+          questions: [q('q1', '函数极限', isOrganized: true)],
           folderList: [],
         ),
       );
@@ -778,8 +767,7 @@ void main() {
       expect(find.text('去复习'), findsOneWidget);
     });
 
-    testWidgets('图加载失败：学科图标 + 题型文字占位，切片区隐藏',
-        (tester) async {
+    testWidgets('图加载失败：学科图标 + 题型文字占位，切片区隐藏', (tester) async {
       await pumpOrganize(tester, imageFailed: true);
       expect(find.textContaining('整题图加载失败'), findsOneWidget);
       expect(find.text('数学 · 极限题'), findsOneWidget);
@@ -827,18 +815,12 @@ void main() {
   });
 
   group('P1-1 二层切片已移除（B8-2）', () {
-    testWidgets('真实题（空 sliceText）：不显示 region 开关，只留整题切片', (
-      tester,
-    ) async {
+    testWidgets('真实题（空 sliceText）：不显示 region 开关，只留整题切片', (tester) async {
       await pumpOrganize(
         tester,
         repo: FakeOrganizeRepo(
-          questions: [
-            q('qr', '真实题', sliceText: '', sliceKind: 'limit'),
-          ],
-          folderList: const [
-            Folder(id: 'f1', name: '试卷', subjectId: 'math'),
-          ],
+          questions: [q('qr', '真实题', sliceText: '', sliceKind: 'limit')],
+          folderList: const [Folder(id: 'f1', name: '试卷', subjectId: 'math')],
         ),
       );
       expect(find.text('stem 题干'), findsNothing);
@@ -869,8 +851,7 @@ void main() {
       await tester.tap(find.text('答案 · 解析 · 笔记（可选）'));
       await tester.pumpAndSettle();
       final answerField = find.byWidgetPredicate(
-        (w) =>
-            w is TextField && w.decoration?.hintText == '还没想好可留空',
+        (w) => w is TextField && w.decoration?.hintText == '还没想好可留空',
       );
       await tester.enterText(answerField, '答案：1');
       await tester.pumpAndSettle();
@@ -878,8 +859,7 @@ void main() {
       await tester.pumpAndSettle();
     }
 
-    testWidgets('SR2-5：同一弹窗内打标签 → 加文件夹 → 关闭，标签与文件夹都在',
-        (tester) async {
+    testWidgets('SR2-5：同一弹窗内打标签 → 加文件夹 → 关闭，标签与文件夹都在', (tester) async {
       final repo = threeQuestionRepo();
       await pumpOrganize(tester, repo: repo);
       await openQueue(tester);
@@ -897,8 +877,7 @@ void main() {
       expect(q1.folderIds, contains('f1'));
     });
 
-    testWidgets('SR2-5：同一弹窗内加文件夹 → 打标签 → 批量确认，标签与文件夹都在',
-        (tester) async {
+    testWidgets('SR2-5：同一弹窗内加文件夹 → 打标签 → 批量确认，标签与文件夹都在', (tester) async {
       final repo = threeQuestionRepo();
       await pumpOrganize(tester, repo: repo);
       await openQueue(tester);
@@ -917,8 +896,7 @@ void main() {
       expect(find.text('还剩 2 道'), findsOneWidget);
     });
 
-    testWidgets('SR2-6：改表单 → 下一道 → 上一道 → 保存草稿，文件夹与答案仍在',
-        (tester) async {
+    testWidgets('SR2-6：改表单 → 下一道 → 上一道 → 保存草稿，文件夹与答案仍在', (tester) async {
       final repo = threeQuestionRepo();
       await pumpOrganize(tester, repo: repo);
       await editCurrentForm(tester);
@@ -945,8 +923,7 @@ void main() {
       expect(saves.last.answer, '答案：1');
     });
 
-    testWidgets('SR2-26：打开队列时保存失败，弹提示且队列打不开',
-        (tester) async {
+    testWidgets('SR2-26：打开队列时保存失败，弹提示且队列打不开', (tester) async {
       final repo = FailingSaveRepo(threeQuestionRepo())..failSave = true;
       await pumpOrganize(tester, repo: repo);
       await tester.tap(find.text('队列'));
@@ -968,8 +945,7 @@ void main() {
       expect(tester.takeException(), isNull);
     });
 
-    testWidgets('SR2-26：队列内跳转时保存失败，弹提示且留在当前题',
-        (tester) async {
+    testWidgets('SR2-26：队列内跳转时保存失败，弹提示且留在当前题', (tester) async {
       final repo = FailingSaveRepo(threeQuestionRepo());
       await pumpOrganize(tester, repo: repo);
       await openQueue(tester);
@@ -982,8 +958,7 @@ void main() {
       expect(tester.takeException(), isNull);
     });
 
-    testWidgets('SR2-26：队列内改排序时保存失败，弹提示且主队列排序不变',
-        (tester) async {
+    testWidgets('SR2-26：队列内改排序时保存失败，弹提示且主队列排序不变', (tester) async {
       final repo = FailingSaveRepo(threeQuestionRepo());
       await pumpOrganize(tester, repo: repo);
       await openQueue(tester);
@@ -1007,8 +982,7 @@ void main() {
       expect(y1, lessThan(y3));
     });
 
-    testWidgets('SR2-26（对照）：队列内改排序保存成功时，主队列按新排序重排',
-        (tester) async {
+    testWidgets('SR2-26（对照）：队列内改排序保存成功时，主队列按新排序重排', (tester) async {
       final repo = FailingSaveRepo(threeQuestionRepo());
       await pumpOrganize(tester, repo: repo);
       await openQueue(tester);
@@ -1024,8 +998,7 @@ void main() {
       expect(tester.takeException(), isNull);
     });
 
-    testWidgets('SR2-26：保存草稿失败时提示失败，不谎报已保存',
-        (tester) async {
+    testWidgets('SR2-26：保存草稿失败时提示失败，不谎报已保存', (tester) async {
       final repo = FailingSaveRepo(threeQuestionRepo())..failSave = true;
       await pumpOrganize(tester, repo: repo);
       await tester.ensureVisible(find.text('保存草稿'));
@@ -1040,9 +1013,9 @@ void main() {
 
   group('B9-2 队列批量操作：全选 / 可选标签 / 内联下拉', () {
     Finder popupText(String text) => find.descendant(
-          of: find.byKey(const Key('organize-queue-popup')),
-          matching: find.text(text),
-        );
+      of: find.byKey(const Key('organize-queue-popup')),
+      matching: find.text(text),
+    );
 
     testWidgets('全选：点全选勾上全部、批量条计数对；再点取消全选', (tester) async {
       await pumpOrganize(tester);
@@ -1067,13 +1040,11 @@ void main() {
       expect(tester.takeException(), isNull);
     });
 
-    testWidgets('全选范围是当前筛选：搜到 1 道时全选只勾那 1 道，筛外已选保留',
-        (tester) async {
+    testWidgets('全选范围是当前筛选：搜到 1 道时全选只勾那 1 道，筛外已选保留', (tester) async {
       await pumpOrganize(tester);
       await openQueue(tester);
       final searchField = find.byWidgetPredicate(
-        (w) =>
-            w is TextField && w.decoration?.hintText == '搜题名、学科、试卷',
+        (w) => w is TextField && w.decoration?.hintText == '搜题名、学科、试卷',
       );
       await tester.enterText(searchField, '函数');
       await tester.pumpAndSettle();
@@ -1110,8 +1081,7 @@ void main() {
       expect(tester.takeException(), isNull);
     });
 
-    testWidgets('批量打标签可选：下拉选预设标签落库，打完不清空选中',
-        (tester) async {
+    testWidgets('批量打标签可选：下拉选预设标签落库，打完不清空选中', (tester) async {
       final repo = threeQuestionRepo();
       await pumpOrganize(tester, repo: repo);
       await openQueue(tester);
@@ -1159,8 +1129,7 @@ void main() {
       expect(tester.takeException(), isNull);
     });
 
-    testWidgets('SR3-15 文件夹下拉：真实点按选平时作业，菜单关闭且值生效',
-        (tester) async {
+    testWidgets('SR3-15 文件夹下拉：真实点按选平时作业，菜单关闭且值生效', (tester) async {
       final repo = threeQuestionRepo();
       await pumpOrganize(tester, repo: repo);
       await openQueue(tester);
@@ -1178,16 +1147,13 @@ void main() {
       await tester.tap(find.text('批量加入该文件夹'));
       await tester.pumpAndSettle();
       expect(
-        repo.saved.any(
-          (x) => x.id == 'q1' && x.folderIds.contains('f2'),
-        ),
+        repo.saved.any((x) => x.id == 'q1' && x.folderIds.contains('f2')),
         isTrue,
       );
       expect(tester.takeException(), isNull);
     });
 
-    testWidgets('SR3-15 文件夹下拉：真实点按“添加新文件夹”打开新建表单',
-        (tester) async {
+    testWidgets('SR3-15 文件夹下拉：真实点按“添加新文件夹”打开新建表单', (tester) async {
       await pumpOrganize(tester);
       await openQueue(tester);
       await tester.tap(popupCheckboxes(tester).first);
@@ -1216,8 +1182,7 @@ void main() {
       expect(tester.takeException(), isNull);
     });
 
-    testWidgets('窄窗口 480：全选后批量条无溢出，标签菜单能打开',
-        (tester) async {
+    testWidgets('窄窗口 480：全选后批量条无溢出，标签菜单能打开', (tester) async {
       await pumpOrganize(tester, viewSize: const Size(480, 720));
       await openQueue(tester);
       await tester.tap(find.text('全选'));

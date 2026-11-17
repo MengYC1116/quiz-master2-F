@@ -1,5 +1,12 @@
 // B4：database.dart 拆分——备份与恢复：JSON 导出/导入 / zip 备份/恢复 / 校验。
 // 与 database.dart 同一库（part of），共享库私有成员；纯重构，行为不变。
+//
+// FR-26：一次 zip 恢复后数据库永久为 WAL 模式——[_takeRestoreSnapshot] 切的
+// `PRAGMA journal_mode=WAL` 是持久化 pragma，恢复成功后无代码切回 delete
+// （恢复成功后切回 delete 不做：须评估与快照 -wal/-shm 拷贝的交互，
+// 风险大于收益）。第二次恢复时切 WAL 是空操作，快照互斥逻辑不受影响；
+// 搬库代码已连 -wal/-shm 一起搬（见 db_storage.dart）。不要按
+// “默认 journal_mode=delete”排障——该前提只对未恢复过的库成立。
 
 part of 'database.dart';
 
@@ -30,8 +37,13 @@ Future<String> exportBackupJsonFromImpl(QuizDatabase db) async {
 /// 校验顺序：① `_meta.schemaVersion` 存在且为整数（缺失 → 按 v1
 /// 备份处理，拒绝：v1 从未发布、老库已删，不存在合法的 v1 备份）；
 /// ② `== 2` 才放行，`> 2` 拒绝（备份来自更新的版本），`< 2` 也拒绝；
-/// ③ 全部 13 张表键齐全且为数组；④ 每行是对象、主键非空、
-/// 必填列齐全且类型正确；⑤ 文件路径合法（见 [_validateBackupRowPaths]）。
+/// ③ 全部 13 张表键齐全且为数组；④ 每行是对象、主键非空、必填列齐全
+/// 且类型正确；⑤ 文件路径合法（见 [_validateBackupRowPaths]）；
+/// ⑥ 9 个 JSON 列是字符串且能解析为对应形状（见
+/// [_validateBackupRowJsonColumns]，FR-07）；
+/// ⑦ 枚举/布尔列的值域（见 [_validateBackupRowDomains]，FR-23：
+/// `cause_records.status` ∈ {pending, inProgress, solved}、
+/// questions 的 5 个布尔列 ∈ {0, 1}；JSON 列非字符串由 ⑥ 覆盖）。
 /// 任一步不过 → 抛 BackupRestoreException（带具体原因），
 /// 调用方一律不动原库。
 /// SR-P2-4：旧写法只强制 subjects/questions 为数组，其它表键缺失时
@@ -70,6 +82,11 @@ void validateBackupDataImpl(Map<String, dynamic> data) {
         throw BackupRestoreException('这份备份文件已损坏：$t 表里有坏行');
       }
       _validateBackupRow(t, row);
+      // FR-07：9 个 JSON 列的形状（非法 JSON / 元素类型错拒绝整个恢复，
+      // 否则恢复插库时 decode* 会静默丢值）。
+      _validateBackupRowJsonColumns(t, row);
+      // FR-23：枚举/布尔列的值域（status 白名单、布尔列 ∈ {0, 1}）。
+      _validateBackupRowDomains(t, row);
       // B3-P01：备份里的文件路径必须是 imports/ 或 slices/ 下
       // 的相对路径；绝对路径、`..` 穿越、其它目录一律拒绝整个
       // 恢复（明确报错，不静默跳过——跳过会让恢复结果不可预期）。
@@ -172,6 +189,139 @@ void _validateBackupRow(String table, Map row) {
   }
 }
 
+/// FR-07：校验备份里 9 个 JSON 列的形状（与
+/// [AppDatabase.decodeStringList]/[decodeQueue]/[decodeRotations] 的
+/// 读侧口径同形）。值必须是字符串且能解析为对应形状，否则拒绝整个
+/// 恢复（与必填列同口径——decode* 本身保持宽容，供应用内读侧用；
+/// 校验层在这里拦，非法值进不了库，也就不会在恢复插库时被 decode*
+/// 静默丢掉）。
+/// `''` / null → 空集合的 D-51 规范化口径不变（放行）；键缺失放行
+/// （FR-21 是批二的项）；非字符串值与非法 JSON 一律拒绝。
+void _validateBackupRowJsonColumns(String table, Map row) {
+  // 字符串列表列：questions 的 5 个多值字段 + cause_records.remedy_history。
+  const stringListColumns = {
+    'questions': [
+      'folder_ids',
+      'knowledge_ids',
+      'error_types',
+      'custom_error_types',
+      'tags',
+    ],
+    'cause_records': ['remedy_history'],
+  };
+  final id = row['id'] ?? row['key'] ?? '?';
+  void reject(String col, String expected, Object? value) {
+    throw BackupRestoreException(
+      '这份备份文件已损坏：$table 表 $id 行的 $col 不是合法的 JSON'
+      '（应为$expected）：$value',
+    );
+  }
+
+  bool validStringList(Object? value) {
+    if (value == null) return true; // D-51：null → 空集合，放行
+    if (value is! String) return false;
+    if (value.isEmpty) return true; // D-51：'' → 空集合，放行
+    try {
+      final decoded = jsonDecode(value);
+      return decoded is List && decoded.every((e) => e is String);
+    } catch (_) {
+      return false;
+    }
+  }
+
+  final columns = stringListColumns[table];
+  if (columns != null) {
+    for (final col in columns) {
+      if (!row.containsKey(col)) continue; // 键缺失放行（FR-21 批二）
+      if (!validStringList(row[col])) {
+        reject(col, '字符串数组', row[col]);
+      }
+    }
+  }
+  // review_state.queue：含 q/c 字符串的对象数组。
+  if (table == 'review_state' && row.containsKey('queue')) {
+    final value = row['queue'];
+    var ok = value == null;
+    if (value is String && value.isEmpty) ok = true; // D-51
+    if (value is String && value.isNotEmpty) {
+      try {
+        final decoded = jsonDecode(value);
+        ok =
+            decoded is List &&
+            decoded.every(
+              (e) => e is Map && e['q'] is String && e['c'] is String,
+            );
+      } catch (_) {
+        ok = false;
+      }
+    }
+    if (!ok) reject('queue', '含 q/c 字符串的对象数组', value);
+  }
+  // collect_tasks.page_rotations：键为页码、值为角度的 JSON 对象。
+  if (table == 'collect_tasks' && row.containsKey('page_rotations')) {
+    final value = row['page_rotations'];
+    var ok = value == null;
+    if (value is String && value.isEmpty) ok = true; // D-51
+    if (value is String && value.isNotEmpty) {
+      try {
+        final decoded = jsonDecode(value);
+        ok =
+            decoded is Map &&
+            decoded.entries.every(
+              (e) => int.tryParse('${e.key}') != null && e.value is num,
+            );
+      } catch (_) {
+        ok = false;
+      }
+    }
+    if (!ok) reject('page_rotations', '键为页码、值为角度的 JSON 对象', value);
+  }
+}
+
+/// FR-23：校验备份里枚举/布尔列的值域（与 FR-07 的 JSON 形状检查并列，
+/// 同在校验层、恢复覆盖原库之前拦）。
+/// - `cause_records.status` ∈ {pending, inProgress, solved}（读侧对未知
+///   status 静默回落 pending，见 db_questions.dart，非法值不得入库）；
+/// - `questions` 的 5 个布尔列（is_organized / is_demo / is_favorite /
+///   is_archived / review_joined）∈ {0, 1}（读侧 `!= 1` 即 false，非法值
+///   不得入库）。报告称“6 个布尔列”，DDL（db_schema.dart questions 表）
+///   里实际只有这 5 个，按实际列校验（见批报告）。
+/// - JSON 列须为字符串或缺失：已由 FR-07 的 [_validateBackupRowJsonColumns]
+///   覆盖（非字符串值拒绝），这里不重复造轮子。
+/// 键缺失放行（走 DDL 默认值）；键在但值为 null 或域外值 → 拒绝整个恢复。
+void _validateBackupRowDomains(String table, Map row) {
+  final id = row['id'] ?? row['key'] ?? '?';
+  if (table == 'cause_records' && row.containsKey('status')) {
+    final value = row['status'];
+    if (value is! String ||
+        (value != 'pending' && value != 'inProgress' && value != 'solved')) {
+      throw BackupRestoreException(
+        '这份备份文件已损坏：cause_records 表 $id 行的 status 不是合法的'
+        '错因状态（应为 pending / inProgress / solved）：$value',
+      );
+    }
+  }
+  if (table == 'questions') {
+    const boolColumns = [
+      'is_organized',
+      'is_demo',
+      'is_favorite',
+      'is_archived',
+      'review_joined',
+    ];
+    for (final col in boolColumns) {
+      if (!row.containsKey(col)) continue;
+      final value = row[col];
+      if (value is! int || (value != 0 && value != 1)) {
+        throw BackupRestoreException(
+          '这份备份文件已损坏：questions 表 $id 行的 $col 不是合法的'
+          '布尔值（应为 0 或 1）：$value',
+        );
+      }
+    }
+  }
+}
+
 /// B3-P01：校验备份里一行携带的文件路径（见
 /// [AppDatabase.isAllowedDataRelativePath]）。只校验存文件路径的列：
 /// questions 的 source_path / page_image_path / slice_path，
@@ -207,7 +357,9 @@ void _validateBackupRowPaths(String table, Map row) {
 ///   存储表示。解码与编码互逆，规范值逐字节不变；非规范旧值 ''（DDL
 ///   DEFAULT 遗留）解码为空集合、编回规范的 '[]' / '{}'（与 p2_json_fields
 ///   回归口径一致：'' 是漂移，'[]' 是规范；语义等价，
-///   `decode('') == decode('[]')`）。
+///   `decode('') == decode('[]')`）。键缺失时走 `Value.absent()`
+///   （FR-21：不写该列、落 DDL 默认值，与旧写法“缺键不写”同口径；
+///   键在但值是 '' 时仍按 D-51 编回规范值）。
 /// - 其余列按 JSON 里的运行时类型严格取值（见 `_rs` / `_ri` / `_rd`
 ///   系列助手）：缺失或类型不对直接抛 [BackupRestoreException]，不静默
 ///   默认值、不猜测转换；有 DDL 默认值的可选列缺失时走 `Value.absent()`
@@ -339,18 +491,12 @@ Future<void> _backupInsertRowTyped(
               id: Value(_rs(row, 'id')),
               title: Value(_rs(row, 'title')),
               subjectId: Value(_rs(row, 'subject_id')),
-              folderIds: Value(AppDatabase.decodeStringList(row['folder_ids'])),
+              folderIds: _vStringListDef(row, 'folder_ids'),
               examId: Value(_rsN(row, 'exam_id')),
-              knowledgeIds: Value(
-                AppDatabase.decodeStringList(row['knowledge_ids']),
-              ),
-              errorTypes: Value(
-                AppDatabase.decodeStringList(row['error_types']),
-              ),
-              customErrorTypes: Value(
-                AppDatabase.decodeStringList(row['custom_error_types']),
-              ),
-              tags: Value(AppDatabase.decodeStringList(row['tags'])),
+              knowledgeIds: _vStringListDef(row, 'knowledge_ids'),
+              errorTypes: _vStringListDef(row, 'error_types'),
+              customErrorTypes: _vStringListDef(row, 'custom_error_types'),
+              tags: _vStringListDef(row, 'tags'),
               answer: Value(_rsN(row, 'answer')),
               explanation: Value(_rsN(row, 'explanation')),
               notes: Value(_rsN(row, 'notes')),
@@ -456,9 +602,7 @@ Future<void> _backupInsertRowTyped(
               solvedCount: _vIntDef(row, 'solved_count'),
               lastCheck: Value(_riN(row, 'last_check')),
               recheckDate: Value(_riN(row, 'recheck_date')),
-              remedyHistory: Value(
-                AppDatabase.decodeStringList(row['remedy_history']),
-              ),
+              remedyHistory: _vStringListDef(row, 'remedy_history'),
               joinedAt: Value(_ri(row, 'joined_at')),
             ),
             mode: InsertMode.insertOrReplace,
@@ -480,9 +624,7 @@ Future<void> _backupInsertRowTyped(
               questionId: Value(_rsN(row, 'question_id')),
               createdAt: _vIntDef(row, 'created_at'),
               sourcePath: _vStrDef(row, 'source_path'),
-              pageRotations: Value(
-                AppDatabase.decodeRotations(row['page_rotations']),
-              ),
+              pageRotations: _vRotationsDef(row, 'page_rotations'),
             ),
             mode: InsertMode.insertOrReplace,
           );
@@ -492,7 +634,7 @@ Future<void> _backupInsertRowTyped(
           .insert(
             ReviewStateCompanion(
               id: Value(_ri(row, 'id')),
-              queue: Value(AppDatabase.decodeQueue(row['queue'])),
+              queue: _vQueueDef(row, 'queue'),
               position: _vIntDef(row, 'position'),
               updatedAt: Value(_ri(row, 'updated_at')),
             ),
@@ -595,10 +737,14 @@ String? _rsN(Map<String, Object?> row, String key) {
   throw BackupRestoreException('这份备份数据有问题：${_rowLabel(row)} 行的 $key 不是文本');
 }
 
+// FR-20：只接受 int；带小数的 double 一律拒绝，不静默截断
+// （与 D-51“严格取值”一致——之前任何 num 都 toInt()，2.5 会静默存成 2）。
+// 整数值 double（如其它工具写出的 2.0）放行：是同一数值的另一种写法，
+// 不是猜测转换。
 int _ri(Map<String, Object?> row, String key) {
   final v = row[key];
   if (v is int) return v;
-  if (v is num) return v.toInt();
+  if (v is double && v.truncate() == v) return v.toInt();
   throw BackupRestoreException('这份备份数据有问题：${_rowLabel(row)} 行的 $key 缺失或不是整数');
 }
 
@@ -606,7 +752,7 @@ int? _riN(Map<String, Object?> row, String key) {
   final v = row[key];
   if (v == null) return null;
   if (v is int) return v;
-  if (v is num) return v.toInt();
+  if (v is double && v.truncate() == v) return v.toInt();
   throw BackupRestoreException('这份备份数据有问题：${_rowLabel(row)} 行的 $key 不是整数');
 }
 
@@ -630,6 +776,26 @@ Value<String> _vStrDef(Map<String, Object?> row, String key) =>
 
 Value<int> _vIntDef(Map<String, Object?> row, String key) =>
     row.containsKey(key) ? Value(_ri(row, key)) : const Value.absent();
+
+/// FR-21：JSON 列缺键时也走 `Value.absent()`（落库 DDL 默认值，
+/// 与旧写法“缺键不写”同口径）；键在时才走 decode → Value。
+/// 之前是无条件 `Value(decode(...))`，缺键行恢复后存成 `'[]'`/`'{}'`，
+/// 与旧口径的 `''`（page_rotations 缺键时新旧一致，都是 `'{}'`）漂移
+/// （语义等价，仅存储表示不同）。
+Value<List<String>> _vStringListDef(Map<String, Object?> row, String key) =>
+    row.containsKey(key)
+    ? Value(AppDatabase.decodeStringList(row[key]))
+    : const Value.absent();
+
+Value<List<ReviewQueueItem>> _vQueueDef(Map<String, Object?> row, String key) =>
+    row.containsKey(key)
+    ? Value(AppDatabase.decodeQueue(row[key]))
+    : const Value.absent();
+
+Value<Map<int, int>> _vRotationsDef(Map<String, Object?> row, String key) =>
+    row.containsKey(key)
+    ? Value(AppDatabase.decodeRotations(row[key]))
+    : const Value.absent();
 
 /// B4.2：恢复（可单测版）。
 /// SR-P2-4：插库时的残余异常统一包成 [BackupRestoreException]
@@ -708,9 +874,11 @@ Future<List<int>> exportBackupZipFromImpl(
   return buildZip(entries);
 }
 
-List<ZipEntryData> _readZipOrThrow(List<int> bytes) {
+List<ZipEntryData> _readZipOrThrow(List<int> bytes, {int? maxTotalBytes}) {
   try {
-    return readZip(bytes);
+    return maxTotalBytes == null
+        ? readZip(bytes)
+        : readZip(bytes, maxTotalBytes: maxTotalBytes);
   } on ZipFormatException catch (e) {
     throw BackupRestoreException('这份备份文件已损坏：${e.message}');
   }
@@ -773,6 +941,20 @@ Future<int> _dataDirFileUsageBytes(String dir) async {
   return total;
 }
 
+/// FR-42：恢复峰值估算里的数据库快照大小——当前库文件 + 已有 -wal/-shm
+/// （快照是整库拷贝，恢复中与原库共存；不存在的文件不计）。
+int _restoreSnapshotBytes(String dir) {
+  var total = 0;
+  final dbPath = p.join(dir, 'quiz-master2.db');
+  for (final path in [dbPath, '$dbPath-wal', '$dbPath-shm']) {
+    try {
+      final f = File(path);
+      if (f.existsSync()) total += f.lengthSync();
+    } catch (_) {}
+  }
+  return total;
+}
+
 String _formatBytes(int bytes) {
   if (bytes < 1024) return '$bytes B';
   if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
@@ -801,9 +983,10 @@ bool _isRestoreStagingDir(String name) {
 ///    正式文件与数据库在此之前一律不动；
 /// 2. 完整性验证：staging 里每个文件条目落盘后核对存在与字节数；
 /// 3. 一致快照：进维护状态（[AppDatabase._restoreMaintenance]，[db] getter
-///    拒绝业务取连接）→ 切 WAL（当前打开方式默认 journal_mode=delete，
+///    拒绝业务取连接）→ 切 WAL（未恢复过的库默认 journal_mode=delete，
 ///    该模式下 wal_checkpoint 是空操作，busy 恒为 0，故必须先切 WAL；
-///    切不过说明另有连接占用，直接拒绝）→ `PRAGMA wal_checkpoint(TRUNCATE)`
+///    切不过说明另有连接占用，直接拒绝。一次恢复后库永久为 WAL，
+///    见文件头 FR-26；再次恢复时切 WAL 是空操作）→ `PRAGMA wal_checkpoint(TRUNCATE)`
 ///    读第一列判定 busy（1 = 被活动读事务阻碍），busy 时重试等一会儿，
 ///    仍 busy 则拒绝、不复制主库文件 → 复制主库 + -wal/-shm 为快照并校验
 ///    （SQLite 文件头）；快照完成才写日志 SNAPSHOT_READY；
@@ -833,7 +1016,11 @@ Future<void> importBackupZipIntoImpl(
   String? dataDir,
 }) async {
   final dir = dataDir ?? AppDatabase.dataDirectoryPath();
-  final entries = _readZipOrThrow(bytes);
+  // FR-41：恢复上限 2GB 在解压前预判——readZip 按中央目录 rawSize 累计，
+  // 超了直接拒、不解压（之前是全量解压进内存后才在峰值估算里判，
+  // 2~4GB 的包先占满内存再被拒，有 OOM 风险）。预览入口
+  // readBackupJsonFromZipImpl 不走这里，仍用 readZip 默认 4GB 上限。
+  final entries = _readZipOrThrow(bytes, maxTotalBytes: _maxRestoreBytes);
   ZipEntryData? jsonEntry;
   for (final e in entries) {
     if (e.name == 'backup.json') jsonEntry = e;
@@ -855,6 +1042,8 @@ Future<void> importBackupZipIntoImpl(
   // 覆盖旧文件时估算 1.9GB 放行，峰值却是 2.4GB，盘空间不足时
   // staging 写一半失败。改后按峰值与 2GB 上限比较；将被覆盖的
   // 文件不再抵扣估算（它在恢复完成前一直占着磁盘）。
+  // FR-42：峰值还要加上数据库快照大小（恢复第 3 步把整个库文件拷成
+  // 快照，与原库共存；见 [_restoreSnapshotBytes]）。
   final fileEntries = [
     for (final e in entries)
       if (e.name != 'backup.json') e,
@@ -864,10 +1053,12 @@ Future<void> importBackupZipIntoImpl(
     (sum, e) => sum + e.bytes.length,
   );
   final usedBytes = await _dataDirFileUsageBytes(dir);
-  final peakBytes = usedBytes + incomingBytes;
+  final snapshotBytes = _restoreSnapshotBytes(dir);
+  final peakBytes = usedBytes + incomingBytes + snapshotBytes;
   if (peakBytes > _maxRestoreBytes) {
     throw BackupRestoreException(
       '这份备份恢复时峰值占用会超过 2GB 存储上限（现有 ${_formatBytes(usedBytes)}，'
+      '数据库快照 ${_formatBytes(snapshotBytes)}，'
       '恢复中峰值约 ${_formatBytes(peakBytes)}），请先清理孤儿文件或删掉'
       '不需要的题目再恢复',
     );
@@ -1034,12 +1225,31 @@ Future<void> importBackupZipIntoImpl(
         fileRollbackOk = false;
       }
       await _deleteDirQuietly(stagingDir);
-      if (fileRollbackOk) {
-        await _deleteDirQuietly(rollbackDir);
-        await _deleteRestoreSnapshotFiles(snapshotFile);
-        await _deleteJournalFiles(store);
-        await _deleteEmptyRestoreParents(dir);
+      if (!fileRollbackOk) {
+        // FR-29：文件回滚没完成时原“原题库没动”文案失实（文件可能半切换，
+        // 须重启走启动钩子完成回滚）——改抛另一条文案，与本函数开头的
+        // pending 日志文案（“上次备份恢复未完成，请重启应用完成恢复后再试”）
+        // 同口径；原错误不再原样上抛。
+        throw BackupRestoreException('恢复失败，文件回滚未完成，请重启应用完成回滚后再试');
       }
+      // FR-28：补偿后复核库行引用文件存在性（plan v9 §四第 5 条）——
+      // 只在切换已开始时核（journal.stage ≥ FILES_SWITCHING；切换前失败
+      // 时文件根本没动过，核它只会用恢复前的旧悬空引用掩盖真正的失败原因）。
+      // 不通过则保留日志与材料、报“回滚后复核未通过”，而不是删掉材料后
+      // 按原错误上抛（悬空引用会在此后才被发现）。
+      if (journal.stage.index >= RestoreStage.filesSwitching.index) {
+        final missing = await _missingReferencedFiles(db, dir);
+        if (missing.isNotEmpty) {
+          throw BackupRestoreException(
+            '恢复失败，文件回滚后复核未通过（${missing.length} 个被引用的'
+            '文件不存在，如 ${missing.first}），请重启应用完成回滚后再试',
+          );
+        }
+      }
+      await _deleteDirQuietly(rollbackDir);
+      await _deleteRestoreSnapshotFiles(snapshotFile);
+      await _deleteJournalFiles(store);
+      await _deleteEmptyRestoreParents(dir);
     } else if (journal != null && dbCommitted) {
       // DB 已提交新数据，进程内无法在不断连接的情况下换回快照；
       // 只删 staging，保留日志 + 快照 + rollback 目录，
@@ -1091,6 +1301,52 @@ String _nextRestoreTaskId() {
   return 'r${DateTime.now().millisecondsSinceEpoch}-$_restoreTaskSeq';
 }
 
+/// FR-28：进程内补偿后“库行引用文件存在性”复核（plan v9 §四第 5 条）。
+/// 只核对库行直接引用的 4 列（questions 的 source_path /
+/// page_image_path / slice_path + collect_tasks 的 source_path）。
+/// 与孤儿扫描口径 [_referencedRelativePaths] 的列相同，但不用它本身：
+/// 它另有两类派生保护（任务的 page-normalized.png 与 pages/ 下页图，
+/// “有行即保护”、文件本身未必存在），直接做存在性检查会把未渲染过的
+/// 任务也判为缺失，让每次失败恢复都报复核未通过。返回缺失的相对路径
+/// （空即通过）。
+Future<List<String>> _missingReferencedFiles(
+  QuizDatabase db,
+  String dir,
+) async {
+  final refs = <String>{};
+  void add(Object? v) {
+    if (v is! String || v.isEmpty) return;
+    final rel = _toDataRelative(v, dir);
+    if (rel != null) refs.add(rel);
+  }
+
+  for (final row in await db.select(db.questions).get()) {
+    add(row.sourcePath);
+    add(row.pageImagePath);
+    add(row.slicePath);
+  }
+  for (final row in await db.select(db.collectTasks).get()) {
+    add(row.sourcePath);
+  }
+  final missing = <String>[];
+  for (final rel in refs) {
+    final abs = _resolveInsideDir(dir, rel);
+    if (abs == null || !File(abs).existsSync()) missing.add(rel);
+  }
+  missing.sort();
+  return missing;
+}
+
+/// FR-27：恢复日志阶段转移白名单——只允许
+/// PREPARING → SNAPSHOT_READY → FILES_SWITCHING → DATABASE_RESTORING →
+/// COMMITTED 的单步前进；跳级与回退一律非法（调用方顺序保证之外的一道
+/// 防线；非法推进会让启动恢复按不可能的阶段分派、跳过应有的回滚步骤）。
+/// [_advanceRestoreJournal] 在每次推进前用它校验，非法时抛
+/// [BackupRestoreException]；[RestoreJournalStore.updateStage] 层不加
+/// （调用方唯一）。
+bool isLegalRestoreStageTransition(RestoreStage from, RestoreStage to) =>
+    to.index == from.index + 1;
+
 /// 日志阶段推进（原子更新；失败包成 [BackupRestoreException]，
 /// 让设置页走同一条可见错误通道展示，不要静默吞掉）。
 Future<RestoreJournal> _advanceRestoreJournal(
@@ -1099,6 +1355,14 @@ Future<RestoreJournal> _advanceRestoreJournal(
   RestoreStage stage, {
   RestoreStatus? status,
 }) async {
+  // FR-27：非法跳转（跳级/回退）直接拒绝，不写日志。
+  if (!isLegalRestoreStageTransition(journal.stage, stage)) {
+    throw BackupRestoreException(
+      '恢复日志阶段推进非法：${journal.stage.name} → ${stage.name}，'
+      '只允许单步前进（PREPARING → SNAPSHOT_READY → FILES_SWITCHING → '
+      'DATABASE_RESTORING → COMMITTED），恢复已停止，原题库没动',
+    );
+  }
   final next = journal.copyWith(stage: stage, status: status ?? journal.status);
   try {
     return await store.updateStage(next);
@@ -1118,11 +1382,12 @@ Future<RestoreJournal> _advanceRestoreJournal(
 }
 
 /// 一致快照（维护状态下、连接空闲时执行）：
-/// ① 切 WAL——当前打开方式默认 journal_mode=delete，该模式下
+/// ① 切 WAL——未恢复过的库默认 journal_mode=delete，该模式下
 ///    wal_checkpoint 是空操作（busy 恒为 0，log 为 -1，见尖峰后实测），
 ///    快照互斥无从谈起；切不过（另有连接占用）即拒绝，不在无法确认
 ///    互斥时快照。切 WAL 是持久化 pragma，首恢复后库文件保持 WAL，
 ///    搬库代码已连 -wal/-shm 一起搬（见 db_storage.dart），无连锁问题。
+///    （FR-26：一次恢复后库永久为 WAL，无代码切回 delete，见文件头。）
 /// ② `PRAGMA wal_checkpoint(TRUNCATE)` 读第一列判定 busy（1 = 有活动
 ///    读事务阻碍），busy 时等 200ms 再试，最多 10 次，仍 busy 则拒绝、
 ///    不复制主库文件（plan 验收 ⑤：必须用真实阻碍 TRUNCATE 的活动读
@@ -1525,9 +1790,11 @@ extension AppDatabaseBackup on AppDatabase {
   Future<List<int>> exportBackupZip() async =>
       AppDatabase.exportBackupZipFrom(await db);
 
-  /// zip 备份恢复（实例版）。成功后只发一个含全部五种 kind 的事件
-  ///（方案 §四）；按路径恢复的 [importBackupZipFile] 调本方法，
-  /// 不另发事件。
+  /// zip 备份恢复（实例版，按已读到的字节恢复）。成功后只发一个含
+  /// 全部五种 kind 的事件（方案 §四）。
+  /// GPT-P1：只接受字节，不再提供按文件路径重读的入口——校验过的
+  /// 字节与导入的字节必须是同一份，消除校验与使用之间的 TOCTOU
+  /// 窗口（旧 `importBackupZipFile` 已删除）。
   Future<void> importBackupZip(List<int> bytes) async {
     await AppDatabase.importBackupZipInto(await db, bytes);
     DataChangeBus.instance.emit(
@@ -1541,11 +1808,5 @@ extension AppDatabaseBackup on AppDatabase {
         },
       ),
     );
-  }
-
-  /// zip 备份恢复（实例版，按文件路径读）。
-  Future<void> importBackupZipFile(String path) async {
-    final bytes = await File(path).readAsBytes();
-    await importBackupZip(bytes);
   }
 }

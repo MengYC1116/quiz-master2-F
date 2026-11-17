@@ -63,7 +63,8 @@ class ReportPage extends ConsumerStatefulWidget {
     String? subjectId,
     String? cause,
     String? knowledgePointId,
-  }) onOpenWrongbookFiltered;
+  })
+  onOpenWrongbookFiltered;
 
   @override
   ConsumerState<ReportPage> createState() => _ReportPageState();
@@ -112,8 +113,7 @@ class _ReportPageState extends ConsumerState<ReportPage> {
             SizedBox(height: 14 * scale),
             QmEmptyState(
               title: '还没有复习记录，先去复习吧',
-              description:
-                  '在复习页按四步解决几个错因，回来这里就会告诉你弱在哪、有没有效果、接下来练什么。',
+              description: '在复习页按四步解决几个错因，回来这里就会告诉你弱在哪、有没有效果、接下来练什么。',
               actionLabel: '去复习',
               onAction: widget.onGoReview,
             ),
@@ -130,8 +130,8 @@ class _ReportPageState extends ConsumerState<ReportPage> {
     final kpTop = report.kpGroups;
     final nextSentence = report.nextSentence;
 
-    final wide = MediaQuery.sizeOf(context).width >
-        DesignTokens.organizeGridBreakpoint;
+    final wide =
+        MediaQuery.sizeOf(context).width > DesignTokens.organizeGridBreakpoint;
     final brightness = Theme.of(context).brightness;
 
     return SingleChildScrollView(
@@ -177,13 +177,15 @@ class _ReportPageState extends ConsumerState<ReportPage> {
             ],
           ),
           SizedBox(
-            height: (DesignTokens.reportRangeBarMarginBottom +
+            height:
+                (DesignTokens.reportRangeBarMarginBottom +
                     DesignTokens.reportSectionMarginTop) *
                 scale,
           ),
           _sectionTitle('有没有效果', palette),
           SizedBox(
-            height: (DesignTokens.reportSectionMarginBottom +
+            height:
+                (DesignTokens.reportSectionMarginBottom +
                     DesignTokens.reportCoreMarginTop) *
                 scale,
           ),
@@ -288,7 +290,9 @@ class _ReportPageState extends ConsumerState<ReportPage> {
               palette,
               scale,
               subject: report.subjects[i],
-              count: qsIn.where((q) => q.subjectId == report.subjects[i].id).length,
+              count: qsIn
+                  .where((q) => q.subjectId == report.subjects[i].id)
+                  .length,
               last: i == report.subjects.length - 1,
             ),
         ],
@@ -322,7 +326,7 @@ class _ReportPageState extends ConsumerState<ReportPage> {
     final rateSmall = judgedTotal == 0
         ? '这段时间还没有复查记录'
         : '复查 $judgedTotal 次，通过 $judgedPassed 次'
-            '（已解决满 ${settings.recheckIntervalDays} 天回来复查）';
+              '（已解决满 ${settings.recheckIntervalDays} 天回来复查）';
     final cells = [
       _CoreCell(
         valueKey: const ValueKey('report-core-solved'),
@@ -420,7 +424,7 @@ class _ReportPageState extends ConsumerState<ReportPage> {
         SizedBox(height: DesignTokens.reportSectionMarginBottom * scale),
         if (groups.isEmpty)
           Text(
-            isKp ? '这段时间没有还没解决的知识点。' : '这段时间没有待解决的错因。',
+            isKp ? '这段时间没有待解决的知识点。' : '这段时间没有待解决的错因。',
             style: TextStyle(
               fontSize: DesignTokens.reportWeakEmptyFontSize,
               color: palette.ink,
@@ -468,8 +472,11 @@ class _ReportPageState extends ConsumerState<ReportPage> {
     // Subject.byId 回退到数学名 + subjectInk 不传存色落到数学色。
     final subject = report.subjectOf(group.subjectId);
     final subjectName = subject.name;
-    final subjectColor =
-        DesignTokens.subjectInk(group.subjectId, brightness, subject.color);
+    final subjectColor = DesignTokens.subjectInk(
+      group.subjectId,
+      brightness,
+      subject.color,
+    );
     final title = isKp ? report.kpName(group.key) : group.key;
     final detail = isKp
         ? '$subjectName${(report.kpOf(group.key)?.chapter.isNotEmpty ?? false) ? ' › ${report.kpOf(group.key)!.chapter}' : ''} · ${group.titles.join('、')}'
@@ -521,8 +528,7 @@ class _ReportPageState extends ConsumerState<ReportPage> {
                       Text.rich(
                         TextSpan(
                           style: TextStyle(
-                            fontSize:
-                                DesignTokens.reportRowTitleFontSize,
+                            fontSize: DesignTokens.reportRowTitleFontSize,
                             fontWeight: FontWeight.w700,
                             color: palette.ink,
                             height: DesignTokens.controlLineHeight,

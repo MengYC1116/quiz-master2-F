@@ -27,24 +27,23 @@ Question _oq(
   bool isOrganized = false,
   bool isArchived = false,
   bool reviewJoined = false,
-}) =>
-    Question(
-      id: id,
-      title: title,
-      subjectId: subjectId,
-      folderIds: folderIds,
-      examId: examId,
-      errorTypes: errorTypes,
-      customErrorTypes: customErrorTypes,
-      tags: tags,
-      answer: answer,
-      createdAt: createdAt ?? DateTime(2026, 11, 8),
-      isOrganized: isOrganized,
-      isArchived: isArchived,
-      reviewJoined: reviewJoined,
-      sliceKind: 'material',
-      sliceText: '题：$title',
-    );
+}) => Question(
+  id: id,
+  title: title,
+  subjectId: subjectId,
+  folderIds: folderIds,
+  examId: examId,
+  errorTypes: errorTypes,
+  customErrorTypes: customErrorTypes,
+  tags: tags,
+  answer: answer,
+  createdAt: createdAt ?? DateTime(2026, 11, 8),
+  isOrganized: isOrganized,
+  isArchived: isArchived,
+  reviewJoined: reviewJoined,
+  sliceKind: 'material',
+  sliceText: '题：$title',
+);
 
 class FakeOrganizeNotifierRepo extends QuestionRepository {
   FakeOrganizeNotifierRepo({
@@ -54,13 +53,13 @@ class FakeOrganizeNotifierRepo extends QuestionRepository {
     List<KnowledgePoint> kpList = const [],
     List<String> tagList = const [],
     List<Subject>? subjectsValue,
-  })  : questions = List.of(questions),
-        folderList = List.of(folderList),
-        examList = List.of(examList),
-        kpList = List.of(kpList),
-        tagList = List.of(tagList),
-        subjectsValue = subjectsValue ?? Subject.all,
-        super(AppDatabase.instance);
+  }) : questions = List.of(questions),
+       folderList = List.of(folderList),
+       examList = List.of(examList),
+       kpList = List.of(kpList),
+       tagList = List.of(tagList),
+       subjectsValue = subjectsValue ?? Subject.all,
+       super(AppDatabase.instance);
 
   List<Question> questions;
   List<Folder> folderList;
@@ -87,10 +86,9 @@ class FakeOrganizeNotifierRepo extends QuestionRepository {
       List.of(questions);
 
   @override
-  Future<List<Folder>> folders({String? subjectId}) async =>
-      subjectId == null
-          ? List.of(folderList)
-          : folderList.where((f) => f.subjectId == subjectId).toList();
+  Future<List<Folder>> folders({String? subjectId}) async => subjectId == null
+      ? List.of(folderList)
+      : folderList.where((f) => f.subjectId == subjectId).toList();
 
   @override
   Future<List<Exam>> exams() async => List.of(examList);
@@ -116,7 +114,17 @@ class FakeOrganizeNotifierRepo extends QuestionRepository {
   }
 
   @override
+  Future<Question?> questionById(String id) async =>
+      questions.where((x) => x.id == id).firstOrNull;
+
+  /// FR-36：指定 id 的 delete 抛错（批量删除部分失败路径用）。
+  final Set<String> failDeleteIds = {};
+
+  @override
   Future<void> delete(Question question) async {
+    if (failDeleteIds.contains(question.id)) {
+      throw StateError('模拟删题失败');
+    }
     deletedIds.add(question.id);
     questions.removeWhere((x) => x.id == question.id);
   }
@@ -132,13 +140,9 @@ class FakeOrganizeNotifierRepo extends QuestionRepository {
     String subjectId,
     String name, {
     String? excludeId,
-  }) async =>
-      folderList.any(
-        (f) =>
-            f.subjectId == subjectId &&
-            f.name == name &&
-            f.id != excludeId,
-      );
+  }) async => folderList.any(
+    (f) => f.subjectId == subjectId && f.name == name && f.id != excludeId,
+  );
 
   @override
   Future<void> addExam(Exam exam) async {
@@ -165,8 +169,7 @@ class FakeOrganizeNotifierRepo extends QuestionRepository {
   }
 
   @override
-  Future<int> organizedTodayCount({DateTime? now}) async =>
-      organizedTodayValue;
+  Future<int> organizedTodayCount({DateTime? now}) async => organizedTodayValue;
 
   @override
   Future<List<Question>> dueToday({bool includeArchived = false}) async =>
@@ -174,56 +177,45 @@ class FakeOrganizeNotifierRepo extends QuestionRepository {
 }
 
 FakeOrganizeNotifierRepo _threeRepo() => FakeOrganizeNotifierRepo(
-      questions: [
-        _oq('q1', '函数极限', createdAt: DateTime(2026, 11, 8)),
-        _oq(
-          'q2',
-          '导数综合',
-          folderIds: const ['f1'],
-          examId: 'e1',
-          createdAt: DateTime(2026, 11, 5),
-        ),
-        _oq(
-          'q3',
-          '阅读主旨',
-          subjectId: 'english',
-          createdAt: DateTime(2026, 11, 3),
-        ),
-      ],
-      folderList: const [
-        Folder(id: 'f1', name: '试卷', subjectId: 'math'),
-        Folder(id: 'f2', name: '平时作业', subjectId: 'math'),
-        Folder(id: 'f3', name: '试卷', subjectId: 'english'),
-      ],
-      examList: [
-        Exam(
-          id: 'e1',
-          name: '高等数学期末试卷',
-          date: DateTime(2026, 11, 10),
-        ),
-      ],
-      kpList: const [
-        KnowledgePoint(
-          id: 'k1',
-          subjectId: 'math',
-          chapter: '第一章 函数与极限',
-          name: '函数极限',
-        ),
-        KnowledgePoint(
-          id: 'k2',
-          subjectId: 'math',
-          chapter: '第一章 函数与极限',
-          name: '导数概念',
-        ),
-        KnowledgePoint(
-          id: 'k3',
-          subjectId: 'english',
-          chapter: '阅读理解',
-          name: '主旨大意',
-        ),
-      ],
-      tagList: const ['易错', '常考'],
-    );
+  questions: [
+    _oq('q1', '函数极限', createdAt: DateTime(2026, 11, 8)),
+    _oq(
+      'q2',
+      '导数综合',
+      folderIds: const ['f1'],
+      examId: 'e1',
+      createdAt: DateTime(2026, 11, 5),
+    ),
+    _oq('q3', '阅读主旨', subjectId: 'english', createdAt: DateTime(2026, 11, 3)),
+  ],
+  folderList: const [
+    Folder(id: 'f1', name: '试卷', subjectId: 'math'),
+    Folder(id: 'f2', name: '平时作业', subjectId: 'math'),
+    Folder(id: 'f3', name: '试卷', subjectId: 'english'),
+  ],
+  examList: [Exam(id: 'e1', name: '高等数学期末试卷', date: DateTime(2026, 11, 10))],
+  kpList: const [
+    KnowledgePoint(
+      id: 'k1',
+      subjectId: 'math',
+      chapter: '第一章 函数与极限',
+      name: '函数极限',
+    ),
+    KnowledgePoint(
+      id: 'k2',
+      subjectId: 'math',
+      chapter: '第一章 函数与极限',
+      name: '导数概念',
+    ),
+    KnowledgePoint(
+      id: 'k3',
+      subjectId: 'english',
+      chapter: '阅读理解',
+      name: '主旨大意',
+    ),
+  ],
+  tagList: const ['易错', '常考'],
+);
 
 ProviderContainer _container(FakeOrganizeNotifierRepo repo) {
   final container = ProviderContainer.test(
@@ -274,10 +266,11 @@ void main() {
       final container = _container(repo);
       final notifier = container.read(organizeProvider.notifier);
       await notifier.refresh();
-      expect(
-        container.read(organizeProvider).queue.map((q) => q.id),
-        ['q1', 'q2', 'q3'],
-      );
+      expect(container.read(organizeProvider).queue.map((q) => q.id), [
+        'q1',
+        'q2',
+        'q3',
+      ]);
       await notifier.goTo(2);
       expect(container.read(organizeProvider).current?.id, 'q3');
       // 模拟末尾题在别处被整理掉：重读后下标钳回末尾。
@@ -290,9 +283,7 @@ void main() {
 
     test('refresh：队列已空且库里有题时读今日小结；库里无题时不读', () async {
       final repo = _threeRepo();
-      repo.questions = [
-        _oq('q1', '已整理题', isOrganized: true),
-      ];
+      repo.questions = [_oq('q1', '已整理题', isOrganized: true)];
       repo.organizedTodayValue = 3;
       repo.dueTodayValue = [
         _oq('q9', '待复习题', isOrganized: true, reviewJoined: true),
@@ -334,10 +325,11 @@ void main() {
       final container = _container(repo);
       final notifier = container.read(organizeProvider.notifier);
       await notifier.refresh();
-      expect(
-        container.read(organizeProvider).queue.map((q) => q.id),
-        ['q3', 'q1', 'q2'],
-      );
+      expect(container.read(organizeProvider).queue.map((q) => q.id), [
+        'q3',
+        'q1',
+        'q2',
+      ]);
       notifier.applyQueueSort('subjectAsc');
       final s = container.read(organizeProvider);
       expect(s.queue.map((q) => q.id), ['q1', 'q2', 'q3']);
@@ -371,10 +363,7 @@ void main() {
       await notifier.refresh();
       final before = container.read(organizeProvider).formResetKey;
       notifier.loadForm();
-      expect(
-        container.read(organizeProvider).formResetKey,
-        before + 1,
-      );
+      expect(container.read(organizeProvider).formResetKey, before + 1);
     });
   });
 
@@ -408,8 +397,7 @@ void main() {
       expect(container.read(organizeProvider).tags, ['常考']);
     });
 
-    test('addCustomType：固定名进固定项返回 true；新自定义进两处返回 false',
-        () async {
+    test('addCustomType：固定名进固定项返回 true；新自定义进两处返回 false', () async {
       final repo = _threeRepo();
       final container = _container(repo);
       final notifier = container.read(organizeProvider.notifier);
@@ -479,11 +467,7 @@ void main() {
       final notifier = container.read(organizeProvider.notifier);
       await notifier.refresh();
       notifier.toggleFolder('f1');
-      await notifier.confirmCurrent(
-        answer: '42',
-        explanation: '解析',
-        notes: '',
-      );
+      await notifier.confirmCurrent(answer: '42', explanation: '解析', notes: '');
       expect(repo.lastRecentKind, '整理');
       final saved = repo.saved.single;
       expect(saved.id, 'q1');
@@ -571,10 +555,7 @@ void main() {
       final container = _container(repo);
       final notifier = container.read(organizeProvider.notifier);
       await notifier.refresh();
-      await notifier.submitNewExam(
-        '高等数学期中试卷',
-        DateTime(2026, 11, 12),
-      );
+      await notifier.submitNewExam('高等数学期中试卷', DateTime(2026, 11, 12));
       final s = container.read(organizeProvider);
       expect(s.exams.length, 2);
       expect(s.exams.last.name, '高等数学期中试卷');
@@ -594,8 +575,7 @@ void main() {
   });
 
   group('OrganizeNotifier 队列批量操作', () {
-    test('batchConfirmQuestions：只确认已选文件夹的题，返回拦下数，不同步错因记录',
-        () async {
+    test('batchConfirmQuestions：只确认已选文件夹的题，返回拦下数，不同步错因记录', () async {
       final repo = _threeRepo();
       final container = _container(repo);
       final notifier = container.read(organizeProvider.notifier);
@@ -603,17 +583,13 @@ void main() {
       final s = container.read(organizeProvider);
       final blocked = await notifier.batchConfirmQuestions(s.queue);
       expect(blocked, 2);
-      expect(
-        repo.saved.map((q) => q.id),
-        ['q2'],
-      );
+      expect(repo.saved.map((q) => q.id), ['q2']);
       expect(repo.saved.single.isOrganized, isTrue);
       // 批量确认不同步错因记录（与单题确认不同，原代码同款）。
       expect(repo.syncCauseRecordsCalls, 0);
     });
 
-    test('batchTagQuestions：打上标签并返回已保存 id；中途失败只返回已保存子集',
-        () async {
+    test('batchTagQuestions：打上标签并返回已保存 id；中途失败只返回已保存子集', () async {
       final repo = _threeRepo();
       final container = _container(repo);
       final notifier = container.read(organizeProvider.notifier);
@@ -622,14 +598,11 @@ void main() {
       final result = await notifier.batchTagQuestions(s.queue, '需重做');
       expect(result.total, 3);
       expect(result.savedIds, {'q1', 'q2', 'q3'});
-      expect(
-        repo.saved.map((q) => q.tags),
-        [
-          ['需重做'],
-          ['需重做'],
-          ['需重做'],
-        ],
-      );
+      expect(repo.saved.map((q) => q.tags), [
+        ['需重做'],
+        ['需重做'],
+        ['需重做'],
+      ]);
 
       final repo2 = _threeRepo();
       repo2.failSaveIds.add('q2');
@@ -642,14 +615,12 @@ void main() {
       expect(r2.total, 3);
     });
 
-    test('batchAddFolders：本科已在文件夹里的计入已加入不重复写库；外科目跳过',
-        () async {
+    test('batchAddFolders：本科已在文件夹里的计入已加入不重复写库；外科目跳过', () async {
       final repo = _threeRepo();
       final container = _container(repo);
       final notifier = container.read(organizeProvider.notifier);
       await notifier.refresh();
-      final folder =
-          repo.folderList.firstWhere((f) => f.id == 'f1');
+      final folder = repo.folderList.firstWhere((f) => f.id == 'f1');
       final s = container.read(organizeProvider);
       final result = await notifier.batchAddFolders(s.queue, folder);
       expect(result, (applied: 2, skipped: 1));
@@ -663,14 +634,10 @@ void main() {
       final container = _container(repo);
       final notifier = container.read(organizeProvider.notifier);
       await notifier.refresh();
-      final folder =
-          await notifier.submitBatchFolder('错题精选', 'math', 2);
+      final folder = await notifier.submitBatchFolder('错题精选', 'math', 2);
       expect(folder, isNotNull);
       expect(folder!.subjectId, 'math');
-      expect(
-        await notifier.submitBatchFolder('试卷', 'math', 3),
-        isNull,
-      );
+      expect(await notifier.submitBatchFolder('试卷', 'math', 3), isNull);
     });
 
     test('deleteQuestion / batchDeleteQuestions：逐题删除', () async {
@@ -684,6 +651,100 @@ void main() {
       await notifier.batchDeleteQuestions(s.queue.sublist(1));
       expect(repo.deletedIds, ['q1', 'q2', 'q3']);
       expect(repo.questions, isEmpty);
+    });
+  });
+
+  group('FR-08 整理页学科排序与错题本共用拼音表', () {
+    test('学科升序按拼音表排：化学 H 在前，生物 SW 在数学 S学 前', () async {
+      final repo = FakeOrganizeNotifierRepo(
+        questions: [
+          _oq(
+            'q-math',
+            '数学题',
+            subjectId: 'math',
+            createdAt: DateTime(2026, 11, 8),
+          ),
+          _oq(
+            'q-chem',
+            '化学题',
+            subjectId: 'chem',
+            createdAt: DateTime(2026, 11, 8),
+          ),
+          _oq(
+            'q-bio',
+            '生物题',
+            subjectId: 'bio',
+            createdAt: DateTime(2026, 11, 8),
+          ),
+        ],
+        folderList: const [],
+        subjectsValue: [
+          Subject.math,
+          Subject(id: 'chem', name: '化学', color: Subject.math.color, icon: '化'),
+          Subject(id: 'bio', name: '生物', color: Subject.math.color, icon: '生'),
+        ],
+      );
+      final container = _container(repo);
+      final notifier = container.read(organizeProvider.notifier);
+      await notifier.refresh();
+      notifier.applyQueueSort('subjectAsc');
+      final s = container.read(organizeProvider);
+      // 旧实现（按 id 写死三科）会把化学、生物都排成 S，与数学同档；
+      // 新实现按拼音表：H（化学）< S（生物 SW < 数学 S学）。
+      expect(s.queue.map((q) => q.id), ['q-chem', 'q-bio', 'q-math']);
+      notifier.applyQueueSort('subjectDesc');
+      final s2 = container.read(organizeProvider);
+      expect(s2.queue.map((q) => q.id), ['q-math', 'q-bio', 'q-chem']);
+    });
+  });
+
+  group('FR-36 整理页批量删除：逐题容错计数 + 返回实际结果', () {
+    test('全部成功：返回 (ok 3, missing 0, failed 0)，三道全删', () async {
+      final repo = _threeRepo();
+      final container = _container(repo);
+      final notifier = container.read(organizeProvider.notifier);
+      await notifier.refresh();
+      final s = container.read(organizeProvider);
+      final result = await notifier.batchDeleteQuestions(s.queue);
+      expect(result.ok, 3);
+      expect(result.missing, 0);
+      expect(result.failed, 0);
+      expect(result.deletedIds, {'q1', 'q2', 'q3'});
+      expect(repo.deletedIds, ['q1', 'q2', 'q3']);
+      expect(repo.questions, isEmpty);
+    });
+
+    test('中途一道删失败：继续删其余题，返回 failed 1、已删 id 只有其余两道',
+        () async {
+      final repo = _threeRepo();
+      repo.failDeleteIds.add('q2');
+      final container = _container(repo);
+      final notifier = container.read(organizeProvider.notifier);
+      await notifier.refresh();
+      final s = container.read(organizeProvider);
+      final result = await notifier.batchDeleteQuestions(s.queue);
+      expect(result.ok, 2);
+      expect(result.missing, 0);
+      expect(result.failed, 1);
+      expect(result.deletedIds, {'q1', 'q3'});
+      // 失败的 q2 还在库里（页面按 deletedIds 同步时它会留在列表里）。
+      expect(repo.questions.map((q) => q.id), ['q2']);
+    });
+
+    test('选中题已不在库里：计 missing，不调 delete、不影响其余题', () async {
+      final repo = _threeRepo();
+      final container = _container(repo);
+      final notifier = container.read(organizeProvider.notifier);
+      await notifier.refresh();
+      final s = container.read(organizeProvider);
+      // 刷新后 q3 在别处被删（库里已无，队列快照里还有）。
+      repo.questions.removeWhere((q) => q.id == 'q3');
+      final result = await notifier.batchDeleteQuestions(s.queue);
+      expect(result.ok, 2);
+      expect(result.missing, 1);
+      expect(result.failed, 0);
+      expect(result.deletedIds, {'q1', 'q2'});
+      expect(repo.deletedIds, ['q1', 'q2']);
     });
   });
 }

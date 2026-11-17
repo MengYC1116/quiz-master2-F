@@ -81,6 +81,8 @@ class FakeDetailNotifierRepo extends QuestionRepository {
     List<CauseRecord> records = const [],
     List<({String result, DateTime reviewedAt})> history = const [],
     List<Subject>? subjectsValue,
+    // FR-09：复查间隔桩（默认 7 天）；`load()` 读它。
+    AppSettings? settingsValue,
   }) : questions = List.of(questions),
        folderList = List.of(folderList),
        examList = List.of(examList),
@@ -89,6 +91,7 @@ class FakeDetailNotifierRepo extends QuestionRepository {
        records = List.of(records),
        history = List.of(history),
        subjectsValue = subjectsValue ?? Subject.all,
+       settingsValue = settingsValue ?? AppSettings.defaults,
        super(AppDatabase.instance);
 
   List<Question> questions;
@@ -99,6 +102,10 @@ class FakeDetailNotifierRepo extends QuestionRepository {
   List<CauseRecord> records;
   List<({String result, DateTime reviewedAt})> history;
   List<Subject> subjectsValue;
+  AppSettings settingsValue;
+
+  @override
+  Future<AppSettings> settings() async => settingsValue;
 
   final List<Question> saved = [];
   final List<String> deletedIds = [];
@@ -272,9 +279,7 @@ FakeDetailNotifierRepo _repo() {
       Folder(id: 'f1', name: '试卷', subjectId: 'math', sortOrder: 0),
       Folder(id: 'f2', name: '平时作业', subjectId: 'math', sortOrder: 10),
     ],
-    examList: [
-      Exam(id: 'e1', name: '高等数学期末试卷', date: DateTime(2026, 11, 10)),
-    ],
+    examList: [Exam(id: 'e1', name: '高等数学期末试卷', date: DateTime(2026, 11, 10))],
     kpList: const [
       KnowledgePoint(
         id: 'k1',
@@ -358,9 +363,8 @@ void main() {
     img.dispose();
     final pageDir = Directory('${_testTmp.path}/imports/rework-task');
     await pageDir.create(recursive: true);
-    await File(
-      '${pageDir.path}/page.png',
-    ).writeAsBytes(png!.buffer.asUint8List());
+    await File('${pageDir.path}/page.png')
+        .writeAsBytes(png!.buffer.asUint8List());
     _pagePngRel = 'imports/rework-task/page.png';
     AppDatabase.testDataDirectory = _testTmp.path;
   });
@@ -651,10 +655,7 @@ void main() {
         isNot(contains('概念不清')),
       );
       expect(notifier.addCustomType('粗心大意'), isFalse);
-      expect(
-        container.read(detailProvider).editCustomTypes,
-        contains('粗心大意'),
-      );
+      expect(container.read(detailProvider).editCustomTypes, contains('粗心大意'));
     });
   });
 
@@ -685,10 +686,9 @@ void main() {
       final notifier = _notifier(container);
       await notifier.load();
       final pageAbs = AppDatabase.resolveDataPath(_pagePngRel)!;
-      final outcome = await notifier.applyReworkBoxes(
-        [box('q1-box', 'q1')],
-        pageAbs,
-      );
+      final outcome = await notifier.applyReworkBoxes([
+        box('q1-box', 'q1'),
+      ], pageAbs);
       expect(outcome, ReworkOutcome.success);
       expect(repo.replacedBoxes['q1']?.length, 1);
       final savedQ = repo.saved.lastWhere((q) => q.id == 'q1');
@@ -719,10 +719,9 @@ void main() {
       await notifier.load();
       repo.saved.clear();
       final pageAbs = AppDatabase.resolveDataPath(_pagePngRel)!;
-      final outcome = await notifier.applyReworkBoxes(
-        [box('q1-box', 'q1')],
-        pageAbs,
-      );
+      final outcome = await notifier.applyReworkBoxes([
+        box('q1-box', 'q1'),
+      ], pageAbs);
       expect(outcome, ReworkOutcome.saveFailed);
       expect(repo.replaceCalled, isTrue);
       expect(oldSliceFile.readAsBytesSync(), equals(oldBytes));
@@ -749,10 +748,9 @@ void main() {
       final container = _container(repo);
       final notifier = _notifier(container);
       await notifier.load();
-      final outcome = await notifier.applyReworkBoxes(
-        [box('q1-box', 'q1')],
-        corruptFile.path,
-      );
+      final outcome = await notifier.applyReworkBoxes([
+        box('q1-box', 'q1'),
+      ], corruptFile.path);
       expect(outcome, ReworkOutcome.cropFailed);
       expect(repo.replaceCalled, isFalse);
     });
@@ -793,9 +791,7 @@ void main() {
       var healed = false;
       for (var i = 0; i < 50 && !healed; i++) {
         await Future<void>.delayed(const Duration(milliseconds: 200));
-        healed = repo.saved.any(
-          (q) => q.id == 'q1' && q.sliceWidth == 492,
-        );
+        healed = repo.saved.any((q) => q.id == 'q1' && q.sliceWidth == 492);
       }
       expect(healed, isTrue);
       expect(_pngSize(sliceFile.readAsBytesSync()).width, 492);

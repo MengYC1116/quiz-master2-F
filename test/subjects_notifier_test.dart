@@ -208,8 +208,9 @@ class FakeSubjectsNotifierRepo extends QuestionRepository {
   }
 }
 
-Future<(FakeSubjectsNotifierRepo, SubjectsNotifier, ProviderContainer)>
-_setUp({bool throwOnLoad = false}) async {
+Future<(FakeSubjectsNotifierRepo, SubjectsNotifier, ProviderContainer)> _setUp({
+  bool throwOnLoad = false,
+}) async {
   final repo = FakeSubjectsNotifierRepo(throwOnLoad: throwOnLoad);
   final container = ProviderContainer.test(
     overrides: [repositoryProvider.overrideWithValue(repo)],
@@ -256,7 +257,10 @@ void main() {
       isTrue,
     );
     expect(repo.savedFolders.map((f) => f.name), ['试卷', '平时作业', '模拟卷']);
-    expect(repo.savedFolders.every((f) => f.subjectId.startsWith('subject-')), isTrue);
+    expect(
+      repo.savedFolders.every((f) => f.subjectId.startsWith('subject-')),
+      isTrue,
+    );
     final dup = await notifier.addSubject('物理');
     expect(dup.saved, isFalse);
     expect(dup.message, '已经有了这个学科');
@@ -267,10 +271,7 @@ void main() {
     addTearDown(container.dispose);
     final r = await notifier.renameSubject('math', '高等数学');
     expect(r.saved, isTrue);
-    expect(
-      container.read(subjectsProvider).subjectName('math'),
-      '高等数学',
-    );
+    expect(container.read(subjectsProvider).subjectName('math'), '高等数学');
     final dup = await notifier.renameSubject('english', '高等数学');
     expect(dup.saved, isFalse);
     expect(dup.message, '已经有了这个学科');
@@ -303,10 +304,10 @@ void main() {
       kpName: '导数定义',
     );
     expect(r.saved, isTrue);
-    expect(
-      container.read(subjectsProvider).chaptersFor('math'),
-      ['函数与极限', '导数'],
-    );
+    expect(container.read(subjectsProvider).chaptersFor('math'), [
+      '函数与极限',
+      '导数',
+    ]);
     final dup = await notifier.addChapter(
       subjectId: 'math',
       chapter: '导数',
@@ -402,5 +403,65 @@ void main() {
     expect(s.kpSubjectId, 'english');
     expect(s.chaptersFor('english'), ['词汇']);
     expect(s.subjects.length, 3);
+  });
+
+  group('FR-01 删学科后知识点树页签残留', () {
+    test('删当前页签学科：页签落到首科，空状态不再错指被删学科', () async {
+      final (_, notifier, container) = await _setUp();
+      addTearDown(container.dispose);
+      notifier.selectKpSubject('english');
+      expect(container.read(subjectsProvider).kpSubjectId, 'english');
+      await notifier.deleteSubject('english');
+      final s = container.read(subjectsProvider);
+      expect(s.kpSubjectId, 'math');
+      expect(s.subjectName(s.kpSubjectId!), '数学');
+      expect(s.subjects.map((e) => e.id), ['math', 'politics']);
+    });
+
+    test('删当前页签学科后，用残留 id 加章节/知识点被拒、不写库', () async {
+      final (repo, notifier, container) = await _setUp();
+      addTearDown(container.dispose);
+      notifier.selectKpSubject('english');
+      await notifier.deleteSubject('english');
+      expect(container.read(subjectsProvider).kpSubjectId, 'math');
+      final kpsBefore = repo.kps.length;
+      final r1 = await notifier.addChapter(
+        subjectId: 'english',
+        chapter: '新章节',
+        kpName: '新知识点',
+      );
+      expect(r1.saved, isFalse);
+      expect(r1.message, isNotNull);
+      final r2 = await notifier.addKnowledgePoint(
+        subjectId: 'english',
+        chapter: '词汇',
+        name: '新知识点',
+      );
+      expect(r2.saved, isFalse);
+      expect(r2.message, isNotNull);
+      expect(repo.kps.length, kpsBefore);
+      expect(
+        repo.kps.any((k) => k.subjectId == 'english' && k.name == '新知识点'),
+        isFalse,
+      );
+    });
+
+    test('删非页签学科：页签不动', () async {
+      final (_, notifier, container) = await _setUp();
+      addTearDown(container.dispose);
+      notifier.selectKpSubject('english');
+      await notifier.deleteSubject('politics');
+      expect(container.read(subjectsProvider).kpSubjectId, 'english');
+    });
+
+    test('load() 重读时残留 kpSubjectId 被重置为首科', () async {
+      final (repo, notifier, container) = await _setUp();
+      addTearDown(container.dispose);
+      notifier.selectKpSubject('english');
+      // 绕过 deleteSubject 直接删库行，模拟“别处删科后本页重读”。
+      repo.subjectsList.removeWhere((s) => s.id == 'english');
+      await notifier.load();
+      expect(container.read(subjectsProvider).kpSubjectId, 'math');
+    });
   });
 }

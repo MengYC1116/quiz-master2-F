@@ -131,12 +131,19 @@ class _WrongbookViewState extends ConsumerState<_WrongbookView> {
   final _newFolderCtrl = TextEditingController();
   final _renameCtrl = TextEditingController();
 
+  /// FR-15：批量加标签弹窗的控制器改字段持有（与详情页同款原因：
+  /// showDialog await 返回后立即 dispose，退出动画重建 TextField 时
+  /// 会抛 “used after being disposed”）。下次打开弹窗时先释放上一个，
+  /// 页面 dispose 时释放最后一个。
+  TextEditingController? _batchAddTagCtrl;
+
   @override
   void dispose() {
     _searchCtrl.dispose();
     _folderSearchCtrl.dispose();
     _newFolderCtrl.dispose();
     _renameCtrl.dispose();
+    _batchAddTagCtrl?.dispose();
     super.dispose();
   }
 
@@ -282,7 +289,9 @@ class _WrongbookViewState extends ConsumerState<_WrongbookView> {
   Future<void> _batchAddTag() async {
     final tags = _sr.allTags.toSet();
     final picked = <String>{};
-    final newCtrl = TextEditingController();
+    // FR-15：字段持有（见字段注释）；开新弹窗前释放上一个。
+    _batchAddTagCtrl?.dispose();
+    final newCtrl = _batchAddTagCtrl = TextEditingController();
     final ok = await showDialog<bool>(
       context: context,
       builder: (ctx) => StatefulBuilder(
@@ -326,7 +335,10 @@ class _WrongbookViewState extends ConsumerState<_WrongbookView> {
               variant: QmButtonVariant.ghost,
               onPressed: () => Navigator.of(ctx).pop(false),
             ),
-            QmButton(label: '确定', onPressed: () => Navigator.of(ctx).pop(true)),
+            QmButton(
+              label: '确定',
+              onPressed: () => Navigator.of(ctx).pop(true),
+            ),
           ],
         ),
       ),

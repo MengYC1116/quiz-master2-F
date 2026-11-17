@@ -833,5 +833,39 @@ void main() {
       expect(entries.map((e) => e.name), ['backup.json']);
       expect(entries.first.bytes, [0x7B, 0x7D]);
     });
+
+    test('FR-40 backup.json 重名：拒绝，提示“备份里有两份题目数据”', () {
+      final bytes = buildZip([
+        const ZipEntryData('backup.json', [0x7B, 0x7D]),
+        const ZipEntryData('backup.json', [0x7B, 0x7D]),
+      ]);
+      expect(
+        () => readZip(bytes),
+        throwsA(
+          isA<ZipFormatException>().having(
+            (e) => e.message,
+            'message',
+            contains('备份里有两份题目数据'),
+          ),
+        ),
+      );
+    });
+
+    test('FR-40 对照：其他条目重名仍按“重复条目”拒绝（文案不变）', () {
+      final bytes = buildZip([
+        const ZipEntryData('slices/a.png', [1]),
+        const ZipEntryData('slices/a.png', [2]),
+      ]);
+      expect(
+        () => readZip(bytes),
+        throwsA(
+          isA<ZipFormatException>().having(
+            (e) => e.message,
+            'message',
+            contains('ZIP 里有重复条目'),
+          ),
+        ),
+      );
+    });
   });
 }

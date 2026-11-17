@@ -45,9 +45,12 @@ import '../models/models.dart';
 import 'repository_provider.dart';
 
 /// 学习报告业务状态的 Provider：页面出现即读库（见 [ReportNotifier.build]）。
+/// FR-19：声明 `dependencies: [repositoryProvider]`（D-49 同款，见
+/// homeProvider 注释）。
 final reportProvider =
     NotifierProvider.autoDispose<ReportNotifier, ReportState>(
   ReportNotifier.new,
+  dependencies: [repositoryProvider],
 );
 
 /// 一组弱点（学科 × 错因，或学科 × 知识点；原页内 `_WeakGroup`，改公开

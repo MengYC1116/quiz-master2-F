@@ -155,6 +155,15 @@ class FakeWrongbookRepo extends QuestionRepository {
     questions.removeWhere((x) => x.id == question.id);
   }
 
+  /// FR-37：整批删除按“整批”语义走单题 delete（Fake 版与
+  /// Notifier 层 deleteQuestions 的整批口径一致：一次调用删多道）。
+  @override
+  Future<void> deleteQuestions(List<Question> questionsToDelete) async {
+    for (final q in questionsToDelete) {
+      await delete(q);
+    }
+  }
+
   @override
   Future<void> saveFolder(Folder folder) async {
     if (saveFolderError != null) throw saveFolderError!;
@@ -1310,6 +1319,19 @@ void main() {
       await tester.tap(find.text('恢复到错题本'));
       await tester.pumpAndSettle();
       expect(repo.archivedChanges, contains(('q5', false)));
+    });
+
+    testWidgets('FR-17：无学科的书内已归档视图标题是“已归档 · 错题本”', (tester) async {
+      final repo = threeSubjectRepo();
+      // D-50 深链路：只带错因筛选、不带学科，直达列表（subjectId 为 null）。
+      await pumpWrongbook(tester, repo: repo, filterCause: '概念不清');
+      // 带筛选时按钮带计数：“筛选（已选 1） ▾”。
+      await tester.tap(find.textContaining('筛选（已选'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('已归档'));
+      await tester.pumpAndSettle();
+      expect(find.text('已归档 · 错题本'), findsOneWidget);
+      expect(find.text(' · 错题本'), findsNothing);
     });
   });
 

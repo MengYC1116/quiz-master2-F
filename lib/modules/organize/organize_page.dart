@@ -10,6 +10,8 @@ import '../../data/database.dart';
 import '../../data/repository.dart';
 import '../../models/models.dart';
 import '../../state/organize_notifier.dart';
+import '../../state/subject_sort.dart';
+import '../../state/wrongbook_notifier.dart';
 import '../../state/repository_provider.dart';
 import '../../theme/design_tokens.dart';
 import '../../widgets/uikit.dart';
@@ -725,10 +727,7 @@ class _OrganizeViewState extends ConsumerState<_OrganizeView> {
     // QuestionSlice 的真图按固有尺寸渲染（cacheWidth 只降采样不放大，
     // 宽条切片固有宽小于容器宽）。Align 让它收成切片实际尺寸；
     // 演示题 / 失败占位是 Center 撑满容器，不受影响。
-    return Align(
-      alignment: Alignment.topLeft,
-      child: slice,
-    );
+    return Align(alignment: Alignment.topLeft, child: slice);
   }
 
   /// 修框切片：只有「整题框切片」一张卡，只存图不做 OCR。
@@ -1856,18 +1855,20 @@ class _QueuePopupState extends State<_QueuePopup> {
         list.sort((a, b) => a.createdAt.compareTo(b.createdAt));
       case 'subjectAsc':
         list.sort((a, b) {
-          // SR-P2-35：用 `organize_notifier.dart` 的共用 subjectInitial，
-          // 不再各一份。
-          final c = subjectInitial(
-            a.subjectId,
-          ).compareTo(subjectInitial(b.subjectId));
+          // FR-08：与错题本共用 `subject_sort.dart` 的拼音表版比较
+          //（SR-P2-35 的共用口径仍在，只是实现搬到了共享文件）。
+          final c = compareSubjectNames(
+            _subjectOf(a.subjectId).name,
+            _subjectOf(b.subjectId).name,
+          );
           return c != 0 ? c : b.createdAt.compareTo(a.createdAt);
         });
       case 'subjectDesc':
         list.sort((a, b) {
-          final c = subjectInitial(
-            b.subjectId,
-          ).compareTo(subjectInitial(a.subjectId));
+          final c = compareSubjectNames(
+            _subjectOf(b.subjectId).name,
+            _subjectOf(a.subjectId).name,
+          );
           return c != 0 ? c : b.createdAt.compareTo(a.createdAt);
         });
       case 'timeDesc':
@@ -1903,8 +1904,9 @@ class _QueuePopupState extends State<_QueuePopup> {
   /// 部分选（null，显示短横）。
   bool? get _selectAllValue {
     if (_filtered.isEmpty) return false;
-    final selectedCount =
-        _filtered.where((q) => _selected.contains(q.id)).length;
+    final selectedCount = _filtered
+        .where((q) => _selected.contains(q.id))
+        .length;
     if (selectedCount == 0) return false;
     if (selectedCount == _filtered.length) return true;
     return null;
@@ -2143,15 +2145,13 @@ class _QueuePopupState extends State<_QueuePopup> {
                 overflow: TextOverflow.ellipsis,
                 style: TextStyle(
                   fontSize: 13.5,
-                  fontWeight:
-                      selected ? FontWeight.w700 : FontWeight.normal,
+                  fontWeight: selected ? FontWeight.w700 : FontWeight.normal,
                   color: selected ? palette.accent : null,
                   height: 1.2,
                 ),
               ),
             ),
-            if (selected)
-              Text('✓', style: TextStyle(color: palette.accent)),
+            if (selected) Text('✓', style: TextStyle(color: palette.accent)),
           ],
         ),
       ),
@@ -2184,10 +2184,7 @@ class _QueuePopupState extends State<_QueuePopup> {
   String? _confirmDetail;
   Completer<bool>? _confirmCompleter;
 
-  Future<bool> _askConfirm({
-    required String title,
-    required String detail,
-  }) {
+  Future<bool> _askConfirm({required String title, required String detail}) {
     final completer = Completer<bool>();
     setState(() {
       _confirmTitle = title;
@@ -2209,7 +2206,7 @@ class _QueuePopupState extends State<_QueuePopup> {
 
   Future<void> _askDeleteOne(Question q) async {
     final ok = await _askConfirm(
-      title: '确认删除这道题？',
+      title: '删了就没了，确定吗？',
       detail:
           '「${_subjectOf(q.subjectId).name} · ${sliceKindLabel(q.sliceKind)}｜${q.title}」删了就没了，不可恢复。',
     );
@@ -2258,9 +2255,7 @@ class _QueuePopupState extends State<_QueuePopup> {
       });
     }
     if (savedIds.length < selected.length) {
-      widget.onNotify(
-        '部分保存失败：已给 ${savedIds.length} 道题打上 #$tag，其余请重试',
-      );
+      widget.onNotify('部分保存失败：已给 ${savedIds.length} 道题打上 #$tag，其余请重试');
       return;
     }
     widget.onNotify('已给 ${selected.length} 道题打上 #$tag');
@@ -2273,8 +2268,10 @@ class _QueuePopupState extends State<_QueuePopup> {
       return;
     }
     final folder = _folders.firstWhere((f) => f.id == folderId);
-    final result =
-        await widget.notifier.batchAddFolders(_selectedQuestions, folder);
+    final result = await widget.notifier.batchAddFolders(
+      _selectedQuestions,
+      folder,
+    );
     if (!mounted) return;
     setState(() {
       _questions = _questions.map((q) {
@@ -2319,8 +2316,9 @@ class _QueuePopupState extends State<_QueuePopup> {
   /// 批量确认：只确认已选文件夹的题，缺文件夹的题拦下提示；
   /// 确认后关闭弹出层，父页刷新并按当前排序进下一道。
   Future<void> _batchConfirm() async {
-    final blocked =
-        await widget.notifier.batchConfirmQuestions(_selectedQuestions);
+    final blocked = await widget.notifier.batchConfirmQuestions(
+      _selectedQuestions,
+    );
     if (blocked > 0) {
       widget.onNotify('有 $blocked 道题没选文件夹，先补上');
     }
@@ -2329,12 +2327,17 @@ class _QueuePopupState extends State<_QueuePopup> {
 
   Future<void> _batchDelete() async {
     final selected = _selectedQuestions;
-    await widget.notifier.batchDeleteQuestions(selected);
+    // FR-36：按 Notifier 返回的实际结果同步——只去掉真删掉的题，
+    // 失败/已不在库里的题留在列表里，并把汇总提示给用户。
+    final result = await widget.notifier.batchDeleteQuestions(selected);
     if (!mounted) return;
     setState(() {
-      _questions.removeWhere((q) => _selected.contains(q.id));
+      _questions.removeWhere((q) => result.deletedIds.contains(q.id));
       _selected.clear();
     });
+    widget.onNotify(
+      batchResultMessage('删除', result.ok, result.missing, result.failed),
+    );
   }
 
   void _clearSelection() {
@@ -2528,9 +2531,7 @@ class _QueuePopupState extends State<_QueuePopup> {
                                   : (_) => _toggleSelectAll(),
                             ),
                             GestureDetector(
-                              onTap: filtered.isEmpty
-                                  ? null
-                                  : _toggleSelectAll,
+                              onTap: filtered.isEmpty ? null : _toggleSelectAll,
                               child: const Text(
                                 '全选',
                                 style: TextStyle(

@@ -263,11 +263,18 @@ class _SubjectsViewState extends ConsumerState<_SubjectsView> {
   Future<void> _addKnowledgePoint(String chapter) async {
     final name = _newKpController.text.trim();
     if (name.isEmpty) return;
-    await _n.addKnowledgePoint(
+    // FR-01：学科已被删时 Notifier 会拦下并给提示；这里收到提示就
+    // 只弹提示，不清输入框、不收起新增行（旧写法不看返回值，会
+    // 装作加成功了）。
+    final r = await _n.addKnowledgePoint(
       subjectId: _sr.kpSubjectId ?? 'math',
       chapter: chapter,
       name: name,
     );
+    if (r.message != null) {
+      _snack(r.message!);
+      return;
+    }
     _newKpController.clear();
     setState(() => _kpAddChapter = null);
   }
@@ -579,8 +586,7 @@ class _SubjectsViewState extends ConsumerState<_SubjectsView> {
                 ),
               ),
               SizedBox(width: 8 * scale),
-              Text(s.name,
-                  style: const TextStyle(fontWeight: FontWeight.w700)),
+              Text(s.name, style: const TextStyle(fontWeight: FontWeight.w700)),
               SizedBox(width: 8 * scale),
               Expanded(
                 child: Text(
@@ -725,8 +731,7 @@ class _SubjectsViewState extends ConsumerState<_SubjectsView> {
             label: '＋ 添加章节',
             variant: QmButtonVariant.secondary,
             size: QmButtonSize.small,
-            onPressed: () =>
-                setState(() => _addingChapter = !_addingChapter),
+            onPressed: () => setState(() => _addingChapter = !_addingChapter),
           ),
         ),
         if (_addingChapter) ...[
@@ -942,8 +947,7 @@ class _SubjectsViewState extends ConsumerState<_SubjectsView> {
                     label: '＋ 添加知识点',
                     variant: QmButtonVariant.secondary,
                     size: QmButtonSize.small,
-                    onPressed: () =>
-                        setState(() => _kpAddChapter = chapter),
+                    onPressed: () => setState(() => _kpAddChapter = chapter),
                   ),
           ),
         ],
@@ -979,8 +983,7 @@ class _SubjectsViewState extends ConsumerState<_SubjectsView> {
             spacing: 8 * scale,
             runSpacing: 8 * scale,
             children: [
-              for (final t in _s.tags)
-                QmChip(label: '#$t', displayOnly: true),
+              for (final t in _s.tags) QmChip(label: '#$t', displayOnly: true),
             ],
           ),
         SizedBox(height: 4 * scale),
@@ -1028,8 +1031,8 @@ class _SubjectsViewState extends ConsumerState<_SubjectsView> {
     final filtered = query.isEmpty
         ? _s.exams
         : _s.exams
-            .where((e) => e.name.toLowerCase().contains(query.toLowerCase()))
-            .toList();
+              .where((e) => e.name.toLowerCase().contains(query.toLowerCase()))
+              .toList();
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [

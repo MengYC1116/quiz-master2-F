@@ -26,9 +26,13 @@ import '../models/models.dart';
 import 'repository_provider.dart';
 
 /// 学科管理页的状态 Provider（ARCH-PLAN-A 第 2 阶段）。
+/// FR-19：声明 `dependencies: [repositoryProvider]`（D-49 同款，见
+/// homeProvider 注释）。
 final subjectsProvider =
     NotifierProvider.autoDispose<SubjectsNotifier, SubjectsState>(
-        SubjectsNotifier.new);
+      SubjectsNotifier.new,
+      dependencies: [repositoryProvider],
+    );
 
 /// 学科管理页的全部业务数据（不含页面本地交互状态）。
 class SubjectsState {
@@ -102,10 +106,8 @@ class SubjectsState {
     return chapters;
   }
 
-  String subjectName(String id) => subjects
-      .where((s) => s.id == id)
-      .map((s) => s.name)
-      .firstOrNull ?? '数学';
+  String subjectName(String id) =>
+      subjects.where((s) => s.id == id).map((s) => s.name).firstOrNull ?? '数学';
 }
 
 /// 新学科的候选色（与 Subject.all 的 R1 新值同步，见原页面注释）。
@@ -155,8 +157,9 @@ class SubjectsNotifier extends Notifier<SubjectsState> {
   /// 首读与每次写库后重读（与原来页面的 `_load` 同口径）：
   /// 学科、全部题（含已归档，计题数用）、知识点、标签、试卷；
   /// 读失败只置 `loadError`，不一直转圈。
-  /// `kpSubjectId` 只在还没定时取首科（无科时回落 'math'），
-  /// 已定时不随重读改变。
+  /// `kpSubjectId` 只在还没定或已指向不存在的学科时取首科
+  /// （无科时回落 'math'），已定且学科仍在时不随重读改变
+  /// （FR-01：删掉当前页签学科后，残留 id 会把新知识点写成孤儿）。
   Future<void> load() async {
     // D-42：build() 的 microtask 首查可能在页面已离开、Provider 已销毁后
     // 才跑——先判 _disposed 再碰 ref；repo 入口处捕获一次，之后不再 ref.read。
@@ -181,6 +184,11 @@ class SubjectsNotifier extends Notifier<SubjectsState> {
       final tags = await repo.tags();
       final exams = await repo.exams();
       if (_disposed) return;
+      // FR-01：kpSubjectId 指向的学科可能已被删（deleteSubject 后
+      // 重读、或别处删科后本页重读），残留 id 再写知识点就是孤儿
+      // 数据；不在 subjects 里时重置为首科（无科回落 'math'）。
+      final kpId = state.kpSubjectId;
+      final kpValid = kpId != null && subjects.any((s) => s.id == kpId);
       state = state.copyWith(
         subjects: subjects,
         questionCounts: counts,
@@ -189,8 +197,9 @@ class SubjectsNotifier extends Notifier<SubjectsState> {
         kps: kps,
         tags: tags,
         exams: exams,
-        kpSubjectId: state.kpSubjectId ??
-            (subjects.isNotEmpty ? subjects.first.id : 'math'),
+        kpSubjectId: kpValid
+            ? kpId
+            : (subjects.isNotEmpty ? subjects.first.id : 'math'),
         loading: false,
         loadError: false,
       );
@@ -312,6 +321,15 @@ class SubjectsNotifier extends Notifier<SubjectsState> {
 
   Future<void> deleteSubject(String id) async {
     await _repo.deleteSubject(id);
+    // FR-01：删的正是知识点树当前页签的学科时，先把页签切到剩余
+    // 首科（load() 里还会再校验一次，这里是 load 失败时的兜底，
+    // 避免页签继续指着已删学科）。
+    if (state.kpSubjectId == id) {
+      final remaining = state.subjects.where((s) => s.id != id).toList();
+      state = state.copyWith(
+        kpSubjectId: remaining.isNotEmpty ? remaining.first.id : 'math',
+      );
+    }
     await load();
   }
 
@@ -335,6 +353,10 @@ class SubjectsNotifier extends Notifier<SubjectsState> {
     required String chapter,
     required String kpName,
   }) async {
+    // FR-01：学科不存在时不写库（残留 kpSubjectId 的孤儿写入口）。
+    if (!state.subjects.any((s) => s.id == subjectId)) {
+      return (saved: false, message: '这个学科已经没有了，请换一个学科再加');
+    }
     if (state.chaptersFor(subjectId).contains(chapter)) {
       return (saved: false, message: '已经有了这个章节');
     }
@@ -356,6 +378,10 @@ class SubjectsNotifier extends Notifier<SubjectsState> {
     required String chapter,
     required String name,
   }) async {
+    // FR-01：学科不存在时不写库（残留 kpSubjectId 的孤儿写入口）。
+    if (!state.subjects.any((s) => s.id == subjectId)) {
+      return (saved: false, message: '这个学科已经没有了，请换一个学科再加');
+    }
     await _repo.addKnowledgePoint(
       KnowledgePoint(
         id: 'kp-${DateTime.now().millisecondsSinceEpoch}',

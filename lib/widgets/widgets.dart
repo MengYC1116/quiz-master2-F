@@ -20,6 +20,21 @@ String sliceKindLabel(String kind) => switch (kind) {
   _ => '材料题',
 };
 
+/// FR-05：切片 Image 的 key——文件路径 + 写盘时间 + 大小。
+/// 切片文件被原地重写（重框确认 / 自愈）后，Image 的 provider
+/// （同路径 + 同 cacheWidth）与旧图相等，`Image.didUpdateWidget`
+/// 不重解码——只清缓存也救不了正在显示的这张图。key 里带写盘时间，
+/// 文件一换就强制重建 Image 状态、重新解码（缓存已由
+/// evictCachedFileImage 清掉）。stat 失败时回落到纯路径。
+String _sliceImageKey(String sliceAbs) {
+  try {
+    final stat = File(sliceAbs).statSync();
+    return '$sliceAbs|${stat.modified.millisecondsSinceEpoch}|${stat.size}';
+  } catch (_) {
+    return sliceAbs;
+  }
+}
+
 /// 整题图切片：白色底、1px 细边框、10px 圆角、限高 160px、按比例缩放不裁切、
 /// 左右居中不偏移。图片就是卡片（外层无背景），点切片进题目详情。
 /// 加载失败时显示学科图标 + 题目类型文字兜底。
@@ -175,6 +190,9 @@ class QuestionSlice extends StatelessWidget {
         borderRadius: BorderRadius.circular(10),
         child: Image.file(
           File(sliceAbs),
+          // FR-05：key 带写盘时间 + 大小，文件被重写后强制重建 Image
+          // 状态、重新解码（provider 相等时 didUpdateWidget 不重解码）。
+          key: ValueKey(_sliceImageKey(sliceAbs)),
           fit: BoxFit.contain,
           // SR-P2-74：cacheWidth 按显示尺寸 × devicePixelRatio 解码——
           // 旧值只有逻辑尺寸的 2 倍，高分屏上文字偏糊；封顶 2048 防爆内存。
@@ -400,6 +418,9 @@ class CompactSliceThumb extends StatelessWidget {
             borderRadius: BorderRadius.circular(8),
             child: Image.file(
               sliceFile,
+              // FR-05：同 QuestionSlice，key 带写盘时间 + 大小，重框/
+              // 自愈后强制重建 Image 状态、重新解码。
+              key: ValueKey(_sliceImageKey(sliceAbs!)),
               fit: BoxFit.cover,
               // SR-P2-74：同 QuestionSlice，cacheWidth 乘 devicePixelRatio
               //（64px 逻辑宽 × 2 倍基数 × dpr），封顶 384 防爆内存。
@@ -409,8 +430,7 @@ class CompactSliceThumb extends StatelessWidget {
               ),
               // SR-P1-15：文件存在但解码失败（如损坏 / 非图片内容）
               // 时走与 failed 分支同一口径的失败占位，不留空白框。
-              errorBuilder: (context, error, stackTrace) =>
-                  failedPlaceholder,
+              errorBuilder: (context, error, stackTrace) => failedPlaceholder,
             ),
           )
         : Column(
@@ -563,18 +583,12 @@ Future<void> showQuestionZoomDialog(
 }) {
   return showDialog<void>(
     context: context,
-    builder: (ctx) => _ZoomDialog(
-      question: question,
-      returnLabel: returnLabel,
-    ),
+    builder: (ctx) => _ZoomDialog(question: question, returnLabel: returnLabel),
   );
 }
 
 class _ZoomDialog extends StatefulWidget {
-  const _ZoomDialog({
-    required this.question,
-    required this.returnLabel,
-  });
+  const _ZoomDialog({required this.question, required this.returnLabel});
 
   final Question question;
   final String returnLabel;

@@ -20,11 +20,17 @@ extension _WrongbookListBuild on _WrongbookViewState {
         ? null
         : _s.folders.firstWhere(
             (f) => f.id == _s.folderId!,
-            orElse: () =>
-                Folder(id: _s.folderId!, name: '', subjectId: _s.subjectId ?? ''),
+            orElse: () => Folder(
+              id: _s.folderId!,
+              name: '',
+              subjectId: _s.subjectId ?? '',
+            ),
           );
     final title = _s.inBookArchived
-        ? '${subject?.name ?? ''} · 错题本'
+        // FR-17：无学科时不留悬空的“ · ”，与下面分支同款处理。
+        ? subject != null
+              ? '${subject.name} · 错题本'
+              : '已归档 · 错题本'
         : folder != null && folder.name.isNotEmpty
         ? subject != null
               ? '${subject.name} · ${folder.name}'
@@ -98,10 +104,7 @@ extension _WrongbookListBuild on _WrongbookViewState {
     final scale = qmScaleOf(context);
     final palette = DesignTokens.of(Theme.of(context).brightness);
     return Container(
-      padding: EdgeInsets.symmetric(
-        horizontal: 8 * scale,
-        vertical: 4 * scale,
-      ),
+      padding: EdgeInsets.symmetric(horizontal: 8 * scale, vertical: 4 * scale),
       decoration: BoxDecoration(
         color: palette.surface,
         border: Border.all(color: palette.line),
@@ -140,8 +143,7 @@ extension _WrongbookListBuild on _WrongbookViewState {
         title: '这一本里还没有归档的题',
         desc: '归档的题会放在这里，随时能恢复回错题本。',
         action: '返回题目列表',
-        onAction: () =>
-            _n.update((st) => st.copyWith(inBookArchived: false)),
+        onAction: () => _n.update((st) => st.copyWith(inBookArchived: false)),
         secondaryAction: null,
         onSecondaryAction: null,
       );
@@ -160,8 +162,8 @@ extension _WrongbookListBuild on _WrongbookViewState {
             )
           : (label: '返回书架', go: _openShelf);
       // D-32：双入口齐全时用“去收集 / 去整理”替代返回按钮。
-      final collectGo = widget.onGoCollect != null &&
-          widget.onGoOrganize != null
+      final collectGo =
+          widget.onGoCollect != null && widget.onGoOrganize != null
           ? (
               action: '去收集',
               onAction: widget.onGoCollect!,
@@ -267,9 +269,8 @@ extension _WrongbookListBuild on _WrongbookViewState {
                 ? '筛选（已选 $filterCount）${_s.filterOpen ? ' ▴' : ' ▾'}'
                 : '筛选${_s.filterOpen ? ' ▴' : ' ▾'}',
             selected: _s.filterOpen,
-            onTap: () => _n.update(
-              (st) => st.copyWith(filterOpen: !st.filterOpen),
-            ),
+            onTap: () =>
+                _n.update((st) => st.copyWith(filterOpen: !st.filterOpen)),
           ),
           QmChip(label: '重置', onTap: _resetFilters),
           SizedBox(
@@ -340,8 +341,8 @@ extension _WrongbookListBuild on _WrongbookViewState {
     // _load 之前 / 之外的重建。
     final effectiveErrorType =
         _s.filterErrorType != null && errorTypes.contains(_s.filterErrorType)
-            ? _s.filterErrorType
-            : null;
+        ? _s.filterErrorType
+        : null;
     Widget cell(String label, Widget control) {
       return Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -626,9 +627,8 @@ extension _WrongbookListBuild on _WrongbookViewState {
             label: '← 返回题目列表',
             variant: QmButtonVariant.plain,
             size: QmButtonSize.small,
-            onPressed: () => _n.update(
-              (st) => st.copyWith(inBookArchived: false, page: 0),
-            ),
+            onPressed: () =>
+                _n.update((st) => st.copyWith(inBookArchived: false, page: 0)),
           ),
         ],
       ),
@@ -706,7 +706,10 @@ extension _WrongbookListBuild on _WrongbookViewState {
                 value: batchFolderId,
                 items: [
                   for (final f in options)
-                    DropdownMenuItem(value: f.id, child: Text(_s.folderLabel(f))),
+                    DropdownMenuItem(
+                      value: f.id,
+                      child: Text(_s.folderLabel(f)),
+                    ),
                 ],
                 onChanged: (v) {
                   if (v != null) {
@@ -776,9 +779,8 @@ extension _WrongbookListBuild on _WrongbookViewState {
             variant: QmButtonVariant.plain,
             size: QmButtonSize.small,
             onPressed: hasSelection
-                ? () => _n.update(
-                    (st) => st.copyWith(selected: const <String>{}),
-                  )
+                ? () =>
+                      _n.update((st) => st.copyWith(selected: const <String>{}))
                 : null,
           ),
           QmButton(
@@ -786,10 +788,7 @@ extension _WrongbookListBuild on _WrongbookViewState {
             variant: QmButtonVariant.plain,
             size: QmButtonSize.small,
             onPressed: () => _n.update(
-              (st) => st.copyWith(
-                batchMode: false,
-                selected: const <String>{},
-              ),
+              (st) => st.copyWith(batchMode: false, selected: const <String>{}),
             ),
           ),
         ],
@@ -822,9 +821,7 @@ extension _WrongbookListBuild on _WrongbookViewState {
             decoration: BoxDecoration(
               color: palette.surface,
               border: Border.all(color: palette.line),
-              borderRadius: BorderRadius.circular(
-                DesignTokens.radius * scale,
-              ),
+              borderRadius: BorderRadius.circular(DesignTokens.radius * scale),
               boxShadow: palette.shadow,
             ),
             child: cards[i],

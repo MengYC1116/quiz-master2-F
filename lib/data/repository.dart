@@ -55,8 +55,8 @@ class QuestionRepository {
   Future<Question?> questionById(String id) => _db.questionById(id);
 
   Future<List<({String result, DateTime reviewedAt})>> reviewHistory(
-          String questionId) =>
-      _db.reviewHistory(questionId);
+    String questionId,
+  ) => _db.reviewHistory(questionId);
 
   // ---------- 错因复习模型 ----------
 
@@ -227,8 +227,9 @@ class QuestionRepository {
   /// `Subject.all` 初始化，新学科的键缺失，错题本封面三数会显示 0）。
   /// 口径本身不变，只改键的来源。记录走仓库方法 `causeRecords()`
   ///（与 `_db.allCauseRecords()` 同义），便于单测覆盖。
-  Future<Map<String, (int toReview, int toRecheck, int solved)>>
-      subjectCounts({bool includeArchived = false}) async {
+  Future<Map<String, (int toReview, int toRecheck, int solved)>> subjectCounts({
+    bool includeArchived = false,
+  }) async {
     final questions = await all(includeArchived: includeArchived);
     final records = await causeRecords();
     final byQ = <String, List<CauseRecord>>{};
@@ -339,9 +340,10 @@ class QuestionRepository {
 
   Future<ReviewSessionState?> reviewState() => _db.loadReviewState();
 
-  Future<void> saveReviewState(
-          {required List<ReviewQueueItem> queue, required int position}) =>
-      _db.saveReviewState(queue: queue, position: position);
+  Future<void> saveReviewState({
+    required List<ReviewQueueItem> queue,
+    required int position,
+  }) => _db.saveReviewState(queue: queue, position: position);
 
   Future<void> clearReviewState() => _db.clearReviewState();
 
@@ -362,8 +364,7 @@ class QuestionRepository {
     final map = <String, int>{};
     for (final s in subjects) {
       map[s.id] = list
-          .where((q) =>
-              q.subjectId == s.id && !q.isOrganized && !q.isArchived)
+          .where((q) => q.subjectId == s.id && !q.isOrganized && !q.isArchived)
           .length;
     }
     return map;
@@ -372,11 +373,11 @@ class QuestionRepository {
   Future<({String kind, String subjectId, String title})?> recentTask() =>
       _db.recentTask();
 
-  Future<void> saveRecentTask(
-          {required String kind,
-          required String subjectId,
-          required String title}) =>
-      _db.saveRecentTask(kind: kind, subjectId: subjectId, title: title);
+  Future<void> saveRecentTask({
+    required String kind,
+    required String subjectId,
+    required String title,
+  }) => _db.saveRecentTask(kind: kind, subjectId: subjectId, title: title);
 
   Future<void> archive(Question q, {bool archived = true}) async =>
       _db.upsertQuestion(q.copyWith(isArchived: archived));
@@ -384,6 +385,11 @@ class QuestionRepository {
   Future<void> save(Question q) async => _db.upsertQuestion(q);
 
   Future<void> delete(Question q) async => _db.deleteQuestion(q.id);
+
+  /// FR-37：批量删题：整批一个事务（数据层 `deleteQuestionsBatch`），
+  /// 中途失败整批回滚；调用方（错题本批量删除）按整体成功 / 失败报数。
+  Future<void> deleteQuestions(List<Question> questions) async =>
+      _db.deleteQuestionsBatch(questions.map((q) => q.id).toList());
 
   // ---------- 学科 / 文件夹 / 标签 / 试卷 / 知识点 / 设置 ----------
 
@@ -404,11 +410,7 @@ class QuestionRepository {
     String subjectId,
     String name, {
     String? excludeId,
-  }) => _db.folderNameExistsInSubject(
-    subjectId,
-    name,
-    excludeId: excludeId,
-  );
+  }) => _db.folderNameExistsInSubject(subjectId, name, excludeId: excludeId);
 
   Future<int> deleteFolder(Folder f) => _db.deleteFolder(f);
 
@@ -441,27 +443,16 @@ class QuestionRepository {
   }
 
   /// 新增或改名/改日期：同 id 覆盖（原地更新，顺序由 [examEvents] 的
-  /// 日期排序定），新 id 追加。
-  Future<void> saveExamEvent(ExamEvent e) async {
-    final list = await _db.loadExamEvents();
-    final i = list.indexWhere((x) => x.id == e.id);
-    if (i >= 0) {
-      list[i] = e;
-    } else {
-      list.add(e);
-    }
-    await _db.saveExamEvents(list);
-  }
+  /// 日期排序定），新 id 追加。FR-38/FR-39：走原始 JSON 行改动 +
+  /// 同一事务（见 `db_settings.dart`），并发写不丢改动、坏行不丢失。
+  Future<void> saveExamEvent(ExamEvent e) async => _db.saveExamEvent(e);
 
-  /// 删除一场考试（只删事件本身，不动任何题目/试卷）。
-  Future<void> deleteExamEvent(String id) async {
-    final list = await _db.loadExamEvents();
-    list.removeWhere((x) => x.id == id);
-    await _db.saveExamEvents(list);
-  }
+  /// 删除一场考试（只删事件本身，不动任何题目/试卷）。FR-38/FR-39：
+  /// 与 [saveExamEvent] 同款原子入口，原始 JSON 里的其余行原样保留。
+  Future<void> deleteExamEvent(String id) async =>
+      _db.deleteExamEvent(id);
 
-  Future<List<KnowledgePoint>> knowledgePoints() =>
-      _db.allKnowledgePoints();
+  Future<List<KnowledgePoint>> knowledgePoints() => _db.allKnowledgePoints();
 
   Future<void> addKnowledgePoint(KnowledgePoint kp) =>
       _db.insertKnowledgePoint(kp);
@@ -469,15 +460,16 @@ class QuestionRepository {
   Future<void> renameKnowledgePoint(String id, String newName) =>
       _db.renameKnowledgePoint(id, newName);
 
-  Future<void> deleteKnowledgePoint(String id) =>
-      _db.deleteKnowledgePoint(id);
+  Future<void> deleteKnowledgePoint(String id) => _db.deleteKnowledgePoint(id);
 
   /// 章节改名 / 删除章节（R10 学科管理知识点树：章节行也有改名/删除，
   /// 与 HTML `viewSubjects` 一致）。章节只随知识点存在，加章节须同时
   /// 给第一个知识点——空章节没有可存的行（不改 Schema）。
   Future<void> renameChapter(
-          String subjectId, String oldChapter, String newChapter) =>
-      _db.renameChapter(subjectId, oldChapter, newChapter);
+    String subjectId,
+    String oldChapter,
+    String newChapter,
+  ) => _db.renameChapter(subjectId, oldChapter, newChapter);
 
   Future<void> deleteChapter(String subjectId, String chapter) =>
       _db.deleteChapter(subjectId, chapter);
@@ -512,17 +504,17 @@ class QuestionRepository {
     required String taskId,
     required Map<int, List<QuestionBox>> boxesByPage,
     required Map<int, int> rotations,
-  }) =>
-      _db.saveDraftBoxes(
-        taskId: taskId,
-        boxesByPage: boxesByPage,
-        rotations: rotations,
-      );
+  }) => _db.saveDraftBoxes(
+    taskId: taskId,
+    boxesByPage: boxesByPage,
+    rotations: rotations,
+  );
 
   /// 详情页重框：只替换这一题的框（同页其他题不动）。
   Future<void> replaceQuestionBoxes(
-          String questionId, List<QuestionBox> boxes) =>
-      _db.replaceQuestionBoxes(questionId, boxes);
+    String questionId,
+    List<QuestionBox> boxes,
+  ) => _db.replaceQuestionBoxes(questionId, boxes);
 
   /// B3-P01 详情页重框：换框 + 保存切片一个事务（框换了、切片
   /// 一起换；任一步失败一起回滚）。切片文件由调用方在调用前写盘。
@@ -532,14 +524,13 @@ class QuestionRepository {
     required String slicePath,
     required int sliceWidth,
     required int sliceHeight,
-  }) =>
-      _db.replaceQuestionBoxesAndSlice(
-        questionId,
-        boxes,
-        slicePath: slicePath,
-        sliceWidth: sliceWidth,
-        sliceHeight: sliceHeight,
-      );
+  }) => _db.replaceQuestionBoxesAndSlice(
+    questionId,
+    boxes,
+    slicePath: slicePath,
+    sliceWidth: sliceWidth,
+    sliceHeight: sliceHeight,
+  );
 
   /// 确认拆题四步同事务（切片须由调用方先写盘）。
   /// SR-P1-2：有未框页时把保留任务 + 未框页草稿一起传进去，
@@ -551,15 +542,14 @@ class QuestionRepository {
     required Map<String, List<QuestionBox>> boxesByQuestionId,
     CollectTask? retainedTask,
     Map<int, List<QuestionBox>> retainedBoxesByPage = const {},
-  }) =>
-      _db.confirmSplit(
-        originalTask: originalTask,
-        questions: questions,
-        splitTasks: splitTasks,
-        boxesByQuestionId: boxesByQuestionId,
-        retainedTask: retainedTask,
-        retainedBoxesByPage: retainedBoxesByPage,
-      );
+  }) => _db.confirmSplit(
+    originalTask: originalTask,
+    questions: questions,
+    splitTasks: splitTasks,
+    boxesByQuestionId: boxesByQuestionId,
+    retainedTask: retainedTask,
+    retainedBoxesByPage: retainedBoxesByPage,
+  );
 
   Future<String> exportBackupJson() => _db.exportBackupJson();
 
@@ -571,19 +561,17 @@ class QuestionRepository {
   Future<List<int>> exportBackupZip() => _db.exportBackupZip();
 
   /// §2.3/P3：zip 备份恢复（JSON + 文件一起恢复）。
-  Future<void> importBackupZip(List<int> bytes) =>
-      _db.importBackupZip(bytes);
-
-  /// §2.3/P3：zip 备份恢复（按文件路径读）。
-  Future<void> importBackupZipFile(String path) =>
-      _db.importBackupZipFile(path);
+  /// GPT-P1：恢复只接受已读到的字节，不再提供按路径重读的入口——
+  /// 校验过的字节与导入的字节必须是同一份。
+  Future<void> importBackupZip(List<int> bytes) => _db.importBackupZip(bytes);
 
   /// §4.5/P3：孤儿扫描（imports/ + slices/ 里无引用的文件）。
   Future<OrphanScan> scanOrphanFiles() => _db.scanOrphans();
 
-  /// §4.5/P3：孤儿清理（只删传入的无引用文件）。
-  Future<({int deletedCount, int freedBytes})> deleteOrphanFiles(
-          List<String> relativePaths) =>
+  /// §4.5/P3：孤儿清理（只删传入的无引用文件；删除前重算引用，
+  /// 仍被引用的跳过并计入返回，FR-06(a)）。
+  Future<({int deletedCount, int freedBytes, int skippedReferencedCount})>
+  deleteOrphanFiles(List<String> relativePaths) =>
       _db.cleanOrphans(relativePaths);
 
   /// §4.5/P3：空间占用分项（设置页“空间占用”显示用）。
@@ -597,7 +585,7 @@ class QuestionRepository {
     final questions = await all(includeArchived: includeArchived);
     final joined = {
       for (final q in questions)
-        if (q.reviewJoined && q.isOrganized) q.id
+        if (q.reviewJoined && q.isOrganized) q.id,
     };
     final records = await causeRecords();
     return records
@@ -615,8 +603,7 @@ class QuestionRepository {
   /// 待定3：首页备份失败横幅的标志（settings 表 key，见 database.dart）。
   Future<bool> backupFailed() => _db.loadBackupFailed();
 
-  Future<void> setBackupFailed(bool failed) =>
-      _db.saveBackupFailed(failed);
+  Future<void> setBackupFailed(bool failed) => _db.saveBackupFailed(failed);
 
   /// B11-10：今天已整理的题数（整理工作台空状态“今日小结”用；口径见
   /// db_settings.dart 的 organizedToday*：当天内经整理确认由未整理
@@ -628,14 +615,17 @@ class QuestionRepository {
   /// 目标已有库时先问用户，`overwrite` 按用户选择传（覆盖 / 保留 /
   /// 取消；文件目录沿用同一选择）。`onProgress` / `isCancelled`
   /// 见 [AppDatabase.migrateDataFiles]（大目录复制进度 / 取消）。
-  Future<DbMigrationOutcome> migrateToDirectory(String dir,
-          {bool overwrite = false,
-          void Function(double progress)? onProgress,
-          bool Function()? isCancelled}) =>
-      _db.migrateToDirectory(dir,
-          overwrite: overwrite,
-          onProgress: onProgress,
-          isCancelled: isCancelled);
+  Future<DbMigrationOutcome> migrateToDirectory(
+    String dir, {
+    bool overwrite = false,
+    void Function(double progress)? onProgress,
+    bool Function()? isCancelled,
+  }) => _db.migrateToDirectory(
+    dir,
+    overwrite: overwrite,
+    onProgress: onProgress,
+    isCancelled: isCancelled,
+  );
 
   Future<void> setCustomDataDirectory(String dir) =>
       _db.setCustomDataDirectory(dir);

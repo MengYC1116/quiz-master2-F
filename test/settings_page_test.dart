@@ -59,12 +59,15 @@ class FakeSettingsRepo extends QuestionRepository {
   Future<OrphanScan> scanOrphanFiles() async => OrphanScan(orphanFiles);
 
   @override
-  Future<({int deletedCount, int freedBytes})> deleteOrphanFiles(
-    List<String> relativePaths,
-  ) async {
+  Future<({int deletedCount, int freedBytes, int skippedReferencedCount})>
+  deleteOrphanFiles(List<String> relativePaths) async {
     cleanedPaths = relativePaths;
     final freed = orphanFiles.fold(0, (sum, f) => sum + f.bytes);
-    return (deletedCount: relativePaths.length, freedBytes: freed);
+    return (
+      deletedCount: relativePaths.length,
+      freedBytes: freed,
+      skippedReferencedCount: 0,
+    );
   }
 
   @override

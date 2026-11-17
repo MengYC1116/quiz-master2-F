@@ -83,10 +83,7 @@ class _ReviewPageState extends State<ReviewPage> {
 
 /// 复习页内层：持有补救输入框控制器，按会话模式切换列表 / 会话 / 总结。
 class _ReviewView extends ConsumerStatefulWidget {
-  const _ReviewView({
-    required this.onOpenDetail,
-    required this.onGoWrongbook,
-  });
+  const _ReviewView({required this.onOpenDetail, required this.onGoWrongbook});
 
   final Future<void> Function(Question q, List<String> orderIds) onOpenDetail;
   final VoidCallback onGoWrongbook;
@@ -112,10 +109,11 @@ class _ReviewViewState extends ConsumerState<_ReviewView> {
   Widget build(BuildContext context) {
     // 只订阅模式切换要的四个字段：自查点选（只改 `checks`）不会
     // 让整页重建，只有自查步自己重建。
-    final (loading, inSession, showSummary, causeKey) =
-        ref.watch(reviewProvider.select(
-      (s) => (s.loading, s.inSession, s.showSummary, s.sessionCauseKey),
-    ));
+    final (loading, inSession, showSummary, causeKey) = ref.watch(
+      reviewProvider.select(
+        (s) => (s.loading, s.inSession, s.showSummary, s.sessionCauseKey),
+      ),
+    );
     if (causeKey != _seenCauseKey) {
       _seenCauseKey = causeKey;
       // build 里不直接改控制器（会触 TextField 的监听重建），
@@ -159,10 +157,10 @@ Widget _centered(BuildContext context, Widget child) {
 }
 
 String _historyLabel(String r) => switch (r) {
-      'solved' => '已解决',
-      'unsolved' => '未解决',
-      _ => '不确定',
-    };
+  'solved' => '已解决',
+  'unsolved' => '未解决',
+  _ => '不确定',
+};
 
 /// 下拉（HTML `.nb-fsel`：36 高、13.5px、line-strong 边、圆角 10；
 /// 与错题本 `_styledDropdown` 同款）。
@@ -229,10 +227,7 @@ class _ListView extends ConsumerWidget {
                 tone: QmBannerTone.error,
                 message: '复习数据读取失败，已显示上次成功加载的内容。',
                 actions: [
-                  QmBannerAction(
-                    label: '重试',
-                    onPressed: notifier.retryLoad,
-                  ),
+                  QmBannerAction(label: '重试', onPressed: notifier.retryLoad),
                 ],
                 onDismiss: notifier.dismissLoadError,
               ),
@@ -242,25 +237,18 @@ class _ListView extends ConsumerWidget {
           if (st.loadError && !st.hasLoaded)
             Padding(
               padding: EdgeInsets.only(bottom: 14 * scale),
-              child: QmButton(
-                label: '重新加载',
-                onPressed: notifier.retryLoad,
-              ),
+              child: QmButton(label: '重新加载', onPressed: notifier.retryLoad),
             ),
           if (st.resume != null && st.groups.isNotEmpty)
             _buildResumeBar(context, ref, st),
           if (st.resume == null && st.groups.isNotEmpty) ...[
-            QmButton(
-              label: '开始解决',
-              onPressed: () => notifier.startSession(),
-            ),
+            QmButton(label: '开始解决', onPressed: () => notifier.startSession()),
             SizedBox(height: 14 * scale),
           ],
           if (!hasData) ...[
             QmEmptyState(
               title: '复习列表还是空的',
-              description:
-                  '在题目详情的「复习记录」里点「加入复习」，这道题的错因才会到这里来解决。',
+              description: '在题目详情的「复习记录」里点「加入复习」，这道题的错因才会到这里来解决。',
               actionLabel: '去错题本选题',
               onAction: onGoWrongbook,
             ),
@@ -272,9 +260,7 @@ class _ListView extends ConsumerWidget {
               ...pageGroups.map((g) => _buildGroupRow(context, ref, g)),
               _buildPager(context, ref, st),
             ] else if (st.groups.isNotEmpty) ...[
-              _DetailBox(
-                child: const Text('当前筛选下没有待解决错因，换个学科 / 错因试试。'),
-              ),
+              _DetailBox(child: const Text('当前筛选下没有待解决错因，换个学科 / 错因试试。')),
             ],
             if (st.filteredCured.isNotEmpty) ...[
               SizedBox(height: 14 * scale),
@@ -354,6 +340,12 @@ class _ListView extends ConsumerWidget {
       fontSize: DesignTokens.reviewMetaFontSize,
       color: palette.muted,
     );
+    // FR-10：括号里的学科名由 `st.subjects` 现拼（前 3 科，多了加“等”），
+    // 不再写死“数学 / 英语 / 政治”；无学科时不带括号。
+    final subjectNames = st.subjects.map((s) => s.name).toList();
+    final subjectHint = subjectNames.isEmpty
+        ? ''
+        : '（${subjectNames.take(3).join('、')}${subjectNames.length > 3 ? '等' : ''}）';
     return Padding(
       padding: EdgeInsets.only(bottom: 12 * scale),
       child: Wrap(
@@ -379,7 +371,7 @@ class _ListView extends ConsumerWidget {
           Text('已解决 $cured 道', style: metaStyle),
           Text(
             st.settings.reviewSort == 'subject'
-                ? '列表按学科排（数学 / 英语 / 政治），同一科里先加入的先解决'
+                ? '列表按学科排$subjectHint，同一科里先加入的先解决'
                 : '列表按加入时间排，先加入的先解决',
             style: metaStyle,
           ),
@@ -415,8 +407,7 @@ class _ListView extends ConsumerWidget {
                 for (final s in st.subjects)
                   DropdownMenuItem(value: s.id, child: Text(s.name)),
               ],
-              onChanged: (v) =>
-                  notifier.setSubjectFilter(v == '全部' ? null : v),
+              onChanged: (v) => notifier.setSubjectFilter(v == '全部' ? null : v),
             ),
           ),
           Text('错因', style: labelStyle),
@@ -426,7 +417,8 @@ class _ListView extends ConsumerWidget {
               context,
               // SR2-34：就地 effectiveValue——与 load 里的复位双防线；
               // _causeFilter 失效时显示“全部”，不在 build 里写回状态。
-              value: st.causeFilter == '全部' ||
+              value:
+                  st.causeFilter == '全部' ||
                       st.allCauses.contains(st.causeFilter)
                   ? st.causeFilter
                   : '全部',
@@ -481,9 +473,7 @@ class _ListView extends ConsumerWidget {
         horizontal: DesignTokens.reviewRowPaddingH * scale,
       ),
       decoration: BoxDecoration(
-        border: Border(
-          bottom: BorderSide(color: palette.line),
-        ),
+        border: Border(bottom: BorderSide(color: palette.line)),
       ),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.center,
@@ -590,8 +580,9 @@ class _ListView extends ConsumerWidget {
                     final sizes = {10, 20, 30, 40, 50, st.pageSize}.toList()
                       ..sort();
                     return sizes
-                        .map((n) =>
-                            DropdownMenuItem(value: n, child: Text('$n')))
+                        .map(
+                          (n) => DropdownMenuItem(value: n, child: Text('$n')),
+                        )
                         .toList();
                   }(),
                   onChanged: (v) {
@@ -623,8 +614,7 @@ class _ListView extends ConsumerWidget {
                 label: '上一页',
                 size: QmButtonSize.small,
                 variant: QmButtonVariant.secondary,
-                onPressed:
-                    page > 1 ? () => notifier.setPage(page - 1) : null,
+                onPressed: page > 1 ? () => notifier.setPage(page - 1) : null,
               ),
               if (totalPages > 1)
                 for (var p = 1; p <= totalPages; p++)
@@ -634,8 +624,7 @@ class _ListView extends ConsumerWidget {
                     variant: p == page
                         ? QmButtonVariant.primary
                         : QmButtonVariant.plain,
-                    onPressed:
-                        p == page ? null : () => notifier.setPage(p),
+                    onPressed: p == page ? null : () => notifier.setPage(p),
                   ),
               QmButton(
                 label: '下一页',
@@ -653,7 +642,10 @@ class _ListView extends ConsumerWidget {
   }
 
   Widget _buildCuredSection(
-      BuildContext context, WidgetRef ref, ReviewState st) {
+    BuildContext context,
+    WidgetRef ref,
+    ReviewState st,
+  ) {
     final scale = qmScaleOf(context);
     final palette = DesignTokens.of(Theme.of(context).brightness);
     // 已解决区也分页（SR-P2-47）：与待解决列表同一每页条数，
@@ -661,15 +653,14 @@ class _ListView extends ConsumerWidget {
     final groups = st.filteredCured;
     final totalPages = (groups.length / st.pageSize).ceil().clamp(1, 9999);
     final page = st.curedPage.clamp(0, totalPages - 1);
-    final items =
-        groups.skip(page * st.pageSize).take(st.pageSize).toList();
+    final items = groups.skip(page * st.pageSize).take(st.pageSize).toList();
     return Container(
-      margin:
-          EdgeInsets.only(bottom: DesignTokens.reviewCuredMarginBottom * scale),
+      margin: EdgeInsets.only(
+        bottom: DesignTokens.reviewCuredMarginBottom * scale,
+      ),
       decoration: BoxDecoration(
         border: Border.all(color: palette.line),
-        borderRadius:
-            BorderRadius.circular(DesignTokens.radiusLg * scale),
+        borderRadius: BorderRadius.circular(DesignTokens.radiusLg * scale),
       ),
       clipBehavior: Clip.antiAlias,
       child: Column(
@@ -721,8 +712,8 @@ class _ListView extends ConsumerWidget {
                     variant: QmButtonVariant.secondary,
                     onPressed: page > 0
                         ? () => ref
-                            .read(reviewProvider.notifier)
-                            .setCuredPage(page - 1)
+                              .read(reviewProvider.notifier)
+                              .setCuredPage(page - 1)
                         : null,
                   ),
                   SizedBox(width: 6 * scale),
@@ -732,8 +723,8 @@ class _ListView extends ConsumerWidget {
                     variant: QmButtonVariant.secondary,
                     onPressed: page < totalPages - 1
                         ? () => ref
-                            .read(reviewProvider.notifier)
-                            .setCuredPage(page + 1)
+                              .read(reviewProvider.notifier)
+                              .setCuredPage(page + 1)
                         : null,
                   ),
                 ],
@@ -745,7 +736,11 @@ class _ListView extends ConsumerWidget {
   }
 
   Widget _buildCuredRow(
-      BuildContext context, WidgetRef ref, ReviewState st, CauseGroup g) {
+    BuildContext context,
+    WidgetRef ref,
+    ReviewState st,
+    CauseGroup g,
+  ) {
     final scale = qmScaleOf(context);
     final palette = DesignTokens.of(Theme.of(context).brightness);
     final key = '${g.subjectId}|${g.cause}';
@@ -756,8 +751,7 @@ class _ListView extends ConsumerWidget {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         InkWell(
-          onTap: () =>
-              ref.read(reviewProvider.notifier).toggleCured(key),
+          onTap: () => ref.read(reviewProvider.notifier).toggleCured(key),
           child: Container(
             padding: EdgeInsets.symmetric(
               vertical: DesignTokens.reviewCuredHeadPaddingV * scale,
@@ -765,9 +759,7 @@ class _ListView extends ConsumerWidget {
             ),
             decoration: BoxDecoration(
               color: open ? palette.accentSoft : null,
-              border: Border(
-                bottom: BorderSide(color: palette.line),
-              ),
+              border: Border(bottom: BorderSide(color: palette.line)),
             ),
             child: Row(
               children: [
@@ -794,9 +786,7 @@ class _ListView extends ConsumerWidget {
                       children: [
                         TextSpan(
                           text: g.cause,
-                          style: const TextStyle(
-                            fontWeight: FontWeight.w700,
-                          ),
+                          style: const TextStyle(fontWeight: FontWeight.w700),
                         ),
                         TextSpan(text: ' · 关联 ${g.items.length} 道题'),
                       ],
@@ -827,9 +817,7 @@ class _ListView extends ConsumerWidget {
             ),
             decoration: BoxDecoration(
               color: palette.surface2,
-              border: Border(
-                bottom: BorderSide(color: palette.line),
-              ),
+              border: Border(bottom: BorderSide(color: palette.line)),
             ),
             child: Column(
               children: [
@@ -852,7 +840,8 @@ class _ListView extends ConsumerWidget {
     }
     if (r.recheckDate != null) {
       parts.add(
-          '下次复查 ${formatReviewDate(r.recheckDate!)}（${formatReviewMd(r.recheckDate!)}）');
+        '下次复查 ${formatReviewDate(r.recheckDate!)}（${formatReviewMd(r.recheckDate!)}）',
+      );
     }
     var text = parts.join(' · ');
     if (r.remedyHistory.isNotEmpty) {
@@ -862,7 +851,10 @@ class _ListView extends ConsumerWidget {
   }
 
   Widget _buildNotJoinedBox(
-      BuildContext context, WidgetRef ref, ReviewState st) {
+    BuildContext context,
+    WidgetRef ref,
+    ReviewState st,
+  ) {
     // 按学科分行；超过 10 道默认只列前 10 道，可展开看全部（SR-P2-47）。
     // 列出来的都是真能加入复习的题（见 load 的 notJoined 过滤）。
     final bySubject = <String, List<Question>>{};
@@ -894,10 +886,7 @@ class _ListView extends ConsumerWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text(
-            '还没加入复习的题',
-            style: TextStyle(fontWeight: FontWeight.w700),
-          ),
+          const Text('还没加入复习的题', style: TextStyle(fontWeight: FontWeight.w700)),
           SizedBox(height: 6 * qmScaleOf(context)),
           ...lines,
           if (total > shownLimit) ...[
@@ -906,9 +895,8 @@ class _ListView extends ConsumerWidget {
               label: st.notJoinedExpanded ? '收起' : '展开全部（共 $total 道）',
               size: QmButtonSize.small,
               variant: QmButtonVariant.secondary,
-              onPressed: () => ref
-                  .read(reviewProvider.notifier)
-                  .toggleNotJoinedExpanded(),
+              onPressed: () =>
+                  ref.read(reviewProvider.notifier).toggleNotJoinedExpanded(),
             ),
           ],
           SizedBox(height: 6 * qmScaleOf(context)),
@@ -943,9 +931,11 @@ class _SessionView extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     // 题没了（会话里进详情删题）：切到总结页（原 `_buildSession`
     // 开头的 `if (_blocks.isEmpty || q == null) return _buildSummary()`）。
-    final gone = ref.watch(reviewProvider.select(
-      (s) => !s.hasCurrentBlock || s.currentQuestion == null,
-    ));
+    final gone = ref.watch(
+      reviewProvider.select(
+        (s) => !s.hasCurrentBlock || s.currentQuestion == null,
+      ),
+    );
     if (gone) return const _SummaryView();
     final phase = ref.watch(reviewProvider.select((s) => s.phase));
     return _centered(
@@ -980,8 +970,7 @@ class _SessionSaveErrorBanner extends ConsumerWidget {
     return QmBanner(
       tone: QmBannerTone.error,
       message: '复习记录保存失败，本次自查还没有存下。请重试，或重启应用后再复习。',
-      onDismiss: () =>
-          ref.read(reviewProvider.notifier).dismissSaveError(),
+      onDismiss: () => ref.read(reviewProvider.notifier).dismissSaveError(),
     );
   }
 }
@@ -996,17 +985,19 @@ class _SessionMeta extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     // 选择器必须空安全：跳过把末块拿掉的瞬时态里当前题已为空，
     // 但父级切总结页的重建还没跑，选择器会先被求值——抛错会污染通知。
-    final meta = ref.watch(reviewProvider.select((s) {
-      final q = s.currentQuestion;
-      if (q == null) return null;
-      return (
-        s.bi,
-        s.blocks.length,
-        s.scopeLabel,
-        q,
-        s.subjectOf(q.subjectId).name,
-      );
-    }));
+    final meta = ref.watch(
+      reviewProvider.select((s) {
+        final q = s.currentQuestion;
+        if (q == null) return null;
+        return (
+          s.bi,
+          s.blocks.length,
+          s.scopeLabel,
+          q,
+          s.subjectOf(q.subjectId).name,
+        );
+      }),
+    );
     if (meta == null) return const SizedBox.shrink();
     final (bi, total, scopeLabel, question, subjectName) = meta;
     final scale = qmScaleOf(context);
@@ -1020,10 +1011,7 @@ class _SessionMeta extends ConsumerWidget {
       runSpacing: 8 * scale,
       crossAxisAlignment: WrapCrossAlignment.center,
       children: [
-        Text(
-          '第 ${bi + 1} / $total 道题 · $scopeLabel',
-          style: metaStyle,
-        ),
+        Text('第 ${bi + 1} / $total 道题 · $scopeLabel', style: metaStyle),
         Text(
           '$subjectName · ${sliceKindLabel(question.sliceKind)}｜${question.title}',
           style: metaStyle,
@@ -1035,8 +1023,7 @@ class _SessionMeta extends ConsumerWidget {
           onPressed: () async {
             final st = ref.read(reviewProvider);
             final q = st.currentQuestion!;
-            final orderIds =
-                st.blocks.map((b) => b.questionId).toList();
+            final orderIds = st.blocks.map((b) => b.questionId).toList();
             await onOpenDetail(q, orderIds);
             await ref.read(reviewProvider.notifier).load();
           },
@@ -1045,8 +1032,7 @@ class _SessionMeta extends ConsumerWidget {
           label: '暂停',
           size: QmButtonSize.small,
           variant: QmButtonVariant.secondary,
-          onPressed: () =>
-              ref.read(reviewProvider.notifier).pauseSession(),
+          onPressed: () => ref.read(reviewProvider.notifier).pauseSession(),
         ),
       ],
     );
@@ -1102,24 +1088,25 @@ class _CauseMeta extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     // 选择器必须空安全（见 `_SessionMeta`）：块被跳空的瞬时态里
     // `currentBlock` 会越界，父级切总结页的重建还没跑。
-    final m = ref.watch(reviewProvider.select((s) {
-      if (!s.hasCurrentBlock) return null;
-      final block = s.currentBlock;
-      final cause = block.causes[s.ci];
-      final record = s.recordOf(block.questionId, cause);
-      return (
-        s.ci,
-        block.causes.length,
-        cause,
-        record?.status,
-        record?.solvedCount,
-        record?.isRecheckDue,
-        s.settings.cureChecks,
-      );
-    }));
+    final m = ref.watch(
+      reviewProvider.select((s) {
+        if (!s.hasCurrentBlock) return null;
+        final block = s.currentBlock;
+        final cause = block.causes[s.ci];
+        final record = s.recordOf(block.questionId, cause);
+        return (
+          s.ci,
+          block.causes.length,
+          cause,
+          record?.status,
+          record?.solvedCount,
+          record?.isRecheckDue,
+          s.settings.cureChecks,
+        );
+      }),
+    );
     if (m == null) return const SizedBox.shrink();
-    final (ci, total, cause, status, solvedCount, isRecheckDue, cureChecks) =
-        m;
+    final (ci, total, cause, status, solvedCount, isRecheckDue, cureChecks) = m;
     final scale = qmScaleOf(context);
     final palette = DesignTokens.of(Theme.of(context).brightness);
     return Padding(
@@ -1173,16 +1160,18 @@ class _StepCause extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     // 选择器必须空安全（见 `_SessionMeta`）。
-    final m = ref.watch(reviewProvider.select((s) {
-      final q = s.currentQuestion;
-      if (q == null) return null;
-      final history = s.historyByQ[q.id];
-      return (
-        q,
-        history == null || history.isEmpty ? null : history.first,
-        s.subjectOf(q.subjectId),
-      );
-    }));
+    final m = ref.watch(
+      reviewProvider.select((s) {
+        final q = s.currentQuestion;
+        if (q == null) return null;
+        final history = s.historyByQ[q.id];
+        return (
+          q,
+          history == null || history.isEmpty ? null : history.first,
+          s.subjectOf(q.subjectId),
+        );
+      }),
+    );
     if (m == null) return const SizedBox.shrink();
     final (question, lastCheck, subject) = m;
     final scale = qmScaleOf(context);
@@ -1218,12 +1207,10 @@ class _StepCause extends ConsumerWidget {
         SizedBox(height: DesignTokens.reviewActsMarginTop * scale),
         _SessionActions(
           primaryLabel: '下一步：写补救',
-          onPrimary: () => ref
-              .read(reviewProvider.notifier)
-              .setPhase(ReviewPhase.remedy),
+          onPrimary: () =>
+              ref.read(reviewProvider.notifier).setPhase(ReviewPhase.remedy),
           secondaryLabel: '跳过该题',
-          onSecondary: () =>
-              ref.read(reviewProvider.notifier).skipCurrent(),
+          onSecondary: () => ref.read(reviewProvider.notifier).skipCurrent(),
         ),
       ],
     );
@@ -1240,19 +1227,21 @@ class _StepRemedy extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     // 选择器必须空安全（见 `_SessionMeta`）。
-    final m = ref.watch(reviewProvider.select((s) {
-      if (!s.hasCurrentBlock) return null;
-      final block = s.currentBlock;
-      final cause = block.causes[s.ci];
-      final record = s.recordOf(block.questionId, cause);
-      return (
-        cause,
-        record == null || record.remedyHistory.isEmpty
-            ? null
-            : record.remedyHistory.first,
-        s.ci >= block.causes.length - 1,
-      );
-    }));
+    final m = ref.watch(
+      reviewProvider.select((s) {
+        if (!s.hasCurrentBlock) return null;
+        final block = s.currentBlock;
+        final cause = block.causes[s.ci];
+        final record = s.recordOf(block.questionId, cause);
+        return (
+          cause,
+          record == null || record.remedyHistory.isEmpty
+              ? null
+              : record.remedyHistory.first,
+          s.ci >= block.causes.length - 1,
+        );
+      }),
+    );
     if (m == null) return const SizedBox.shrink();
     final (cause, lastRemedy, isLastCause) = m;
     final scale = qmScaleOf(context);
@@ -1316,18 +1305,15 @@ class _StepRemedy extends ConsumerWidget {
               vertical: 10 * scale,
             ),
             border: OutlineInputBorder(
-              borderRadius:
-                  BorderRadius.circular(DesignTokens.radius * scale),
+              borderRadius: BorderRadius.circular(DesignTokens.radius * scale),
               borderSide: BorderSide(color: palette.lineStrong),
             ),
             enabledBorder: OutlineInputBorder(
-              borderRadius:
-                  BorderRadius.circular(DesignTokens.radius * scale),
+              borderRadius: BorderRadius.circular(DesignTokens.radius * scale),
               borderSide: BorderSide(color: palette.lineStrong),
             ),
             focusedBorder: OutlineInputBorder(
-              borderRadius:
-                  BorderRadius.circular(DesignTokens.radius * scale),
+              borderRadius: BorderRadius.circular(DesignTokens.radius * scale),
               borderSide: BorderSide(color: palette.accent, width: 2),
             ),
             filled: true,
@@ -1337,12 +1323,10 @@ class _StepRemedy extends ConsumerWidget {
         SizedBox(height: DesignTokens.reviewActsMarginTop * scale),
         _SessionActions(
           primaryLabel: isLastCause ? '下一步：重做' : '下一步：下个错因',
-          onPrimary: () => ref
-              .read(reviewProvider.notifier)
-              .nextFromRemedy(controller.text),
+          onPrimary: () =>
+              ref.read(reviewProvider.notifier).nextFromRemedy(controller.text),
           secondaryLabel: '跳过',
-          onSecondary: () =>
-              ref.read(reviewProvider.notifier).skipCurrent(),
+          onSecondary: () => ref.read(reviewProvider.notifier).skipCurrent(),
         ),
       ],
     );
@@ -1356,11 +1340,13 @@ class _StepRedo extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     // 选择器必须空安全（见 `_SessionMeta`）。
-    final m = ref.watch(reviewProvider.select((s) {
-      final q = s.currentQuestion;
-      if (q == null) return null;
-      return (q, s.answerShown, s.subjectOf(q.subjectId));
-    }));
+    final m = ref.watch(
+      reviewProvider.select((s) {
+        final q = s.currentQuestion;
+        if (q == null) return null;
+        return (q, s.answerShown, s.subjectOf(q.subjectId));
+      }),
+    );
     if (m == null) return const SizedBox.shrink();
     final (question, answerShown, subject) = m;
     final scale = qmScaleOf(context);
@@ -1400,7 +1386,8 @@ class _StepRedo extends ConsumerWidget {
                 ),
                 _KvRow(
                   label: '解析',
-                  value: (question.explanation == null ||
+                  value:
+                      (question.explanation == null ||
                           question.explanation!.isEmpty)
                       ? '待补充（未填写，如实显示）'
                       : question.explanation!,
@@ -1422,8 +1409,7 @@ class _StepRedo extends ConsumerWidget {
           },
           secondaryLabel: answerShown ? '遮住答案' : null,
           onSecondary: answerShown
-              ? () =>
-                  ref.read(reviewProvider.notifier).setAnswerShown(false)
+              ? () => ref.read(reviewProvider.notifier).setAnswerShown(false)
               : null,
         ),
       ],
@@ -1442,18 +1428,21 @@ class _StepCheck extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     // 选择器必须空安全（见 `_SessionMeta`）：块被跳空的瞬时态里
     // `currentBlock` 会越界，父级切总结页的重建还没跑。
-    final sel = ref.watch(reviewProvider.select((s) => (
+    final sel = ref.watch(
+      reviewProvider.select(
+        (s) => (
           s.hasCurrentBlock ? s.currentBlock : null,
           s.checks,
           s.bi,
           s.blocks.length,
-        )));
+        ),
+      ),
+    );
     final (block, checks, bi, total) = sel;
     if (block == null) return const SizedBox.shrink();
     final st = ref.read(reviewProvider);
     final scale = qmScaleOf(context);
-    final allChecked =
-        block.causes.every((c) => checks.containsKey(c));
+    final allChecked = block.causes.every((c) => checks.containsKey(c));
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -1467,8 +1456,7 @@ class _StepCheck extends ConsumerWidget {
         SizedBox(height: DesignTokens.reviewActsMarginTop * scale),
         _SessionActions(
           primaryLabel: bi < total - 1 ? '下一题' : '看总结',
-          onPrimary: () =>
-              ref.read(reviewProvider.notifier).finishQuestion(),
+          onPrimary: () => ref.read(reviewProvider.notifier).finishQuestion(),
           primaryEnabled: allChecked,
         ),
       ],
@@ -1536,9 +1524,8 @@ class _StepCheck extends ConsumerWidget {
                     variant: selected == op
                         ? QmButtonVariant.primary
                         : QmButtonVariant.secondary,
-                    onPressed: () => ref
-                        .read(reviewProvider.notifier)
-                        .setCheck(cause, op),
+                    onPressed: () =>
+                        ref.read(reviewProvider.notifier).setCheck(cause, op),
                   ),
               ],
             ),
@@ -1567,10 +1554,9 @@ class _SummaryView extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final (curedNow, summaryRemaining, changes) =
-        ref.watch(reviewProvider.select(
-      (s) => (s.curedNow, s.summaryRemaining, s.changes),
-    ));
+    final (curedNow, summaryRemaining, changes) = ref.watch(
+      reviewProvider.select((s) => (s.curedNow, s.summaryRemaining, s.changes)),
+    );
     final scale = qmScaleOf(context);
     return _centered(
       context,
@@ -1657,8 +1643,7 @@ class _DetailBox extends StatelessWidget {
       decoration: BoxDecoration(
         color: palette.surface2,
         border: Border.all(color: palette.lineStrong),
-        borderRadius:
-            BorderRadius.circular(DesignTokens.radiusLg * scale),
+        borderRadius: BorderRadius.circular(DesignTokens.radiusLg * scale),
       ),
       child: child,
     );
@@ -1683,8 +1668,9 @@ class _KvRow extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           ConstrainedBox(
-            constraints:
-                BoxConstraints(minWidth: DesignTokens.reviewKvLabelWidth * scale),
+            constraints: BoxConstraints(
+              minWidth: DesignTokens.reviewKvLabelWidth * scale,
+            ),
             child: Text(
               label,
               style: TextStyle(

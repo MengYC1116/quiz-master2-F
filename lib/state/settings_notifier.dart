@@ -41,6 +41,10 @@ final settingsProvider = AsyncNotifierProvider<SettingsNotifier, AppSettings>(
 /// 改为经 `ref.read(repositoryProvider)` 拿——测试注入见
 /// `docs/ui-replication/A-READING-GUIDE.md`（`ProviderContainer.test`
 /// + `repositoryProvider.overrideWithValue`）。
+/// 备份恢复（GPT-P1）：解析时读到的字节一路带到确认恢复，恢复直接
+/// 用这份字节，不再按路径重读——磁盘上的文件在解析后被替换/删除也
+/// 不影响，恢复的永远是用户选中的那一份（旧 FR-43 指纹重查已删除，
+/// 它正是 TOCTOU 窗口本身：校验与恢复是两次独立读文件）。
 class SettingsNotifier extends AsyncNotifier<AppSettings> {
   /// 每次用都经 ref 拿：方法在 build() 跑完之前也能调（单测里只调
   /// 方法、不读 state 时尤其如此），且不缓存一份可能过期的 repo。
@@ -107,16 +111,16 @@ class SettingsNotifier extends AsyncNotifier<AppSettings> {
   Future<void> clearBackupFailedFlag() => _repo.setBackupFailed(false);
 
   /// 解析用户选好的备份文件：读字节 → 按魔数识别 zip / JSON →
-  /// 校验版本。返回备份数据与 zip 路径（zip 备份返回原路径，
-  /// 确认恢复时再读文件；老 JSON 备份 zipPath 为 null）。
+  /// 校验版本。返回备份数据与 zip 字节（zip 备份返回解析时读到的
+  /// 完整字节，确认恢复时直接用这份字节，不再按路径重读；
+  /// 老 JSON 备份 zipBytes 为 null，按数据对象恢复）。
   ///
   /// 读不到文件抛 [RestoreFileReadException]；zip 内容或 JSON
   /// 校验不过抛 [BackupRestoreException]（message 即提示文案）；
   /// 其余格式问题抛 [FormatException]。调用方按异常类型提示，
   /// 不做静默读坏。
-  Future<({Map<String, dynamic> data, String? zipPath})> parseRestoreFile(
-    String path,
-  ) async {
+  Future<({Map<String, dynamic> data, List<int>? zipBytes})>
+  parseRestoreFile(String path) async {
     List<int> bytes;
     try {
       bytes = await File(path).readAsBytes();
@@ -124,9 +128,9 @@ class SettingsNotifier extends AsyncNotifier<AppSettings> {
       throw RestoreFileReadException(path);
     }
     if (isZipBytes(bytes)) {
-      // 新 zip 备份：只读出内嵌 JSON 校验，文件本身确认时再恢复。
+      // 新 zip 备份：只读出内嵌 JSON 校验，字节本身留给确认恢复用。
       final data = AppDatabase.readBackupJsonFromZip(bytes);
-      return (data: data, zipPath: path);
+      return (data: data, zipBytes: bytes);
     }
     final decoded = jsonDecode(utf8.decode(bytes));
     if (decoded is! Map<String, dynamic>) throw const FormatException();
@@ -135,18 +139,19 @@ class SettingsNotifier extends AsyncNotifier<AppSettings> {
       throw const FormatException();
     }
     AppDatabase.validateBackupData(data);
-    return (data: data, zipPath: null);
+    return (data: data, zipBytes: null);
   }
 
-  /// 执行恢复（覆盖当前题库）：zip 备份按路径恢复，
+  /// 执行恢复（覆盖当前题库）：zip 备份按解析时读到的字节恢复
+  /// （GPT-P1：校验过的字节与导入的字节是同一份，不再按路径重读），
   /// 老 JSON 备份按数据对象恢复。失败抛异常，原库不动。
   /// 恢复后调用方再调 [reloadSettings] 重读设置（恢复可能覆盖设置表）。
   Future<void> restoreBackup({
     Map<String, dynamic>? jsonData,
-    String? zipPath,
+    List<int>? zipBytes,
   }) async {
-    if (zipPath != null) {
-      await _repo.importBackupZipFile(zipPath);
+    if (zipBytes != null) {
+      await _repo.importBackupZip(zipBytes);
     } else {
       await _repo.importBackupJson(jsonData!);
     }
@@ -190,10 +195,11 @@ class SettingsNotifier extends AsyncNotifier<AppSettings> {
   /// 扫描无引用文件（imports/ + slices/ 里的孤儿）。
   Future<OrphanScan> scanOrphans() => _repo.scanOrphanFiles();
 
-  /// 只删传入的无引用文件，返回实际删掉的数量与释放字节数。
-  Future<({int deletedCount, int freedBytes})> clearOrphans(
-    List<String> relativePaths,
-  ) => _repo.deleteOrphanFiles(relativePaths);
+  /// 只删传入的无引用文件，返回实际删掉的数量、释放字节数与
+  /// 删除前重算引用后跳过的数量（FR-06(a)）。
+  Future<({int deletedCount, int freedBytes, int skippedReferencedCount})>
+  clearOrphans(List<String> relativePaths) =>
+      _repo.deleteOrphanFiles(relativePaths);
 
   // ---------- 缓存扫描 / 清理 ----------
 
@@ -282,14 +288,9 @@ class SettingsValidationException implements Exception {
 }
 
 /// 备份文件读不到（文件被删 / 无权限等），与“文件不是备份”区分提示。
-class RestoreFileReadException implements Exception {
-  const RestoreFileReadException(this.path);
-
-  final String path;
-
-  @override
-  String toString() => 'RestoreFileReadException: $path';
-}
+/// FR-43：定义已移到数据层（`lib/data/database.dart` 的
+/// [RestoreFileReadException]）；这里不再重复定义。恢复不再按路径
+/// 重读文件（GPT-P1：解析时读到的字节一路带到恢复）。
 
 /// 缓存清理预览：临时文件 + 缩略图缓存 + 失败导入残留，不动题目数据。
 class CachePreview {

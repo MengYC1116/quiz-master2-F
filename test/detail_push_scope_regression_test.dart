@@ -49,6 +49,11 @@ class MechFakeRepo extends QuestionRepository {
 
   @override
   Future<List<Subject>> subjects() async => Subject.all;
+
+  /// FR-09（批三）起 DetailNotifier.load() 也读 repo.settings()；
+  /// 本测试的 FakeRepo 须给桩，否则走真实库（见批四批报告）。
+  @override
+  Future<AppSettings> settings() async => AppSettings.defaults;
 }
 
 final _q = Question(

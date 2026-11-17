@@ -602,3 +602,199 @@ layer-2 行保留不动，编辑器读到时直接丢弃）；③ `docs/代码�
   - 全仓 `dart format --set-exit-if-changed lib/` 显示 37 个文件可被重排（长单行构造展开，例 models.dart 的 Subject.all），均为 B3 未动文件、既往风格漂移；B3 改动文件全部干净。收尾阶段不做全仓重排（只增 diff 噪音），留待以后。
   - drift_dev 的 PRIMARY KEY `NOT NULL` 警告见 D-54，未动。
 - 状态：B3 本地实现与验收全部完成，未推代码、未发邮件，等 Meng 批推送；推送后他按 Win11 清单验证（sqlite3.dll + 备份冒烟），通过后 B 正式收尾。
+
+## D-56 — 最终自审启动：只审不修（2026-11-17）
+
+- Meng 批准开始最终自审（架构 A、B 全部跑完之后的闭环）。本次只审、不修：通读代码、核实 6 个已知尾巴、找出新问题，汇总成带编号的分级报告交给 Meng 裁决，他定修哪些之后再开修复批次。
+- 自审过程不改产品代码、不推代码、不发邮件。工作日志与报告放 `~/workspace/final-review/`，报告 `FINAL-REVIEW-REPORT.md`。
+- 分级口径沿用第二次自审（P0 阻断、P1 应修、P2 可修可留），只报能确认的，不猜。
+- 明确不列入修复建议、只记现状的两项：详情页 `reviewRecords` 订阅（A 外单独事项，等 Meng 定）；`retryFromStoredOriginal` 的 UI 接线（Meng 待决事项）。
+
+## D-57 — 最终自审完成：只审不修，45 项（P0 0、P1 7、P2 38），等 Meng 裁决（2026-11-17）
+
+- 7 个工作组（W1 页面层、W2 数据/状态层、W3 尾巴①⑤、W4 尾巴②、W5 尾巴③④、W6 尾巴⑥、W7 基线）全部完成；报告 `~/workspace/final-review/FINAL-REVIEW-REPORT.md`，各组报告 `w1-pages.md` ~ `w7-baseline.md`，基线日志 `baseline-full.log`。
+- 基线：全量 1267/1267、analyze 0、schema 测试通过；演示库跑后 md5 曾变（见 FR-45），已从备份恢复。
+- 6 个尾巴：①重叠框部分复现 P1（检测问题，先做 UX 小修）；②重框主流程通，2 P1 + 2 P2；③删除未包事务在代码层面已闭合（13 路径全包事务），另 1 P1 + 4 P2 在事务之外；④ zip 主干全过，边界 1 P1 + 5 P2；⑤放大浮层已修且在远程 head 4c1ca1e3 里（协调员亲自核实 `widgets.dart` 含 `_fitFor`/`_centerInitial`），残留 P2（Win11 复核）；⑥纯白胶囊未复现，残留 P2（根因未证实）。
+- P1 7 项：FR-01 删学科后 kpSubjectId 残留写孤儿、FR-02 角标事件先于错因同步、FR-03 重叠框、FR-04 重框可画第二框静默丢框、FR-05 重框后旧切片滞留、FR-06 孤儿清理信过期扫描、FR-07 备份 JSON 损坏值静默丢数据。
+- 需 Meng 裁决：SR2-29 口径、SR2-40 圆盘、FR-04 修法二选一、FR-37 口径；修哪些按编号定，之后再开修复批次。
+- 附带：全量测试会改写真实演示库（FR-45，肇事测试未定位）；v1 演示库启动即删是既定设计（B1 删老库、无迁移），GUI 复现改用 v2 空库或另做 v2 夹具；R11 回归脚本坐标已过期（复习 271→248、首页 100→84）。
+
+## D-58 — 最终自审修复启动：45 项全修，四批顺序做（2026-11-17）
+
+- Meng 2026-11-17 17:25 批准按自审建议全部修：P1 7 项 + P2 38 项，修法按报告建议走；FR-04 选 (a) 重框模式禁画新框，FR-37 加批量删题事务；SR2-29 确认“报告分布扣已掌握”、SR2-40 确认“紧凑行不设行号、大卡片蓝圆盘保留”。
+- 四批顺序做、每批验收：批一 P1（FR-01~FR-07）；批二 P2 数据与恢复（FR-20/21/23/24/25/26/27/28/29/40/41/42/43/45，14 项）；批三 P2 页面与文案（FR-08/09/10/11/12/16/17/18/34/35，10 项）；批四 P2 代码卫生与防御（FR-13/14/15/19/22/30/31/32/36/37/38/39，12 项）。可修 P2 共 36 项；FR-33/FR-44 只做 Win11 真机复核、不修代码。合计 45 项。
+- 全部本地实现与验收，不推代码、不发邮件；四批合并不久一次推，等 Meng 批准。
+- 记一笔：FR-03 的 UX 小修（重叠框标红 + 横幅点名）就是 Meng 17:02 待加功能第 1 项的本体，修完后十二批第 1 项只剩核对、不用另做。
+- 风险重点：FR-05 缓存改动、FR-06/07/26 恢复与备份行为改动必须双向测试（合法旧行为仍通过、非法的被拦住）；FR-07 拒绝恢复时先校验、再覆盖，确保原库不被整体覆盖。FR-45（全量测试改写真实演示库）仍是开放缺口：每批全量前后都核对演示库 md5，变了就从备份恢复并记录。
+
+## D-59 — SR2-29 裁决确认：报告分布扣已掌握（2026-11-17，批一）
+
+- 亲手核对代码属实，不改代码。`lib/state/report_provider.dart:225` 的 `questionsInRange` 只收已整理未归档且**未掌握**的题（`!isMastered(q)`），报告分布与弱点 Top 5 均由此派生；`lib/modules/report/report_page.dart:128` 取 `questionsInRange`。文件头注释已写明 SR2-29 口径。
+- 裁决（Meng 2026-11-17 17:25，见 D-58）：报告分布扣已掌握。按此口径实现已是现状，旧账闭合。
+
+## D-60 — SR2-40 裁决确认：紧凑行不设行号、大卡片蓝圆盘保留（2026-11-17，批一）
+
+- 亲手核对代码属实，不改代码。大卡片确有蓝色序号圆盘（`lib/modules/wrongbook/wrongbook_list.dart` `_buildLargeCard`，accent 圆角 999 徽标 + 本页位置序号）；紧凑行 `_buildCompactRow` 无序号。
+- 裁决（Meng 2026-11-17 17:25，见 D-58）：紧凑行不设行号、大卡片蓝圆盘保留。代码现状即此口径，旧账闭合。
+
+## D-61 — FR-05 缓存修法选择：evict 全清 + ValueKey（2026-11-17，批一）
+
+- 根因（W4-03 已钉死）：`evictCachedFileImage` 用裸 `FileImage.evict()`，与渲染侧 `Image.file(cacheWidth: ...)` 走的 `ResizeImage` 缓存键不一致；且 `Image.didUpdateWidget` 只在 provider 不等时重解码——只清缓存救不了正在显示的旧图。
+- 选了组合方案（任务书两选项都用，各补对方的缺口）：
+  - `evictCachedFileImage`：裸 `FileImage` evict + `PaintingBinding.instance.imageCache.clear()` + `clearLiveImages()`。不用精确键清理：`ResizeImageKey` 是私有构造、外部构造不出来，且各渲染点的 cacheWidth 随 maxHeight × dpr 变化、无法逐个枚举。`clear()` 本身不清 live 图片——旧切片正显示时旧图仍以 live 条目留在缓存里，重建后旧态卸载、旧图回落 keepAlive，新解析又命中它（回归测试实测证实）；`clearLiveImages()` 只摘掉缓存的追踪回调，不动正在显示的图片本身。副作用是全应用正在显示的图片失去 live 追踪，之后切页回来重新读盘——重框确认 / 切片自愈是偶发操作，可接受。
+  - `QuestionSlice._realSliceBody` 与 `CompactSliceThumb` 的 `Image.file` 加 `ValueKey`（文件写盘时间毫秒 + 字节大小，stat 失败回落纯路径）：文件重写后 widget 重建、重新解码。
+- 返回值语义不变：仍是裸键是否命中（ResizeImage 加载不填充裸键，返回 false 是正常的；isTrue 语义由 p05 既有测试覆盖）。
+- 回归测试 `test/fix_batch1_fr05_slice_cache_test.dart` 2 项：(a) ResizeImage 侧 evict 再读到新图；(b) 同一 QuestionSlice 在同一进程内覆盖写后即时变色（RepaintBoundary 截图读中心像素）。p05 13/13、详情页重框组 5/5 通过。
+
+## D-62 — 最终自审修复批一完成：P1 7 项 + 两项旧账（2026-11-17）
+
+- FR-01（删学科后 kpSubjectId 残留）：`load()`/`deleteSubject` 校验页签、`addChapter`/`addKnowledgePoint` 入口校验学科存在性；回归测试 +4（subjects_notifier_test 14/14）。
+- FR-02（角标事件先于错因同步）：三处调用点用 `DataChangeBus.instance.scope()` 包 save + syncCauseRecords（confirmCurrent 再加 saveRecentTask）；新测试 fix_batch1_fr02 3/3，修法前失败探针已做。
+- FR-03（重叠框标红 + 横幅点名）：重叠框标红（errInk）+ 横幅按“题级框 N”点名，新文案不含“有框重叠了，”前缀；回归测试并入 collect_page_test 修框编辑器组 1 项。**本项即 Meng 17:02 待加功能第 1 项的本体，十二批第 1 项修完只剩核对。**
+- FR-04（重框禁画新框，选 (a)）：`_onDrawStart` + 右键 `onPointerDown` 两道拦，提示改写；回归测试并入 detail_page_test 重框组 1 项，修法前失败探针已做。遗留边角：重框下删掉唯一框后只能点「恢复自动框」或取消（详情页有 `至少保留一个题级框` 兜底）。
+- FR-05（重框后旧切片滞留）：选型见 D-61（evict 全清 + ValueKey）；新测试 fix_batch1_fr05 2/2；p05 13/13、详情页重框组 5/5。
+- FR-06（孤儿清理信任过期扫描）：删除前重算引用（`skippedReferencedCount`）、恢复成功后置空重扫；新测试 fix_batch1_fr06 3/3；p3/b2 44/44、settings 26/26。
+- FR-07（备份 JSON 列损坏值）：校验层加 9 列形状检查，`''`/`null` → 空集合的 D-51 口径不变；新测试 fix_batch1_fr07 8/8；b3/p1 31/31。附带：s8b4 种子 queue 写成字符串数组 `'["q-math-1"]'`（应用从未写过这种形状），改为规范值 `'[{"q":"q-math-1","c":"计算错误"}]'`。
+- SR2-29（报告分布扣已掌握，D-59）、SR2-40（紧凑行不设行号、大卡片蓝圆盘保留，D-60）：亲手核对代码属实，只记决策，不改代码。
+- 验收：串行全量 **1289/1289**（1267 基线 + 新增 22，9 分 44 秒，日志 `~/workspace/final-review/fix-batch1-full2.log`）；`flutter analyze` No issues found；`dart format` 本批改动文件干净；schema 测试 1/1（17 条 DDL 逐字一致）；演示库 md5 前后不变（`8f7f9c64…`，FR-45 本批未咬人）；Linux Release 构建通过（包内含 `libsqlite3.so`）。
+- 批报告 `~/workspace/final-review/FIX-BATCH-1.md`。未推代码、未发邮件；四批合并不久一次推，等 Meng 批准。
+
+## D-63 — FR-23 布尔列口径：按 DDL 实际 5 列，不按报告的 6 列（2026-11-17，批二）
+
+- 报告（W2-06）称 questions 有“6 个布尔列”，但 DDL（`lib/data/db_schema.dart` questions 表）实际只有 5 个：is_organized、is_demo、is_favorite、is_archived、review_joined。`_validateBackupRowDomains` 按实际 5 列做白名单；多出来的第 6 列不存在，无从校验。写进批报告。
+
+## D-64 — FR-28 复核口径：不用 `_referencedRelativePaths`，只查库行直接引用的 4 列（2026-11-17，批二）
+
+- 任务书字面是“复用孤儿扫描口径 `_referencedRelativePaths` + 存在性检查”。但 `_referencedRelativePaths` 除 4 列直接引用外，另有两类派生保护：任务的 `page-normalized.png` 与 `pages/` 下页图（“有行即保护”、文件本身未必存在）。直接做存在性检查会把未渲染过的任务也判为缺失，让每次失败恢复都报“回滚后复核未通过”。
+- 改用新 helper `_missingReferencedFiles`，只查库行直接引用的 4 列（questions 的 source_path/page_image_path/slice_path + collect_tasks.source_path），与孤儿扫描的列相同、去掉派生保护。偏差与理由写进批报告。
+
+## D-65 — FR-28 复核范围限定：只在切换已开始时核（2026-11-17，批二）
+
+- `fileRollbackOk == true` 时加 `journal.stage.index >= RestoreStage.filesSwitching.index` 限定。切换前失败（如快照互斥）时文件根本没动过，核它只会用恢复前的旧悬空引用掩盖真正的失败原因。任务书未写此限定，是实现时补的范围收窄，写进批报告。
+
+## D-66 — FR-43 指纹含 mtime：写回相同字节也判已变化（2026-11-17，批二）
+
+- `RestoreFileFingerprint` 按任务书比大小/mtime/哈希三项。重写相同字节会改 mtime，`restoreFileUnchanged` 返回 false——这是按口径的正确行为（宁可误报重选，不可按可能已被换过的文件恢复），不是 bug。指纹测试初版期望“写回相同字节后为 true”，实跑失败后已按此口径修正测试。
+
+## D-67 — FR-45：未定位到肇事测试，加 `test/flutter_test_config.dart` 兜底（2026-11-17，批二）
+
+- 88 个测试文件逐组二分跑完，无一能复现 W7 的演示库 md5 变化；静态上直接碰单例的测试都在 setUp/测试体内先重定向。最可能的肇事是 W7 窗口内并行工作员的 GUI/应用真机运行（应用 `_openDb` 删 v1 演示库重建 v2 的行为与 94,208 → 126,976 字节一致），而非某个测试。
+- 加兜底：`test/flutter_test_config.dart` 的 `testExecutable` 在每个测试文件 main() 之前把 `AppDatabase.testDataDirectory` 指到全新临时目录。加之前核对：两处 `setCustomDataDirectory` 测试（b2_leftover_data_test、b5_p2_data_test）都先设 `testMarkerDirectory`；无测试断言 `testDataDirectory` 为 null 或 `dataDirectoryPath()` 等于真实路径；`testDataDirectory = null` 只出现在各文件 `tearDownAll` 收尾。
+- 防线只拦测试进程，拦不住 GUI/应用真机运行——跑应用验证仍须用隔离数据目录。最终结论以批末全量 md5 为准，见批报告。
+
+## D-68 — FR-08 共享拼音排序：新文件 `lib/state/subject_sort.dart`（2026-11-17，批三）
+
+- 拼音表（97 条）原在 `wrongbook_notifier.dart`（SR2-32），FR-08 原样移到新文件 `lib/state/subject_sort.dart`，另加三个共享函数：`subjectInitialForName` / `subjectPinyinKeyForName` / `compareSubjectNames`（首字母 → 拼音串 → 原名）。
+- 错题本 `subjectInitial` / `subjectPinyinKey` / `subjectKeyCompare` 改为按学科 id 取名后委托；整理页 `_sorted` 改为取学科表（`subjects` 参数，找不到的 id 回退 `Subject.byId`）后调 `compareSubjectNames`，队列弹窗 `_filtered` 同款；整理页旧的顶层 `subjectInitial`（按 id 写死三科）删除。
+- 附带发现（不在本批范围，未改）：'学' 不在原表里（SR2-32 的表缺口），'数学' 的拼音串是 'S学'（回退原字），不是 'SX'；但 'W'(0x57) < '学'(0x5B66)，生物仍排在数学前，排序结论不受影响。扩表是另一件事，留待以后。
+
+## D-69 — FR-09 详情页复查间隔：DetailState 带 `recheckIntervalDays`（2026-11-17，批三）
+
+- 未选“页面 watch settingsProvider”：详情页其余文案都不读设置，另起一个订阅不如沿用复习页/报告页“状态里带设置”的做法。`DetailState` 加 `recheckIntervalDays`（默认 7），`load()` 里 `repo.settings()` 一并读库；文案拼 `满 ${_st.recheckIntervalDays} 天自动回来复查`。
+- 为让 `load()` 不走真实库，`test/detail_page_test.dart` 与 `test/detail_notifier_test.dart` 的两个 FakeRepo 各加 `settingsValue`（默认 `AppSettings.defaults`）+ `settings()` 桩。
+
+## D-70 — FR-10 复习页元数据行：现拼 `st.subjects`，前 3 科 +“等”（2026-11-17，批三）
+
+- 括号内容由 `st.subjects` 现拼：取前 3 科名用“、”连，超过 3 科加“等”；无学科时不带括号（`列表按学科排，同一科里先加入的先解决`）。未选“去掉括号”（报告给的二选一，选了现拼，信息量不变）。
+
+## D-71 — FR-12 详情页计数：改标“共自查 N 次”（2026-11-17，批三）
+
+- 报告给的二选一（改标“共自查 N 次” / 直接用 `nOk`），选前者：数字仍是 `history.length`（全部自查次数），只改“解决”二字为“自查”，与同行内“自查「已解决」nOk 次”不再自相矛盾。
+
+## D-72 — FR-16 详情页知识点补章节：`学科 › 章节 · 知识点名`，章节为空回落（2026-11-17，批三）
+
+- 与同页编辑芯片同款写法；`chapter` 为空时回落到 `学科 › 知识点名`，不留悬空的“·”（数据损坏时的防御，正常数据章节非空）。
+
+## D-73 — FR-17 错题本已归档标题：无学科时为“已归档 · 错题本”（2026-11-17，批三）
+
+- 报告给的二选一（“已归档 · 错题本” / “错题本”），选前者：与有学科时的“学科 · 错题本”对称，且保留“已归档”信息。注意：书架顶部跨学科已归档视图（`_buildArchived`）标题本来就是硬编码“已归档”，不在 FR-17 范围内，未动。
+
+## D-74 — FR-34 重框确认按钮：重框下为“确认重新框选”（2026-11-17，批三）
+
+- 报告给的二选一（“确认重新框选” / “确认并更新切片”），选前者，与详情页入口文案“重新框选这道题”同词。草稿模式两档文案（“确认修框，去整理”/“拆成 N 个待整理任务”）不动；重框模式的操作说明折叠文本里“确认只点下方「确认修框」按钮”同步改成新按钮名，避免文案与按钮脱节。
+
+## D-75 — FR-35 重叠横幅：已由批一 FR-03 修好，本批只核对验证，不改代码（2026-11-17，批三）
+
+- 核对：`_overlapBannerMessage`（`box_editor.dart`）四种文案均不含“有框重叠了，”前缀（批一 FR-03 写新文案时已去掉，文件内注释亦有“FR-35 到时只剩核对”字样）；标题“框重叠” + 正文“第 N 道题的框叠在一起，请调开再确认。”连读无重复。只加回归测试锁定。
+
+## D-76 — 最终自审修复批三完成：P2 页面与文案 10 项（2026-11-17）
+
+- FR-08/09/10/11/12/16/17/18/34 按报告修法修完，FR-35 核对无重复（不改代码）；每项都有回归测试锁定（见批报告）。
+- 新增测试 15 项（fix_batch3 6 项 + organize_notifier 1 + wrongbook_notifier 1 + detail_page 3 + review_page 2 + report_page 1 + wrongbook_page 1），既有测试改断言 3 处（detail_page FR-12、FR-16 各 1 行；organize_page FR-11 1 行）+ 详情页重框确认 5 行（FR-34）。
+- 验收：只跑相关测试文件（按 Meng 2026-11-17 19:27 新定，不跑全量、不跑 Linux Release）；`flutter analyze` No issues found；schema 测试 1/1（17 条 DDL 逐字一致）；演示库 md5 前后不变（`8f7f9c64…`）。
+- 批报告 `~/workspace/final-review/FIX-BATCH-3.md`。未推代码、未发邮件；四批合并不久一次推，等 Meng 批准。
+
+## D-77 — FR-19：5 个页 Provider 补 `dependencies: [repositoryProvider]`（2026-11-17，批四）
+
+- 报告给的二选一（补 dependencies / 补覆盖测试），两者都做：home/collect/organize/report/subjects 五处补 `dependencies: [repositoryProvider]`（D-49 同款），另按 detail 模式各补一组“根 Scope + Navigator.push + FakeRepo”回归测试（`test/fix_batch4_fr19_push_scope_test.dart` 5 项，判别信号是 FakeRepo 独有的“假学科 / 假题”）。
+- 生产行为零变化：默认值与根组件是同一单例库。`settingsProvider` 与 `badgeCountsProvider` 不补（无嵌套 override，见 W2 审计表）。
+- 修法前失败探针已做：临时去掉 homeProvider 的 dependencies 后，home 一项失败；还原后 5/5 通过。
+
+## D-78 — FR-22：`freedBytes` 删除成功后再计入（2026-11-17，批四）
+
+- `deleteOrphanFilesImpl`：先 `lengthSync()` 存局部变量，`await f.delete()` 成功后再 `freed += size`；删失败进空 catch 时 freed 不虚高。单文件失败不阻断整批的既定口径不变。
+- 删失败活注：当前环境是 root + overlayfs，权限位拦不住删除、`chattr +i` 不被允许（Operation not permitted），无法稳定注入一次真实删失败；回归测试锁两点——成功路径数字准确（删 123 字节文件 → freedBytes 123）+ 源码顺序（`freed += size` 在 `await f.delete()` 之后，旧 `freed += f.lengthSync()` 已不存在）。
+
+## D-79 — FR-30：删三个死方法 + 修正指南对照表（2026-11-17，批四）
+
+- 删 `AppDatabase.addCauseCheckHistory` / `deleteCauseRecordsForQuestion` / `deleteCauseRecord`（全仓零调用；`syncCauseRecordsIntoImpl` 内部删错因直接写 `db.delete`，不经过它们，删除无连锁）。指南 `A-READING-GUIDE.md` §六两行同步修正：`syncCauseRecords` 单列一行；`ensureCauseRecords` 单列一行并注明 FR-30 已删三者。
+- 历史文档（旧报告/计划文档，如 `DB-CHANGE-PLAN.md`、`B3-DELETE-CONFIRM.md`、`P0B2-P0-HARDENING-REPORT.md`）里提及三者的文字是当时状态的历史记录，不改。
+
+## D-80 — FR-31：事件 kind 订阅口径只写注释/指南，不改代码（2026-11-17，批四）
+
+- `lib/data/data_change_events.dart` 头注释 + 指南 §六写明：当前唯一订阅方是 `badgeCountsProvider`、只消费 `badges`；其余四种 kind（questions / subjects / reviewRecords / settings）目前无任何订阅方，是为将来订阅方预留的元数据；将来加订阅方时把该页的刷新时序纳入回归（W2-01 角标竞态的教训）。
+
+## D-81 — FR-32：编解码双实现用对照测试锁定，不抽公共函数（2026-11-17，批四）
+
+- 报告给的二选一（抽公共纯函数 / 加对照测试），选后者（推荐②）：`converters.dart` 是 part 库私有、抽公共函数需解除 part 私有性，改动面大；对照测试 `test/fix_batch4_test.dart` FR-32 组 4 项——同一批边界输入（空串、`[]`、非法 JSON、非字符串元素、缺键项、浮点旋转角等）同时过 `decode*` 与 `*Converter.fromSql`，断言结果相等；编码一侧也对照（空列表写 `'[]'`）。
+
+## D-82 — FR-36：整理页批量删除与错题本同款逐题容错（2026-11-17，批四）
+
+- `OrganizeNotifier.batchDeleteQuestions` 返回 `({int ok, int missing, int failed, Set<String> deletedIds})`：每题先 `repo.questionById` 查库（已不在库里计 missing）、删成功计 ok、抛错计 failed 继续下一题；页面 `_batchDelete` 只去掉 `deletedIds` 里的题，并用 `batchResultMessage('删除', ok, missing, failed)` 提示（为此 organize_page import 了 `wrongbook_notifier.dart` 的 `batchResultMessage`，无循环 import）。
+- 注意：整理页仍是逐题删除（每题各自一个事务），与错题本 FR-37 的整批事务不同——整理页保留逐题容错语义（中途失败其余题继续删），错题本改成要么全成、要么全不成。两处口径不同是有意的，见 D-83。
+
+## D-83 — FR-37：错题本批量删除整批一个事务（2026-11-17，批四）
+
+- Meng 裁决口径 (b) 数据层加批量删题事务：新增 `deleteQuestionsBatchFromImpl`（先收各题切片路径 → 一次事务内逐题 `_deleteQuestionTxn` → 提交后逐个删独占切片，中途失败整批回滚）+ `AppDatabase.deleteQuestionsBatch`（成功后只发一个合并事件，多题故 questionId 为空；空批直接返回、不发事件）+ `QuestionRepository.deleteQuestions`；`WrongbookNotifier.batchDeleteConfirmed` 改为一次调 `deleteQuestions`，整体成功 okN 全计、整体失败 failed 全计（missing 仍先在 state 里按 `questionById` 分出）。指南 §六补 `deleteQuestions` 一行。
+- 旧的逐题 try/catch + scope 包循环不再用于批量删除；单题删除 `repo.delete` 不变。
+
+## D-84 — FR-38/FR-39：考试事件单条改动走原始 JSON 行 + 同一事务（2026-11-17，批四）
+
+- 新增 `mutateExamEventsRawIntoImpl`（`db_settings.dart`）：读原始 JSON 数组 → 改动函数只改目标行（按 id 匹配的 Map）→ 写回，读-改-写回在同一个 `db.transaction` 内（Drift 同一连接上的事务串行执行，并发写不再交错丢改动，FR-38）；未知/坏行原样保留随新数组写回（FR-39，读时跳过是“读时容忍”，写时不再清掉）。整段 JSON 不是数组或非法 JSON 时按空列表起步（与读侧坏 JSON 按空列表口径一致；整段已坏到无法解析时无行可保留）。
+- `QuestionRepository.saveExamEvent` / `deleteExamEvent` 改走新入口（经 `AppDatabase.saveExamEventFrom` / `deleteExamEventFrom`，成功后发一次 `{settings}` 事件）；整表替换的 `saveExamEvents` / `saveExamEventsInto` 保留（批量整体替换口径，单条增删改不再走它）。指南 §六对应行同步改口径。
+- 修法前失败探针已做：临时探针按旧写法（load → 改 → saveExamEventsInto）并发新增两场，丢一场；新入口同款并发三操作（新增两场 + 删一场）全生效（探针文件已删）。
+
+## D-85 — FR-15 修法修正：弹窗控制器改字段持有，不立即 dispose（2026-11-17，批四）
+
+- 报告建议是“showDialog await 返回后 dispose”，按字面实现后实测失败：showDialog 的 future 在 `didComplete` 时就完成（SDK 源码：`Route.didComplete` 在退出动画之前完成 `_popCompleter`），退出动画仍在重建 TextField，立即 dispose 会抛 “A TextEditingController was used after being disposed”（`_AnimatedState.didUpdateWidget` → `addListener`），且泄漏出的框架异常会毒化后续测试（错题本页测试一度连锁失败 22 项）。
+- 改为字段持有：详情页 `_askTextCtrl` / `_newKpNameCtrl`、错题本页 `_batchAddTagCtrl`，下次打开同种弹窗时先释放上一个（此时上一个弹窗早已完全关闭——弹窗是模态的，按钮要等退出动画结束才能再点到），页面 dispose 时释放最后一个。`Route.popped` 同样在动画前完成，不能用来等动画结束，故不用它。
+- 附带修（批三遗留，批四验收时发现）：批三 FR-09 让 `DetailNotifier.load()` 多读 `repo.settings()`，但 `test/detail_push_scope_regression_test.dart` 的 `MechFakeRepo` 没补桩，3 项全失败（`loading` 一直 true）；按批三同款给该 FakeRepo 补 `settings()` 返回 `AppSettings.defaults`。这是测试桩补漏，不改产品代码、不动批三的项。
+
+## D-86 — 批四完成（2026-11-17，P2 代码卫生与防御 12 项）
+
+- 12 项全部实现并验收：相关测试 23 个文件 546/546（`--concurrency=1`，约 210 秒），`flutter analyze` 0，schema 测试 1/1，演示库 md5 前后均为 `8f7f9c64405dc6e484ac2bf8e5e1a807`。新增测试 34 项：fix_batch4_test 22、fr19 推送范围测试 5、organize_notifier FR-36 组 3、wrongbook_notifier FR-37 组 3、organize_page FR-36 控件测试 1；另 detail_push 测试文件仅补桩、无新增测试。
+- 本批验收中途曾出现 25 项失败（错题本页 22 + detail_push 3），全部定位并修复后复跑全过：① FR-37 改入口后错题本页 FakeRepo 未跟进 `deleteQuestions` 桩；② FR-15 按报告字面“await 后立即 dispose”实测错误（见 D-85）；③ detail_push 的 MechFakeRepo 缺 `settings()` 桩（批三 FR-09 遗留，见 D-85）。
+- FR-36 与 FR-37 语义刻意不同：整理页批量删除保留逐题容错（删坏的留下、其余继续、汇总报数），错题本批量删除改整批事务（中途失败整批回滚）。两处入口不同，互不冲突。
+- 未推代码、未发邮件。批报告：`~/workspace/final-review/FIX-BATCH-4.md`，测试日志：`~/workspace/final-review/fix-batch4-relevant-tests.log`。
+
+## D-87 — FR-34 定性：重框改名是通用改名，收集页重框测试期望滞后（2026-11-17，门禁失败修复）
+
+- 自审报告 FR-34（W4-01）原文说的是“重框模式确认按钮文案误导”，未限定详情页；D-74 记“重框模式为‘确认重新框选’，草稿模式两档文案不动”——`box_editor.dart:922` 的 `confirmLabel` 本就是按 `mode` 分支，不是按页面分支；批三回归测试已锁“重框 1 框 → 新文案、草稿 1 框 → 旧文案”。故收集页重框模式同样适用新文案，批三改共享编辑器没有改过界。
+- 批三漏改的只是测试：`test/b5_p2_collect_test.dart` 的 `_openEditorDialog` / `_tapConfirm` 两个共享 helper 仍按旧文案前缀“确认修框”找按钮（重框新文案“确认重新框选”不含该前缀），4 项重框测试（SR-P2-20 ×2、SR3-13 ×2）因此找不到按钮。本批只改测试：helper 改模式感知（`_confirmFinder(mode)`：重框精确匹配“确认重新框选”，草稿仍按“确认修框”前缀），4 处重框点按 + 1 处草稿点按显式传 mode；草稿模式断言（259/295/511/922 行等）全部保留原样。产品代码不动。
+- SR-P2-3 详情页重框用例另含一处同类滞后点按（`find.text('确认修框，去整理')` → “确认重新框选”），随 D-88 的桩修复一并改（该用例门禁失败主因是桩缺失，见 D-88）。
+
+## D-88 — 18 项 pumpAndSettle 超时定性：FakeRepo 缺 `settings()` 桩，非产品回归（2026-11-17，门禁失败修复）
+
+- 根因链：批三 FR-09 让 `DetailNotifier.load()` 多读 `repo.settings()`（`detail_notifier.dart:310`）；`test/b5_p2_collect_test.dart` 的 `_DetailFakeRepo`（5 项）、`test/b11_8_export_image_test.dart` 的 `FakeExportRepo`（12 项）、`test/b8_1_subject_sweep_test.dart` 的 `_SweepDetailRepo`（1 项）均未覆写 `settings()`，落到基类 `QuestionRepository.settings() => _db.loadSettings()`，读真实 Drift 库，在测试 fake async 里永不完成 → `loading` 一直 true → `CircularProgressIndicator` 无限动画拖死 `pumpAndSettle`。三处超时的失败点全在首 pump（b5 `_pumpDetail:1423`、b11_8 `pumpExportDetail:179`、b8_1 `_pumpPage:83`），与 FR-15 无关——FR-15 的字段持有控制器只在弹窗打开后才创建，超时发生时弹窗尚未打开，故 (b) 排除；b8_1 同文件内已补桩的报告/复习 FakeRepo 均通过，是反证。
+- 不是产品回归：生产环境 `settings()` 读真实库可完成；`load()` 无 try/catch 是全部 repo 调用共有的既有模式（任一读库抛错都会停在 loading），不在本批修范围；若要给 `load()` 加失败兜底（抛错时退回默认间隔、不一直 loading），另立项由 Meng 定。
+- 修法：三处 FakeRepo 各补 `Future<AppSettings> settings() async => AppSettings.defaults;`（与 `detail_page_test` / `detail_push_scope_regression_test` / FR-19 测试同款，D-85 同类先例：批四验收时 `MechFakeRepo` 同样缺桩，同样只补桩）。产品代码不动；未用 `pump(Duration…)` 绕过超时。
+
+## D-89 — GPT 关口审 P1 修复：备份恢复 TOCTOU，校验字节与导入字节同一份（2026-11-17）
+
+- GPT 门禁 FAIL 的唯一阻断项：FR-43 备份恢复里指纹校验与实际恢复是两次独立读文件（`parseRestoreFile` 算指纹 → `restoreFileUnchanged` 重读核对 → `importBackupZipFile` 按路径重读恢复）；校验与恢复之间文件被换，恢复的就是用户没确认过的另一份备份，而恢复会覆盖现有数据库。定性 P1 成立（触发虽窄——个人电脑上需外部换文件，但后果是整库被换）。
+- 修法：解析时读到的完整字节一路带到确认恢复，恢复直接用这份字节，不再按路径重读。删 `RestoreFileFingerprint` 类与 `restoreFileUnchanged()`（指纹重查本身就是 TOCTOU 窗口）；删按路径重读的入口 `AppDatabase.importBackupZipFile` 与 `QuestionRepository.importBackupZipFile`（危险 API 不留）；设置页 `_restoreZipPath` / `_restoreFingerprint` 合并为 `_restoreZipBytes` 常驻内存。确认后“文件已变化请重新选择”的提示随之取消——文件被换后恢复照常用解析过的字节。
+- 代价：zip 字节在选好到确认期间常驻内存（解析时已读过一次、确认弹窗模态短时持有，可接受）。
+- 新增回归测试 3 项（`test/fix_gpt_p1_toctou_test.dart`，A/B 两份真导出备份）：确认前文件被换仍恢复解析过的 A；确认前文件被删仍照常恢复；解析出的题数与备份一致。旧测试同步更新：删“按路径重读失败”与指纹测试，改“解析返回文件本身字节”与“恢复分发走字节”。
+- 验收：相关测试 20/20 + 131/131 + 59/59，`flutter analyze` 0，全量串行 **1362/1362**（1360 + 3 − 1，9 分 43 秒，日志 `~/workspace/final-review/fix-gpt-p1-full2.log`），演示库 md5 不变。未推代码、未发邮件。
+- 环境插曲：首遍全量跑到 +1183（0 失败）时被 SIGTERM 中断，系 VM 重启清空 /usr 下 clang 与 ninja；恢复脚本两次在拉 Ubuntu 索引时断流（urllib 一次性读大流），变通为 curl 拉三个索引 + 本地闭包脚本恢复（`/tmp/restore-from-local.py`），clang 18.1.3 等均已验证可用。恢复脚本的索引拉取宜改 curl + retry，是否改由 Meng 定。
+- 批报告：`~/workspace/final-review/FIX-GPT-P1.md`。

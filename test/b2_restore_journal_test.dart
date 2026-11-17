@@ -407,6 +407,87 @@ void main() {
     });
   });
 
+  group('FR-24 _handleReplaceFailure：正式在、临时不在时先核对正式日志内容', () {
+    test('返回非 0 但 formal 已是新内容：视为本次更新已完成、正常返回', () async {
+      await store.writeInitial(_journal(dir: dir));
+      // fake 在调用时真的把 tmp 安装为正式日志（模拟 ReplaceFileW
+      // “报失败、实际已替换”），再返回非 0 错误码。
+      final injected = _storeWithFake(
+        dir,
+        [1175],
+        onCall: (index, s) {
+          if (index == 0) {
+            s.tmpFile.renameSync(s.formalFile.path);
+          }
+        },
+      );
+      store = injected.store;
+      final fake = injected.fake;
+      final v2 = await store.updateStage(
+        _journal(dir: dir, stage: RestoreStage.snapshotReady),
+      );
+      expect(fake.calls, 1, reason: '本次更新已完成，不应重试');
+      expect(v2.stage, RestoreStage.snapshotReady);
+      expect((await _readFormal(store)).checksum, v2.checksum);
+      expect(await store.tmpFile.exists(), isFalse);
+    });
+
+    test('返回非 0、formal 仍是旧内容、临时已不在：仍抛错、原日志保留', () async {
+      final v1 = await store.writeInitial(_journal(dir: dir));
+      // fake 在调用时把 tmp 删掉（已被消费），但正式仍是旧日志：
+      // 不是“已替换”，须按原口径中止。
+      final injected = _storeWithFake(
+        dir,
+        [1175],
+        onCall: (index, s) {
+          if (index == 0) {
+            s.tmpFile.deleteSync();
+          }
+        },
+      );
+      store = injected.store;
+      final fake = injected.fake;
+      await expectLater(
+        store.updateStage(
+          _journal(dir: dir, stage: RestoreStage.snapshotReady),
+        ),
+        throwsA(isA<JournalUpdateException>()),
+      );
+      expect(fake.calls, 1, reason: '正式仍是旧内容，不应重试');
+      expect((await _readFormal(store)).checksum, v1.checksum);
+    });
+  });
+
+  group('FR-25 同一文件系统约束是运行期检查（不再只是 assert）', () {
+    // 数据目录外的 rollback 路径（与临时数据目录同级的另一目录，
+    // 归一化后词法上不在数据目录内）。
+    String outsideRollback() =>
+        p.normalize(p.join(dir.path, '..', 'qm2-outside-rollback'));
+
+    test('rollbackDir 在数据目录外：writeInitial 抛 JournalUpdateException', () async {
+      final outside = _journal(dir: dir)
+          .copyWith(rollbackDir: outsideRollback());
+      await expectLater(
+        store.writeInitial(outside),
+        throwsA(isA<JournalUpdateException>()),
+      );
+      expect(await store.formalFile.exists(), isFalse);
+    });
+
+    test('rollbackDir 在数据目录外：updateStage 同样拦住，原日志保留', () async {
+      final v1 = await store.writeInitial(_journal(dir: dir));
+      final outside = _journal(
+        dir: dir,
+        stage: RestoreStage.snapshotReady,
+      ).copyWith(rollbackDir: outsideRollback());
+      await expectLater(
+        store.updateStage(outside),
+        throwsA(isA<JournalUpdateException>()),
+      );
+      expect((await _readFormal(store)).checksum, v1.checksum);
+    });
+  });
+
   group('⑭ 启动恢复 locateAndRecover', () {
     test('三处均无日志：返回 null（无进行中的恢复，正常启动）', () async {
       expect(await store.locateAndRecover(), isNull);

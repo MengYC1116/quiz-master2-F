@@ -26,20 +26,19 @@ Question tq(
   DateTime? createdAt,
   bool isOrganized = true,
   bool isArchived = false,
-}) =>
-    Question(
-      id: id,
-      title: title,
-      subjectId: subjectId,
-      errorTypes: errorTypes,
-      knowledgePointIds: knowledgePointIds,
-      createdAt: createdAt ?? _today,
-      isOrganized: isOrganized,
-      isArchived: isArchived,
-      reviewJoined: true,
-      sliceKind: 'material',
-      sliceText: '题：$title',
-    );
+}) => Question(
+  id: id,
+  title: title,
+  subjectId: subjectId,
+  errorTypes: errorTypes,
+  knowledgePointIds: knowledgePointIds,
+  createdAt: createdAt ?? _today,
+  isOrganized: isOrganized,
+  isArchived: isArchived,
+  reviewJoined: true,
+  sliceKind: 'material',
+  sliceText: '题：$title',
+);
 
 CauseRecord trec(
   String questionId,
@@ -49,16 +48,15 @@ CauseRecord trec(
   int solvedCount = 0,
   DateTime? lastCheck,
   DateTime? joinedAt,
-}) =>
-    CauseRecord(
-      questionId: questionId,
-      cause: cause,
-      subjectId: subjectId,
-      status: status,
-      solvedCount: solvedCount,
-      lastCheck: lastCheck,
-      joinedAt: joinedAt ?? _today,
-    );
+}) => CauseRecord(
+  questionId: questionId,
+  cause: cause,
+  subjectId: subjectId,
+  status: status,
+  solvedCount: solvedCount,
+  lastCheck: lastCheck,
+  joinedAt: joinedAt ?? _today,
+);
 
 KnowledgePoint tkp(String id, String subjectId, String chapter, String name) =>
     KnowledgePoint(id: id, subjectId: subjectId, chapter: chapter, name: name);
@@ -71,8 +69,8 @@ class FakeReportRepo extends QuestionRepository {
     this.history = const {},
     this.throwOnLoad = false,
     List<Subject>? subjects,
-  })  : subjectsValue = subjects ?? Subject.all,
-        super(AppDatabase.instance);
+  }) : subjectsValue = subjects ?? Subject.all,
+       super(AppDatabase.instance);
 
   List<Question> questions;
   List<CauseRecord> records;
@@ -104,44 +102,83 @@ class FakeReportRepo extends QuestionRepository {
 
   @override
   Future<List<({String result, DateTime reviewedAt})>> reviewHistory(
-          String questionId) async =>
-      List.of(history[questionId] ?? const []);
+    String questionId,
+  ) async => List.of(history[questionId] ?? const []);
 }
 
 /// 默认库：本周 8 道题（q-old 是 40 天前的题，只在“全部”里出现）。
 FakeReportRepo reportRepo({bool withHistory = true}) {
   final today = _today;
   final questions = [
-    tq('q1', '函数极限', errorTypes: ['概念不清'],
-        knowledgePointIds: ['kp-limit']),
-    tq('q2', '导数应用', errorTypes: ['方法不会'],
-        knowledgePointIds: ['kp-derivative']),
-    tq('q3', '定积分', errorTypes: ['计算错误'],
-        knowledgePointIds: ['kp-integral']),
-    tq('q4', '学术词汇', subjectId: 'english', errorTypes: ['概念不清'],
-        knowledgePointIds: ['kp-vocab']),
-    tq('q5', '长篇阅读', subjectId: 'english', errorTypes: ['审题失误'],
-        knowledgePointIds: ['kp-reading']),
-    tq('q6', '史纲时间轴', subjectId: 'politics', errorTypes: ['审题失误'],
-        knowledgePointIds: ['kp-history']),
-    tq('q7', '马原', subjectId: 'politics', errorTypes: ['概念不清'],
-        knowledgePointIds: ['kp-marx']),
-    tq('q8', '材料分析', subjectId: 'politics', errorTypes: ['方法不会'],
-        knowledgePointIds: ['kp-marx']),
-    tq('q-old', '旧题', errorTypes: ['概念不清'],
-        knowledgePointIds: ['kp-limit'],
-        createdAt: today.subtract(const Duration(days: 40))),
+    tq('q1', '函数极限', errorTypes: ['概念不清'], knowledgePointIds: ['kp-limit']),
+    tq(
+      'q2',
+      '导数应用',
+      errorTypes: ['方法不会'],
+      knowledgePointIds: ['kp-derivative'],
+    ),
+    tq('q3', '定积分', errorTypes: ['计算错误'], knowledgePointIds: ['kp-integral']),
+    tq(
+      'q4',
+      '学术词汇',
+      subjectId: 'english',
+      errorTypes: ['概念不清'],
+      knowledgePointIds: ['kp-vocab'],
+    ),
+    tq(
+      'q5',
+      '长篇阅读',
+      subjectId: 'english',
+      errorTypes: ['审题失误'],
+      knowledgePointIds: ['kp-reading'],
+    ),
+    tq(
+      'q6',
+      '史纲时间轴',
+      subjectId: 'politics',
+      errorTypes: ['审题失误'],
+      knowledgePointIds: ['kp-history'],
+    ),
+    tq(
+      'q7',
+      '马原',
+      subjectId: 'politics',
+      errorTypes: ['概念不清'],
+      knowledgePointIds: ['kp-marx'],
+    ),
+    tq(
+      'q8',
+      '材料分析',
+      subjectId: 'politics',
+      errorTypes: ['方法不会'],
+      knowledgePointIds: ['kp-marx'],
+    ),
+    tq(
+      'q-old',
+      '旧题',
+      errorTypes: ['概念不清'],
+      knowledgePointIds: ['kp-limit'],
+      createdAt: today.subtract(const Duration(days: 40)),
+    ),
   ];
   final records = [
     trec('q1', '概念不清'),
     trec('q2', '方法不会'),
-    trec('q3', '计算错误',
-        status: CauseStatus.inProgress, solvedCount: 1, lastCheck: today),
-    trec('q4', '概念不清',
-        subjectId: 'english',
-        status: CauseStatus.solved,
-        solvedCount: 2,
-        lastCheck: today),
+    trec(
+      'q3',
+      '计算错误',
+      status: CauseStatus.inProgress,
+      solvedCount: 1,
+      lastCheck: today,
+    ),
+    trec(
+      'q4',
+      '概念不清',
+      subjectId: 'english',
+      status: CauseStatus.solved,
+      solvedCount: 2,
+      lastCheck: today,
+    ),
     trec('q-old', '概念不清', joinedAt: today.subtract(const Duration(days: 40))),
   ];
   final kps = [
@@ -187,8 +224,9 @@ Future<void> pumpReport(
     MaterialApp(
       theme: AppTheme.light(scale: scale),
       darkTheme: AppTheme.dark(scale: scale),
-      themeMode:
-          brightness == Brightness.dark ? ThemeMode.dark : ThemeMode.light,
+      themeMode: brightness == Brightness.dark
+          ? ThemeMode.dark
+          : ThemeMode.light,
       home: Builder(
         builder: (context) {
           final data = MediaQuery.of(context);
@@ -199,16 +237,16 @@ Future<void> pumpReport(
                 key: UniqueKey(),
                 repo: repo ?? reportRepo(),
                 onGoReview: () => wentReview = true,
-                onOpenWrongbookFiltered: ({
-                  String? subjectId,
-                  String? cause,
-                  String? knowledgePointId,
-                }) =>
-                    calls.add((
-                  subjectId: subjectId,
-                  cause: cause,
-                  kp: knowledgePointId,
-                )),
+                onOpenWrongbookFiltered:
+                    ({
+                      String? subjectId,
+                      String? cause,
+                      String? knowledgePointId,
+                    }) => calls.add((
+                      subjectId: subjectId,
+                      cause: cause,
+                      kp: knowledgePointId,
+                    )),
               ),
             ),
           );
@@ -240,28 +278,27 @@ void main() {
       expect(find.byKey(const ValueKey('report-core-solved')), findsOneWidget);
       // 数字与序号圆盘同字：用 Key 精确定位核心数。
       expect(
-        (tester.widget(find.byKey(const ValueKey('report-core-solved')))
-                as Text)
-            .data,
+        (tester.widget(
+          find.byKey(const ValueKey('report-core-solved')),
+        ) as Text).data,
         '1',
       );
       expect(
-        (tester.widget(find.byKey(const ValueKey('report-core-pending')))
-                as Text)
-            .data,
+        (tester.widget(
+          find.byKey(const ValueKey('report-core-pending')),
+        ) as Text).data,
         '4',
       );
       expect(
-        (tester.widget(find.byKey(const ValueKey('report-core-rate')))
-                as Text)
-            .data,
+        (tester.widget(
+          find.byKey(const ValueKey('report-core-rate')),
+        ) as Text).data,
         '67%',
       );
       expect(find.text('已解决错因'), findsOneWidget);
       expect(find.text('待解决错因'), findsOneWidget);
       expect(find.text('复查通过率'), findsOneWidget);
-      expect(find.text('复查 3 次，通过 2 次（已解决满 7 天回来复查）'),
-          findsOneWidget);
+      expect(find.text('复查 3 次，通过 2 次（已解决满 7 天回来复查）'), findsOneWidget);
       expect(find.text('同一错因 2 次自查「已解决」才算解决'), findsOneWidget);
     });
 
@@ -271,28 +308,27 @@ void main() {
       expect(find.text('这段时间还没有复查记录'), findsOneWidget);
     });
 
-    testWidgets('范围说明：本周 · 周一 ~ 今天 · 数字按这个时间段算',
-        (tester) async {
+    testWidgets('范围说明：本周 · 周一 ~ 今天 · 数字按这个时间段算', (tester) async {
       await pumpReport(tester);
       final today = _today;
       final monday = today.subtract(Duration(days: today.weekday - 1));
       expect(
-        find.text('本周 · ${monday.month}-${monday.day} ~ '
-            '${today.month}-${today.day} · 数字按这个时间段算'),
+        find.text(
+          '本周 · ${monday.month}-${monday.day} ~ '
+          '${today.month}-${today.day} · 数字按这个时间段算',
+        ),
         findsOneWidget,
       );
     });
   });
 
   group('待解决按范围过滤（S8 B1）', () {
-    String pendingValue(WidgetTester tester) =>
-        (tester.widget(find.byKey(const ValueKey('report-core-pending')))
-                as Text)
-            .data!;
-    String solvedValue(WidgetTester tester) =>
-        (tester.widget(find.byKey(const ValueKey('report-core-solved')))
-                as Text)
-            .data!;
+    String pendingValue(WidgetTester tester) => (tester.widget(
+      find.byKey(const ValueKey('report-core-pending')),
+    ) as Text).data!;
+    String solvedValue(WidgetTester tester) => (tester.widget(
+      find.byKey(const ValueKey('report-core-solved')),
+    ) as Text).data!;
 
     // A 待解决·今天（本周/本月/全部都进）；B 解决中·上周日（只进本月/
     // 全部，本周一是 1 号时不存在该档）；C 待解决·40 天前（只进全部）；
@@ -300,8 +336,9 @@ void main() {
     FakeReportRepo rangeRepo() {
       final today = _today;
       final monday = today.subtract(Duration(days: today.weekday - 1));
-      final inMonthOutWeek =
-          monday.day > 1 ? monday.subtract(const Duration(days: 1)) : null;
+      final inMonthOutWeek = monday.day > 1
+          ? monday.subtract(const Duration(days: 1))
+          : null;
       final questions = [
         tq('qA', '题 A', errorTypes: ['概念不清']),
         tq('qB', '题 B', errorTypes: ['方法不会']),
@@ -312,15 +349,22 @@ void main() {
       final records = [
         trec('qA', '概念不清', lastCheck: today),
         if (inMonthOutWeek != null)
-          trec('qB', '方法不会',
-              status: CauseStatus.inProgress,
-              solvedCount: 1,
-              lastCheck: inMonthOutWeek),
-        trec('qC', '计算错误',
-            lastCheck: today.subtract(const Duration(days: 40))),
+          trec(
+            'qB',
+            '方法不会',
+            status: CauseStatus.inProgress,
+            solvedCount: 1,
+            lastCheck: inMonthOutWeek,
+          ),
+        trec('qC', '计算错误', lastCheck: today.subtract(const Duration(days: 40))),
         trec('qD', '审题失误'),
-        trec('qE', '概念不清',
-            status: CauseStatus.solved, solvedCount: 2, lastCheck: today),
+        trec(
+          'qE',
+          '概念不清',
+          status: CauseStatus.solved,
+          solvedCount: 2,
+          lastCheck: today,
+        ),
       ];
       return FakeReportRepo(questions: questions, records: records, kps: []);
     }
@@ -343,7 +387,6 @@ void main() {
       expect(pendingValue(tester), hasInMonthOutWeek ? '4' : '3');
       expect(solvedValue(tester), '1');
     });
-
   });
 
   group('弱点', () {
@@ -351,10 +394,7 @@ void main() {
       await pumpReport(tester);
       // 原因组共 7 行：默认只显示 5 条。
       expect(find.text('1 道题'), findsNWidgets(5));
-      expect(
-        find.widgetWithText(QmButton, '看更多（共 7 个）'),
-        findsOneWidget,
-      );
+      expect(find.widgetWithText(QmButton, '看更多（共 7 个）'), findsOneWidget);
       final more = find.widgetWithText(QmButton, '看更多（共 7 个）');
       await tester.ensureVisible(more);
       await tester.pumpAndSettle();
@@ -365,17 +405,41 @@ void main() {
       expect(find.textContaining('审题失误'), findsNWidgets(2));
     });
 
-    testWidgets('知识点组：矛盾观 2 道排第一，已解决题的知识点不出现',
-        (tester) async {
+    testWidgets('知识点组：矛盾观 2 道排第一，已解决题的知识点不出现', (tester) async {
       await pumpReport(tester);
       expect(find.textContaining('矛盾观'), findsOneWidget);
       expect(find.text('还没解决 2 道'), findsOneWidget);
       // q4 已解决：学术词汇不进弱点。
       expect(find.textContaining('学术词汇'), findsNothing);
-      expect(
-        find.widgetWithText(QmButton, '看更多（共 6 个）'),
-        findsOneWidget,
+      expect(find.widgetWithText(QmButton, '看更多（共 6 个）'), findsOneWidget);
+    });
+
+    testWidgets('FR-18：知识点弱点为空时文案是“这段时间没有待解决的知识点。”', (tester) async {
+      final today = _today;
+      final repo = FakeReportRepo(
+        questions: [
+          tq(
+            'q1',
+            '函数极限',
+            errorTypes: ['概念不清'],
+            knowledgePointIds: ['kp-limit'],
+          ),
+        ],
+        records: [
+          trec(
+            'q1',
+            '概念不清',
+            status: CauseStatus.solved,
+            solvedCount: 2,
+            lastCheck: today,
+          ),
+        ],
+        kps: [tkp('kp-limit', 'math', '函数与极限', '函数极限')],
       );
+      await pumpReport(tester, repo: repo);
+      expect(find.text('这段时间没有待解决的知识点。'), findsOneWidget);
+      expect(find.text('这段时间没有还没解决的知识点。'), findsNothing);
+      expect(find.text('这段时间没有待解决的错因。'), findsOneWidget);
     });
 
     testWidgets('看更多展开 7 条，再点收起回 5 条', (tester) async {
@@ -420,19 +484,23 @@ void main() {
   });
 
   group('SR-P1-10 / SR-P1-11 口径', () {
-    testWidgets('SR-P1-10：同名不同题各算 1 道，原因组与知识点组都计 2 道',
-        (tester) async {
+    testWidgets('SR-P1-10：同名不同题各算 1 道，原因组与知识点组都计 2 道', (tester) async {
       final repo = FakeReportRepo(
         questions: [
-          tq('qA', '选择题', errorTypes: ['概念不清'],
-              knowledgePointIds: ['kp-limit']),
-          tq('qB', '选择题', errorTypes: ['概念不清'],
-              knowledgePointIds: ['kp-limit']),
+          tq(
+            'qA',
+            '选择题',
+            errorTypes: ['概念不清'],
+            knowledgePointIds: ['kp-limit'],
+          ),
+          tq(
+            'qB',
+            '选择题',
+            errorTypes: ['概念不清'],
+            knowledgePointIds: ['kp-limit'],
+          ),
         ],
-        records: [
-          trec('qA', '概念不清'),
-          trec('qB', '概念不清'),
-        ],
+        records: [trec('qA', '概念不清'), trec('qB', '概念不清')],
         kps: [tkp('kp-limit', 'math', '函数与极限', '函数极限')],
       );
       await pumpReport(tester, repo: repo);
@@ -441,16 +509,29 @@ void main() {
       expect(find.text('数学 · 2 道错题'), findsOneWidget);
     });
 
-    testWidgets('SR-P1-11：未整理题与已归档题不进弱点 Top5 与学科分布',
-        (tester) async {
+    testWidgets('SR-P1-11：未整理题与已归档题不进弱点 Top5 与学科分布', (tester) async {
       final repo = FakeReportRepo(
         questions: [
-          tq('q1', '已整理题', errorTypes: ['概念不清'],
-              knowledgePointIds: ['kp-limit']),
-          tq('q2', '未整理题', errorTypes: ['概念不清'],
-              knowledgePointIds: ['kp-limit'], isOrganized: false),
-          tq('q3', '已归档题', errorTypes: ['概念不清'],
-              knowledgePointIds: ['kp-limit'], isArchived: true),
+          tq(
+            'q1',
+            '已整理题',
+            errorTypes: ['概念不清'],
+            knowledgePointIds: ['kp-limit'],
+          ),
+          tq(
+            'q2',
+            '未整理题',
+            errorTypes: ['概念不清'],
+            knowledgePointIds: ['kp-limit'],
+            isOrganized: false,
+          ),
+          tq(
+            'q3',
+            '已归档题',
+            errorTypes: ['概念不清'],
+            knowledgePointIds: ['kp-limit'],
+            isArchived: true,
+          ),
         ],
         records: [trec('q1', '概念不清')],
         kps: [tkp('kp-limit', 'math', '函数与极限', '函数极限')],
@@ -465,17 +546,13 @@ void main() {
   });
 
   group('范围与分布', () {
-    testWidgets('切到“全部”：旧题进来，数学分布变 4 道，概念不清变 2 道',
-        (tester) async {
+    testWidgets('切到“全部”：旧题进来，数学分布变 4 道，概念不清变 2 道', (tester) async {
       await pumpReport(tester);
       await tapSegment(tester, '全部');
       expect(find.text('数学 · 4 道错题'), findsOneWidget);
       expect(find.text('2 道题'), findsOneWidget);
       expect(find.text('先解决数学的概念不清。'), findsOneWidget);
-      expect(
-        find.text('全部时间 · 数字按这个时间段算'),
-        findsOneWidget,
-      );
+      expect(find.text('全部时间 · 数字按这个时间段算'), findsOneWidget);
     });
 
     testWidgets('分布只按学科、扣已掌握：本周数学 3 · 英语 1 · 政治 3', (tester) async {
@@ -489,25 +566,50 @@ void main() {
       // 英语只有 q4 且已掌握（错因已解决 ×2）→ 分布英语 0 道，数学仍 3 道。
       final repo = FakeReportRepo(
         questions: [
-          tq('q1', '函数极限', errorTypes: ['概念不清'],
-              knowledgePointIds: ['kp-limit']),
-          tq('q2', '导数应用', errorTypes: ['方法不会'],
-              knowledgePointIds: ['kp-derivative']),
-          tq('q3', '定积分', errorTypes: ['计算错误'],
-              knowledgePointIds: ['kp-integral']),
-          tq('q4', '学术词汇', subjectId: 'english', errorTypes: ['概念不清'],
-              knowledgePointIds: ['kp-vocab']),
+          tq(
+            'q1',
+            '函数极限',
+            errorTypes: ['概念不清'],
+            knowledgePointIds: ['kp-limit'],
+          ),
+          tq(
+            'q2',
+            '导数应用',
+            errorTypes: ['方法不会'],
+            knowledgePointIds: ['kp-derivative'],
+          ),
+          tq(
+            'q3',
+            '定积分',
+            errorTypes: ['计算错误'],
+            knowledgePointIds: ['kp-integral'],
+          ),
+          tq(
+            'q4',
+            '学术词汇',
+            subjectId: 'english',
+            errorTypes: ['概念不清'],
+            knowledgePointIds: ['kp-vocab'],
+          ),
         ],
         records: [
           trec('q1', '概念不清'),
           trec('q2', '方法不会'),
-          trec('q3', '计算错误',
-              status: CauseStatus.inProgress, solvedCount: 1, lastCheck: _today),
-          trec('q4', '概念不清',
-              subjectId: 'english',
-              status: CauseStatus.solved,
-              solvedCount: 2,
-              lastCheck: _today),
+          trec(
+            'q3',
+            '计算错误',
+            status: CauseStatus.inProgress,
+            solvedCount: 1,
+            lastCheck: _today,
+          ),
+          trec(
+            'q4',
+            '概念不清',
+            subjectId: 'english',
+            status: CauseStatus.solved,
+            solvedCount: 2,
+            lastCheck: _today,
+          ),
         ],
         kps: const [],
       );
@@ -538,11 +640,7 @@ void main() {
 
   group('空态与错误态', () {
     testWidgets('没有任何记录：小伙伴 + 去复习', (tester) async {
-      final empty = FakeReportRepo(
-        questions: [],
-        records: [],
-        kps: [],
-      );
+      final empty = FakeReportRepo(questions: [], records: [], kps: []);
       await pumpReport(tester, repo: empty);
       expect(find.text('还没有复习记录，先去复习吧'), findsOneWidget);
       final go = find.widgetWithText(QmButton, '去复习');
@@ -557,22 +655,15 @@ void main() {
     testWidgets('加载失败：出错误横幅，可点“知道了”关闭', (tester) async {
       final broken = reportRepo()..throwOnLoad = true;
       await pumpReport(tester, repo: broken);
-      expect(
-        find.text('报告数据读取失败，已显示上次成功加载的内容。可重启应用后重试。'),
-        findsOneWidget,
-      );
+      expect(find.text('报告数据读取失败，已显示上次成功加载的内容。可重启应用后重试。'), findsOneWidget);
       await tester.tap(find.text('知道了'));
       await tester.pumpAndSettle();
-      expect(
-        find.text('报告数据读取失败，已显示上次成功加载的内容。可重启应用后重试。'),
-        findsNothing,
-      );
+      expect(find.text('报告数据读取失败，已显示上次成功加载的内容。可重启应用后重试。'), findsNothing);
     });
   });
 
   group('无旧模型、无图标字体', () {
-    testWidgets('不出现“下次复习时间”、不出现导出、不使用 Icon',
-        (tester) async {
+    testWidgets('不出现“下次复习时间”、不出现导出、不使用 Icon', (tester) async {
       await pumpReport(tester);
       expect(find.textContaining('下次复习时间'), findsNothing);
       expect(find.textContaining('导出'), findsNothing);
@@ -583,13 +674,12 @@ void main() {
   group('亮/深 × 三档无溢出', () {
     for (final brightness in [Brightness.light, Brightness.dark]) {
       for (final scale in [1.0, 1.15, 1.3]) {
-        testWidgets(
-          '${brightness == Brightness.dark ? '深色' : '亮色'} × $scale',
-          (tester) async {
-            await pumpReport(tester, brightness: brightness, scale: scale);
-            expect(tester.takeException(), isNull);
-          },
-        );
+        testWidgets('${brightness == Brightness.dark ? '深色' : '亮色'} × $scale', (
+          tester,
+        ) async {
+          await pumpReport(tester, brightness: brightness, scale: scale);
+          expect(tester.takeException(), isNull);
+        });
       }
     }
 

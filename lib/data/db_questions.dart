@@ -254,6 +254,29 @@ Future<String?> _slicePathOf(QuizDatabase db, String id) async {
   return row.slicePath;
 }
 
+/// FR-37：批量删题（错题本批量删除，Meng 裁决口径 (b) 数据层加批量
+/// 删题事务）：整批一个事务——先收各题切片路径，再一次事务内逐题走
+/// `_deleteQuestionTxn`，提交后逐个删独占切片。中途任一题失败，
+/// 整批回滚，不出现删一半的状态；切片文件只在事务提交后删
+/// （与单题 [deleteQuestionFromImpl] 同顺序）。
+Future<void> deleteQuestionsBatchFromImpl(
+  QuizDatabase db,
+  List<String> ids,
+) async {
+  final slices = <String?>[];
+  for (final id in ids) {
+    slices.add(await _slicePathOf(db, id));
+  }
+  await db.transaction(() async {
+    for (final id in ids) {
+      await _deleteQuestionTxn(db, id);
+    }
+  });
+  for (final slice in slices) {
+    await _deleteDataFileIfUnreferenced(db, slice);
+  }
+}
+
 /// §4.5/§3.4：从复习队列里去掉该题的项（队列是 ReviewQueueItem
 /// 对象数组，按 questionId 匹配，不再拼字符串比对）。
 Future<void> _removeFromReviewQueueTxn(
@@ -340,22 +363,6 @@ extension AppDatabaseQuestions on AppDatabase {
           ),
         )
         .toList();
-  }
-
-  Future<void> addCauseCheckHistory({
-    required String questionId,
-    required String result,
-  }) async {
-    final d = await db;
-    await d
-        .into(d.reviewHistory)
-        .insert(
-          ReviewHistoryCompanion.insert(
-            questionId: questionId,
-            result: result,
-            reviewedAt: DateTime.now().millisecondsSinceEpoch,
-          ),
-        );
   }
 
   Future<List<CauseRecord>> allCauseRecords() async {
@@ -478,21 +485,6 @@ extension AppDatabaseQuestions on AppDatabase {
     return written;
   }
 
-  Future<void> deleteCauseRecordsForQuestion(String questionId) async {
-    final d = await db;
-    await (d.delete(
-      d.causeRecords,
-    )..where((t) => t.questionId.equals(questionId))).go();
-  }
-
-  Future<void> deleteCauseRecord(String questionId, String cause) async {
-    final d = await db;
-    await (d.delete(d.causeRecords)..where(
-          (t) => t.questionId.equals(questionId) & t.cause.equals(cause),
-        ))
-        .go();
-  }
-
   Future<void> saveReviewState({
     required List<ReviewQueueItem> queue,
     required int position,
@@ -555,6 +547,23 @@ extension AppDatabaseQuestions on AppDatabase {
           DataChangeKind.reviewRecords,
         },
         questionId: id,
+      ),
+    );
+  }
+
+  /// FR-37：批量删题（整批一个事务，见 [deleteQuestionsBatchFromImpl]）。
+  /// 成功后只发一个事件（多题，questionId 为空）；空批直接返回，不发事件。
+  Future<void> deleteQuestionsBatch(List<String> ids) async {
+    if (ids.isEmpty) return;
+    final d = await db;
+    await AppDatabase.deleteQuestionsBatchFrom(d, ids);
+    DataChangeBus.instance.emit(
+      const DataChangeEvent(
+        kinds: {
+          DataChangeKind.badges,
+          DataChangeKind.questions,
+          DataChangeKind.reviewRecords,
+        },
       ),
     );
   }

@@ -21,7 +21,7 @@
 //   系统注销等进程级中断），不承诺突然断电（断电、操作系统崩溃）后的完整回滚。
 //   本模块所有“持久化”措辞均按此范围解释。
 // - rollback 目录必须与正式目录位于同一文件系统（硬性要求，见
-//   [_assertSameFilesystem] 的断言与注释；本模块不另写目录逻辑）。
+//   [_assertSameFilesystem] 的运行期检查与注释；本模块不另写目录逻辑）。
 //
 // 本文件是纯 Dart，不 import flutter / riverpod（lib/data/ 白名单）。
 
@@ -504,6 +504,14 @@ class RestoreJournalStore {
     if (formalExists) {
       // 1175 语义：原日志仍在正式路径、临时新日志仍在临时位置。
       if (!tmpExists) {
+        // FR-24：ReplaceFileW 可能“报失败、实际已替换”——替换成功时
+        // 临时文件已被消费、正式日志已是新内容，只凭“临时不在”就中止
+        // 是误判。先读正式日志校验 checksum，等于本次 journal 即视为
+        // 本次更新已完成、正常返回；否则仍按原口径中止。正式日志本身
+        // 损坏时 validateFile 抛 JournalCorruptException（无法确认
+        // 是否已完成，不得猜测继续）。
+        final formal = await validateFile(formalFile);
+        if (formal.checksum == journal.checksum) return;
         throw JournalUpdateException(
           '原子替换失败（错误码 $code），正式日志仍在且完整，'
           '临时日志已不在，本次更新中止，原日志保留',
@@ -583,14 +591,19 @@ class RestoreJournalStore {
   /// 同一文件系统约束（B-NEW-07 / v7 修订，硬性要求）：
   /// rollback 目录必须位于正式目录所在的同一文件系统，否则目录重命名
   /// 会退化为复制 + 删除，无法保证原子性。本模块不另写目录逻辑，
-  /// 只在断言里体现——调用方须把 rollback 目录建在数据目录内
-  /// （同盘同文件系统）；相对路径视为数据目录内的相对位置，不另校验。
+  /// 只在这里做运行期检查——FR-25：以前是 `assert(...)`，release 构建
+  /// 会被 strip，约束只在 debug 构建里执行；现改为运行期检查，
+  /// 越界即抛 [JournalUpdateException]。调用方须把 rollback 目录建在
+  /// 数据目录内（同盘同文件系统）；相对路径视为数据目录内的相对位置，
+  /// 不另校验。
   void _assertSameFilesystem(RestoreJournal journal) {
-    assert(
-      !p.isAbsolute(journal.rollbackDir) ||
-          p.isWithin(dataDir.path, journal.rollbackDir),
-      'rollbackDir 必须与正式日志目录位于同一文件系统（数据目录内）：'
-      '${journal.rollbackDir}',
-    );
+    final rollback = journal.rollbackDir;
+    final inside =
+        !p.isAbsolute(rollback) || p.isWithin(dataDir.path, rollback);
+    if (!inside) {
+      throw JournalUpdateException(
+        'rollbackDir 必须与正式日志目录位于同一文件系统（数据目录内）：$rollback',
+      );
+    }
   }
 }

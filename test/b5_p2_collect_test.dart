@@ -157,16 +157,22 @@ Future<void> _openEditorDialog(
   await tester.pumpAndSettle();
   await tester.tap(find.text('打开修框'));
   await tester.pumpAndSettle();
-  // 确认按钮文案随 1 层框总数变：1 个是“确认修框，去整理”，
-  // 多个是“确认修框，拆成 N 个待整理任务”——只断言按钮在。
-  expect(find.textContaining('确认修框'), findsOneWidget);
+  // 确认按钮文案随模式变（FR-34 / D-87）：草稿模式随 1 层框总数变，
+  // 1 个是“确认修框，去整理”，多个是“确认修框，拆成 N 个待整理任务”；
+  // 重框模式固定是“确认重新框选”。只断言按钮在。
+  expect(_confirmFinder(mode), findsOneWidget);
 }
 
-Future<void> _tapConfirm(WidgetTester tester) async {
-  // 文案随 1 层框总数变（1 个“去整理”，多个“拆成 N 个”），只按前缀点。
-  await tester.tap(find.textContaining('确认修框'));
+/// 确认按钮的查找器：重框模式是固定文案“确认重新框选”，草稿模式
+/// 按“确认修框”前缀找（两档文案都以它开头）。
+Finder _confirmFinder(BoxEditorMode mode) => mode == BoxEditorMode.rework
+    ? find.text('确认重新框选')
+    : find.textContaining('确认修框');
+
+Future<void> _tapConfirm(WidgetTester tester, BoxEditorMode mode) async {
+  await tester.tap(_confirmFinder(mode));
   await tester.pumpAndSettle();
-  expect(find.textContaining('确认修框'), findsNothing);
+  expect(_confirmFinder(mode), findsNothing);
 }
 
 /// 鼠标右键拖动（次要按键）——画框用。
@@ -316,7 +322,7 @@ void main() {
       );
       await tester.tap(find.text('恢复自动框'));
       await tester.pumpAndSettle();
-      await _tapConfirm(tester);
+      await _tapConfirm(tester, BoxEditorMode.rework);
       final result = _capturedResult!;
       // 1 层框换成检测框。
       final layer1 = result.boxesByPage[2]!.firstWhere((b) => b.layer == 1);
@@ -368,7 +374,7 @@ void main() {
       await tester.pumpAndSettle();
       // 两道框都找到了对应的检测框，不弹“没找到对应的题”。
       expect(find.textContaining('没找到对应的题'), findsNothing);
-      await _tapConfirm(tester);
+      await _tapConfirm(tester, BoxEditorMode.rework);
       final result = _capturedResult!;
       final layer1 = result.boxesByPage[2]!.where((b) => b.layer == 1).toList();
       expect(layer1, hasLength(2));
@@ -409,7 +415,7 @@ void main() {
       // SnackBar 默认 4 秒后消失：等它走完再点确认，否则会被盖住。
       await tester.pump(const Duration(seconds: 5));
       await tester.pumpAndSettle();
-      await _tapConfirm(tester);
+      await _tapConfirm(tester, BoxEditorMode.rework);
       final result = _capturedResult!;
       final layer1 = result.boxesByPage[2]!.firstWhere((b) => b.layer == 1);
       expect(layer1.x, closeTo(0.05, 1e-9));
@@ -449,7 +455,7 @@ void main() {
       // SnackBar 默认 4 秒后消失：等它走完再点确认，否则会被盖住。
       await tester.pump(const Duration(seconds: 5));
       await tester.pumpAndSettle();
-      await _tapConfirm(tester);
+      await _tapConfirm(tester, BoxEditorMode.rework);
       final result = _capturedResult!;
       final layer1 = result.boxesByPage[2]!.firstWhere((b) => b.layer == 1);
       expect(layer1.x, closeTo(0.05, 1e-9));
@@ -544,7 +550,7 @@ void main() {
       // 新框直接落下成题级框，不弹选类型菜单。
       expect(find.text('这个框是？'), findsNothing);
       expect(_editorBoxLabel('题级框 1'), findsOneWidget);
-      await _tapConfirm(tester);
+      await _tapConfirm(tester, BoxEditorMode.draft);
       final result = _capturedResult!;
       expect(result.boxesByPage[1]!.where((b) => b.layer == 1), hasLength(1));
     });
@@ -847,7 +853,8 @@ void main() {
       expect(find.textContaining('修框 ·'), findsOneWidget);
       // 真实裁剪 + 写盘须在 runAsync 内反复 pump 推进。
       await tester.runAsync(() async {
-        await tester.tap(find.text('确认修框，去整理'));
+        // 详情页开的是重框模式（FR-34 / D-87）：确认按钮是“确认重新框选”。
+        await tester.tap(find.text('确认重新框选'));
         for (var i = 0; i < 20; i++) {
           await tester.pump();
           await Future<void>.delayed(const Duration(milliseconds: 200));
@@ -1291,6 +1298,12 @@ class _DetailFakeRepo extends QuestionRepository {
 
   @override
   Future<List<Subject>> subjects() async => Subject.all;
+
+  // FR-09（D-88）：DetailNotifier.load() 多读 repo.settings()；FakeRepo
+  // 不覆写会落到基类读真实 Drift 库，测试 fake async 里永不完成，
+  // loading 一直 true、转圈拖死 pumpAndSettle。
+  @override
+  Future<AppSettings> settings() async => AppSettings.defaults;
 
   @override
   Future<List<Folder>> folders({String? subjectId}) async => subjectId == null

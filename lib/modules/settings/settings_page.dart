@@ -78,9 +78,12 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
   // 恢复：选好的备份文件（未确认前只记着，不动库）。
   String? _restoreFileName;
   Map<String, dynamic>? _restoreData;
-  // P3 §2.3：zip 备份恢复——选好后只存路径，确认时再读文件恢复
-  // （zip 可能很大，不常驻内存；老 JSON 备份沿用 _restoreData）。
-  String? _restoreZipPath;
+  // GPT-P1：zip 备份恢复——选好时读到的完整字节常驻内存，确认时
+  // 直接用这份字节恢复，不再按路径重读（校验过的字节与导入的字节
+  // 必须是同一份；磁盘上的文件被替换/删除也不影响。zip 可能很大，
+  // 但解析时已读过一次、确认弹窗是模态短时持有，内存代价可接受。
+  // 老 JSON 备份沿用 _restoreData，zipBytes 为 null）。
+  List<int>? _restoreZipBytes;
 
   // 空间占用与孤儿清理：只在打开数据组时扫描一次。
   ({int importsBytes, int slicesBytes})? _storageUsage;
@@ -299,15 +302,18 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
   Future<void> _confirmRestore() async {
     final data = _restoreData;
     if (data == null) return;
-    final zipPath = _restoreZipPath;
+    // GPT-P1：恢复直接用选好时读到的字节，不再按路径重读、也不再
+    // 做指纹重查——校验过的字节与导入的字节是同一份，磁盘上的文件
+    // 在选好后被替换/删除不影响本次恢复。
+    final zipBytes = _restoreZipBytes;
     setState(() {
       _busy = true;
       _restoreData = null;
       _restoreFileName = null;
-      _restoreZipPath = null;
+      _restoreZipBytes = null;
     });
     try {
-      await _controller.restoreBackup(jsonData: data, zipPath: zipPath);
+      await _controller.restoreBackup(jsonData: data, zipBytes: zipBytes);
       // 恢复成功已发一个含全部五种 kind 的变更事件（见
       // AppDatabase.importBackupJson/Zip），角标由 badgeCountsProvider
       // 刷新，本页不再手动 bump。
@@ -316,6 +322,11 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
       // + _apply 两步，现合并为一次 reloadSettings）。
       await _controller.reloadSettings();
       await _loadQuestionCount();
+      // FR-06(b)：恢复会改写库与文件，恢复前的孤儿扫描已过期——
+      // 置空并重扫，否则旧列表里“恢复后重新被引用”的文件会在下次
+      // 清理时被误删（(a) 的删除前重算是第二道防线）。
+      if (mounted) setState(() => _orphanScan = null);
+      await _scanStorageAndOrphans();
       _snack('已恢复备份');
     } on BackupRestoreException catch (e) {
       // §2.3：校验不过拒绝恢复、原库不动；报具体原因（不是笼统的
@@ -345,7 +356,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
       setState(() {
         _restoreData = null;
         _restoreFileName = null;
-        _restoreZipPath = null;
+        _restoreZipBytes = null;
       });
       return;
     }
@@ -365,7 +376,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
     // P3 §2.3：按魔数识别，不靠扩展名——新 zip 备份以 PK 开头，
     // 老 .qm2backup JSON 内容是 JSON 文本；两者恢复口径不同，
     // 不要静默读坏。解析在 Controller，页面只按异常类型提示。
-    ({Map<String, dynamic> data, String? zipPath}) parsed;
+    ({Map<String, dynamic> data, List<int>? zipBytes}) parsed;
     try {
       parsed = await _controller.parseRestoreFile(path);
     } on RestoreFileReadException {
@@ -381,7 +392,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
     setState(() {
       _restoreFileName = result!.files.single.name;
       _restoreData = parsed.data;
-      _restoreZipPath = parsed.zipPath;
+      _restoreZipBytes = parsed.zipBytes;
     });
     await _askRestore();
   }

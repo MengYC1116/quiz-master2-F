@@ -27,8 +27,13 @@ import '../models/models.dart';
 import 'repository_provider.dart';
 
 /// 首页业务状态的 Provider：页面出现即读库（见 [HomeNotifier.build]）。
+/// FR-19：声明 `dependencies: [repositoryProvider]`（D-49 同款）——
+/// 未声明时 Notifier 挂到根容器，嵌套 ProviderScope 的 repo override
+/// 会被静默无视；生产上默认值与根组件是同一单例库、行为零变化，
+/// 补声明只锁住挂载语义 + 根 Scope + push 测试覆盖。
 final homeProvider = NotifierProvider.autoDispose<HomeNotifier, HomeState>(
   HomeNotifier.new,
+  dependencies: [repositoryProvider],
 );
 
 /// 首页业务数据（原 `_HomePageState` 里的读库字段，原样搬移，行为零变）。

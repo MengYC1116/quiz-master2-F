@@ -48,6 +48,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../data/database.dart';
+import '../data/data_change_events.dart';
 import '../data/repository.dart';
 import '../models/models.dart';
 import '../services/import_service.dart';
@@ -142,6 +143,9 @@ class DetailState {
     this.editExamId,
     this.editBase,
     this.formResetKey = 0,
+    // FR-09：复查间隔（设置 3 / 7 / 14 天，默认 7，D-05）；详情页
+    // “满 N 天自动回来复查”文案用它拼，不再写死 7 天。`load()` 读库。
+    this.recheckIntervalDays = 7,
   });
 
   /// 首查进行中（原 `_loading`；初始 true，首帧先出加载圈）。
@@ -171,6 +175,9 @@ class DetailState {
   /// 新学科显示成“数学”）。B8-1 扫尾：空表是删光学科后的合法状态，
   /// 不再回退预设三科；首帧与读库后都以真实列表为准，空就是空。
   final List<Subject> subjects;
+
+  /// 复查间隔天数（设置项，见构造函数注释；默认 7 天）。
+  final int recheckIntervalDays;
 
   // ---- 编辑表单值（当前题；文本框内容在页面控制器里，不在这里） ----
 
@@ -215,6 +222,7 @@ class DetailState {
     Object? editExamId = _unset,
     Object? editBase = _unset,
     int? formResetKey,
+    int? recheckIntervalDays,
   }) {
     return DetailState(
       loading: loading ?? this.loading,
@@ -238,6 +246,7 @@ class DetailState {
           : editExamId as String?,
       editBase: editBase == _unset ? this.editBase : editBase as Question?,
       formResetKey: formResetKey ?? this.formResetKey,
+      recheckIntervalDays: recheckIntervalDays ?? this.recheckIntervalDays,
     );
   }
 }
@@ -297,6 +306,8 @@ class DetailNotifier extends Notifier<DetailState> {
     final tags = await repo.tags();
     final kps = await repo.knowledgePoints();
     final subjects = await repo.subjects();
+    // FR-09：复查间隔随详情页一起读库（与复习页 / 报告页同款读法）。
+    final settings = await repo.settings();
     if (_disposed) return;
     state = state.copyWith(
       question: q,
@@ -307,6 +318,7 @@ class DetailNotifier extends Notifier<DetailState> {
       allTags: tags,
       kps: kps,
       subjects: subjects,
+      recheckIntervalDays: settings.recheckIntervalDays,
       loading: false,
     );
     // SR3-10：打开详情页时自愈“库新图旧”的崩溃窗口（事务提交后、
@@ -523,8 +535,13 @@ class DetailNotifier extends Notifier<DetailState> {
       sliceWidth: base.sliceWidth,
       sliceHeight: base.sliceHeight,
     );
-    await repo.save(updated);
-    await repo.syncCauseRecords(updated);
+    // FR-02：save 先发角标事件、syncCauseRecords 后写库时，角标重读
+    // 可能抢在同步提交前；与 joinReviewBatch 同款用 scope 包起来，
+    // 事件在同步提交后才合并发出一次。
+    await DataChangeBus.instance.scope(() async {
+      await repo.save(updated);
+      await repo.syncCauseRecords(updated);
+    });
     await load();
   }
 
@@ -754,12 +771,19 @@ class DetailNotifier extends Notifier<DetailState> {
     if (q == null) return '';
     final id = newEntityId('kp-${q.subjectId}');
     await _repo.addKnowledgePoint(
-      KnowledgePoint(id: id, subjectId: q.subjectId, chapter: chapter, name: name),
+      KnowledgePoint(
+        id: id,
+        subjectId: q.subjectId,
+        chapter: chapter,
+        name: name,
+      ),
     );
     await load();
     if (_disposed) return id;
     state = state.copyWith(
-      editKps: state.editKps.contains(id) ? state.editKps : {...state.editKps, id},
+      editKps: state.editKps.contains(id)
+          ? state.editKps
+          : {...state.editKps, id},
     );
     return id;
   }

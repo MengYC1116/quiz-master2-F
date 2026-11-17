@@ -26,7 +26,7 @@ class FakeControllerRepo extends QuestionRepository {
   List<ExamEvent> events = [];
   bool backupFailedFlag = false;
   List<int>? exportedBytes;
-  String? restoredZipPath;
+  List<int>? restoredZipBytes;
   Map<String, dynamic>? restoredJson;
 
   /// Provider 的 build() 读设置：Fake 直接返回内存值，
@@ -93,8 +93,8 @@ class FakeControllerRepo extends QuestionRepository {
   }
 
   @override
-  Future<void> importBackupZipFile(String path) async {
-    restoredZipPath = path;
+  Future<void> importBackupZip(List<int> bytes) async {
+    restoredZipBytes = bytes;
   }
 }
 
@@ -297,6 +297,23 @@ void main() {
       );
     });
 
+    test('GPT-P1：解析 zip 备份返回文件本身的字节（恢复用这份字节）', () async {
+      final notifier = makeNotifier(FakeControllerRepo());
+      final dir = await Directory.systemTemp.createTemp('qm2-p1-');
+      try {
+        final copy = File('${dir.path}/b3-old-backup.zip');
+        final original = await File(
+          'test/fixtures/b3-old-backup.zip',
+        ).readAsBytes();
+        await copy.writeAsBytes(original);
+        final parsed = await notifier.parseRestoreFile(copy.path);
+        expect(parsed.zipBytes, original);
+        expect(parsed.data['questions'], isA<List>());
+      } finally {
+        await dir.delete(recursive: true);
+      }
+    });
+
     test(
       '解析备份：非 JSON 文本抛 FormatException；无版本信息的 JSON 抛 BackupRestoreException',
       () async {
@@ -321,11 +338,11 @@ void main() {
       },
     );
 
-    test('恢复分发：zip 路径走文件恢复，JSON 数据走对象恢复', () async {
+    test('恢复分发：zip 字节走字节恢复，JSON 数据走对象恢复', () async {
       final repo = FakeControllerRepo();
       final notifier = makeNotifier(repo);
-      await notifier.restoreBackup(zipPath: '/tmp/x.qm2backup');
-      expect(repo.restoredZipPath, '/tmp/x.qm2backup');
+      await notifier.restoreBackup(zipBytes: [1, 2, 3]);
+      expect(repo.restoredZipBytes, [1, 2, 3]);
       expect(repo.restoredJson, isNull);
       await notifier.restoreBackup(jsonData: {'questions': []});
       expect(repo.restoredJson, {'questions': []});

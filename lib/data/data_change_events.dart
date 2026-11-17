@@ -9,6 +9,13 @@ import 'dart:async';
 // 事件本身不做数据搬运。发布是“写后”不是“写前”：写入成功、事务提交
 // 后才 emit；写入抛异常或事务回滚时不 emit。
 //
+// FR-31（W2-14）：当前唯一订阅方是 `badgeCountsProvider`，且只消费
+// `DataChangeKind.badges`（`lib/state/badge_counts_provider.dart:92`）。
+// 其余四种 kind（questions / subjects / reviewRecords / settings）
+// 目前没有任何订阅方，是为将来订阅方预留的元数据——各页现靠
+// autoDispose“回页重建重读”刷新，不依赖总线。将来给某一 kind 加
+// 订阅方时，把该页的刷新时序纳入回归（见 W2-01 角标竞态的教训：
+// 发了事件但无人校验时序就是盲区）。
 // 一次独立写入或一次批量提交只发一个事件，该事件的 `kinds` 集合必须
 // 包含本次写入影响的全部类别；备份恢复只发一个事件，`kinds` 为全部
 // 五类。写入方法—事件类别对照表见

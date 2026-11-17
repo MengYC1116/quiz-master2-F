@@ -233,17 +233,67 @@ class _BoxEditorDialogState extends State<_BoxEditorDialog> {
     return false;
   }
 
+  static bool _overlaps(QuestionBox a, QuestionBox b) {
+    final overlapX = math.min(a.x + a.w, b.x + b.w) - math.max(a.x, b.x);
+    final overlapY = math.min(a.y + a.h, b.y + b.h) - math.max(a.y, b.y);
+    return overlapX > 0.001 && overlapY > 0.001;
+  }
+
   static bool _hasOverlap(List<QuestionBox> boxes) {
     for (var i = 0; i < boxes.length; i++) {
       for (var j = i + 1; j < boxes.length; j++) {
-        final a = boxes[i];
-        final b = boxes[j];
-        final overlapX = math.min(a.x + a.w, b.x + b.w) - math.max(a.x, b.x);
-        final overlapY = math.min(a.y + a.h, b.y + b.h) - math.max(a.y, b.y);
-        if (overlapX > 0.001 && overlapY > 0.001) return true;
+        if (_overlaps(boxes[i], boxes[j])) return true;
       }
     }
     return false;
+  }
+
+  /// FR-03：当前页重叠的框 id 集（可编辑框 + 只读框 + 正在画的框），
+  /// 重叠的框标红用；只算当前页（画布上只画当前页的框）。
+  Set<String> get _overlappingBoxIds {
+    final boxes = <QuestionBox>[..._boxes, ...widget.readOnlyBoxes];
+    final pending = _pendingBox;
+    if (pending != null) boxes.add(pending);
+    final ids = <String>{};
+    for (var i = 0; i < boxes.length; i++) {
+      for (var j = i + 1; j < boxes.length; j++) {
+        if (_overlaps(boxes[i], boxes[j])) {
+          ids.add(boxes[i].id);
+          ids.add(boxes[j].id);
+        }
+      }
+    }
+    return ids;
+  }
+
+  /// FR-03：重叠横幅点名是哪几道框重叠（按画布上的“题级框 N”编号；
+  /// 只读框记“同页其他题”）。当前页无重叠但别的页有重叠时，横幅
+  /// 指去另一页（旧文案一律写“本页有两道题”是不准的）。
+  /// 文案不含“有框重叠了，”前缀（FR-35 到时只剩核对）。
+  String _overlapBannerMessage() {
+    final ids = _overlappingBoxIds;
+    final numbers = <int>[];
+    var readOnly = false;
+    for (final id in ids) {
+      final idx = _boxes.indexWhere((b) => b.id == id);
+      if (idx >= 0) {
+        numbers.add(idx + 1);
+      } else if (widget.readOnlyBoxes.any((b) => b.id == id)) {
+        readOnly = true;
+      }
+    }
+    numbers.sort();
+    if (numbers.isEmpty && !readOnly) {
+      return '另一页的框叠在一起，请切到那一页调开再确认。';
+    }
+    if (readOnly && numbers.isEmpty) {
+      return '同页其他题的框叠在一起，在这里调不开，请取消后去那几道题的详情页重新框选。';
+    }
+    final nums = numbers.map((n) => '$n').join('、');
+    if (readOnly) {
+      return '第 $nums 道题的框与同页其他题的框叠在一起，请调开再确认。';
+    }
+    return '第 $nums 道题的框叠在一起，请调开再确认。';
   }
 
   @override
@@ -776,12 +826,15 @@ class _BoxEditorDialogState extends State<_BoxEditorDialog> {
   /// B3：右键拖动画框时起点可以落在已有框上（[fromRightDrag] 为真时
   /// 跳过“起点在框内就不画”的拦下）；框的移动只走左键拖动，右键拖动
   /// 永远是画新框。触摸 / 主按键画框仍走原来的拦下（起点在框内不画）。
+  /// FR-04(a)：重框模式禁画新框——只允许移动/缩放既有框，画框入口
+  /// 在这里统一拦下（右键拖动与触摸/主按键画框都走这里）。
   void _onDrawStart(
     Offset pos,
     double pw,
     double ph, {
     bool fromRightDrag = false,
   }) {
+    if (widget.mode == BoxEditorMode.rework) return;
     // 正在拖旋转/缩放柄时不画框（柄在框外，按下会同时命中画布层）。
     if (_suppressDraw) return;
     if (!fromRightDrag) {
@@ -864,7 +917,13 @@ class _BoxEditorDialogState extends State<_BoxEditorDialog> {
     final total = _totalBoxes;
     final overlap = _anyOverlap;
     final confirmEnabled = total > 0 && !overlap && _pendingBox == null;
-    final confirmLabel = total > 1 ? '确认修框，拆成 $total 个待整理任务' : '确认修框，去整理';
+    // FR-34：重框模式确认后回详情页，不去整理、也不拆任务，按钮
+    // 按 mode 分支（草稿模式保持原两档文案）。
+    final confirmLabel = widget.mode == BoxEditorMode.rework
+        ? '确认重新框选'
+        : total > 1
+        ? '确认修框，拆成 $total 个待整理任务'
+        : '确认修框，去整理';
     return Dialog(
       insetPadding: const EdgeInsets.all(24),
       backgroundColor: palette.surface,
@@ -913,7 +972,10 @@ class _BoxEditorDialogState extends State<_BoxEditorDialog> {
                 expanded: _helpOpen,
                 onToggle: () => setState(() => _helpOpen = !_helpOpen),
                 child: Text(
-                  '点一下选题级框 · 拖框移动 · 拖边/角缩放 · 框只能拖动/缩放，不旋转 · 改乱了点「恢复自动框」回到 YOLO 原框 · 「旋转整页」把整页图片转 90°（框跟着转） · 框的边界按本页图片的实际大小算：图片有多大，画框就多大，拖动 / 缩放 / 新画框都不能超出这张图，框大小不限 · 切页不丢框：每页的框都留着，切回来还在，点「确认修框」才一起提交 · 两道题的框重叠时确认会被拦下，先调开再确认 · 滚轮在图上以指针为中心缩放（不滚动）、在图外滚动 · 左键拖动平移图片 · 右键拖出新框（起点落在框上也能画，不拖框），松开即生成题级框、右键单击取消 · 确认只点下方「确认修框」按钮',
+                  // FR-04(a)：重框模式的操作说明不写画新框（禁画新框）。
+                  widget.mode == BoxEditorMode.rework
+                      ? '点一下选这道题的框 · 拖框移动 · 拖边/角缩放 · 框只能拖动/缩放，不旋转，也不能再画新框 · 改乱了点「恢复自动框」回到 YOLO 原框 · 两道题的框重叠时确认会被拦下，先调开再确认 · 滚轮在图上以指针为中心缩放（不滚动）、在图外滚动 · 左键拖动平移图片 · 确认只点下方「确认重新框选」按钮'
+                      : '点一下选题级框 · 拖框移动 · 拖边/角缩放 · 框只能拖动/缩放，不旋转 · 改乱了点「恢复自动框」回到 YOLO 原框 · 「旋转整页」把整页图片转 90°（框跟着转） · 框的边界按本页图片的实际大小算：图片有多大，画框就多大，拖动 / 缩放 / 新画框都不能超出这张图，框大小不限 · 切页不丢框：每页的框都留着，切回来还在，点「确认修框」才一起提交 · 两道题的框重叠时确认会被拦下，先调开再确认 · 滚轮在图上以指针为中心缩放（不滚动）、在图外滚动 · 左键拖动平移图片 · 右键拖出新框（起点落在框上也能画，不拖框），松开即生成题级框、右键单击取消 · 确认只点下方「确认修框」按钮',
                   style: TextStyle(
                     fontSize: DesignTokens.bodySmallFontSize,
                     color: palette.ink2,
@@ -941,16 +1003,20 @@ class _BoxEditorDialogState extends State<_BoxEditorDialog> {
                   message: '这页的图片解不出来，只能看框的位置对不对；请重新导入这份文件。',
                 ),
               if (_boxes.isEmpty)
-                const QmBanner(
+                QmBanner(
                   tone: QmBannerTone.warning,
                   title: '没框到题',
-                  message: '没框到题，请用鼠标右键拖一个框：在画布空白处按住拖出一个框，松开就能继续，不用重新导入',
+                  // FR-04(a)：重框模式禁画新框，空框时指去「恢复自动框」
+                  // 而不是右键画框（草稿模式保持原提示）。
+                  message: widget.mode == BoxEditorMode.rework
+                      ? '没框到题，请点「恢复自动框」找回检测框，或取消放弃本次修改'
+                      : '没框到题，请用鼠标右键拖一个框：在画布空白处按住拖出一个框，松开就能继续，不用重新导入',
                 ),
               if (overlap)
-                const QmBanner(
+                QmBanner(
                   tone: QmBannerTone.error,
                   title: '框重叠',
-                  message: '有框重叠了，请调开再确认：本页有两道题的框叠在一起，把它们拖开（或缩放错开）后才能确认修框。',
+                  message: _overlapBannerMessage(),
                 ),
               SizedBox(height: 8 * scale),
               _toolbar(scale, palette),
@@ -986,6 +1052,7 @@ class _BoxEditorDialogState extends State<_BoxEditorDialog> {
                       palette,
                       constraints.maxWidth,
                       constraints.maxHeight,
+                      _overlappingBoxIds,
                     );
                   },
                 ),
@@ -1013,7 +1080,10 @@ class _BoxEditorDialogState extends State<_BoxEditorDialog> {
       children: [
         Expanded(
           child: Text(
-            '新增框：右键在图片内空白处拖出框，拖出图片也会夹回图内，松开即生成题级框；左键拖动平移图片',
+            // FR-04(a)：重框模式禁画新框，工具条不再写“右键拖出新框”。
+            widget.mode == BoxEditorMode.rework
+                ? '重框模式：只能拖动 / 缩放这道题的框，不能再画新框；左键拖动平移图片'
+                : '新增框：右键在图片内空白处拖出框，拖出图片也会夹回图内，松开即生成题级框；左键拖动平移图片',
             style: TextStyle(
               fontSize: DesignTokens.bodySmallFontSize,
               color: palette.ink2,
@@ -1072,6 +1142,7 @@ class _BoxEditorDialogState extends State<_BoxEditorDialog> {
     AppPalette palette,
     double viewW,
     double viewH,
+    Set<String> overlappingIds,
   ) {
     // B2-6b(2)：指针按下画布时按情况锁住滚动——画框 / 拖框的手势不再与
     // 滚动视图竞争，抬起后恢复滚动。锁在 pointer-down 时（手势竞技场
@@ -1103,6 +1174,9 @@ class _BoxEditorDialogState extends State<_BoxEditorDialog> {
           setState(() => _scrollLocked = true);
         }
         if (isMouse && event.buttons == kSecondaryMouseButton) {
+          // FR-04(a)：重框模式禁画新框，右键按下不记坐标（_onDrawStart
+          // 里还有一道拦下，这里是不让右键拖动进画框状态）。
+          if (widget.mode == BoxEditorMode.rework) return;
           // 右键：先只记按下坐标，拖出距离才算画框，
           // 抬起时没拖过就是单击（取消），见 onPointerUp。
           _rightDownLocal = local;
@@ -1331,7 +1405,14 @@ class _BoxEditorDialogState extends State<_BoxEditorDialog> {
                               ),
                             ),
                             for (final box in _boxes)
-                              _boxView(box, pw, ph, scale, palette),
+                              _boxView(
+                                box,
+                                pw,
+                                ph,
+                                scale,
+                                palette,
+                                overlapping: overlappingIds.contains(box.id),
+                              ),
                             // §1.5.1：同页其他题的框只读展示（重框模式）。
                             for (final box in widget.readOnlyBoxes)
                               _frozenBoxView(
@@ -1341,6 +1422,7 @@ class _BoxEditorDialogState extends State<_BoxEditorDialog> {
                                 scale,
                                 palette,
                                 label: '其他题 · 只读',
+                                overlapping: overlappingIds.contains(box.id),
                               ),
                             if (_pendingBox != null)
                               _pendingBoxView(
@@ -1349,6 +1431,9 @@ class _BoxEditorDialogState extends State<_BoxEditorDialog> {
                                 ph,
                                 scale,
                                 palette,
+                                overlapping: overlappingIds.contains(
+                                  _pendingBox!.id,
+                                ),
                               ),
                           ],
                         ),
@@ -1391,12 +1476,20 @@ class _BoxEditorDialogState extends State<_BoxEditorDialog> {
     bool confirmEnabled,
     String confirmLabel,
   ) {
+    final isRework = widget.mode == BoxEditorMode.rework;
     final hint = _pendingBox != null
         ? '正在画框：松开鼠标生成题级框'
         : _selectedId != null
-        ? '当前选中：题级框 ${_boxes.indexWhere((b) => b.id == _selectedId) + 1} · 右键拖动可直接再画一个新框'
+        // FR-04(a)：重框模式底部提示不再写“右键拖动可再画新框”。
+        ? isRework
+              ? '当前选中：题级框 ${_boxes.indexWhere((b) => b.id == _selectedId) + 1} · 只能拖动 / 缩放，不能再画新框'
+              : '当前选中：题级框 ${_boxes.indexWhere((b) => b.id == _selectedId) + 1} · 右键拖动可直接再画一个新框'
         : _boxes.isEmpty
-        ? '没框到题，请用鼠标右键拖一个框：在图上拖出框，松开鼠标就能继续'
+        ? isRework
+              ? '没框到题，请点「恢复自动框」找回检测框，或取消'
+              : '没框到题，请用鼠标右键拖一个框：在图上拖出框，松开鼠标就能继续'
+        : isRework
+        ? '本页已框 ${_boxes.length} 道题 · 点框可选中拖动 / 缩放 · 不能再画新框'
         : '本页已框 ${_boxes.length} 道题 · 点框可选中拖动 / 缩放 · 右键拖动可再画新框';
     return Row(
       children: [
@@ -1570,10 +1663,16 @@ class _BoxEditorDialogState extends State<_BoxEditorDialog> {
     double pw,
     double ph,
     double scale,
-    AppPalette palette,
-  ) {
+    AppPalette palette, {
+    bool overlapping = false,
+  }) {
     final selected = _selectedId == box.id;
-    final borderColor = selected ? palette.accent : palette.lineStrong;
+    // FR-03：重叠的框标红（优先于选中态的 accent 边，一眼可见）。
+    final borderColor = overlapping
+        ? palette.errInk
+        : selected
+        ? palette.accent
+        : palette.lineStrong;
     final label =
         '题级框 ${_boxes.indexWhere((b) => b.id == box.id) + 1}'
         '${selected ? ' · 已选中' : ''}';
@@ -1593,7 +1692,14 @@ class _BoxEditorDialogState extends State<_BoxEditorDialog> {
         }),
         onPanUpdate: (details) =>
             _moveBox(box.id, details.delta.dx, details.delta.dy, pw, ph),
-        child: _boxBody(box, palette, selected, borderColor, label),
+        child: _boxBody(
+          box,
+          palette,
+          selected,
+          borderColor,
+          label,
+          overlapping: overlapping,
+        ),
       ),
     );
   }
@@ -1604,11 +1710,14 @@ class _BoxEditorDialogState extends State<_BoxEditorDialog> {
     AppPalette palette,
     bool selected,
     Color borderColor,
-    String label,
-  ) {
+    String label, {
+    bool overlapping = false,
+  }) {
     return Container(
       decoration: BoxDecoration(
-        color: selected
+        color: overlapping
+            ? palette.errInk.withValues(alpha: 0.06)
+            : selected
             ? palette.accent.withValues(alpha: 0.07)
             : palette.accent.withValues(alpha: 0.02),
         border: Border.all(color: borderColor, width: 2.5),
@@ -1631,7 +1740,11 @@ class _BoxEditorDialogState extends State<_BoxEditorDialog> {
                 style: TextStyle(
                   fontSize: 10.5,
                   fontWeight: FontWeight.w700,
-                  color: selected ? palette.accentText : palette.muted,
+                  color: overlapping
+                      ? palette.errInk
+                      : selected
+                      ? palette.accentText
+                      : palette.muted,
                 ),
               ),
             ),
@@ -1710,6 +1823,7 @@ class _BoxEditorDialogState extends State<_BoxEditorDialog> {
     double scale,
     AppPalette palette, {
     String? label,
+    bool overlapping = false,
   }) {
     return Positioned(
       left: box.x * pw,
@@ -1720,7 +1834,11 @@ class _BoxEditorDialogState extends State<_BoxEditorDialog> {
         opacity: 0.45,
         child: Container(
           decoration: BoxDecoration(
-            border: Border.all(color: palette.lineStrong, width: 2.5),
+            // FR-03：只读框重叠时同样标红（用户调自己的框错开它）。
+            border: Border.all(
+              color: overlapping ? palette.errInk : palette.lineStrong,
+              width: 2.5,
+            ),
             borderRadius: BorderRadius.circular(8),
           ),
           child: Stack(
@@ -1742,7 +1860,7 @@ class _BoxEditorDialogState extends State<_BoxEditorDialog> {
                     style: TextStyle(
                       fontSize: 10.5,
                       fontWeight: FontWeight.w700,
-                      color: palette.muted,
+                      color: overlapping ? palette.errInk : palette.muted,
                     ),
                   ),
                 ),
@@ -1759,8 +1877,9 @@ class _BoxEditorDialogState extends State<_BoxEditorDialog> {
     double pw,
     double ph,
     double scale,
-    AppPalette palette,
-  ) {
+    AppPalette palette, {
+    bool overlapping = false,
+  }) {
     return Positioned(
       left: box.x * pw,
       top: box.y * ph,
@@ -1769,7 +1888,8 @@ class _BoxEditorDialogState extends State<_BoxEditorDialog> {
       child: Container(
         decoration: BoxDecoration(
           border: Border.all(
-            color: palette.accent,
+            // FR-03：正在画的框与已有框重叠时同样标红。
+            color: overlapping ? palette.errInk : palette.accent,
             width: 2,
             style: BorderStyle.solid,
           ),
@@ -1788,7 +1908,7 @@ class _BoxEditorDialogState extends State<_BoxEditorDialog> {
               style: TextStyle(
                 fontSize: 10.5,
                 fontWeight: FontWeight.w700,
-                color: palette.accentText,
+                color: overlapping ? palette.errInk : palette.accentText,
               ),
             ),
           ),

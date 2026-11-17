@@ -1870,7 +1870,7 @@ void main() {
   });
 
   group('SR2-17 readZip 拒重名条目', () {
-    test('重名文件条目抛错；backup.json 重名是例外，取最后一个', () {
+    test('重名文件条目抛错；backup.json 重名也拒绝（FR-40）', () {
       final dup = buildStoredZipForTest([
         ('slices/q1.png', [1, 2]),
         ('slices/q1.png', [3, 4]),
@@ -1885,7 +1885,8 @@ void main() {
           ),
         ),
       );
-      // backup.json 重名不抛错（恢复取最后一个，进位循环跳过它）。
+      // FR-40：backup.json 重名也不再放行（之前是例外、取最后一个，
+      // 两份内容不同的题目数据会静默按后一份恢复）——现在直接拒绝。
       Map<String, dynamic> minimalJson({bool withSubject = false}) => {
         '_meta': {'schemaVersion': 2, 'appVersion': 'test', 'exportedAt': 1},
         for (final t in AppDatabase.backupTables)
@@ -1902,10 +1903,16 @@ void main() {
           utf8.encode(jsonEncode(minimalJson(withSubject: true))),
         ),
       ]);
-      final entries = readZip(dupJson);
-      expect(entries.map((e) => e.name), ['backup.json', 'backup.json']);
-      final decoded = AppDatabase.readBackupJsonFromZip(dupJson);
-      expect((decoded['subjects'] as List), hasLength(1));
+      expect(
+        () => readZip(dupJson),
+        throwsA(
+          isA<ZipFormatException>().having(
+            (e) => e.message,
+            'message',
+            contains('备份里有两份题目数据'),
+          ),
+        ),
+      );
     });
 
     test('重名文件条目的备份：恢复报“已损坏”，不误报“文件写不进去”', () async {

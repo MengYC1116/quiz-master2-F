@@ -58,9 +58,12 @@ import '../services/yolo_onnx_service.dart';
 import 'repository_provider.dart';
 
 /// 收集页业务状态的 Provider：页面出现即读库（见 [CollectNotifier.build]）。
+/// FR-19：声明 `dependencies: [repositoryProvider]`（D-49 同款，见
+/// homeProvider 注释）。
 final collectProvider =
     NotifierProvider.autoDispose<CollectNotifier, CollectState>(
       CollectNotifier.new,
+      dependencies: [repositoryProvider],
     );
 
 /// 待确认的一批导入：已选文件，但重复 / 超限警告还没被用户处理

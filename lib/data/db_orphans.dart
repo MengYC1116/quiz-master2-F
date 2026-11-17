@@ -107,17 +107,37 @@ Future<OrphanScan> scanOrphanFilesFromImpl(
 /// 删指定的孤儿文件（只接受 `imports/` / `slices/` 下的相对路径，
 /// 且解析后必须在数据目录内；其它路径静默跳过）。删完把空的父
 /// 目录也清掉（只到 `imports/<taskId>` 这一层，不删根）。
-/// 返回实际删掉的文件数与释放字节数。
-Future<({int deletedCount, int freedBytes})> deleteOrphanFilesImpl(
+/// 返回实际删掉的文件数、释放字节数与“删除前重算引用后发现仍被
+/// 引用而跳过”的文件数。
+///
+/// FR-06(a)：不信任调用方传来的旧扫描——删除前用 [db]（传了时）
+/// 重算一次引用（复用 `_referencedRelativePaths`，一次调用只算
+/// 一次），当时仍被引用的文件跳过不删、计入
+/// `skippedReferencedCount`。调用方不传 db 时保持旧行为（p3/b2
+/// 既有测试直调静态方法，不改签名仍能编译）。
+Future<({int deletedCount, int freedBytes, int skippedReferencedCount})>
+deleteOrphanFilesImpl(
   List<String> relativePaths, {
   String? dataDir,
+  QuizDatabase? db,
 }) async {
   final dir = dataDir ?? AppDatabase.dataDirectoryPath();
+  // 删除前重算一次引用：扫描时无引用、删除时又被引用的文件——
+  // 典型是恢复后旧扫描里的文件——必须跳过。
+  final refs = db == null
+      ? const <String>{}
+      : await _referencedRelativePaths(db, dir);
   var deleted = 0;
   var freed = 0;
+  var skipped = 0;
   final touchedParents = <Directory>[];
   for (final rel in relativePaths) {
     if (!rel.startsWith('imports/') && !rel.startsWith('slices/')) {
+      continue;
+    }
+    // FR-06(a)：删除前重算的引用里有它——跳过不删，计入返回。
+    if (refs.contains(rel)) {
+      skipped++;
       continue;
     }
     final abs = _resolveInsideDir(dir, rel);
@@ -125,8 +145,11 @@ Future<({int deletedCount, int freedBytes})> deleteOrphanFilesImpl(
     final f = File(abs);
     if (!f.existsSync()) continue;
     try {
-      freed += f.lengthSync();
+      // FR-22：先记大小、删成功后再计入 freed——删失败时汇报数字
+      // 不虚高（旧写法在 delete 之前就 +=，catch 为空时照计）。
+      final size = f.lengthSync();
       await f.delete();
+      freed += size;
       deleted++;
       touchedParents.add(f.parent);
     } catch (_) {}
@@ -151,7 +174,11 @@ Future<({int deletedCount, int freedBytes})> deleteOrphanFilesImpl(
       d = d.parent;
     }
   }
-  return (deletedCount: deleted, freedBytes: freed);
+  return (
+    deletedCount: deleted,
+    freedBytes: freed,
+    skippedReferencedCount: skipped,
+  );
 }
 
 extension AppDatabaseOrphans on AppDatabase {
@@ -159,8 +186,9 @@ extension AppDatabaseOrphans on AppDatabase {
   Future<OrphanScan> scanOrphans() async =>
       AppDatabase.scanOrphanFilesFrom(await db);
 
-  /// 孤儿清理（实例版）：删指定的孤儿文件。
-  Future<({int deletedCount, int freedBytes})> cleanOrphans(
-    List<String> relativePaths,
-  ) async => AppDatabase.deleteOrphanFiles(relativePaths);
+  /// 孤儿清理（实例版）：删指定的孤儿文件，删除前用当前库重算
+  /// 一次引用（FR-06(a)，仍被引用的跳过并计入返回）。
+  Future<({int deletedCount, int freedBytes, int skippedReferencedCount})>
+  cleanOrphans(List<String> relativePaths) async =>
+      AppDatabase.deleteOrphanFiles(relativePaths, db: await db);
 }

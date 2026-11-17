@@ -270,6 +270,72 @@ Future<void> _stageFilesSwitchingCrash(
   );
 }
 
+/// FR-41：手工改 zip 字节的帮手（与 b5_p2_services_test.dart 同款，
+/// 本文件独立一份，避免跨文件依赖）。
+int _zipFind(List<int> bytes, List<int> pattern) {
+  for (var i = 0; i + pattern.length <= bytes.length; i++) {
+    var match = true;
+    for (var j = 0; j < pattern.length; j++) {
+      if (bytes[i + j] != pattern[j]) {
+        match = false;
+        break;
+      }
+    }
+    if (match) return i;
+  }
+  return -1;
+}
+
+void _zipWriteU32(List<int> bytes, int off, int v) {
+  bytes[off] = v & 0xFF;
+  bytes[off + 1] = (v >> 8) & 0xFF;
+  bytes[off + 2] = (v >> 16) & 0xFF;
+  bytes[off + 3] = (v >> 24) & 0xFF;
+}
+
+/// FR-29：写库很慢才失败的备份——3 万道题行，最后一行带表里没有的列。
+/// 校验放行，入库事务跑一阵子才在最后一行报“没有这列”，给测试留出
+/// “日志推进到 DATABASE_RESTORING 后篡改文件”的窗口。
+Future<List<int>> _makeManyRowsFailingZip() async {
+  final zip = await _makeNewZip();
+  final entries = readZip(zip).map((e) {
+    if (e.name != 'backup.json') return e;
+    final data = jsonDecode(utf8.decode(e.bytes)) as Map<String, dynamic>;
+    final row = (data['questions'] as List).first as Map<String, dynamic>;
+    final rows = <Map<String, dynamic>>[];
+    for (var i = 0; i < 30000; i++) {
+      final copy = Map<String, dynamic>.from(row);
+      copy['id'] = 'q-bulk-$i';
+      copy['title'] = '批量题 $i';
+      rows.add(copy);
+    }
+    rows.last['bogus_col'] = 'x';
+    data['questions'] = rows;
+    return ZipEntryData(e.name, utf8.encode(jsonEncode(data)));
+  }).toList();
+  return buildZip(entries);
+}
+
+/// FR-29：读当前恢复日志的阶段（日志文件不存在/读不出时 null）。
+String? _journalStage(Directory dir) {
+  final f = File(p.join(dir.path, 'restore-journal.json'));
+  if (!f.existsSync()) return null;
+  try {
+    final json = jsonDecode(f.readAsStringSync()) as Map<String, dynamic>;
+    return json['stage'] as String?;
+  } catch (_) {
+    return null;
+  }
+}
+
+/// FR-42：写一个稀疏文件（只占逻辑大小、不占磁盘）。
+Future<void> _writeSparseFile(String path, int size) async {
+  final f = await File(path).create(recursive: true);
+  final raf = await f.open(mode: FileMode.write);
+  await raf.truncate(size);
+  await raf.close();
+}
+
 void main() {
   test('① 恢复中途失败（写库阶段）能回滚到旧库，旧数据完整', () async {
     final old = await _makeOldState();
@@ -601,6 +667,233 @@ void main() {
     expect(await _questionTitles(second), firstTitles);
     expect(_readBytes(old.dir, 'slices/q1.png'), firstSlice);
     expect(_readBytes(old.dir, 'imports/task-1/original.jpg'), firstSource);
+    expect(_leftoverRestoreMaterials(old.dir), isEmpty);
+  });
+
+  test('FR-27 日志阶段推进白名单：只允许单步前进（25 种组合全断言）', () {
+    const stages = RestoreStage.values;
+    for (var i = 0; i < stages.length; i++) {
+      for (var j = 0; j < stages.length; j++) {
+        expect(
+          isLegalRestoreStageTransition(stages[i], stages[j]),
+          j == i + 1,
+          reason: '${stages[i].name} → ${stages[j].name}',
+        );
+      }
+    }
+  });
+
+  test('FR-28 补偿后复核：旧库引用文件缺失时拦住、保留材料', () async {
+    final old = await _makeOldState();
+    addTearDown(() async {
+      try {
+        await old.db.close();
+      } catch (_) {}
+      try {
+        await old.dir.delete(recursive: true);
+      } catch (_) {}
+      await AppDatabase.resetForTest();
+    });
+    // 旧库多一道题，引用一个根本不存在的切片（恢复前的旧悬空引用）。
+    await _seedQuestion(
+      old.db,
+      id: 'q-missing',
+      title: '引用缺失切片的旧题',
+      slicePath: 'slices/missing.png',
+    );
+    final badZip = await _makeDbFailingZip();
+    await expectLater(
+      () => AppDatabase.importBackupZipInto(
+        old.db,
+        badZip,
+        dataDir: old.dir.path,
+      ),
+      throwsA(
+        isA<BackupRestoreException>().having(
+          (e) => e.message,
+          'message',
+          allOf(contains('回滚后复核未通过'), contains('slices/missing.png')),
+        ),
+      ),
+    );
+    // 旧数据完整（数据库由导入事务保护）。
+    expect(await _questionTitles(old.db), {
+      'q-old': '旧题',
+      'q-missing': '引用缺失切片的旧题',
+    });
+    expect(_readBytes(old.dir, 'slices/q1.png'), [1, 1, 1]);
+    expect(_readBytes(old.dir, 'imports/task-1/original.jpg'), [2, 2, 2]);
+    // 日志与材料保留（不删），不是静默成功。
+    expect(_leftoverRestoreMaterials(old.dir), isNotEmpty);
+    expect(
+      File(p.join(old.dir.path, 'restore-journal.json')).existsSync(),
+      isTrue,
+    );
+    expect(AppDatabase.inRestoreMaintenance, isFalse);
+  });
+
+  test('FR-29 文件回滚失败时改抛“文件回滚未完成，请重启应用”', () async {
+    final old = await _makeOldState();
+    addTearDown(() async {
+      try {
+        await old.db.close();
+      } catch (_) {}
+      try {
+        await old.dir.delete(recursive: true);
+      } catch (_) {}
+      await AppDatabase.resetForTest();
+    });
+    final zip = await _makeManyRowsFailingZip();
+    // 不 await 地启动恢复：写库事务要跑一阵子才在最后一行失败。
+    final importFuture = AppDatabase.importBackupZipInto(
+      old.db,
+      zip,
+      dataDir: old.dir.path,
+    );
+    // 轮询等日志推进到 DATABASE_RESTORING（文件已切换、写库进行中），
+    // 立即篡改：删掉 slices 目录、在原位置写一个同名文件——回滚时
+    // restoreOne 的 parent.create 抛错，文件回滚失败。
+    final reached = await _waitUntil(
+      () => _journalStage(old.dir) == 'databaseRestoring',
+      timeout: const Duration(seconds: 60),
+      interval: const Duration(milliseconds: 10),
+    );
+    expect(reached, isTrue, reason: '日志应在 60 秒内推进到 DATABASE_RESTORING');
+    await Directory(p.join(old.dir.path, 'slices')).delete(recursive: true);
+    await File(p.join(old.dir.path, 'slices')).writeAsString('not a dir');
+    await expectLater(
+      importFuture,
+      throwsA(
+        isA<BackupRestoreException>().having(
+          (e) => e.message,
+          'message',
+          allOf(contains('文件回滚未完成'), contains('请重启应用')),
+        ),
+      ),
+    );
+    // 日志与 rollback 目录保留（下次启动走启动钩子完成回滚），
+    // 旧库行还在（数据库由导入事务保护）。
+    expect(_leftoverRestoreMaterials(old.dir), isNotEmpty);
+    expect(
+      File(p.join(old.dir.path, 'restore-journal.json')).existsSync(),
+      isTrue,
+    );
+    expect(await _questionTitles(old.db), {'q-old': '旧题'});
+    expect(AppDatabase.inRestoreMaintenance, isFalse);
+  });
+
+  test('FR-41 2GB 恢复上限在解压前预判：申报 rawSize 超 2GB 的 zip 直接拒', () async {
+    final old = await _makeOldState();
+    addTearDown(() async {
+      try {
+        await old.db.close();
+      } catch (_) {}
+      try {
+        await old.dir.delete(recursive: true);
+      } catch (_) {}
+      await AppDatabase.resetForTest();
+    });
+    final newZip = await _makeNewZip();
+    final backupJson = readZip(newZip)
+        .singleWhere((e) => e.name == 'backup.json');
+    final zip = buildZip([
+      ZipEntryData('slices/big.bin', List<int>.filled(10, 0)),
+      backupJson,
+    ]);
+    // 篡改 big.bin 的申报大小：local header +22 与中央目录 +24 都改成
+    // 2GB+1（真实数据仍 10 字节，不占磁盘）。
+    final bytes = List<int>.from(zip);
+    final lh = _zipFind(bytes, [0x50, 0x4B, 0x03, 0x04]);
+    expect(lh, isNot(-1));
+    _zipWriteU32(bytes, lh + 22, 2147483649);
+    final cd = _zipFind(bytes, [0x50, 0x4B, 0x01, 0x02]);
+    expect(cd, isNot(-1));
+    _zipWriteU32(bytes, cd + 24, 2147483649);
+    await expectLater(
+      () =>
+          AppDatabase.importBackupZipInto(old.db, bytes, dataDir: old.dir.path),
+      throwsA(
+        isA<BackupRestoreException>().having(
+          (e) => e.message,
+          'message',
+          contains('2GB'),
+        ),
+      ),
+    );
+    // 拒绝发生在解压前、日志写出前：旧库原样、无残留。
+    expect(await _questionTitles(old.db), {'q-old': '旧题'});
+    expect(_leftoverRestoreMaterials(old.dir), isEmpty);
+    expect(AppDatabase.inRestoreMaintenance, isFalse);
+  });
+
+  test('FR-42 峰值估算含数据库快照：快照 60MB 时超限被拒', () async {
+    final old = await _makeOldState();
+    addTearDown(() async {
+      try {
+        await old.db.close();
+      } catch (_) {}
+      try {
+        await old.dir.delete(recursive: true);
+      } catch (_) {}
+      await AppDatabase.resetForTest();
+    });
+    // 现有占用：slices 下 2.05GB 稀疏文件（只占逻辑大小）。
+    await _writeSparseFile(
+      p.join(old.dir.path, 'slices', 'huge.bin'),
+      2050000000,
+    );
+    // 假 -wal：60MB 稀疏文件（快照会连它一起拷，须计入峰值；但它在
+    // 数据目录根部，不计入 _dataDirFileUsageBytes 的 imports/slices 统计）。
+    await _writeSparseFile(
+      p.join(old.dir.path, 'quiz-master2.db-wal'),
+      60000000,
+    );
+    final newZip = await _makeNewZip();
+    final entries = readZip(newZip).toList();
+    entries.add(
+      ZipEntryData('slices/fifty.bin', List<int>.filled(50000000, 0)),
+    );
+    final zip = buildZip(entries);
+    await expectLater(
+      () => AppDatabase.importBackupZipInto(old.db, zip, dataDir: old.dir.path),
+      throwsA(
+        isA<BackupRestoreException>().having(
+          (e) => e.message,
+          'message',
+          allOf(contains('超过 2GB'), contains('数据库快照')),
+        ),
+      ),
+    );
+    // 不计快照时峰值 2.05GB + 50MB = 2.10GB < 2GB 上限会放行——
+    // 这例只有计入快照才超限，断言的是快照被计入。
+    expect(await _questionTitles(old.db), {'q-old': '旧题'});
+    expect(_leftoverRestoreMaterials(old.dir), isEmpty);
+  });
+
+  test('FR-42 对照：去掉假 -wal 后同一备份能恢复成功', () async {
+    final old = await _makeOldState();
+    addTearDown(() async {
+      try {
+        await old.db.close();
+      } catch (_) {}
+      try {
+        await old.dir.delete(recursive: true);
+      } catch (_) {}
+      await AppDatabase.resetForTest();
+    });
+    await _writeSparseFile(
+      p.join(old.dir.path, 'slices', 'huge.bin'),
+      2050000000,
+    );
+    final newZip = await _makeNewZip();
+    final entries = readZip(newZip).toList();
+    entries.add(
+      ZipEntryData('slices/fifty.bin', List<int>.filled(50000000, 0)),
+    );
+    final zip = buildZip(entries);
+    await AppDatabase.importBackupZipInto(old.db, zip, dataDir: old.dir.path);
+    expect(await _questionTitles(old.db), {'q-new': '新题'});
+    expect(_readBytes(old.dir, 'slices/fifty.bin')?.length, 50000000);
     expect(_leftoverRestoreMaterials(old.dir), isEmpty);
   });
 }

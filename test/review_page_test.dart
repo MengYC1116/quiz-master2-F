@@ -25,22 +25,21 @@ Question rq(
   bool isOrganized = true,
   bool reviewJoined = false,
   bool isArchived = false,
-}) =>
-    Question(
-      id: id,
-      title: title,
-      subjectId: subjectId,
-      errorTypes: errorTypes,
-      answer: answer,
-      explanation: explanation,
-      notes: notes,
-      createdAt: createdAt ?? DateTime(2026, 11, 8),
-      isOrganized: isOrganized,
-      reviewJoined: reviewJoined,
-      isArchived: isArchived,
-      sliceKind: 'material',
-      sliceText: '题：$title',
-    );
+}) => Question(
+  id: id,
+  title: title,
+  subjectId: subjectId,
+  errorTypes: errorTypes,
+  answer: answer,
+  explanation: explanation,
+  notes: notes,
+  createdAt: createdAt ?? DateTime(2026, 11, 8),
+  isOrganized: isOrganized,
+  reviewJoined: reviewJoined,
+  isArchived: isArchived,
+  sliceKind: 'material',
+  sliceText: '题：$title',
+);
 
 CauseRecord rec(
   String questionId,
@@ -51,20 +50,17 @@ CauseRecord rec(
   DateTime? recheckDate,
   List<String> remedyHistory = const [],
   DateTime? joinedAt,
-}) =>
-    CauseRecord(
-      questionId: questionId,
-      cause: cause,
-      subjectId: subjectId,
-      status: status,
-      solvedCount: solvedCount,
-      lastCheck: status == CauseStatus.solved
-          ? DateTime(2026, 11, 10)
-          : null,
-      recheckDate: recheckDate,
-      remedyHistory: remedyHistory,
-      joinedAt: joinedAt ?? DateTime(2026, 11, 10),
-    );
+}) => CauseRecord(
+  questionId: questionId,
+  cause: cause,
+  subjectId: subjectId,
+  status: status,
+  solvedCount: solvedCount,
+  lastCheck: status == CauseStatus.solved ? DateTime(2026, 11, 10) : null,
+  recheckDate: recheckDate,
+  remedyHistory: remedyHistory,
+  joinedAt: joinedAt ?? DateTime(2026, 11, 10),
+);
 
 class FakeReviewRepo extends QuestionRepository {
   FakeReviewRepo({
@@ -73,9 +69,9 @@ class FakeReviewRepo extends QuestionRepository {
     AppSettings? settings,
     this.throwOnCheck = false,
     List<Subject>? subjects,
-  })  : settingsValue = settings ?? AppSettings.defaults,
-        subjectsValue = subjects ?? Subject.all,
-        super(AppDatabase.instance);
+  }) : settingsValue = settings ?? AppSettings.defaults,
+       subjectsValue = subjects ?? Subject.all,
+       super(AppDatabase.instance);
 
   List<Question> questions;
   List<CauseRecord> records;
@@ -91,8 +87,7 @@ class FakeReviewRepo extends QuestionRepository {
   @override
   Future<List<Subject>> subjects() async => List.of(subjectsValue);
 
-  final Map<String, List<({String result, DateTime reviewedAt})>> history =
-      {};
+  final Map<String, List<({String result, DateTime reviewedAt})>> history = {};
 
   @override
   Future<AppSettings> settings() async {
@@ -115,20 +110,21 @@ class FakeReviewRepo extends QuestionRepository {
 
   @override
   Future<List<({String result, DateTime reviewedAt})>> reviewHistory(
-          String questionId) async =>
-      List.of(history[questionId] ?? const []);
+    String questionId,
+  ) async => List.of(history[questionId] ?? const []);
 
   @override
   Future<ReviewSessionState?> reviewState() async => savedState;
 
   @override
-  Future<void> saveReviewState(
-          {required List<ReviewQueueItem> queue, required int position}) async =>
-      savedState = ReviewSessionState(
-        queue: queue,
-        position: position,
-        updatedAt: DateTime.now(),
-      );
+  Future<void> saveReviewState({
+    required List<ReviewQueueItem> queue,
+    required int position,
+  }) async => savedState = ReviewSessionState(
+    queue: queue,
+    position: position,
+    updatedAt: DateTime.now(),
+  );
 
   @override
   Future<void> clearReviewState() async {
@@ -175,7 +171,8 @@ class FakeReviewRepo extends QuestionRepository {
       );
     }
     final i = records.indexWhere(
-        (x) => x.questionId == r.questionId && x.cause == r.cause);
+      (x) => x.questionId == r.questionId && x.cause == r.cause,
+    );
     if (i >= 0) records[i] = updated;
     return updated;
   }
@@ -186,10 +183,10 @@ class FakeReviewRepo extends QuestionRepository {
     if (trimmed.isEmpty) return r;
     final now = DateTime.now();
     final entry = '${now.year}-${now.month}-${now.day}：$trimmed';
-    final updated =
-        r.copyWith(remedyHistory: [entry, ...r.remedyHistory]);
+    final updated = r.copyWith(remedyHistory: [entry, ...r.remedyHistory]);
     final i = records.indexWhere(
-        (x) => x.questionId == r.questionId && x.cause == r.cause);
+      (x) => x.questionId == r.questionId && x.cause == r.cause,
+    );
     if (i >= 0) records[i] = updated;
     return updated;
   }
@@ -200,48 +197,69 @@ FakeReviewRepo reviewRepo({int pageSize = 10}) {
   return FakeReviewRepo(
     settings: AppSettings.defaults.copyWith(pageSize: pageSize),
     questions: [
-      rq('q1', '函数极限',
-          errorTypes: const ['概念不清'],
-          answer: '3',
-          explanation: 'lim sin3x/x = 3。',
-          notes: '当时没看清题目。',
-          createdAt: DateTime(2026, 11, 8),
-          reviewJoined: true),
-      rq('q2', '导数应用综合',
-          errorTypes: const ['方法不会', '计算错误'],
-          answer: '见解析',
-          explanation: '先求导，再列表。',
-          createdAt: DateTime(2026, 11, 9),
-          reviewJoined: true),
-      rq('q3', '学术词汇辨析',
-          subjectId: 'english',
-          errorTypes: const ['概念不清'],
-          createdAt: DateTime(2026, 11, 7),
-          reviewJoined: true),
-      rq('q4', '马原',
-          subjectId: 'politics',
-          errorTypes: const ['概念不清'],
-          createdAt: DateTime(2026, 11, 6)),
-      rq('q5', '未整理题',
-          errorTypes: const ['方法不会'],
-          createdAt: DateTime(2026, 11, 5),
-          isOrganized: false,
-          reviewJoined: true),
+      rq(
+        'q1',
+        '函数极限',
+        errorTypes: const ['概念不清'],
+        answer: '3',
+        explanation: 'lim sin3x/x = 3。',
+        notes: '当时没看清题目。',
+        createdAt: DateTime(2026, 11, 8),
+        reviewJoined: true,
+      ),
+      rq(
+        'q2',
+        '导数应用综合',
+        errorTypes: const ['方法不会', '计算错误'],
+        answer: '见解析',
+        explanation: '先求导，再列表。',
+        createdAt: DateTime(2026, 11, 9),
+        reviewJoined: true,
+      ),
+      rq(
+        'q3',
+        '学术词汇辨析',
+        subjectId: 'english',
+        errorTypes: const ['概念不清'],
+        createdAt: DateTime(2026, 11, 7),
+        reviewJoined: true,
+      ),
+      rq(
+        'q4',
+        '马原',
+        subjectId: 'politics',
+        errorTypes: const ['概念不清'],
+        createdAt: DateTime(2026, 11, 6),
+      ),
+      rq(
+        'q5',
+        '未整理题',
+        errorTypes: const ['方法不会'],
+        createdAt: DateTime(2026, 11, 5),
+        isOrganized: false,
+        reviewJoined: true,
+      ),
     ],
     records: [
       rec('q1', '概念不清', joinedAt: now),
-      rec('q2', '方法不会',
-          status: CauseStatus.inProgress,
-          solvedCount: 1,
-          joinedAt: now.add(const Duration(hours: 1))),
+      rec(
+        'q2',
+        '方法不会',
+        status: CauseStatus.inProgress,
+        solvedCount: 1,
+        joinedAt: now.add(const Duration(hours: 1)),
+      ),
       rec('q2', '计算错误', joinedAt: now.add(const Duration(hours: 1))),
-      rec('q3', '概念不清',
-          subjectId: 'english',
-          status: CauseStatus.solved,
-          solvedCount: 2,
-          recheckDate: DateTime.now().add(const Duration(days: 7)),
-          remedyHistory: const ['2026-11-10：把词根表抄了一遍'],
-          joinedAt: now.subtract(const Duration(hours: 1))),
+      rec(
+        'q3',
+        '概念不清',
+        subjectId: 'english',
+        status: CauseStatus.solved,
+        solvedCount: 2,
+        recheckDate: DateTime.now().add(const Duration(days: 7)),
+        remedyHistory: const ['2026-11-10：把词根表抄了一遍'],
+        joinedAt: now.subtract(const Duration(hours: 1)),
+      ),
       rec('q5', '方法不会', joinedAt: now),
     ],
   );
@@ -255,16 +273,23 @@ FakeReviewRepo crossSubjectRepo() {
   final now = DateTime(2026, 11, 10);
   repo.questions = [
     ...repo.questions,
-    rq('q6', '英语完形填空',
-        subjectId: 'english',
-        errorTypes: const ['计算错误'],
-        createdAt: DateTime(2026, 11, 9),
-        reviewJoined: true),
+    rq(
+      'q6',
+      '英语完形填空',
+      subjectId: 'english',
+      errorTypes: const ['计算错误'],
+      createdAt: DateTime(2026, 11, 9),
+      reviewJoined: true,
+    ),
   ];
   repo.records = [
     ...repo.records,
-    rec('q6', '计算错误',
-        subjectId: 'english', joinedAt: now.add(const Duration(hours: 2))),
+    rec(
+      'q6',
+      '计算错误',
+      subjectId: 'english',
+      joinedAt: now.add(const Duration(hours: 2)),
+    ),
   ];
   return repo;
 }
@@ -273,19 +298,25 @@ FakeReviewRepo crossSubjectRepo() {
 FakeReviewRepo singleRepo({int solvedCount = 0}) {
   final repo = reviewRepo();
   repo.questions = [
-    rq('q1', '函数极限',
-        errorTypes: const ['概念不清'],
-        answer: '3',
-        explanation: 'lim sin3x/x = 3。',
-        notes: '当时没看清题目。',
-        createdAt: DateTime(2026, 11, 8),
-        reviewJoined: true),
+    rq(
+      'q1',
+      '函数极限',
+      errorTypes: const ['概念不清'],
+      answer: '3',
+      explanation: 'lim sin3x/x = 3。',
+      notes: '当时没看清题目。',
+      createdAt: DateTime(2026, 11, 8),
+      reviewJoined: true,
+    ),
   ];
   repo.records = [
-    rec('q1', '概念不清',
-        status: solvedCount > 0 ? CauseStatus.inProgress : CauseStatus.pending,
-        solvedCount: solvedCount,
-        joinedAt: DateTime(2026, 11, 10)),
+    rec(
+      'q1',
+      '概念不清',
+      status: solvedCount > 0 ? CauseStatus.inProgress : CauseStatus.pending,
+      solvedCount: solvedCount,
+      joinedAt: DateTime(2026, 11, 10),
+    ),
   ];
   return repo;
 }
@@ -296,11 +327,14 @@ FakeReviewRepo archivedRepo({bool archived = true}) {
   final repo = reviewRepo();
   repo.questions = [
     ...repo.questions,
-    rq('q9', '已归档题',
-        errorTypes: const ['概念不清'],
-        createdAt: DateTime(2026, 11, 9),
-        reviewJoined: true,
-        isArchived: archived),
+    rq(
+      'q9',
+      '已归档题',
+      errorTypes: const ['概念不清'],
+      createdAt: DateTime(2026, 11, 9),
+      reviewJoined: true,
+      isArchived: archived,
+    ),
   ];
   repo.records = [
     ...repo.records,
@@ -314,20 +348,26 @@ FakeReviewRepo archivedRepo({bool archived = true}) {
 FakeReviewRepo recheckRepo() {
   final repo = reviewRepo();
   repo.questions = [
-    rq('q1', '函数极限',
-        errorTypes: const ['概念不清'],
-        answer: '3',
-        explanation: 'lim sin3x/x = 3。',
-        notes: '当时没看清题目。',
-        createdAt: DateTime(2026, 11, 8),
-        reviewJoined: true),
+    rq(
+      'q1',
+      '函数极限',
+      errorTypes: const ['概念不清'],
+      answer: '3',
+      explanation: 'lim sin3x/x = 3。',
+      notes: '当时没看清题目。',
+      createdAt: DateTime(2026, 11, 8),
+      reviewJoined: true,
+    ),
   ];
   repo.records = [
-    rec('q1', '概念不清',
-        status: CauseStatus.solved,
-        solvedCount: 2,
-        recheckDate: DateTime.now().subtract(const Duration(days: 1)),
-        joinedAt: DateTime(2026, 11, 10)),
+    rec(
+      'q1',
+      '概念不清',
+      status: CauseStatus.solved,
+      solvedCount: 2,
+      recheckDate: DateTime.now().subtract(const Duration(days: 1)),
+      joinedAt: DateTime(2026, 11, 10),
+    ),
   ];
   return repo;
 }
@@ -349,8 +389,9 @@ Future<void> pumpReview(
     MaterialApp(
       theme: AppTheme.light(scale: scale),
       darkTheme: AppTheme.dark(scale: scale),
-      themeMode:
-          brightness == Brightness.dark ? ThemeMode.dark : ThemeMode.light,
+      themeMode: brightness == Brightness.dark
+          ? ThemeMode.dark
+          : ThemeMode.light,
       home: Builder(
         builder: (context) {
           final data = MediaQuery.of(context);
@@ -376,8 +417,11 @@ Future<void> pumpReview(
   await tester.pumpAndSettle();
 }
 
-Future<void> tapText(WidgetTester tester, String text,
-    {bool first = false}) async {
+Future<void> tapText(
+  WidgetTester tester,
+  String text, {
+  bool first = false,
+}) async {
   final finder = first ? find.text(text).first : find.text(text);
   await tester.ensureVisible(finder);
   await tester.pumpAndSettle();
@@ -385,8 +429,7 @@ Future<void> tapText(WidgetTester tester, String text,
   await tester.pumpAndSettle();
 }
 
-Future<void> tapButton(WidgetTester tester, String label,
-    {int at = 0}) async {
+Future<void> tapButton(WidgetTester tester, String label, {int at = 0}) async {
   final finder = find.widgetWithText(QmButton, label);
   await tester.ensureVisible(finder.at(at));
   await tester.pumpAndSettle();
@@ -396,13 +439,17 @@ Future<void> tapButton(WidgetTester tester, String label,
 
 /// 点下拉里的菜单项（按 DropdownMenuItem 的 value 精确定位）。
 Future<void> pickMenuItem<T>(
-    WidgetTester tester, Finder dropdown, T value) async {
+  WidgetTester tester,
+  Finder dropdown,
+  T value,
+) async {
   await tester.ensureVisible(dropdown);
   await tester.pumpAndSettle();
   await tester.tap(dropdown);
   await tester.pumpAndSettle();
   final item = find.byWidgetPredicate(
-      (w) => w is DropdownMenuItem<T> && w.value == value);
+    (w) => w is DropdownMenuItem<T> && w.value == value,
+  );
   await tester.ensureVisible(item);
   await tester.pumpAndSettle();
   await tester.tap(item);
@@ -411,8 +458,7 @@ Future<void> pickMenuItem<T>(
 
 void main() {
   group('列表', () {
-    testWidgets('按学科 × 错因分组、每组一行：关联题数 + 状态 pill + 复查标记',
-        (tester) async {
+    testWidgets('按学科 × 错因分组、每组一行：关联题数 + 状态 pill + 复查标记', (tester) async {
       await pumpReview(tester);
       // 三组待治：数学|概念不清、数学|方法不会、数学|计算错误。
       // 已治愈行的错因是 Text.rich（“概念不清 · 关联 1 道题”），用包含匹配。
@@ -436,15 +482,12 @@ void main() {
       // B9-4（Meng 2026-11-15 ~19:43 裁决：与角标 / 首页统一，按题数）：
       // 种子库待治 3 条错因记录分属 2 道题（q1 1 条、q2 2 条），
       // 页顶按题计是 2 道题，不是 3 条；q3 已解决（复查日未到）计 1 道。
-      expect(
-          find.text('待解决 / 解决中 2 道题'), findsOneWidget);
+      expect(find.text('待解决 / 解决中 2 道题'), findsOneWidget);
       expect(find.text('已解决 1 道'), findsOneWidget);
-      expect(find.textContaining('列表按加入时间排，先加入的先解决'),
-          findsOneWidget);
+      expect(find.textContaining('列表按加入时间排，先加入的先解决'), findsOneWidget);
     });
 
-    testWidgets('B6：已归档的已加入题不在复习列表里，取消归档后回来',
-        (tester) async {
+    testWidgets('B6：已归档的已加入题不在复习列表里，取消归档后回来', (tester) async {
       await pumpReview(tester, repo: archivedRepo());
       expect(find.textContaining('已归档题'), findsNothing);
       // 归档题的记录保留在库里（只是列表不显示），取消归档即回来。
@@ -458,21 +501,25 @@ void main() {
       expect(find.byType(Card), findsNothing);
     });
 
-    testWidgets('学科筛选：只留英语组，待治为空出提示 + 已治愈组仍在',
-        (tester) async {
+    testWidgets('学科筛选：只留英语组，待治为空出提示 + 已治愈组仍在', (tester) async {
       await pumpReview(tester);
       await pickMenuItem<String>(
-          tester, find.byType(DropdownButton<String>).first, 'english');
-      expect(find.text('当前筛选下没有待解决错因，换个学科 / 错因试试。'),
-          findsOneWidget);
+        tester,
+        find.byType(DropdownButton<String>).first,
+        'english',
+      );
+      expect(find.text('当前筛选下没有待解决错因，换个学科 / 错因试试。'), findsOneWidget);
       expect(find.textContaining('概念不清'), findsOneWidget); // 仅已治愈组
       expect(find.text('方法不会'), findsNothing);
     });
 
     testWidgets('错因筛选：只留计算错误组', (tester) async {
       await pumpReview(tester);
-      await pickMenuItem<String>(tester,
-          find.byType(DropdownButton<String>).last, '计算错误');
+      await pickMenuItem<String>(
+        tester,
+        find.byType(DropdownButton<String>).last,
+        '计算错误',
+      );
       // 下拉框当前值 + 分组行各一个“计算错误”。
       expect(find.text('计算错误'), findsNWidgets(2));
       expect(find.text('方法不会'), findsNothing);
@@ -486,20 +533,21 @@ void main() {
       await tapButton(tester, '下一页');
       expect(find.text('共 3 条 · 第 2 / 2 页'), findsOneWidget);
       expect(find.text('计算错误'), findsOneWidget);
-      await pickMenuItem<String>(tester,
-          find.byType(DropdownButton<String>).last, '计算错误');
+      await pickMenuItem<String>(
+        tester,
+        find.byType(DropdownButton<String>).last,
+        '计算错误',
+      );
       expect(find.text('共 1 条 · 第 1 / 1 页'), findsOneWidget);
       // 下拉框当前值 + 分组行各一个“计算错误”。
       expect(find.text('计算错误'), findsNWidgets(2));
     });
 
-    testWidgets('每页数量可改：改成 20 条后只剩 1 页，设置默认值不动（P0B2 本地行为）',
-        (tester) async {
+    testWidgets('每页数量可改：改成 20 条后只剩 1 页，设置默认值不动（P0B2 本地行为）', (tester) async {
       final repo = reviewRepo(pageSize: 2);
       await pumpReview(tester, repo: repo);
       expect(find.text('共 3 条 · 第 1 / 2 页'), findsOneWidget);
-      await pickMenuItem<int>(
-          tester, find.byType(DropdownButton<int>), 20);
+      await pickMenuItem<int>(tester, find.byType(DropdownButton<int>), 20);
       expect(find.text('共 3 条 · 第 1 / 1 页'), findsOneWidget);
       // 本地行为：只改本页显示，不写库、不改设置默认值。
       expect(repo.settingsValue.pageSize, 2);
@@ -528,8 +576,7 @@ void main() {
         ],
         records: [
           for (var i = 0; i < 55; i++)
-            rec('b$i', '分页错因 $i',
-                joinedAt: base.add(Duration(minutes: i))),
+            rec('b$i', '分页错因 $i', joinedAt: base.add(Duration(minutes: i))),
         ],
       );
       await pumpReview(tester, repo: repo);
@@ -544,7 +591,10 @@ void main() {
       for (final (size, pages, first, before) in cases) {
         if (size != 10) {
           await pickMenuItem<int>(
-              tester, find.byType(DropdownButton<int>), size);
+            tester,
+            find.byType(DropdownButton<int>),
+            size,
+          );
         }
         expect(find.text('共 55 条 · 第 1 / $pages 页'), findsOneWidget);
         for (var p = 1; p < pages; p++) {
@@ -563,8 +613,7 @@ void main() {
       await tapText(tester, '解决记录');
       expect(find.textContaining('解决于 2026-11-10'), findsOneWidget);
       expect(find.textContaining('下次复查'), findsOneWidget);
-      expect(find.textContaining('补救记录：2026-11-10：把词根表抄了一遍'),
-          findsOneWidget);
+      expect(find.textContaining('补救记录：2026-11-10：把词根表抄了一遍'), findsOneWidget);
       await tapText(tester, '收起');
       expect(find.textContaining('解决于'), findsNothing);
     });
@@ -583,11 +632,35 @@ void main() {
       expect(find.textContaining('下次复习时间'), findsNothing);
       expect(find.textContaining('翻卡'), findsNothing);
     });
+
+    testWidgets('FR-10：按学科排时括号现拼学科名，不写死预设三科', (tester) async {
+      final repo = reviewRepo();
+      repo.settingsValue = repo.settingsValue.copyWith(reviewSort: 'subject');
+      repo.subjectsValue = [
+        Subject.math,
+        Subject(id: 'chem', name: '化学', color: Subject.math.color, icon: '化'),
+      ];
+      await pumpReview(tester, repo: repo);
+      expect(find.text('列表按学科排（数学、化学），同一科里先加入的先解决'), findsOneWidget);
+      expect(find.textContaining('数学 / 英语 / 政治'), findsNothing);
+    });
+
+    testWidgets('FR-10：学科超过 3 科时只列前 3 科 +“等”', (tester) async {
+      final repo = reviewRepo();
+      repo.settingsValue = repo.settingsValue.copyWith(reviewSort: 'subject');
+      repo.subjectsValue = [
+        Subject.math,
+        Subject.english,
+        Subject.politics,
+        Subject(id: 'chem', name: '化学', color: Subject.math.color, icon: '化'),
+      ];
+      await pumpReview(tester, repo: repo);
+      expect(find.text('列表按学科排（数学、英语、政治等），同一科里先加入的先解决'), findsOneWidget);
+    });
   });
 
   group('会话', () {
-    testWidgets('四步走完一题：看错因 → 写补救 → 重做 → 自查 → 看总结',
-        (tester) async {
+    testWidgets('四步走完一题：看错因 → 写补救 → 重做 → 自查 → 看总结', (tester) async {
       await pumpReview(tester, repo: singleRepo());
       await tapButton(tester, '开始解决');
       expect(find.textContaining('第 1 / 1 道题'), findsOneWidget);
@@ -615,8 +688,7 @@ void main() {
       expect(find.text('概念不清'), findsOneWidget); // 单题库：仅待治组
     });
 
-    testWidgets('自查“已解决”满 2 次算已解决：总结计 1 个已解决',
-        (tester) async {
+    testWidgets('自查“已解决”满 2 次算已解决：总结计 1 个已解决', (tester) async {
       await pumpReview(tester, repo: singleRepo(solvedCount: 1));
       await tapButton(tester, '开始解决');
       await tapButton(tester, '下一步：写补救');
@@ -630,8 +702,7 @@ void main() {
       expect(find.textContaining('下次复查'), findsOneWidget);
     });
 
-    testWidgets('待定1：复查通过不加计数——已满 2 次治愈后复查通过仍为 2',
-        (tester) async {
+    testWidgets('待定1：复查通过不加计数——已满 2 次治愈后复查通过仍为 2', (tester) async {
       final repo = recheckRepo();
       await pumpReview(tester, repo: repo);
       // 复查到期的题在列表里，带复查标记。
@@ -659,8 +730,7 @@ void main() {
       expect(!r.recheckDate!.isBefore(todayStart), isTrue);
     });
 
-    testWidgets('自查要全选完才能“下一题”：双错因题先选一个仍禁用',
-        (tester) async {
+    testWidgets('自查要全选完才能“下一题”：双错因题先选一个仍禁用', (tester) async {
       await pumpReview(tester);
       await tapButton(tester, '开始解决');
       // q1 一因走完，到 q2（双错因）。
@@ -726,8 +796,7 @@ void main() {
       expect(find.text('① 看错因'), findsOneWidget);
     });
 
-    testWidgets('按组开始解决：只治该组的错因（SR-P2-49 决定 (b)）',
-        (tester) async {
+    testWidgets('按组开始解决：只治该组的错因（SR-P2-49 决定 (b)）', (tester) async {
       await pumpReview(tester);
       // 第 3 个“开始解决”按钮 = 计算错误组（顶栏 1 个 + 三组各 1 个）。
       await tapButton(tester, '开始解决', at: 3);
@@ -737,20 +806,17 @@ void main() {
       expect(find.text('本题错因 1 / 1'), findsOneWidget);
       // SR2-33：按组进会话的范围文案按该组写（数学 · 计算错误），
       // 不再写筛选口径的“全部待解决错因”。
-      expect(find.textContaining('第 1 / 1 道题 · 数学 · 计算错误'),
-          findsOneWidget);
+      expect(find.textContaining('第 1 / 1 道题 · 数学 · 计算错误'), findsOneWidget);
     });
 
-    testWidgets('SR3-17 按组进会话跨学科同错因：文案退为错因「…」，会话共 2 道题',
-        (tester) async {
+    testWidgets('SR3-17 按组进会话跨学科同错因：文案退为错因「…」，会话共 2 道题', (tester) async {
       await pumpReview(tester, repo: crossSubjectRepo());
       // 第 4 个“开始解决”按钮 = 数学“计算错误”组（顶栏 1 个 + 四组各 1 个）。
       await tapButton(tester, '开始解决', at: 3);
       // 会话块是（当前筛选 × 计算错误）：q2（数学）+ q6（英语），共 2 块；
       // 文案按实际块集算，跨学科单错因退为“错因「计算错误」”，不再写
       // “数学 · 计算错误”（旧文案只在单科单错因时才成立）。
-      expect(find.textContaining('第 1 / 2 道题 · 错因「计算错误」'),
-          findsOneWidget);
+      expect(find.textContaining('第 1 / 2 道题 · 错因「计算错误」'), findsOneWidget);
       expect(find.textContaining('数学 · 计算错误'), findsNothing);
       // 走完 q2 的单个错因，到第 2 道题：是英语题，文案仍是错因口径。
       await tapButton(tester, '下一步：写补救');
@@ -759,14 +825,11 @@ void main() {
       await tapButton(tester, '下一步：自查');
       await tapText(tester, '已解决');
       await tapButton(tester, '下一题');
-      expect(find.textContaining('第 2 / 2 道题 · 错因「计算错误」'),
-          findsOneWidget);
-      expect(find.textContaining('英语 · 材料题｜英语完形填空'),
-          findsOneWidget);
+      expect(find.textContaining('第 2 / 2 道题 · 错因「计算错误」'), findsOneWidget);
+      expect(find.textContaining('英语 · 材料题｜英语完形填空'), findsOneWidget);
     });
 
-    testWidgets('放大浮层：点题图弹出，标题“整题图 · 放大查看”',
-        (tester) async {
+    testWidgets('放大浮层：点题图弹出，标题“整题图 · 放大查看”', (tester) async {
       await pumpReview(tester, repo: singleRepo());
       await tapButton(tester, '开始解决');
       await tester.tap(find.byType(QuestionSlice).first);
@@ -776,8 +839,7 @@ void main() {
       expect(find.text('整题图 · 放大查看'), findsNothing);
     });
 
-    testWidgets('保存失败：自查提交抛错，出错误横幅并留在自查步',
-        (tester) async {
+    testWidgets('保存失败：自查提交抛错，出错误横幅并留在自查步', (tester) async {
       final repo = singleRepo();
       repo.throwOnCheck = true;
       await pumpReview(tester, repo: repo);
@@ -808,8 +870,7 @@ void main() {
       expect(find.textContaining('2026-11-01'), findsNothing);
     });
 
-    testWidgets('SR-P1-13：跳过双错因题的最后一个错因，直接进重做，不重现已写完补救的错因',
-        (tester) async {
+    testWidgets('SR-P1-13：跳过双错因题的最后一个错因，直接进重做，不重现已写完补救的错因', (tester) async {
       await pumpReview(tester);
       await tapButton(tester, '开始解决');
       // q1 单错因走完，到 q2（双错因）。
@@ -828,9 +889,7 @@ void main() {
       // 注意步骤指示条四颗 pill 常驻，不能用 '① 看错因' 断言；
       // 用重做步独有的提示文案 + 错因头（只在 ①② 步出现）断言。
       await tapButton(tester, '跳过该题');
-      expect(
-          find.text('答案遮着：自己把这道题重做一遍，再点开答案对照'),
-          findsOneWidget);
+      expect(find.text('答案遮着：自己把这道题重做一遍，再点开答案对照'), findsOneWidget);
       expect(find.text('本题错因 1 / 2'), findsNothing);
       expect(find.text('下一步：写补救'), findsNothing);
       // 重做步本身能正常走下去（看答案 → 自查 → 下一题进队尾重排块）。
@@ -839,13 +898,11 @@ void main() {
       expect(find.widgetWithText(QmButton, '下一题'), findsOneWidget);
     });
 
-    testWidgets('SR-P1-12：复习每页条数改后，进会话再暂停回列表，仍保留',
-        (tester) async {
+    testWidgets('SR-P1-12：复习每页条数改后，进会话再暂停回列表，仍保留', (tester) async {
       final repo = reviewRepo(pageSize: 2);
       await pumpReview(tester, repo: repo);
       expect(find.text('共 3 条 · 第 1 / 2 页'), findsOneWidget);
-      await pickMenuItem<int>(
-          tester, find.byType(DropdownButton<int>), 20);
+      await pickMenuItem<int>(tester, find.byType(DropdownButton<int>), 20);
       expect(find.text('共 3 条 · 第 1 / 1 页'), findsOneWidget);
       // 进会话再暂停：_pauseSession 末尾调 _load()，旧代码会在此
       // 把 _pageSize 弹回设置默认值 2。
@@ -860,30 +917,28 @@ void main() {
     for (final brightness in [Brightness.light, Brightness.dark]) {
       for (final scale in [1.0, 1.15, 1.3]) {
         testWidgets(
-            '${brightness == Brightness.light ? '亮' : '深'} × $scale 列表 + 会话无溢出',
-            (tester) async {
-          await pumpReview(tester,
-              brightness: brightness, scale: scale);
-          expect(tester.takeException(), isNull);
-          await tapButton(tester, '开始解决');
-          await tester.pumpAndSettle();
-          expect(tester.takeException(), isNull);
-          await tapButton(tester, '下一步：写补救');
-          await tester.pumpAndSettle();
-          expect(tester.takeException(), isNull);
-        });
+          '${brightness == Brightness.light ? '亮' : '深'} × $scale 列表 + 会话无溢出',
+          (tester) async {
+            await pumpReview(tester, brightness: brightness, scale: scale);
+            expect(tester.takeException(), isNull);
+            await tapButton(tester, '开始解决');
+            await tester.pumpAndSettle();
+            expect(tester.takeException(), isNull);
+            await tapButton(tester, '下一步：写补救');
+            await tester.pumpAndSettle();
+            expect(tester.takeException(), isNull);
+          },
+        );
       }
     }
   });
 
   group('B5-P2 复习', () {
-    testWidgets('SR-P2-39 未加入盒只列真能加入的题：未整理、无错因不进',
-        (tester) async {
+    testWidgets('SR-P2-39 未加入盒只列真能加入的题：未整理、无错因不进', (tester) async {
       final repo = reviewRepo();
       repo.questions = [
         ...repo.questions,
-        rq('q6', '未整理新题',
-            errorTypes: const ['概念不清'], isOrganized: false),
+        rq('q6', '未整理新题', errorTypes: const ['概念不清'], isOrganized: false),
         rq('q7', '无错因题', errorTypes: const []),
         rq('q8', '新加入候选题', errorTypes: const ['方法不会']),
       ];
@@ -894,54 +949,66 @@ void main() {
       expect(find.textContaining('无错因题'), findsNothing);
     });
 
-    testWidgets('SR-P2-47 已解决区也分页：5 组每页 2 条共 3 页',
-        (tester) async {
+    testWidgets('SR-P2-47 已解决区也分页：5 组每页 2 条共 3 页', (tester) async {
       final repo = FakeReviewRepo(
         settings: AppSettings.defaults.copyWith(pageSize: 2),
         questions: [
-          rq('q1', '函数极限',
-              errorTypes: const ['概念不清'], reviewJoined: true),
-          rq('q3', '学术词汇辨析',
-              subjectId: 'english',
-              errorTypes: const ['概念不清'],
-              reviewJoined: true),
-          rq('c1', '治愈题 1',
-              errorTypes: const ['方法不会'], reviewJoined: true),
-          rq('c2', '治愈题 2',
-              errorTypes: const ['计算错误'], reviewJoined: true),
-          rq('c3', '治愈题 3',
-              errorTypes: const ['审题失误'], reviewJoined: true),
-          rq('c4', '治愈题 4',
-              errorTypes: const ['其他'], reviewJoined: true),
+          rq('q1', '函数极限', errorTypes: const ['概念不清'], reviewJoined: true),
+          rq(
+            'q3',
+            '学术词汇辨析',
+            subjectId: 'english',
+            errorTypes: const ['概念不清'],
+            reviewJoined: true,
+          ),
+          rq('c1', '治愈题 1', errorTypes: const ['方法不会'], reviewJoined: true),
+          rq('c2', '治愈题 2', errorTypes: const ['计算错误'], reviewJoined: true),
+          rq('c3', '治愈题 3', errorTypes: const ['审题失误'], reviewJoined: true),
+          rq('c4', '治愈题 4', errorTypes: const ['其他'], reviewJoined: true),
         ],
         records: [
           rec('q1', '概念不清', joinedAt: DateTime(2026, 11, 10)),
-          rec('q3', '概念不清',
-              subjectId: 'english',
-              status: CauseStatus.solved,
-              solvedCount: 2,
-              recheckDate: DateTime.now().add(const Duration(days: 7)),
-              joinedAt: DateTime(2026, 11, 10)),
-          rec('c1', '方法不会',
-              status: CauseStatus.solved,
-              solvedCount: 2,
-              recheckDate: DateTime.now().add(const Duration(days: 7)),
-              joinedAt: DateTime(2026, 11, 10)),
-          rec('c2', '计算错误',
-              status: CauseStatus.solved,
-              solvedCount: 2,
-              recheckDate: DateTime.now().add(const Duration(days: 7)),
-              joinedAt: DateTime(2026, 11, 10)),
-          rec('c3', '审题失误',
-              status: CauseStatus.solved,
-              solvedCount: 2,
-              recheckDate: DateTime.now().add(const Duration(days: 7)),
-              joinedAt: DateTime(2026, 11, 10)),
-          rec('c4', '其他',
-              status: CauseStatus.solved,
-              solvedCount: 2,
-              recheckDate: DateTime.now().add(const Duration(days: 7)),
-              joinedAt: DateTime(2026, 11, 10)),
+          rec(
+            'q3',
+            '概念不清',
+            subjectId: 'english',
+            status: CauseStatus.solved,
+            solvedCount: 2,
+            recheckDate: DateTime.now().add(const Duration(days: 7)),
+            joinedAt: DateTime(2026, 11, 10),
+          ),
+          rec(
+            'c1',
+            '方法不会',
+            status: CauseStatus.solved,
+            solvedCount: 2,
+            recheckDate: DateTime.now().add(const Duration(days: 7)),
+            joinedAt: DateTime(2026, 11, 10),
+          ),
+          rec(
+            'c2',
+            '计算错误',
+            status: CauseStatus.solved,
+            solvedCount: 2,
+            recheckDate: DateTime.now().add(const Duration(days: 7)),
+            joinedAt: DateTime(2026, 11, 10),
+          ),
+          rec(
+            'c3',
+            '审题失误',
+            status: CauseStatus.solved,
+            solvedCount: 2,
+            recheckDate: DateTime.now().add(const Duration(days: 7)),
+            joinedAt: DateTime(2026, 11, 10),
+          ),
+          rec(
+            'c4',
+            '其他',
+            status: CauseStatus.solved,
+            solvedCount: 2,
+            recheckDate: DateTime.now().add(const Duration(days: 7)),
+            joinedAt: DateTime(2026, 11, 10),
+          ),
         ],
       );
       await pumpReview(tester, repo: repo);
@@ -957,8 +1024,7 @@ void main() {
       expect(find.text('共 5 组 · 第 2 / 3 页'), findsOneWidget);
     });
 
-    testWidgets('SR-P2-47 未加入盒：超 10 道默认只列前 10，可展开看全部',
-        (tester) async {
+    testWidgets('SR-P2-47 未加入盒：超 10 道默认只列前 10，可展开看全部', (tester) async {
       final repo = reviewRepo();
       repo.questions = [
         ...repo.questions,
@@ -977,38 +1043,34 @@ void main() {
       expect(find.text('收起'), findsOneWidget);
     });
 
-    testWidgets('SR2-75 未加入盒按学科分行：新学科/未知学科排最后',
-        (tester) async {
+    testWidgets('SR2-75 未加入盒按学科分行：新学科/未知学科排最后', (tester) async {
       final repo = reviewRepo();
       // 新学科化学进学科表（排在预设三科之后）；未知学科不在表里。
       repo.subjectsValue = [
         ...Subject.all,
         Subject(
-            id: 'chemistry',
-            name: '化学',
-            color: Color(0xFF7C4DDB),
-            icon: '化'),
+          id: 'chemistry',
+          name: '化学',
+          color: Color(0xFF7C4DDB),
+          icon: '化',
+        ),
       ];
       repo.questions = [
         ...repo.questions,
         rq('n0', '数学新题', errorTypes: const ['方法不会']),
-        rq('n1', '化学新题',
-            subjectId: 'chemistry', errorTypes: const ['概念不清']),
-        rq('n2', '未知学科题',
-            subjectId: 'weird', errorTypes: const ['概念不清']),
+        rq('n1', '化学新题', subjectId: 'chemistry', errorTypes: const ['概念不清']),
+        rq('n2', '未知学科题', subjectId: 'weird', errorTypes: const ['概念不清']),
       ];
       await pumpReview(tester, repo: repo);
       // 未加入盒共 4 行，按学科表顺序：数学 → 政治 → 化学 → 未知学科。
       // 未知学科名回退到数学（Subject.byId 兜底），但行本身排在最后。
-      double dy(String s) =>
-          tester.getTopLeft(find.textContaining(s)).dy;
+      double dy(String s) => tester.getTopLeft(find.textContaining(s)).dy;
       expect(dy('数学新题'), lessThan(dy('马原')));
       expect(dy('马原'), lessThan(dy('化学新题')));
       expect(dy('化学新题'), lessThan(dy('未知学科题')));
     });
 
-    testWidgets('SR-P2-48 读库失败出错误横幅；重试失败仍在，成功后恢复',
-        (tester) async {
+    testWidgets('SR-P2-48 读库失败出错误横幅；重试失败仍在，成功后恢复', (tester) async {
       final repo = reviewRepo();
       repo.throwOnLoad = true;
       await pumpReview(tester, repo: repo);
@@ -1021,14 +1083,15 @@ void main() {
       expect(find.text('概念不清'), findsOneWidget);
     });
 
-    testWidgets('SR-P2-49 错因筛选进会话：只治筛选命中的错因',
-        (tester) async {
+    testWidgets('SR-P2-49 错因筛选进会话：只治筛选命中的错因', (tester) async {
       await pumpReview(tester);
       await pickMenuItem<String>(
-          tester, find.byType(DropdownButton<String>).last, '计算错误');
+        tester,
+        find.byType(DropdownButton<String>).last,
+        '计算错误',
+      );
       await tapButton(tester, '开始解决');
-      expect(find.textContaining('第 1 / 1 道题 · 错因「计算错误」'),
-          findsOneWidget);
+      expect(find.textContaining('第 1 / 1 道题 · 错因「计算错误」'), findsOneWidget);
       expect(find.text('本题错因 1 / 1'), findsOneWidget);
     });
 
@@ -1037,17 +1100,21 @@ void main() {
       // 只有 q2 带“计算错误”（待治组里唯一）；详情页删题由
       // onOpenDetail 模拟：删题 + 删记录。
       final repo = reviewRepo();
-      await pumpReview(tester,
-          repo: repo,
-          onOpenDetail: (q, ids) async {
-            repo.questions.removeWhere((x) => x.id == q.id);
-            repo.records.removeWhere((r) => r.questionId == q.id);
-          });
+      await pumpReview(
+        tester,
+        repo: repo,
+        onOpenDetail: (q, ids) async {
+          repo.questions.removeWhere((x) => x.id == q.id);
+          repo.records.removeWhere((r) => r.questionId == q.id);
+        },
+      );
       await pickMenuItem<String>(
-          tester, find.byType(DropdownButton<String>).last, '计算错误');
+        tester,
+        find.byType(DropdownButton<String>).last,
+        '计算错误',
+      );
       await tapButton(tester, '开始解决');
-      expect(find.textContaining('第 1 / 1 道题 · 错因「计算错误」'),
-          findsOneWidget);
+      expect(find.textContaining('第 1 / 1 道题 · 错因「计算错误」'), findsOneWidget);
       // 会话里进详情删题：题没了，会话切到总结页。
       await tapButton(tester, '查看题目详情');
       expect(repo.questions.where((x) => x.id == 'q2'), isEmpty);
@@ -1056,20 +1123,24 @@ void main() {
       // 未修时 _causeFilter 仍是“计算错误”，而选项里已无它，
       // 回列表重建下拉会抛 DropdownButton 断言。
       expect(
-          tester
-              .widget<DropdownButton<String>>(
-                  find.byType(DropdownButton<String>).last)
-              .value,
-          '全部');
+        tester
+            .widget<DropdownButton<String>>(
+              find.byType(DropdownButton<String>).last,
+            )
+            .value,
+        '全部',
+      );
       expect(find.text('计算错误'), findsNothing);
       expect(find.textContaining('关联 1 道题：函数极限'), findsOneWidget);
     });
 
-    testWidgets('SR-P2-57 断点恢复的范围按保存队列写，不写死“全部待解决错因”',
-        (tester) async {
+    testWidgets('SR-P2-57 断点恢复的范围按保存队列写，不写死“全部待解决错因”', (tester) async {
       await pumpReview(tester);
       await pickMenuItem<String>(
-          tester, find.byType(DropdownButton<String>).first, 'math');
+        tester,
+        find.byType(DropdownButton<String>).first,
+        'math',
+      );
       await tapButton(tester, '开始解决');
       expect(find.textContaining('第 1 / 2 道题 · 数学这一科'), findsOneWidget);
       await tapButton(tester, '暂停');
