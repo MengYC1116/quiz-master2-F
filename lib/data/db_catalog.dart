@@ -97,8 +97,7 @@ Future<int> deleteFolderFromImpl(QuizDatabase db, Folder f) async {
 /// 数组文本，用 `LIKE '%"id"%'` 在 SQL 层粗筛（`"` 定界，不会把
 /// `f1` 误筛成 `f10` 的子串；`%`/`_`/`\` 先转义再拼 LIKE，
 /// 见 [_likeEscape]），再内存按 [Question.folderIds] 精筛；
-/// 旧写法每层 `txn.query('questions')` 全表 + 逐行 `_fromRow`
-/// 解码，题库上千时删文件夹是 O(层数 × 题数)。
+/// 全表读 + 逐行解码时，题库上千时删文件夹是 O(层数 × 题数)。
 Future<int> _deleteFolderTxn(QuizDatabase db, Folder f) async {
   // B2 集成：folder_ids LIKE 粗筛走类型化 select；folderIds 列是
   // StringListConverter 映射的 List<String>，Drift 没有原生 `like`
@@ -212,8 +211,7 @@ Future<void> renameTagFromImpl(
 ) async {
   await db.transaction(() async {
     // B2 集成：questions 全表循环走 Drift 类型化读 + 类型化
-    // update（原 SELECT * FROM questions + _fromRow + 逐行
-    // customUpdate）。行映射复用 db_questions.dart 的同库私有
+    // update。行映射复用 db_questions.dart 的同库私有
     // [_questionFromDb]（part of 同一库，无需改公开或另复制一份）。
     await (db.update(db.tags)..where((t) => t.name.equals(oldName))).write(
       TagsCompanion(id: Value('tag-$newName'), name: Value(newName)),

@@ -88,26 +88,6 @@ enum DbMigrationOutcome {
   sameLocation,
 }
 
-/// B1-Drift：把行 map 的值按运行时类型变成 Drift 变量。
-/// null 一律变成 NULL 变量（`'last_check': null` 这类在 map 里很常见，
-/// 集中一处分流，调用点不用逐列手写 Variable 构造、不用担心漏掉 null）。
-/// 非 null 值按类型走 withString/withInt/withReal/withBool/withDateTime；
-/// 其余类型（本项目没有）走 `Variable(value)` 的运行时分流。
-Variable _variable(Object? value) => switch (value) {
-  null => const Variable<String>(null),
-  String s => Variable.withString(s),
-  int i => Variable.withInt(i),
-  double d => Variable.withReal(d),
-  bool b => Variable.withBool(b),
-  DateTime dt => Variable.withDateTime(dt),
-  _ => Variable(value),
-};
-
-/// B1-Drift：把行 map 的全部值按顺序变成 Drift 变量列表，
-/// 与显式写的列顺序（`INSERT INTO t (c1, c2) VALUES (?, ?)`）配对用。
-List<Variable> _variables(Map<String, Object?> row) =>
-    row.values.map(_variable).toList();
-
 /// v2 全新数据库（version 2，无迁移历史；§6 第 1 条：老 v1 库首次启动
 /// 直接删除，不迁移；新库从空开始，不预置演示数据）。
 /// - Win11：`%LOCALAPPDATA%\quiz-master2\quiz-master2.db`；
@@ -124,9 +104,9 @@ class AppDatabase {
 
   static final AppDatabase instance = AppDatabase._();
 
-  /// §2：备份/恢复与 settings 表共用的 schema 版本号（与 sqflite 的
-  /// `version` 参数、PRAGMA user_version 是两回事，别混用——后者是
-  /// 打开时驱动的，前者是给备份/恢复与排障看的）。
+  /// §2：备份/恢复与 settings 表共用的 schema 版本号（与
+  /// `PRAGMA user_version` 是两回事，别混用——后者是打开时驱动的，
+  /// 前者是给备份/恢复与排障看的）。
   static const int schemaVersion = 2;
 
   /// §2.3：备份里的应用版本号（与 pubspec.yaml 的 version 一致）。
@@ -404,6 +384,9 @@ class AppDatabase {
 
   static List<ReviewQueueItem> decodeQueue(Object? value) =>
       decodeQueueImpl(value);
+
+  static Map<int, int> decodeRotations(Object? value) =>
+      decodeRotationsImpl(value);
   // -- db_questions.dart --
 
   static Future<List<Question>> allQuestionsFrom(QuizDatabase db) =>

@@ -6,9 +6,6 @@
 // customSelect / customInsert / customUpdate SQL 字符串；行映射走本文件
 // 底部的 _questionFromDb / _causeRecordFromDb（DbXxx 行类 → 模型类）与
 // _questionCompanion / _causeRecordCompanion（模型类 → Companion）。
-// 共享的 db_codec.dart 旧助手（_toRow / _fromRow / _causeFromRow /
-// _causeRecordToRow）已在 B2 集成时删：db_catalog.dart 与
-// db_collect.dart（confirmSplitIntoImpl）已全部转类型化，不再用它们。
 
 part of 'database.dart';
 
@@ -565,10 +562,9 @@ extension AppDatabaseQuestions on AppDatabase {
 
 // ---------------------------------------------------------------------------
 // Drift 行映射（本文件私有）：DbXxx 行类 ↔ 模型类。
-// 与 db_codec.dart 的旧 _toRow / _fromRow / _causeFromRow /
-// _causeRecordToRow 同口径（bool ↔ 0/1、DateTime ↔ 毫秒、枚举存 name、
+// 行映射口径：bool ↔ 0/1、DateTime ↔ 毫秒、枚举存 name、
 // 多值字段经 StringListConverter 走 JSON 文本、queue 经 QueueConverter
-// 走对象数组），只是读写走类型化列，不再拼 SQL 字符串。
+// 走对象数组；读写走类型化列，不再拼 SQL 字符串。
 // ---------------------------------------------------------------------------
 
 Question _questionFromDb(DbQuestion r) => Question(
@@ -670,9 +666,8 @@ CauseRecordsCompanion _causeRecordCompanion(CauseRecord r) =>
       joinedAt: Value(r.joinedAt.millisecondsSinceEpoch),
     );
 
-/// 错因记录播种（类型化版）：每个错因一条待解决记录（已存在的不动）。
-/// 与已删的 db_schema.dart `_seedCauseRecordsFor`（customInsert
-/// OR IGNORE）同语义；db_schema.dart 的旧函数已在 B2 集成时删。
+/// 错因记录播种（类型化版）：每个错因一条待解决记录（已存在的不动），
+/// 语义等价于 INSERT OR IGNORE。
 Future<void> _seedCauseRecordsTyped(
   QuizDatabase db,
   Question q, {

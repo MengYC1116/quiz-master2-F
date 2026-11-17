@@ -1,6 +1,5 @@
 // B4：database.dart 拆分——收集任务 / question_boxes（草稿、重框、确认拆题）/ 文件级联删除。
 // 与 database.dart 同一库（part of），共享库私有成员；纯重构，行为不变。
-// ARCH-PLAN-B 第 1 阶段：sqflite 结构化调用 → Drift custom* API，SQL 语义保留。
 
 part of 'database.dart';
 
@@ -676,8 +675,7 @@ Future<void> confirmSplitIntoImpl(
 /// 确认拆题里建题那一步：普通 INSERT（冲突即抛，与旧
 /// `ConflictAlgorithm.fail` 同口径——不存在时才插，重复确认在
 /// 前面已显式拦截）。B2 集成：走 Drift 类型化 insert + db_questions
-/// 的 [_questionCompanion]（与旧 [_toRow] 同列、同值），不再走
-/// _toRow / customInsert。
+/// 的 [_questionCompanion]。
 Future<void> _collectInsertQuestion(QuizDatabase db, Question q) async {
   await db
       .into(db.questions)

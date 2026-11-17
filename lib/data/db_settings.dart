@@ -2,8 +2,7 @@
 // 与 database.dart 同一库（part of），共享库私有成员；纯重构，行为不变。
 // B2 第 2 阶段（W-settings）：本文件 settings / recent_tasks 两表已全部
 // 改走 Drift 类型化查询（db.select / db.into + Companion），不再有针对
-// 这两表的 SQL 字符串。db_codec.dart 里没有这两表专属的 _toRow/_fromRow
-// 助手（那里的旧 _toRow/_fromRow 只服务 questions 表，B2 集成时已删）。
+// 这两表的 SQL 字符串。
 // database.dart 的通用 _rows 助手在 B2 集成收尾时已删（最后一个调用方
 // db_paths 转类型化后全仓零调用）。
 

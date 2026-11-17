@@ -219,76 +219,74 @@ Future<void> createTablesImpl(QuizDatabase db) async {
 ///（仅剩 p2_json_fields_test 的测试名提及，其本体走
 /// ensureCauseRecords → 类型化的 _seedCauseRecordsTyped）；错因
 /// 播种走 db_questions.dart 的 [_seedCauseRecordsTyped]。
+/// B3：以下播种全部走 Drift 类型化 insert（`db.into(...).insert`），
+/// 不再手写 customInsert SQL 字符串；settings.schemaVersion 走
+/// db_settings 的类型化 upsert（与备份恢复的写回同口径）。
 /// onCreate 的其他种子逻辑（subjects/folders/tags/exams/
 /// knowledge_points/schemaVersion 原始 DDL）保留不动。
 Future<void> _seed(QuizDatabase db) async {
   for (final s in Subject.all) {
-    await db.customInsert(
-      'INSERT INTO subjects (id, name, color, cover_style, cover_color) '
-      'VALUES (?, ?, ?, ?, ?)',
-      variables: [
-        Variable.withString(s.id),
-        Variable.withString(s.name),
-        Variable.withInt(s.color.toARGB32()),
-        Variable.withString('plain'),
-        Variable.withString(switch (s.id) {
-          'math' => 'blue',
-          'english' => 'green',
-          _ => 'red',
-        }),
-      ],
-    );
+    await db
+        .into(db.subjects)
+        .insert(
+          SubjectsCompanion.insert(
+            id: s.id,
+            name: s.name,
+            color: s.color.toARGB32(),
+            coverStyle: const Value('plain'),
+            coverColor: Value(switch (s.id) {
+              'math' => 'blue',
+              'english' => 'green',
+              _ => 'red',
+            }),
+          ),
+        );
   }
   // 每科一套预置文件夹（v2：文件夹按学科分）。
   for (final s in Subject.all) {
     for (var i = 0; i < presetFolders.length; i++) {
       final f = presetFolders[i];
-      await db.customInsert(
-        'INSERT INTO folders (id, name, subject_id, parent_id, sort_order) '
-        'VALUES (?, ?, ?, ?, ?)',
-        variables: [
-          Variable.withString('folder-${s.id}-$f'),
-          Variable.withString(f),
-          Variable.withString(s.id),
-          const Variable<String>(null),
-          Variable.withInt(i),
-        ],
-      );
+      await db
+          .into(db.folders)
+          .insert(
+            FoldersCompanion.insert(
+              id: 'folder-${s.id}-$f',
+              name: f,
+              subjectId: s.id,
+              parentId: const Value(null),
+              sortOrder: Value(i),
+            ),
+          );
     }
   }
   for (final t in presetTags) {
-    await db.customInsert(
-      'INSERT INTO tags (id, name) VALUES (?, ?)',
-      variables: [Variable.withString('tag-$t'), Variable.withString(t)],
-    );
+    await db.into(db.tags).insert(TagsCompanion.insert(id: 'tag-$t', name: t));
   }
   for (final e in demoExams()) {
-    await db.customInsert(
-      'INSERT INTO exams (id, name, date) VALUES (?, ?, ?)',
-      variables: _variables({
-        'id': e.id,
-        'name': e.name,
-        'date': e.date?.millisecondsSinceEpoch,
-      }),
-    );
+    await db
+        .into(db.exams)
+        .insert(
+          ExamsCompanion.insert(
+            id: e.id,
+            name: e.name,
+            date: Value(e.date?.millisecondsSinceEpoch),
+          ),
+        );
   }
   for (final kp in demoKnowledgePoints()) {
-    await db.customInsert(
-      'INSERT INTO knowledge_points (id, subject_id, chapter, name) '
-      'VALUES (?, ?, ?, ?)',
-      variables: [
-        Variable.withString(kp.id),
-        Variable.withString(kp.subjectId),
-        Variable.withString(kp.chapter),
-        Variable.withString(kp.name),
-      ],
-    );
+    await db
+        .into(db.knowledgePoints)
+        .insert(
+          KnowledgePointsCompanion.insert(
+            id: kp.id,
+            subjectId: kp.subjectId,
+            chapter: kp.chapter,
+            name: kp.name,
+          ),
+        );
   }
   // §2.1：settings 表写 schemaVersion = '2'（与备份 _meta 同一口径；
-  // 与 sqflite 的 version 参数是两回事）。新库从空开始，不预置演示
+  // 与 PRAGMA user_version 是两回事）。新库从空开始，不预置演示
   // 数据（§6 第 1 条）：演示题、演示解决记录、演示 recent_tasks 一律不建。
-  await db.customInsert(
-    'INSERT INTO settings (key, value) VALUES (?, ?)',
-    variables: [Variable.withString('schemaVersion'), Variable.withString('2')],
-  );
+  await _upsertSettingInto(db, 'schemaVersion', '2');
 }

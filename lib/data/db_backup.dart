@@ -198,25 +198,438 @@ void _validateBackupRowPaths(String table, Map row) {
   }
 }
 
-/// 备份恢复插行：行来自 JSON，键是动态的（可能含表里没有的列——此时
-/// 必须让 SQLite 报错走“备份数据有问题”包装，不能静默丢列），
-/// 故按行的实际键拼 INSERT OR REPLACE。列名双引号转义，与旧
-/// sqflite `insert` 的标识符处理同口径。
-Future<int> _backupInsertRow(
-  DatabaseConnectionUser db,
+/// B3：备份恢复插行（类型化版）——替代手拼 SQL 的旧 `_backupInsertRow`
+///（`INSERT OR REPLACE INTO $table (...) VALUES (...)` 动态拼列）。
+/// 行来自 JSON，值是存储表示：
+/// - JSON 列（questions 的 5 个多值字段、cause_records.remedy_history、
+///   review_state.queue、collect_tasks.page_rotations）先经
+///   `AppDatabase.decode*` 解回业务值，再由各列的 TypeConverter 编回
+///   存储表示。解码与编码互逆，规范值逐字节不变；非规范旧值 ''（DDL
+///   DEFAULT 遗留）解码为空集合、编回规范的 '[]' / '{}'（与 p2_json_fields
+///   回归口径一致：'' 是漂移，'[]' 是规范；语义等价，
+///   `decode('') == decode('[]')`）。
+/// - 其余列按 JSON 里的运行时类型严格取值（见 `_rs` / `_ri` / `_rd`
+///   系列助手）：缺失或类型不对直接抛 [BackupRestoreException]，不静默
+///   默认值、不猜测转换；有 DDL 默认值的可选列缺失时走 `Value.absent()`
+///  （落库默认值，与旧写法“缺键不写”同口径）。
+/// 插库用 `InsertMode.insertOrReplace`，与旧 INSERT OR REPLACE 同语义
+///（自增 id 缺失时自动编号，与旧写法同口径）。
+Future<void> _backupInsertRowTyped(
+  QuizDatabase db,
   String table,
   Map<String, Object?> row,
 ) async {
-  final cols = row.keys.toList();
-  final sql =
-      'INSERT OR REPLACE INTO $table '
-      '(${cols.map((c) => '"${c.replaceAll('"', '""')}"').join(', ')}) '
-      'VALUES (${List.filled(cols.length, '?').join(', ')})';
-  return db.customInsert(
-    sql,
-    variables: [for (final c in cols) Variable(row[c])],
-  );
+  // 旧 `_backupInsertRow` 是按行实际键拼 INSERT，表里没有的列会在插库时
+  // 让 SQLite 报错（“不能静默丢列”）；类型化映射只认已知列，未知列
+  // 不会进 Companion，必须在这里先拦，否则会静默丢掉备份里的数据。
+  const knownColumns = <String, Set<String>>{
+    'subjects': {'id', 'name', 'color', 'cover_style', 'cover_color'},
+    'questions': {
+      'id',
+      'title',
+      'subject_id',
+      'folder_ids',
+      'exam_id',
+      'knowledge_ids',
+      'error_types',
+      'custom_error_types',
+      'tags',
+      'answer',
+      'explanation',
+      'notes',
+      'review_count',
+      'is_organized',
+      'is_demo',
+      'is_favorite',
+      'is_archived',
+      'review_joined',
+      'created_at',
+      'slice_kind',
+      'slice_text',
+      'source_path',
+      'source_kind',
+      'source_page',
+      'page_image_path',
+      'slice_path',
+      'slice_width',
+      'slice_height',
+    },
+    'question_boxes': {
+      'id',
+      'collect_task_id',
+      'question_id',
+      'parent_box_id',
+      'page',
+      'layer',
+      'type',
+      'x',
+      'y',
+      'w',
+      'h',
+      'confidence',
+      'origin',
+      'updated_at',
+    },
+    'folders': {'id', 'name', 'subject_id', 'parent_id', 'sort_order'},
+    'tags': {'id', 'name'},
+    'exams': {'id', 'name', 'date'},
+    'knowledge_points': {'id', 'subject_id', 'chapter', 'name'},
+    'cause_records': {
+      'id',
+      'question_id',
+      'cause',
+      'subject_id',
+      'status',
+      'solved_count',
+      'last_check',
+      'recheck_date',
+      'remedy_history',
+      'joined_at',
+    },
+    'collect_tasks': {
+      'id',
+      'name',
+      'file_name',
+      'subject_id',
+      'status',
+      'progress',
+      'page_count',
+      'page',
+      'error',
+      'question_id',
+      'created_at',
+      'source_path',
+      'page_rotations',
+    },
+    'review_state': {'id', 'queue', 'position', 'updated_at'},
+    'review_history': {'id', 'question_id', 'result', 'reviewed_at'},
+    'recent_tasks': {'id', 'kind', 'subject_id', 'title', 'updated_at'},
+    'settings': {'key', 'value'},
+  };
+  final allowed = knownColumns[table];
+  if (allowed == null) {
+    throw BackupRestoreException('这份备份数据有问题：未知表 $table');
+  }
+  for (final key in row.keys) {
+    if (!allowed.contains(key)) {
+      throw BackupRestoreException(
+        '这份备份数据有问题：$table 表 ${_rowLabel(row)} 行有多余的列 $key',
+      );
+    }
+  }
+  switch (table) {
+    case 'subjects':
+      await db
+          .into(db.subjects)
+          .insert(
+            SubjectsCompanion(
+              id: Value(_rs(row, 'id')),
+              name: Value(_rs(row, 'name')),
+              color: Value(_ri(row, 'color')),
+              coverStyle: _vStrDef(row, 'cover_style'),
+              coverColor: _vStrDef(row, 'cover_color'),
+            ),
+            mode: InsertMode.insertOrReplace,
+          );
+    case 'questions':
+      await db
+          .into(db.questions)
+          .insert(
+            QuestionsCompanion(
+              id: Value(_rs(row, 'id')),
+              title: Value(_rs(row, 'title')),
+              subjectId: Value(_rs(row, 'subject_id')),
+              folderIds: Value(AppDatabase.decodeStringList(row['folder_ids'])),
+              examId: Value(_rsN(row, 'exam_id')),
+              knowledgeIds: Value(
+                AppDatabase.decodeStringList(row['knowledge_ids']),
+              ),
+              errorTypes: Value(
+                AppDatabase.decodeStringList(row['error_types']),
+              ),
+              customErrorTypes: Value(
+                AppDatabase.decodeStringList(row['custom_error_types']),
+              ),
+              tags: Value(AppDatabase.decodeStringList(row['tags'])),
+              answer: Value(_rsN(row, 'answer')),
+              explanation: Value(_rsN(row, 'explanation')),
+              notes: Value(_rsN(row, 'notes')),
+              reviewCount: _vIntDef(row, 'review_count'),
+              isOrganized: _vIntDef(row, 'is_organized'),
+              isDemo: _vIntDef(row, 'is_demo'),
+              isFavorite: _vIntDef(row, 'is_favorite'),
+              isArchived: _vIntDef(row, 'is_archived'),
+              reviewJoined: _vIntDef(row, 'review_joined'),
+              createdAt: Value(_ri(row, 'created_at')),
+              sliceKind: _vStrDef(row, 'slice_kind'),
+              sliceText: _vStrDef(row, 'slice_text'),
+              sourcePath: Value(_rsN(row, 'source_path')),
+              sourceKind: Value(_rsN(row, 'source_kind')),
+              sourcePage: Value(_riN(row, 'source_page')),
+              pageImagePath: Value(_rsN(row, 'page_image_path')),
+              slicePath: Value(_rsN(row, 'slice_path')),
+              sliceWidth: Value(_riN(row, 'slice_width')),
+              sliceHeight: Value(_riN(row, 'slice_height')),
+            ),
+            mode: InsertMode.insertOrReplace,
+          );
+    case 'question_boxes':
+      await db
+          .into(db.questionBoxes)
+          .insert(
+            QuestionBoxesCompanion(
+              id: Value(_rs(row, 'id')),
+              collectTaskId: Value(_rsN(row, 'collect_task_id')),
+              questionId: Value(_rsN(row, 'question_id')),
+              parentBoxId: Value(_rsN(row, 'parent_box_id')),
+              page: _vIntDef(row, 'page'),
+              layer: Value(_ri(row, 'layer')),
+              type: Value(_rs(row, 'type')),
+              x: Value(_rd(row, 'x')),
+              y: Value(_rd(row, 'y')),
+              w: Value(_rd(row, 'w')),
+              h: Value(_rd(row, 'h')),
+              confidence: Value(_rdN(row, 'confidence')),
+              origin: _vStrDef(row, 'origin'),
+              updatedAt: Value(_ri(row, 'updated_at')),
+            ),
+            mode: InsertMode.insertOrReplace,
+          );
+    case 'folders':
+      await db
+          .into(db.folders)
+          .insert(
+            FoldersCompanion(
+              id: Value(_rs(row, 'id')),
+              name: Value(_rs(row, 'name')),
+              subjectId: Value(_rs(row, 'subject_id')),
+              parentId: Value(_rsN(row, 'parent_id')),
+              sortOrder: _vIntDef(row, 'sort_order'),
+            ),
+            mode: InsertMode.insertOrReplace,
+          );
+    case 'tags':
+      await db
+          .into(db.tags)
+          .insert(
+            TagsCompanion(
+              id: Value(_rs(row, 'id')),
+              name: Value(_rs(row, 'name')),
+            ),
+            mode: InsertMode.insertOrReplace,
+          );
+    case 'exams':
+      await db
+          .into(db.exams)
+          .insert(
+            ExamsCompanion(
+              id: Value(_rs(row, 'id')),
+              name: Value(_rs(row, 'name')),
+              date: Value(_riN(row, 'date')),
+            ),
+            mode: InsertMode.insertOrReplace,
+          );
+    case 'knowledge_points':
+      await db
+          .into(db.knowledgePoints)
+          .insert(
+            KnowledgePointsCompanion(
+              id: Value(_rs(row, 'id')),
+              subjectId: Value(_rs(row, 'subject_id')),
+              chapter: Value(_rs(row, 'chapter')),
+              name: Value(_rs(row, 'name')),
+            ),
+            mode: InsertMode.insertOrReplace,
+          );
+    case 'cause_records':
+      await db
+          .into(db.causeRecords)
+          .insert(
+            CauseRecordsCompanion(
+              id: row['id'] is int
+                  ? Value(row['id'] as int)
+                  : const Value.absent(),
+              questionId: Value(_rs(row, 'question_id')),
+              cause: Value(_rs(row, 'cause')),
+              subjectId: Value(_rs(row, 'subject_id')),
+              status: _vStrDef(row, 'status'),
+              solvedCount: _vIntDef(row, 'solved_count'),
+              lastCheck: Value(_riN(row, 'last_check')),
+              recheckDate: Value(_riN(row, 'recheck_date')),
+              remedyHistory: Value(
+                AppDatabase.decodeStringList(row['remedy_history']),
+              ),
+              joinedAt: Value(_ri(row, 'joined_at')),
+            ),
+            mode: InsertMode.insertOrReplace,
+          );
+    case 'collect_tasks':
+      await db
+          .into(db.collectTasks)
+          .insert(
+            CollectTasksCompanion(
+              id: Value(_rs(row, 'id')),
+              name: Value(_rs(row, 'name')),
+              fileName: Value(_rs(row, 'file_name')),
+              subjectId: Value(_rs(row, 'subject_id')),
+              status: _vStrDef(row, 'status'),
+              progress: _vIntDef(row, 'progress'),
+              pageCount: _vIntDef(row, 'page_count'),
+              page: _vIntDef(row, 'page'),
+              error: Value(_rsN(row, 'error')),
+              questionId: Value(_rsN(row, 'question_id')),
+              createdAt: _vIntDef(row, 'created_at'),
+              sourcePath: _vStrDef(row, 'source_path'),
+              pageRotations: Value(
+                AppDatabase.decodeRotations(row['page_rotations']),
+              ),
+            ),
+            mode: InsertMode.insertOrReplace,
+          );
+    case 'review_state':
+      await db
+          .into(db.reviewState)
+          .insert(
+            ReviewStateCompanion(
+              id: Value(_ri(row, 'id')),
+              queue: Value(AppDatabase.decodeQueue(row['queue'])),
+              position: _vIntDef(row, 'position'),
+              updatedAt: Value(_ri(row, 'updated_at')),
+            ),
+            mode: InsertMode.insertOrReplace,
+          );
+    case 'review_history':
+      await db
+          .into(db.reviewHistory)
+          .insert(
+            ReviewHistoryCompanion(
+              id: row['id'] is int
+                  ? Value(row['id'] as int)
+                  : const Value.absent(),
+              questionId: Value(_rs(row, 'question_id')),
+              result: Value(_rs(row, 'result')),
+              reviewedAt: Value(_ri(row, 'reviewed_at')),
+            ),
+            mode: InsertMode.insertOrReplace,
+          );
+    case 'recent_tasks':
+      await db
+          .into(db.recentTasks)
+          .insert(
+            RecentTasksCompanion(
+              id: Value(_ri(row, 'id')),
+              kind: Value(_rs(row, 'kind')),
+              subjectId: Value(_rs(row, 'subject_id')),
+              title: Value(_rs(row, 'title')),
+              updatedAt: Value(_ri(row, 'updated_at')),
+            ),
+            mode: InsertMode.insertOrReplace,
+          );
+    case 'settings':
+      await db
+          .into(db.settings)
+          .insert(
+            SettingsCompanion(
+              key: Value(_rs(row, 'key')),
+              value: Value(_rs(row, 'value')),
+            ),
+            mode: InsertMode.insertOrReplace,
+          );
+    default:
+      throw BackupRestoreException('这份备份数据有问题：未知表 $table');
+  }
 }
+
+/// B3：恢复前清表（类型化版）——`db.delete(...).go()` 按表名分流；
+/// 旧写法是 `customUpdate('DELETE FROM $t')`，动态表名拼 SQL。
+Future<void> _clearBackupTable(QuizDatabase db, String table) async {
+  switch (table) {
+    case 'subjects':
+      await db.delete(db.subjects).go();
+    case 'questions':
+      await db.delete(db.questions).go();
+    case 'question_boxes':
+      await db.delete(db.questionBoxes).go();
+    case 'folders':
+      await db.delete(db.folders).go();
+    case 'tags':
+      await db.delete(db.tags).go();
+    case 'exams':
+      await db.delete(db.exams).go();
+    case 'knowledge_points':
+      await db.delete(db.knowledgePoints).go();
+    case 'cause_records':
+      await db.delete(db.causeRecords).go();
+    case 'collect_tasks':
+      await db.delete(db.collectTasks).go();
+    case 'review_state':
+      await db.delete(db.reviewState).go();
+    case 'review_history':
+      await db.delete(db.reviewHistory).go();
+    case 'recent_tasks':
+      await db.delete(db.recentTasks).go();
+    case 'settings':
+      await db.delete(db.settings).go();
+    default:
+      throw BackupRestoreException('这份备份数据有问题：未知表 $table');
+  }
+}
+
+String _rowLabel(Map<String, Object?> row) =>
+    '${row['id'] ?? row['key'] ?? '?'}';
+
+/// 备份行取值助手（B3）：必填列缺失或类型不对时直接抛
+/// [BackupRestoreException]（带表内行 id 与列名），不静默默认值、
+/// 不猜测转换。调用方 [importBackupJsonIntoImpl] 已先跑过
+/// [validateBackupDataImpl]，这里是第二道防线。
+String _rs(Map<String, Object?> row, String key) {
+  final v = row[key];
+  if (v is String) return v;
+  throw BackupRestoreException('这份备份数据有问题：${_rowLabel(row)} 行的 $key 缺失或不是文本');
+}
+
+String? _rsN(Map<String, Object?> row, String key) {
+  final v = row[key];
+  if (v == null) return null;
+  if (v is String) return v;
+  throw BackupRestoreException('这份备份数据有问题：${_rowLabel(row)} 行的 $key 不是文本');
+}
+
+int _ri(Map<String, Object?> row, String key) {
+  final v = row[key];
+  if (v is int) return v;
+  if (v is num) return v.toInt();
+  throw BackupRestoreException('这份备份数据有问题：${_rowLabel(row)} 行的 $key 缺失或不是整数');
+}
+
+int? _riN(Map<String, Object?> row, String key) {
+  final v = row[key];
+  if (v == null) return null;
+  if (v is int) return v;
+  if (v is num) return v.toInt();
+  throw BackupRestoreException('这份备份数据有问题：${_rowLabel(row)} 行的 $key 不是整数');
+}
+
+double _rd(Map<String, Object?> row, String key) {
+  final v = row[key];
+  if (v is num) return v.toDouble();
+  throw BackupRestoreException('这份备份数据有问题：${_rowLabel(row)} 行的 $key 缺失或不是数字');
+}
+
+double? _rdN(Map<String, Object?> row, String key) {
+  final v = row[key];
+  if (v == null) return null;
+  if (v is num) return v.toDouble();
+  throw BackupRestoreException('这份备份数据有问题：${_rowLabel(row)} 行的 $key 不是数字');
+}
+
+/// 有 DDL 默认值的可选列：键缺失时走 `Value.absent()`（落库默认值，
+/// 与旧写法“缺键不写”同口径）；键在但类型不对时仍抛错。
+Value<String> _vStrDef(Map<String, Object?> row, String key) =>
+    row.containsKey(key) ? Value(_rs(row, key)) : const Value.absent();
+
+Value<int> _vIntDef(Map<String, Object?> row, String key) =>
+    row.containsKey(key) ? Value(_ri(row, key)) : const Value.absent();
 
 /// B4.2：恢复（可单测版）。
 /// SR-P2-4：插库时的残余异常统一包成 [BackupRestoreException]
@@ -238,14 +651,14 @@ Future<void> importBackupJsonIntoImpl(
   try {
     await db.transaction(() async {
       for (final t in clearOrder) {
-        await db.customUpdate('DELETE FROM $t');
+        await _clearBackupTable(db, t);
       }
       for (final t in AppDatabase.backupTables) {
         final rows = data[t];
         if (rows is! List) continue;
         for (final row in rows) {
           if (row is! Map) continue;
-          await _backupInsertRow(db, t, Map<String, Object?>.from(row));
+          await _backupInsertRowTyped(db, t, Map<String, Object?>.from(row));
         }
       }
       // §2.3：恢复后 settings.schemaVersion 写回 2（备份里的 settings

@@ -1,13 +1,8 @@
 // B4：database.dart 拆分——JSON 编解码：encode/decodeStringList /
 // encode/decodeQueue / encode/decodeRemedyList。
 // 与 database.dart 同一库（part of），共享库私有成员；纯重构，行为不变。
-// B2 集成：旧 Map 行映射 _toRow / _fromRow / _causeFromRow /
-// _causeRecordToRow / _collectTaskToRow 已删——questions /
-// cause_records / collect_tasks 的读写已全部走 Drift 类型化
-//（行映射见 db_questions.dart 的 _questionFromDb /
-// _causeRecordFromDb 与 Companion，框/任务见 db_collect.dart）。
 // encode*/decode* 的 Impl 保留：AppDatabase 的同名公开静态方法仍
-// 被测试调用（p2_json_fields_test、b5_p2_data_test），按任务要求留着。
+// 被测试调用（p2_json_fields_test、b5_p2_data_test）。
 
 part of 'database.dart';
 
@@ -19,6 +14,10 @@ part of 'database.dart';
 ///   （与字符串列表同构，单列一对函数是为将来补救条目变对象时只改一处）；
 /// - [AppDatabase.encodeQueue]/[AppDatabase.decodeQueue]：review_state.queue（对象数组，
 ///   见 §3.4 的 ReviewQueueItem）。
+/// - [AppDatabase.decodeRotations]：collect_tasks.page_rotations（`{"1": 90}`，
+///   B3 补：备份恢复的类型化映射用；编码侧仍走 RotationsConverter，与
+///   StringListConverter / QueueConverter 同逻辑——空串与 NULL 解码为 {}，
+///   编码空 Map 写 '{}'）。
 /// 空串 '' 与 NULL 统一解码为 []；编码空列表写 '[]'，不写 ''。
 /// 读到非法值（不是 JSON 字符串数组）按空列表处理，不猜逗号拆分
 /// （§3.3：没有老数据需要兼容，读侧只认 JSON）。
@@ -62,4 +61,24 @@ List<ReviewQueueItem> decodeQueueImpl(Object? value) {
     }
   } catch (_) {}
   return const [];
+}
+
+/// B3：collect_tasks.page_rotations 解码（`{"1": 90}` ↔ `Map<int, int>`）。
+/// 与 [RotationsConverter.fromSql] 同逻辑（空串/NULL/非法 JSON -> {}），
+/// 供备份恢复的类型化映射用（db_backup.dart 的 `_backupInsertRowTyped`），
+/// 与 decodeStringList / decodeQueue 同口径：读侧只认 JSON，不猜其它格式。
+Map<int, int> decodeRotationsImpl(Object? value) {
+  if (value == null) return const {};
+  if (value is! String || value.isEmpty) return const {};
+  try {
+    final decoded = jsonDecode(value);
+    if (decoded is Map) {
+      return {
+        for (final e in decoded.entries)
+          if (int.tryParse('${e.key}') != null && e.value is num)
+            int.parse('${e.key}'): (e.value as num).toInt(),
+      };
+    }
+  } catch (_) {}
+  return const {};
 }

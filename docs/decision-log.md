@@ -551,3 +551,54 @@ layer-2 行保留不动，编辑器读到时直接丢弃）；③ `docs/代码�
   - 演示库跑前备份到 `~/workspace/demo-db-backup/quiz-master2.db.d50-gate`，跑后 md5 未变（`8f7f9c64…`）。
 - 环境插曲（与 D-50 改动无关，记在这里免得下次重踩）：验证中途 runtime 重启，/usr 下工具链丢失（clang/ninja 不见）；按 `docs/ui-replication/restore-linux-toolchain.sh` 恢复后，Release 应用启动报 `libEGL fatal: did not find extension DRI_Mesa version 1`。查到恢复脚本的 bug：注释说索引按 noble-updates 优先，但 `pkgs.update()` 是后写覆盖，循环里 updates 在前、noble 在后，结果 noble 24.0.5 胜出——日志证实 24.0.5 的 `libglapi-mesa` 被解到 /，与 25.2.8 的 DRI 驱动不匹配。修复：① 手动把 `libglapi-mesa` 换成 noble-updates 的 24.2.8-1ubuntu1~24.04.1，应用随即正常启动（Impeller OpenGLESSDF）；② 恢复脚本循环顺序改成先 noble、后 noble-updates（`dict.update` 后写者胜），并把原因写进脚本注释；干跑验证：libegl-mesa0 / libegl1-mesa-dev / libgl1-mesa-dri 均解析为 25.2.8，libglapi-mesa 解析为 24.2.8。注意：盘上 `libEGL_mesa.so.0.0.0` 经 md5 核对一直是 25.2.8（没被 24.0.5 覆盖），这次真正被 24.0.5 覆盖的是 `libglapi.so.0.0.0`。
 - 状态：修复未推，等 Meng 批推送——D-49 + D-50 一起推（D-49 的推送审批 11:20 已给、11:21 被叫停“先不推”，需重新走邮件先行 + 小卡片确认）；他重装后需在 Win11 真机上确认两处：详情页正常显示、报告弱点直达已筛选列表。
+
+## D-51 — B3：备份恢复走类型化 API；导出保持存储表示原样；非规范 '' 规范化为 '[]' / '{}'（2026-11-17）
+
+- 范围（plan v9 §四第 3 阶段第 3 条 + P1-B3）：`_seed` 的 6 处 customInsert 与备份恢复的 `_backupInsertRow`（手拼 SQL）改走 Drift 类型化 API；`_variables` / `_variable`（仅供这两处用）随之删除。
+- 导出不动：`exportBackupJsonFromImpl` 仍用 `customSelect('SELECT * FROM $t')` 读存储表示原样导出——这是 P1-B3 的明文要求（“导出时 JSON 文本原样”），类型化导出会把 '' 读成 [] 再编回 '[]'，改了导出字节，不合要求。导出不是垫片，是有意保留的存储表示读取。
+- 恢复映射（`_backupInsertRowTyped`，13 张表逐表 Companion）：JSON 列先经 `AppDatabase.decode*` 解回业务值，再由各列 TypeConverter 编回存储表示。规范值解码-编码互逆、逐字节不变；非规范旧值 ''（DDL DEFAULT 遗留）解码为空集合、编回规范的 '[]' / '{}'。语义等价（`decode('') == decode('[]')`），口径与 p2_json_fields 回归一致（'' 是漂移、'[]' 是规范；`_seedCauseRecordsTyped` 的 remedy_history 显式写 '[]' 同理）。
+- 其余列按 JSON 运行时类型严格取值（`_rs` / `_ri` / `_rd` 系列助手）：缺失或类型不对直接抛 `BackupRestoreException`（带行 id 与列名），不静默默认值、不猜测转换；有 DDL 默认值的可选列缺失时走 `Value.absent()`（落库默认值，与旧写法“缺键不写”同口径）。
+- 旧 strict 口径保留：类型化映射只认已知列，未知列不会进 Companion，必须先拦——`_backupInsertRowTyped` 开头按 13 张表已知列集校验，多余列直接拒绝恢复（旧 `_backupInsertRow` 是拼 SQL 时由 SQLite 报错，同一口径；测试覆盖）。
+- 清表也类型化：`DELETE FROM $t` 改为按表名分流的 `db.delete(...).go()`（`_clearBackupTable`）。
+- 新增 `AppDatabase.decodeRotations`（db_codec `decodeRotationsImpl`），与 `RotationsConverter.fromSql` 同逻辑（空串/NULL/非法 JSON -> {}），供恢复映射用；编解码约定源头仍是 db_codec.dart。
+- 验收：新测试 `test/b3_backup_interop_test.dart` 10/10 通过（见 D-55）；黄金夹具 `test/fixtures/b3-old-backup.json` / `.zip`（B3 之前代码导出，13 张表全覆盖，含满值 / '[]' / '{}' / 非规范 ''，生成器 `test/b3_fixture_gen_test.dart` 已删）。
+- 导出行顺序：`SELECT *` 无 ORDER BY，行顺序不保证；恢复末尾的 schemaVersion 写回（insertOrReplace）会把该行移到 settings 末尾——新旧代码同行为，与内容无关；往返对比测试按主键排序后再比。
+
+## D-52 — B3：计划 v9 第 3 阶段第 3 条“新表定义统一放 lib/data/drift/（新目录：tables.dart、converters.dart、daos/）”与现实的偏差（2026-11-17）
+
+- 现实：B2 已把 13 张表定义放在 `lib/data/drift/tables/`（每表一个文件）+ `converters.dart`，计划里的“新目录”写法是 v1 时期的布局描述，实质要求（表定义统一在 drift/ 下）已满足，不再新建 `tables.dart` 做无行为收益的重组。
+- `daos/` 不建：B2 已定偏差（无独立 DAO 类，直接用 Drift 生成的表访问器，GPT 关口已知）；B3 是收尾，不为此补一层 DAO——多一层转发既不改行为也不改验收，只增 churn。
+- 结论：本条视为已完成（表定义在 drift/、转换器在 converters.dart、备份/恢复与 _seed 已类型化），偏差记在这里，不另立项。
+
+## D-53 — B3：移除 sqflite_common_ffi 依赖；pubspec.lock 随之变化（2026-11-17）
+
+- `pubspec.yaml` 删 `sqflite_common_ffi: ^2.3.6`；`flutter pub get` 输出只移除了 `sqflite_common 2.5.7` 与 `sqflite_common_ffi 2.4.7`（前者是后者带入的传递依赖），其余包版本零变动；全仓 grep 无任何代码 `import package:sqflite…`（只剩 `package:sqlite3` 的只读探针 import，与本次移除无关）；`flutter analyze` 0 问题。
+- 全仓 custom* / raw* 审计结论：(d) 类真正残留垫片 0 处——命中的 `.insert/.update/.delete` 均为 Drift 类型化 API；17 条 DDL `customStatement`、两处 `SELECT 1` 探针、两处 PRAGMA 均为合法使用，不动。
+- 仅注释清理：db_codec / db_questions / db_catalog / db_collect / db_settings / database / README / 代码地图里已失实的 sqflite / `_toRow` / `_fromRow` 提及；`db_codec.dart` 的 encode*/decode* Impl 保留（仍被 `AppDatabase` 公开静态方法与测试调用）。
+- **注意（给 Meng 的提醒，写进 B3 推送说明）：B3 推送后他拉取时 pubspec.lock 有合法变化（sqflite 两包移除），不要像之前那样 `git checkout -- pubspec.lock` 还原——还原会把已删的依赖带回来。**
+
+## D-54 — B3：build_runner 进工作流；生成的 *.g.dart 必须入库（2026-11-17）
+
+- 命令：仓库根目录 `dart run build_runner build --delete-conflicting-outputs`（Win11 用 `D:\flutter_sdk\flutter\bin\dart`，Linux 用 `~/workspace/flutter-install/flutter/bin/dart`）；改了 `lib/data/drift/tables/` 任一表文件、`quiz_database.dart` 的表注册或 `converters.dart` 后要跑，只改业务代码不用跑。
+- 验证：本次跑完 `lib/data/drift/quiz_database.g.dart` md5 与改动前完全一致（`d20ce76c11e711c18618de22e57cd28d`，表定义没改，符合预期）；耗时 81 秒，exit 0。
+- 入库核实：同步记录里 `.g.dart` 在 B1（84aa09a）与 B2（16ae2c8）两次推送的 paths 里，之后无推送删它；`.gitignore` 无 `*.g.dart` 忽略规则；结论：已在远程快照里。
+- 代码地图 `docs/代码地图.md` 第 3 节“数据流”内新增 `### build_runner 工作流` 一节（命令、触发条件、入库约定、建表不走生成——`createTablesImpl` 的 `customStatement` 原样 DDL 为准）；同文件 §1 依赖块与 §3 一处已失实描述同步修正（sqflite → Drift）。
+- drift_dev 的 PRIMARY KEY 列 `NOT NULL` 警告（`customConstraint('PRIMARY KEY')` 未写 `NOT NULL`）是 B2 既有表定义写法，本次未动——表定义变动会触发 schema diff 门禁复核，不属于收尾范围；实际 DDL 由 `createTablesImpl` 的原样 SQL 决定，不受其影响。
+
+## D-55 — B3 验收汇总：收尾完成，B 全部结束（2026-11-17）
+
+- 第 1 项：`sqflite_common_ffi` 移除（见 D-53）；全仓 custom* / raw* 审计：(d) 类真正残留垫片 0 处；17 条 DDL 不动；仅注释清理 9 文件。
+- 第 2 项：build_runner 工作流进代码地图（见 D-54）；`quiz_database.g.dart` 两次重生成 md5 均为 `d20ce76c…`，与改动前一致。
+- 第 3 项：`_seed` 与备份/恢复走类型化 API（见 D-51）；黄金夹具 `test/fixtures/b3-old-backup.json`（md5 `ac5d969d…`）/ `.zip`（md5 `896f0a2d…`）；新测试 `test/b3_backup_interop_test.dart` 10/10（旧→新 JSON/zip、新→旧复刻 JSON/zip、现场往返、多余列拒绝、非空库恢复）。
+- 验收（2026-11-17）：
+  - 串行全量 **1267/1267，`All tests passed!`，0 个 `[E]`**（9 分 20 秒，日志 `~/workspace/b3-work/b3-full.log`；1257 + 新增 10 个）；`flutter analyze` No issues found；`dart format`：B3 改动文件干净。
+  - schema diff 0：`test/b1_stage1_schema_test.dart` 1/1（17 条 DDL 逐字一致）。
+  - 演示库跑前备份到 `~/workspace/demo-db-backup/quiz-master2.db.b3-start`，跑后备份到 `quiz-master2.db.b3-gate`，md5 全程不变（`8f7f9c64…`）。
+  - Linux Release 构建通过（日志 `~/workspace/b3-work/b3-release-build.log`），包内含 `libsqlite3.so`（与 `libonnxruntime.so.1.15.1`、`libpdfium.so` 同在）。
+  - Win11 待 Meng 做：清单 `~/workspace/b3-work/win11-b3-checklist.md`（核心：安装包里 `sqlite3.dll` 在 + 备份导出/恢复冒烟；这次拉取后不要 `git checkout -- pubspec.lock`，见 D-53）。
+- 已知非阻塞项（不拦 B3）：
+  - `b11_dragdrop_test.dart`“一次拖两张”：D-50 全量 +1089 时失败过一次、第 1/2 项验收全量与单跑又各失败一次（当时判为稳定复现），本次 B3 全量 1267/1267 里它通过了。结论：与 B3 改动无关（改动是注释 + 删无引用依赖 + 字节一致的 `.g.dart` 再生成 + 备份/种子类型化，不碰拖放导入），是负载/时序敏感的偶发；全量绿了，不再追。
+  - 全量日志里 Drift “multiple databases” debug 警告共 18 处，其中 14 处来自既有测试（b2_restore_flow 等），B3 新测试贡献 4 处（同一测试内先后开两个内存库、源库未关）。各内存库自有执行器，无实际共享；既有套件同模式，不另改。
+  - 全仓 `dart format --set-exit-if-changed lib/` 显示 37 个文件可被重排（长单行构造展开，例 models.dart 的 Subject.all），均为 B3 未动文件、既往风格漂移；B3 改动文件全部干净。收尾阶段不做全仓重排（只增 diff 噪音），留待以后。
+  - drift_dev 的 PRIMARY KEY `NOT NULL` 警告见 D-54，未动。
+- 状态：B3 本地实现与验收全部完成，未推代码、未发邮件，等 Meng 批推送；推送后他按 Win11 清单验证（sqlite3.dll + 备份冒烟），通过后 B 正式收尾。

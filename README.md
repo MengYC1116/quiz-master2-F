@@ -12,7 +12,8 @@ Windows 个人智能错题本（大学个人用），1:1 复刻主预览
 ## 环境
 
 - Flutter 3.47.9 / Dart 3.13.7（锁定）
-- 依赖：`sqflite_common_ffi ^2.3.6`、`path ^1.9.1`、
+- 依赖：`drift ^2.35.4` + `sqlite3 ^3.5.2`（SQLite，Drift 驱动；B1 起替代
+  `sqflite_common_ffi`，见 D-45）、`path ^1.9.1`、
   `file_picker ^8.0.0`、`flutter_lints ^5.0.0`、
   `onnxruntime ^1.4.1`（D-23，2026-11-13 已 pin）、
   `pdfrx_engine ^0.9.2`（PDF 渲染，PDFium 引擎的纯 Dart 封装）
