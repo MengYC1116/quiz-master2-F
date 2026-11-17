@@ -40,9 +40,14 @@ import '../models/models.dart';
 import 'repository_provider.dart';
 
 /// 复习页业务状态的 Provider：页面出现即读库（见 [ReviewNotifier.build]）。
+///
+/// D-49：声明 `dependencies`（与 detailProvider 同一缺陷：不声明时
+/// Riverpod 3.x 把 Provider 挂到根容器，`build()` 里读到的
+/// `reviewInitialProvider` 是默认值而非页面嵌套 Scope 的 override）。
 final reviewProvider =
     NotifierProvider.autoDispose<ReviewNotifier, ReviewState>(
       ReviewNotifier.new,
+      dependencies: [reviewInitialProvider, repositoryProvider],
     );
 
 /// 复习页的构造参数（初始落点）：带学科进来 → 该学科筛选；

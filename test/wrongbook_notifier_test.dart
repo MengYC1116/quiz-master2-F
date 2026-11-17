@@ -65,11 +65,7 @@ class FakeWrongbookNotifierRepo extends QuestionRepository {
   ];
   List<Question> questions = [
     _wbq('q1', folderIds: ['f1']),
-    _wbq(
-      'q2',
-      folderIds: ['f1'],
-      createdAt: DateTime(2026, 11, 9),
-    ),
+    _wbq('q2', folderIds: ['f1'], createdAt: DateTime(2026, 11, 9)),
     _wbq(
       'q3',
       folderIds: ['f2'],
@@ -82,12 +78,7 @@ class FakeWrongbookNotifierRepo extends QuestionRepository {
   ];
   List<Folder> folderList = [
     const Folder(id: 'f1', name: '试卷', subjectId: 'math', sortOrder: 0),
-    const Folder(
-      id: 'f2',
-      name: '平时作业',
-      subjectId: 'math',
-      sortOrder: 10,
-    ),
+    const Folder(id: 'f2', name: '平时作业', subjectId: 'math', sortOrder: 10),
     const Folder(id: 'f3', name: '试卷', subjectId: 'english', sortOrder: 0),
     const Folder(
       id: 'f1a',
@@ -138,10 +129,9 @@ class FakeWrongbookNotifierRepo extends QuestionRepository {
       List.of(questions);
 
   @override
-  Future<List<Folder>> folders({String? subjectId}) async =>
-      subjectId == null
-          ? List.of(folderList)
-          : folderList.where((f) => f.subjectId == subjectId).toList();
+  Future<List<Folder>> folders({String? subjectId}) async => subjectId == null
+      ? List.of(folderList)
+      : folderList.where((f) => f.subjectId == subjectId).toList();
 
   @override
   Future<List<Exam>> exams() async => List.of(examList);
@@ -191,9 +181,7 @@ class FakeWrongbookNotifierRepo extends QuestionRepository {
 
   @override
   Future<int> deleteFolder(Folder folder) async {
-    folderList.removeWhere(
-      (e) => e.id == folder.id || e.parentId == folder.id,
-    );
+    folderList.removeWhere((e) => e.id == folder.id || e.parentId == folder.id);
     deletedFolderIds.add(folder.id);
     return 0;
   }
@@ -406,17 +394,11 @@ void main() {
     expect(await notifier.moveOneFolder(f1a, 'f1a'), '不能移到自己下面');
     expect(await notifier.moveOneFolder(f1a, 'f1'), '已经在那里了');
     // f1 下面有子文件夹 f1a，不能再放进别的文件夹里。
-    expect(
-      await notifier.moveOneFolder(f1, 'f2'),
-      contains('只留一层'),
-    );
+    expect(await notifier.moveOneFolder(f1, 'f2'), contains('只留一层'));
     // 子文件夹只能有一层：f1a 移到 f2（顶层）可以。
     // moveOneFolder 本身不重读（与原来一致，重读在调用方），断言 FakeRepo。
     expect(await notifier.moveOneFolder(f1a, 'f2'), isNull);
-    expect(
-      repo.folderList.firstWhere((f) => f.id == 'f1a').parentId,
-      'f2',
-    );
+    expect(repo.folderList.firstWhere((f) => f.id == 'f1a').parentId, 'f2');
   });
 
   test('批量加标签：勾选题加标签；新建标签含逗号拦下', () async {
@@ -426,10 +408,7 @@ void main() {
     addTearDown(container.dispose);
     notifier.openList(subjectId: 'math', folderId: null);
     notifier.update((s) => s.copyWith(selected: {'q1', 'q3'}));
-    final bad = await notifier.batchAddTag(
-      picked: {},
-      newName: 'a,b',
-    );
+    final bad = await notifier.batchAddTag(picked: {}, newName: 'a,b');
     expect(bad, '不能含逗号或竖线');
     final msg = await notifier.batchAddTag(picked: {'易错'});
     expect(msg, contains('已加标签 2 道'));
@@ -449,10 +428,7 @@ void main() {
     expect(r.message, contains('已加入复习 2 道'));
     expect(r.message, contains('1 道已无未解决错因，跳过'));
     expect(r.showReviewAction, isTrue);
-    expect(
-      repo.questions.firstWhere((q) => q.id == 'q1').reviewJoined,
-      isTrue,
-    );
+    expect(repo.questions.firstWhere((q) => q.id == 'q1').reviewJoined, isTrue);
     expect(
       repo.questions.firstWhere((q) => q.id == 'q2').reviewJoined,
       isFalse,
@@ -515,5 +491,128 @@ void main() {
       container.read(wrongbookProvider).folders.any((f) => f.id == 'f2'),
       isFalse,
     );
+  });
+
+  // ---------- D-50：报告深链路直达已筛选列表 ----------
+
+  test('D-50 深链路：学科 + 错因直达已筛选列表', () async {
+    final repo = FakeWrongbookNotifierRepo();
+    repo.questions = [
+      _wbq('m1', errorTypes: const ['概念不清']),
+      _wbq('m2', errorTypes: const ['计算错误'], createdAt: DateTime(2026, 11, 9)),
+      _wbq('m3', subjectId: 'english', errorTypes: const ['概念不清']),
+    ];
+    final container = ProviderContainer.test(
+      overrides: [
+        repositoryProvider.overrideWithValue(repo),
+        wrongbookInitialProvider.overrideWithValue(
+          const WrongbookInitial(subjectId: 'math', filterCause: '概念不清'),
+        ),
+      ],
+    );
+    addTearDown(container.dispose);
+    final notifier = container.read(wrongbookProvider.notifier);
+    await notifier.load();
+    final s = container.read(wrongbookProvider);
+    expect(s.view, WrongbookView.list);
+    expect(s.subjectId, 'math');
+    expect(s.filterCauseName, '概念不清');
+    // 只筛出数学的“概念不清”：m2 错因不对，m3 学科不对。
+    expect(s.filteredAll().map((q) => q.id).toList(), ['m1']);
+  });
+
+  test('D-50 深链路：学科 + 知识点直达已筛选列表', () async {
+    final repo = FakeWrongbookNotifierRepo();
+    repo.questions = [
+      _wbq('m1').copyWith(knowledgePointIds: const ['kp-math-limit']),
+      _wbq(
+        'm2',
+        errorTypes: const ['计算错误'],
+        createdAt: DateTime(2026, 11, 9),
+      ).copyWith(knowledgePointIds: const ['kp-math-derivative']),
+    ];
+    final container = ProviderContainer.test(
+      overrides: [
+        repositoryProvider.overrideWithValue(repo),
+        wrongbookInitialProvider.overrideWithValue(
+          const WrongbookInitial(
+            subjectId: 'math',
+            filterKnowledgePointId: 'kp-math-limit',
+          ),
+        ),
+      ],
+    );
+    addTearDown(container.dispose);
+    final notifier = container.read(wrongbookProvider.notifier);
+    await notifier.load();
+    final s = container.read(wrongbookProvider);
+    expect(s.view, WrongbookView.list);
+    expect(s.subjectId, 'math');
+    expect(s.filterKpIds, {'kp-math-limit'});
+    expect(s.filteredAll().map((q) => q.id).toList(), ['m1']);
+  });
+
+  test('D-50 正常入口：目录进列表仍清筛选', () async {
+    final (_, notifier, container) = await _setUp(
+      initial: const WrongbookInitial(subjectId: 'math', filterCause: '概念不清'),
+    );
+    addTearDown(container.dispose);
+    expect(container.read(wrongbookProvider).view, WrongbookView.list);
+    expect(container.read(wrongbookProvider).filterCauseName, '概念不清');
+    // 从目录进列表（SR-P2-44）：范围变化清筛选。
+    notifier.openList(subjectId: 'math', folderId: 'f1');
+    final s = container.read(wrongbookProvider);
+    expect(s.view, WrongbookView.list);
+    expect(s.filterCauseName, isNull);
+    expect(s.filterKpIds, isEmpty);
+  });
+
+  test('D-50 重置行为不变', () async {
+    final (_, notifier, container) = await _setUp(
+      initial: const WrongbookInitial(subjectId: 'math', filterCause: '概念不清'),
+    );
+    addTearDown(container.dispose);
+    notifier.setSearch('极限');
+    notifier.setSort('old');
+    notifier.resetFilters();
+    final s = container.read(wrongbookProvider);
+    expect(s.search, '');
+    expect(s.filterCauseName, isNull);
+    expect(s.sort, 'new');
+  });
+
+  test('D-50 挂载后 override 再变不影响当前页（initial 只在挂载时读一次）', () async {
+    final (repo, notifier, container) = await _setUp(
+      initial: const WrongbookInitial(subjectId: 'math', filterCause: '概念不清'),
+    );
+    addTearDown(container.dispose);
+    final s1 = container.read(wrongbookProvider);
+    expect(s1.loading, isFalse);
+    expect(s1.view, WrongbookView.list);
+    // 改一个会话字段，再让外壳重建（每次 build 都新建 initial 实例）。
+    notifier.setSort('old');
+    // 值相等的新实例：有 `==` 时 Riverpod 认为值没变（与
+    // DetailInitial / ReviewInitial 同款）；即使没有 `==`，已挂载的
+    // notifier 也不重建——initial 只在挂载时读一次。
+    container.updateOverrides([
+      repositoryProvider.overrideWithValue(repo),
+      wrongbookInitialProvider.overrideWithValue(
+        const WrongbookInitial(subjectId: 'math', filterCause: '概念不清'),
+      ),
+    ]);
+    final s2 = container.read(wrongbookProvider);
+    expect(s2.view, WrongbookView.list);
+    expect(s2.sort, 'old');
+    expect(s2.filterCauseName, '概念不清');
+    // 值变了也不影响当前页：残留参数只在下一次全新挂载时才被读到，
+    // 而 _go 会在普通导航时先清掉（见 lib/app.dart D-50）。
+    container.updateOverrides([
+      repositoryProvider.overrideWithValue(repo),
+      wrongbookInitialProvider.overrideWithValue(const WrongbookInitial()),
+    ]);
+    final s3 = container.read(wrongbookProvider);
+    expect(s3.view, WrongbookView.list);
+    expect(s3.sort, 'old');
+    expect(s3.filterCauseName, '概念不清');
   });
 }

@@ -329,10 +329,12 @@ class _QuizMasterAppState extends ConsumerState<QuizMasterApp> {
       _route = route;
       _subjectArg = subjectId;
       if (route != '/review') _reviewSubjectArg = null;
-      if (route != '/wrongbook') {
-        _reportCauseArg = null;
-        _reportKpArg = null;
-      }
+      // D-50：深链路参数只由 `_goWrongbookFiltered` 设；普通导航（含左
+      // 导航 / 首页进错题本）一律清掉。已挂载的 notifier 不随 override
+      // 变化重建（initial 只在挂载时读一次），所以残留值影响的是下一次
+      // 全新挂载：不清掉，下次普通进错题本会落在带筛选的列表而不是书架。
+      _reportCauseArg = null;
+      _reportKpArg = null;
       // B11-9：普通入口进设置页时不预展开任何组。
       if (route != '/settings') _settingsGroupArg = null;
     });

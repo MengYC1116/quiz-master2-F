@@ -55,9 +55,16 @@ import '../services/page_image_pipeline.dart';
 import 'repository_provider.dart';
 
 /// 详情页业务状态的 Provider：页面出现即读库（见 [DetailNotifier.build]）。
+///
+/// D-49：必须声明 `dependencies`——Riverpod 3.x 只把 Provider 挂载到
+/// 覆写了它已声明传递依赖的最深容器；不声明时挂到根容器，`build()` 里
+/// `ref.read(detailInitialProvider)` 读到的是根容器的默认值
+/// `questionId: ''`，详情页嵌套 ProviderScope 的 override 不生效，
+/// 详情页显示“这道题不存在了”（2026-11-17 诊断）。
 final detailProvider =
     NotifierProvider.autoDispose<DetailNotifier, DetailState>(
       DetailNotifier.new,
+      dependencies: [detailInitialProvider, repositoryProvider],
     );
 
 /// 详情页的构造参数（初始落点）：题目 id 与来源列表（上一题 / 下一题

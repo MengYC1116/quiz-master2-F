@@ -12,7 +12,11 @@
 # libgl1-mesa-dri 是 25.2.8，只用 noble 索引会装上 24.0.5 的
 # libegl-mesa0，EGL 与 DRI 驱动版本对不上，应用启动即
 # "libEGL fatal: did not find extension DRI_Mesa version 1"。
-# 本脚本索引按 noble-updates 优先，避免重蹈覆辙。
+# 本脚本索引按 noble-updates 优先，避免重蹈覆辙：`dict.update` 是
+# 后写覆盖，所以必须先拉 noble、后拉 noble-updates（2026-11-17
+# 实测：原来 updates 在前、noble 在后，24.0.5 的 libglapi-mesa
+# 覆盖了 updates 版，与 25.2.8 的 DRI 驱动不匹配，应用启动即
+# "libEGL fatal: did not find extension DRI_Mesa version 1"）。
 #
 # 用法：sudo ./restore-linux-toolchain.sh（本机以 root 跑，直接跑也行）
 set -euo pipefail
@@ -58,8 +62,8 @@ installed = set(subprocess.run(
     capture_output=True, text=True, check=True).stdout.split())
 
 pkgs = {}
-for dist, comp in (("noble-updates", "main"), ("noble-updates", "universe"),
-                   ("noble", "main"), ("noble", "universe")):
+for dist, comp in (("noble", "main"), ("noble", "universe"),
+                   ("noble-updates", "main"), ("noble-updates", "universe")):
     pkgs.update(fetch_packages(dist, comp))
 print(f"index: {len(pkgs)} packages", flush=True)
 

@@ -33,13 +33,18 @@ import 'repository_provider.dart';
 
 /// 错题本页的状态 Provider（ARCH-PLAN-A 第 2 阶段）。
 /// 书架 / 目录 / 列表三个子页共用一个 Provider。
+///
+/// D-49：声明 `dependencies`（与 detailProvider 同一缺陷：不声明时
+/// Riverpod 3.x 把 Provider 挂到根容器，`build()` 里读到的
+/// `wrongbookInitialProvider` 是默认值而非页面嵌套 Scope 的 override）。
 final wrongbookProvider =
     NotifierProvider.autoDispose<WrongbookNotifier, WrongbookState>(
       WrongbookNotifier.new,
+      dependencies: [wrongbookInitialProvider, repositoryProvider],
     );
 
-/// 错题本页的构造参数（初始落点）：带学科进来 → 目录页；
-/// 只带错因 / 知识点筛选进来 → 列表页；都不带 → 书架。
+/// 错题本页的构造参数（初始落点）：带错因 / 知识点筛选进来 → 列表页
+///（学科只定列表的范围）；只带学科进来 → 目录页；都不带 → 书架。
 /// 页面外壳经 `ProviderScope` 注入；Notifier 的 `build()` 里读它，
 /// 不在 `initState` 里改 Provider（Riverpod 禁止在 build /
 /// initState 等生命周期里同步改 Provider）。
@@ -53,6 +58,22 @@ class WrongbookInitial {
   final String? subjectId;
   final String? filterCause;
   final String? filterKnowledgePointId;
+
+  // D-50：外壳每次 build 都新建一个实例；补 `==` / `hashCode` 使
+  // 值相等的实例比较相等（同款见 `DetailInitial` / `ReviewInitial`）。
+  // 注意：实测证实 Riverpod 3.5.0 里 `dependencies` 只决定挂载容器，
+  // `ref.read` 不订阅——挂载后 override 再变，已挂载的 notifier
+  // 不重建、initial 只在挂载时读一次（D-50 回归测试锁定此语义）。
+  @override
+  bool operator ==(Object other) =>
+      other is WrongbookInitial &&
+      other.subjectId == subjectId &&
+      other.filterCause == filterCause &&
+      other.filterKnowledgePointId == filterKnowledgePointId;
+
+  @override
+  int get hashCode =>
+      Object.hash(subjectId, filterCause, filterKnowledgePointId);
 }
 
 /// 初始落点 Provider：默认空（书架）；页面外壳按构造参数 override。
@@ -158,14 +179,16 @@ class WrongbookState {
   final String? filterExamId;
   final String? filterErrorType;
   final String filterTimeRange; // all / week / month
-  final String filterCauseStatus; // all / pending / inProgress / solved / recheck
+  final String
+  filterCauseStatus; // all / pending / inProgress / solved / recheck
   final String? filterCauseName;
   final bool filterFavorite;
   final bool filterOverdue;
   final Set<String> filterTags;
   final Set<String> filterKpIds;
   final bool filterOpen;
-  final String sort; // new / old / subj-asc / subj-desc / status-asc / status-desc
+  final String
+  sort; // new / old / subj-asc / subj-desc / status-asc / status-desc
   final int pageSize;
   final int page;
   final String viewMode; // large / compact
@@ -251,9 +274,15 @@ class WrongbookState {
       selectingMove: selectingMove ?? this.selectingMove,
       moveSelection: moveSelection ?? this.moveSelection,
       moveTargetId: moveTargetId ?? this.moveTargetId,
-      renamingId: renamingId == _unset ? this.renamingId : renamingId as String?,
-      draggingId: draggingId == _unset ? this.draggingId : draggingId as String?,
-      dragOverKey: dragOverKey == _unset ? this.dragOverKey : dragOverKey as String?,
+      renamingId: renamingId == _unset
+          ? this.renamingId
+          : renamingId as String?,
+      draggingId: draggingId == _unset
+          ? this.draggingId
+          : draggingId as String?,
+      dragOverKey: dragOverKey == _unset
+          ? this.dragOverKey
+          : dragOverKey as String?,
       search: search ?? this.search,
       filterExamId: filterExamId == _unset
           ? this.filterExamId
@@ -278,7 +307,9 @@ class WrongbookState {
       viewModeInitialized: viewModeInitialized ?? this.viewModeInitialized,
       sortInitialized: sortInitialized ?? this.sortInitialized,
       pageSizeInitialized: pageSizeInitialized ?? this.pageSizeInitialized,
-      hoverBookId: hoverBookId == _unset ? this.hoverBookId : hoverBookId as String?,
+      hoverBookId: hoverBookId == _unset
+          ? this.hoverBookId
+          : hoverBookId as String?,
       batchMode: batchMode ?? this.batchMode,
       selected: selected ?? this.selected,
       batchFolderId: batchFolderId == _unset
@@ -622,9 +653,7 @@ class WrongbookState {
 
   List<Folder> batchFolderOptions() {
     if (subjectId == null) return [];
-    return subjectFolders(subjectId!)
-        .where((f) => f.id != folderId)
-        .toList();
+    return subjectFolders(subjectId!).where((f) => f.id != folderId).toList();
   }
 
   String folderLabel(Folder f) {
@@ -685,13 +714,11 @@ class WrongbookState {
 
   /// 学科首字母 + 全名拼音首字母串比较（时间平局由调用方另行处理）。
   int subjectKeyCompare(Question a, Question b) {
-    final c = subjectInitial(a.subjectId).compareTo(
-      subjectInitial(b.subjectId),
-    );
+    final c = subjectInitial(a.subjectId)
+        .compareTo(subjectInitial(b.subjectId));
     if (c != 0) return c;
-    final k = subjectPinyinKey(a.subjectId).compareTo(
-      subjectPinyinKey(b.subjectId),
-    );
+    final k = subjectPinyinKey(a.subjectId)
+        .compareTo(subjectPinyinKey(b.subjectId));
     if (k != 0) return k;
     return subjectOf(a.subjectId).name.compareTo(subjectOf(b.subjectId).name);
   }
@@ -870,17 +897,18 @@ class WrongbookNotifier extends Notifier<WrongbookState> {
   WrongbookState build() {
     ref.onDispose(() => _disposed = true);
     unawaited(load());
-    // 初始落点（原 `initState` 的一部分）：带学科进来 → 目录页；
-    // 只带错因 / 知识点筛选进来 → 列表页；都不带 → 书架。
+    // 初始落点（原 `initState` 的一部分）：带错因 / 知识点筛选进来 →
+    // 列表页（D-50：筛选优先于学科——报告深链路带学科 + 错因 / 知识点
+    // 进来时直达已筛选列表，学科只定列表的范围，不把落点拉回目录页）；
+    // 只带学科进来 → 目录页；都不带 → 书架。
     // `load()` 只写数据字段，不动视图 / 范围 / 筛选字段，
     // 所以先读后读不影响最终状态。
     final initial = ref.read(wrongbookInitialProvider);
     var view = WrongbookView.shelf;
-    if (initial.subjectId != null) {
-      view = WrongbookView.directory;
-    } else if (initial.filterCause != null ||
-        initial.filterKnowledgePointId != null) {
+    if (initial.filterCause != null || initial.filterKnowledgePointId != null) {
       view = WrongbookView.list;
+    } else if (initial.subjectId != null) {
+      view = WrongbookView.directory;
     }
     return WrongbookState(
       view: view,
@@ -1065,10 +1093,7 @@ class WrongbookNotifier extends Notifier<WrongbookState> {
   ///（HTML `viewNotebook` 的 fkey 逻辑）。
   void applyFilterChange() {
     final ids = state.filteredAll().map((q) => q.id).toSet();
-    state = state.copyWith(
-      selected: state.selected.intersection(ids),
-      page: 0,
-    );
+    state = state.copyWith(selected: state.selected.intersection(ids), page: 0);
   }
 
   void setSearch(String v) {
@@ -1116,9 +1141,7 @@ class WrongbookNotifier extends Notifier<WrongbookState> {
   }
 
   void removeFilterKpId(String kpId) {
-    state = state.copyWith(
-      filterKpIds: {...state.filterKpIds}..remove(kpId),
-    );
+    state = state.copyWith(filterKpIds: {...state.filterKpIds}..remove(kpId));
     applyFilterChange();
   }
 
@@ -1332,12 +1355,14 @@ class WrongbookNotifier extends Notifier<WrongbookState> {
     if (picked.isEmpty) return '先勾选要移动的文件夹';
     final effective = picked
         .where(
-          (f) => f.parentId == null || !state.moveSelection.contains(f.parentId),
+          (f) =>
+              f.parentId == null || !state.moveSelection.contains(f.parentId),
         )
         .toList();
     // SR2-7：下拉显示的值与实际移动的目标取同一口径——_moveTargetId
     // 陈旧（换科 / 删目标后）时按下拉回落到顶层，不按旧 id 移动。
-    final effectiveTargetId = state.moveTargetId == '__top__' ||
+    final effectiveTargetId =
+        state.moveTargetId == '__top__' ||
             state.topFolders(subjectId).any((f) => f.id == state.moveTargetId)
         ? state.moveTargetId
         : '__top__';
@@ -1532,13 +1557,7 @@ class WrongbookNotifier extends Notifier<WrongbookState> {
     });
     state = state.copyWith(selected: const {});
     await load();
-    return batchResultMessage(
-      '移入文件夹',
-      okN,
-      missing,
-      failed,
-      skipped: skipped,
-    );
+    return batchResultMessage('移入文件夹', okN, missing, failed, skipped: skipped);
   }
 
   Future<String?> batchMoveOut() async {
