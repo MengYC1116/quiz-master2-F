@@ -51,7 +51,10 @@ import '../data/database.dart';
 import '../data/data_change_events.dart';
 import '../data/repository.dart';
 import '../models/models.dart';
+import '../modules/ocr/stem_correction.dart';
+import '../services/import_guess.dart';
 import '../services/import_service.dart';
+import '../services/ocr_queue.dart';
 import '../services/page_image_pipeline.dart';
 import 'repository_provider.dart';
 
@@ -146,6 +149,13 @@ class DetailState {
     // FR-09：复查间隔（设置 3 / 7 / 14 天，默认 7，D-05）；详情页
     // “满 N 天自动回来复查”文案用它拼，不再写死 7 天。`load()` 读库。
     this.recheckIntervalDays = 7,
+    // 十三批 M5：当前题的 OCR 任务行与 key 有无（识别题干状态推导用）。
+    this.ocrJobs = const [],
+    this.hasOcrApiKey = false,
+    // 十三批 P1-2：重框成功但 OCR 入队失败时置真（页面显
+    // “题目已更新，OCR 未入队”横幅 + “重新入队”重试入口）；
+    // 入队成功 / 无切片可入队 / 切到别的题时为假。
+    this.ocrEnqueueFailed = false,
   });
 
   /// 首查进行中（原 `_loading`；初始 true，首帧先出加载圈）。
@@ -178,6 +188,16 @@ class DetailState {
 
   /// 复查间隔天数（设置项，见构造函数注释；默认 7 天）。
   final int recheckIntervalDays;
+
+  /// 十三批 M5：当前题的 OCR 任务行（最新在前）与设置里是否已存
+  /// BigModel key。只供识别题干状态推导（[OcrStemSection]）用。
+  final List<OcrJob> ocrJobs;
+  final bool hasOcrApiKey;
+
+  /// 十三批 P1-2：重框成功但 OCR 入队失败（见 [DetailNotifier.applyReworkBoxes]）。
+  /// 只属于置真时的那道题：[DetailNotifier.load] 只在同题重读时保留它，
+  /// 切到别的题 / 题不存在时清掉；重试入队成功后也清掉。
+  final bool ocrEnqueueFailed;
 
   // ---- 编辑表单值（当前题；文本框内容在页面控制器里，不在这里） ----
 
@@ -223,6 +243,9 @@ class DetailState {
     Object? editBase = _unset,
     int? formResetKey,
     int? recheckIntervalDays,
+    List<OcrJob>? ocrJobs,
+    bool? hasOcrApiKey,
+    bool? ocrEnqueueFailed,
   }) {
     return DetailState(
       loading: loading ?? this.loading,
@@ -247,6 +270,9 @@ class DetailState {
       editBase: editBase == _unset ? this.editBase : editBase as Question?,
       formResetKey: formResetKey ?? this.formResetKey,
       recheckIntervalDays: recheckIntervalDays ?? this.recheckIntervalDays,
+      ocrJobs: ocrJobs ?? this.ocrJobs,
+      hasOcrApiKey: hasOcrApiKey ?? this.hasOcrApiKey,
+      ocrEnqueueFailed: ocrEnqueueFailed ?? this.ocrEnqueueFailed,
     );
   }
 }
@@ -275,6 +301,29 @@ class DetailNotifier extends Notifier<DetailState> {
   /// 编辑保存等写操作后重读——那不是一次新的“打开”，同题不重复记；
   /// 切到另一题（goTo）或重新打开本页（新 Notifier 实例）时才再记。
   String? _lastViewRecordedId;
+
+  /// 十三批 P1-2：重框入队失败的那道题 id（与 [DetailState.ocrEnqueueFailed]
+  /// 配对）。load() 只在重读的还是这道题时保留标志，切到别的题时清掉；
+  /// 失败标志本身存在 state 里，load() 的 copyWith 必须显式按它算，
+  /// 不能靠“不传参就保留”——load() 之后标志仍须可见（见 load 内注释）。
+  String? _ocrEnqueueFailedQuestionId;
+
+  /// 十三批 P1-2（任务 b）：重框入队的可 fake 缝。生产恒为 null——
+  /// 此时走冻结契约 [enqueueOcrForQuestion]，await 确认任务已持久化，
+  /// 绝不改回 fire-and-forget。真实 Drift 在 widget 测试的 fake async
+  /// 下永不完成（M5 §七第二条），详情页重框的 widget 测试不能直接
+  /// await 它：测试里把这里设为假实现（返回假任务 / 抛错模拟入队失败），
+  /// 用完必须复位（detail_page_test 的 tearDown）。
+  /// 真实入队路径由 b13_stem_correction_test 的真实库测试覆盖。
+  @visibleForTesting
+  static Future<OcrJob?> Function(AppDatabase db, Question question)?
+  enqueueOcrForTest;
+
+  /// 缝后统一的入队调用：测试假实现优先，生产走冻结契约。
+  static Future<OcrJob?> _enqueueForRework(
+    AppDatabase db,
+    Question question,
+  ) => (enqueueOcrForTest ?? enqueueOcrForQuestion)(db, question);
 
   @override
   DetailState build() {
@@ -314,6 +363,13 @@ class DetailNotifier extends Notifier<DetailState> {
     // FR-09：复查间隔随详情页一起读库（与复习页 / 报告页同款读法）。
     final settings = await repo.settings();
     if (_disposed) return;
+    // 十三批 P1-2：load() 会重建 state——入队失败标志必须按题 id
+    // 显式算出来再写进 copyWith，否则 load() 一跑标志就被刷掉，
+    // “题目已更新，OCR 未入队”横幅在重框成功提示之后立刻消失。
+    // 同题重读（收藏/编辑保存/重框后的重读）保留；切题/题不存在清掉。
+    final keepEnqueueFailed =
+        _ocrEnqueueFailedQuestionId != null &&
+        q?.id == _ocrEnqueueFailedQuestionId;
     state = state.copyWith(
       question: q,
       records: records,
@@ -325,7 +381,12 @@ class DetailNotifier extends Notifier<DetailState> {
       subjects: subjects,
       recheckIntervalDays: settings.recheckIntervalDays,
       loading: false,
+      ocrEnqueueFailed: keepEnqueueFailed,
     );
+    // 十三批 M5：读当前题的 OCR 任务行与 key 有无（状态推导用）。
+    // 不 await：它是装饰性 best-effort 加载，失败/挂起都不能挡
+    // 详情加载的后续流程（记查看、自愈）；读到了再更新 state。
+    unawaited(_refreshOcrStatus(q));
     // 十二批功能 4（D-91）：题目加载成功后记一次查看（同一题只留一条，
     // 时间更新为最后一次）。D-88：load() 本来就没有 try/catch，任一
     // repo 抛错都会停在 loading——记录失败必须自己吞掉，绝不能拖垮
@@ -351,10 +412,16 @@ class DetailNotifier extends Notifier<DetailState> {
 
   /// SR3-10（a）：校验磁盘切片的实际尺寸与库里 [sliceWidth] /
   /// [sliceHeight] 是否一致。不一致时按当前第一个 1 层框重裁一次、
-  /// 原子替换切片文件；重裁尺寸与库里记的不一样时再把库里尺寸改成
-  /// 重裁尺寸（框可能在崩溃后又被改过）。切片文件不存在时不处理
-  /// （仍走原有的图加载失败占位）；页图缺失/损坏、框缺失时同样
-  /// 静默放弃——用户仍可手动“重新框选”，打开页时不弹提示打扰。
+  /// 写新切片文件；重裁尺寸与库里记的不一样时再把库里尺寸改成
+  /// 重裁尺寸（框可能在崩溃后又被改过）。
+  /// 十三批 P1-1：切片不可变——
+  /// - 库里路径的文件不存在（重框事务已提交、rename 前被杀）：按当前
+  ///   框重裁，直接写到库里记的路径（该路径尚无文件，是首写不是覆盖）；
+  /// - 文件存在但尺寸不符（旧崩溃窗口的残留）：写新的版本化路径
+  ///   （[ImportService.nextSliceRelative]），旧文件字节不动，
+  ///   库里 slice_path 指到新文件；旧候选如来自旧切片则标 stale。
+  /// 页图缺失/损坏、框缺失时同样静默放弃——用户仍可手动“重新框选”，
+  /// 打开页时不弹提示打扰。
   Future<void> _healSliceIfNeeded(Question q) async {
     if (q.slicePath == null || q.sliceWidth == null || q.sliceHeight == null) {
       return;
@@ -368,15 +435,22 @@ class DetailNotifier extends Notifier<DetailState> {
       final sliceAbs = AppDatabase.resolveDataPath(q.slicePath!);
       if (sliceAbs == null) return;
       final sliceFile = File(sliceAbs);
-      if (!sliceFile.existsSync()) return;
-      final dims = pngDimensions(await sliceFile.readAsBytes());
-      if (dims != null &&
-          dims.width == q.sliceWidth &&
-          dims.height == q.sliceHeight) {
-        _sliceHealCheckedKey = key;
-        return;
+      // 文件不存在：重框事务已提交、rename 前被杀的残留——按当前框
+      // 重裁后直接写到库里记的路径（首写）；文件存在且尺寸相符时
+      // 不用自愈；存在但尺寸不符时写版本化新路径（见下）。
+      var missingFile = false;
+      if (!sliceFile.existsSync()) {
+        missingFile = true;
+      } else {
+        final dims = pngDimensions(await sliceFile.readAsBytes());
+        if (dims != null &&
+            dims.width == q.sliceWidth &&
+            dims.height == q.sliceHeight) {
+          _sliceHealCheckedKey = key;
+          return;
+        }
       }
-      // 尺寸不符（或切片已不是合法 PNG）：按当前框重裁。
+      // 尺寸不符（或切片已不是合法 PNG / 文件缺失）：按当前框重裁。
       if (q.pageImagePath == null) return;
       final pageAbs = AppDatabase.resolveDataPath(q.pageImagePath!);
       if (pageAbs == null || !File(pageAbs).existsSync()) return;
@@ -393,22 +467,41 @@ class DetailNotifier extends Notifier<DetailState> {
       if (tmpAbs == null) return;
       await File(tmpAbs).parent.create(recursive: true);
       await File(tmpAbs).writeAsBytes(crop.png);
+      // 缺失时写回库里记的路径（首写）；存在但尺寸不符时写版本化
+      // 新路径，旧文件字节永不动（十三批 P1-1 不可变切片）。
+      final targetRel = missingFile
+          ? q.slicePath!
+          : ImportService.nextSliceRelative(q.id);
+      final targetAbs = AppDatabase.resolveDataPath(targetRel);
+      if (targetAbs == null) {
+        try {
+          if (File(tmpAbs).existsSync()) await File(tmpAbs).delete();
+        } catch (_) {}
+        return;
+      }
       try {
-        await File(tmpAbs).rename(sliceAbs);
+        await File(tmpAbs).rename(targetAbs);
       } catch (_) {
         try {
           if (File(tmpAbs).existsSync()) await File(tmpAbs).delete();
         } catch (_) {}
         return;
       }
-      await evictCachedFileImage(sliceAbs);
-      if (crop.width != q.sliceWidth || crop.height != q.sliceHeight) {
-        await repo.save(
-          q.copyWith(sliceWidth: crop.width, sliceHeight: crop.height),
-        );
-      }
+      await evictCachedFileImage(targetAbs);
+      var updated = q.copyWith(
+        slicePath: targetRel,
+        sliceWidth: crop.width,
+        sliceHeight: crop.height,
+      );
+      // 新切片内容变了：旧候选如来自旧切片，标 stale（纯函数，
+      // 无候选或 hash 一致时原样返回，不动版本）。
+      try {
+        final newHash = await sha256HexOfFile(File(targetAbs));
+        updated = markCandidateStale(updated, newHash);
+      } catch (_) {}
+      await repo.save(updated);
       _sliceHealCheckedKey =
-          '${q.id}|${q.slicePath}|${crop.width}x${crop.height}';
+          '${q.id}|$targetRel|${crop.width}x${crop.height}';
       if (!_disposed) await load();
     } catch (e) {
       // 自愈是后台兜底：任何一步失败都不打扰用户、不抛到界面，
@@ -420,6 +513,139 @@ class DetailNotifier extends Notifier<DetailState> {
     } finally {
       _sliceHealRunning = false;
     }
+  }
+
+  /// 十三批 M5：只刷新当前题的 OCR 状态（任务行 + key 有无）。
+  /// 不碰编辑表单值与 formResetKey。读库失败时保持旧值，不抛。
+  Future<void> _refreshOcrStatus([Question? question]) async {
+    final q = question ?? state.question;
+    if (q == null || _disposed) return;
+    final repo = _repo;
+    try {
+      final jobs = await repo.ocrJobsForQuestion(q.id);
+      final hasKey = await repo.hasOcrApiKey();
+      if (_disposed || state.question?.id != q.id) return;
+      state = state.copyWith(ocrJobs: jobs, hasOcrApiKey: hasKey);
+    } catch (_) {
+      // OCR 状态读不到：界面按题本身的 OCR 字段推导，不挡详情。
+    }
+  }
+
+  /// 十三批 M5：活页内刷新守门后的单题刷新（页面订阅 DataChangeBus
+  /// 的 questions 事件后调，见 question_detail_page.dart 的 _onDataChange）。
+  /// 只重读当前题 + 它的 OCR 任务行与 key 有无；编辑表单值
+  /// （editBase / edit*）与 formResetKey 都原样保留——
+  /// 主编辑表单的控制器不会被重建；题干纠错编辑器的草稿是
+  /// StemEditor 的本地状态，换题才重建，同题只显“有新的识别结果”
+  /// 横幅。调用方（页面）须先守门：纠错编辑器正开着时不调本方法，
+  /// 改走 [candidateStemFor] 只取候选。
+  Future<void> refreshStemStatus() async {
+    if (_disposed) return;
+    final repo = _repo;
+    try {
+      final q = await repo.questionById(state.currentId);
+      if (q == null || _disposed) return;
+      final jobs = await repo.ocrJobsForQuestion(q.id);
+      final hasKey = await repo.hasOcrApiKey();
+      if (_disposed) return;
+      state = state.copyWith(
+        question: q,
+        ocrJobs: jobs,
+        hasOcrApiKey: hasKey,
+      );
+    } catch (_) {
+      // OCR 状态读不到：保持旧行，不挡详情。
+    }
+  }
+
+  /// 十三批 M5：读一道题的候选题干（守门分支用，不改任何状态）。
+  Future<String?> candidateStemFor(String questionId) =>
+      candidateStemForQuestion(_repo, questionId);
+
+  // ---------- 十三批 M5：纠错保存（见 stem_correction.dart 的规则） ----------
+
+  /// 保存手动编辑的题干：版本 +1、人工标记、切分状态“人工调整”、
+  /// 候选标志清掉；成功后更新 state.question（编辑表单值不动）。
+  /// 返回 false 时页面提示“保存失败，请重试”，编辑器不收起。
+  Future<bool> saveStemEdit(String newStem) async {
+    final q = state.question;
+    if (q == null) return false;
+    final repo = _repo;
+    try {
+      final updated = applyManualStemEdit(q, newStem);
+      await repo.save(updated);
+      if (!_disposed) state = state.copyWith(question: updated);
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// 接受候选（十三批 P1-1）：接受的题干一律从库里 ocr_raw 包取，
+  /// 接受时重验证（题目仍存在、input_hash 与当前切片一致、候选仍
+  /// pending）；任一不符返回 false（编辑器不收起，P1-2/M5 后续按
+  /// [CandidateRejection.reason] 给明确原因）。切分状态写回、
+  /// 人工标记保持 1、版本 +1、raw 候选状态写 accepted。
+  /// 失败返回 false，编辑器不收起。
+  Future<bool> acceptOcrCandidate() async =>
+      await acceptOcrCandidateWithReason() == null;
+
+  /// 接受候选并返回失败原因（十三批 P1-2 任务 e）：成功返回 null；
+  /// 失败返回 [CandidateRejection.reason]（question_deleted /
+  /// no_candidate / not_pending / hash_mismatch / slice_missing），
+  /// 其余失败（写库等）返回 'save_failed'，无当前题返回 'no_question'。
+  /// 页面按 reason 给明确文案（见 ocr_stem_section.dart 的
+  /// [candidateRejectionMessage]），不要只显示通用“保存失败，请重试”。
+  Future<String?> acceptOcrCandidateWithReason() async {
+    final q = state.question;
+    if (q == null) return 'no_question';
+    final repo = _repo;
+    try {
+      // 十三批 P1 第二轮：acceptCandidateStem 在事务内原子校验并落库，
+      // 返回的就是已保存的题，不再另行 repo.save。
+      final updated = await acceptCandidateStem(repo, q);
+      if (!_disposed) state = state.copyWith(question: updated);
+      return null;
+    } on CandidateRejection catch (e) {
+      return e.reason;
+    } catch (_) {
+      return 'save_failed';
+    }
+  }
+
+  /// 忽略候选：只清 raw 里的候选标志（版本 +1）。无候选时直接返回 true。
+  Future<bool> dismissOcrCandidate() async {
+    final q = state.question;
+    if (q == null) return true;
+    if (!hasPendingOcrCandidate(q)) return true;
+    final repo = _repo;
+    try {
+      final updated = dismissOcrCandidateFlag(q);
+      await repo.save(updated);
+      if (!_disposed) state = state.copyWith(question: updated);
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// 手动“重新识别”：为当前题建 OCR 任务（调 M3 入队接口），
+  /// 入队后刷新任务行。入队失败（无切片等）返回 false，页面提示。
+  /// 十三批 P1-1：入队失败抛错时这里接住返回 false（P1-2 改为向
+  /// 用户展示“OCR 未入队”+重试入口）。
+  Future<bool> rerecognizeCurrent() async {
+    final q = state.question;
+    if (q == null) return false;
+    OcrJob? job;
+    try {
+      job = await enqueueOcrForQuestion(_repo.db, q);
+    } catch (_) {
+      return false;
+    }
+    if (job == null) return false;
+    // 任务行刷新不 await（best-effort：读到了再更新 state，见上）。
+    unawaited(_refreshOcrStatus(q));
+    return true;
   }
 
   // ---------- 编辑 ----------
@@ -556,6 +782,14 @@ class DetailNotifier extends Notifier<DetailState> {
       slicePath: base.slicePath,
       sliceWidth: base.sliceWidth,
       sliceHeight: base.sliceHeight,
+      // 十三批 M5：编辑表单不改 OCR 内容——全新构造时必须从 base 带上，
+      // 否则编辑一次就把 ocr_stem / ocr_raw / 人工标记 / 内容版本
+      // 全抹掉（旧代码漏了这 5 个字段，题干纠错成果会被一次普通编辑清零）。
+      ocrRaw: base.ocrRaw,
+      ocrStem: base.ocrStem,
+      ocrSplitStatus: base.ocrSplitStatus,
+      ocrManualEdited: base.ocrManualEdited,
+      contentVersion: base.contentVersion,
     );
     // FR-02：save 先发角标事件、syncCauseRecords 后写库时，角标重读
     // 可能抢在同步提交前；与 joinReviewBatch 同款用 scope 包起来，
@@ -667,7 +901,10 @@ class DetailNotifier extends Notifier<DetailState> {
     } catch (_) {
       return ReworkOutcome.cropFailed;
     }
-    final sliceRel = ImportService.sliceRelative(q.id);
+    // 十三批 P1-1：重框写新切片必须用版本化文件名，绝不原地覆盖已有
+    // 切片文件（一个切片路径的字节在入队后永不变化；旧文件留盘，
+    // 孤儿扫描清理）。库里 slice_path 随事务一起指到新文件。
+    final sliceRel = ImportService.nextSliceRelative(q.id);
     final sliceAbs = AppDatabase.resolveDataPath(sliceRel);
     if (sliceAbs == null) return ReworkOutcome.sliceUnavailable;
     // 临时切片与正式切片同目录，rename 是同文件系统内的原子替换；
@@ -723,8 +960,77 @@ class DetailNotifier extends Notifier<DetailState> {
       return ReworkOutcome.renameFailed;
     }
     await evictCachedFileImage(sliceAbs);
+    // 十三批 P1-2（GPT §5.2）：重框成功后 await 入队，确认任务已持久化；
+    // 只有 worker.kick() 可以 fire-and-forget（它在 enqueueOcrForQuestion
+    // 内部调，见 stem_correction.dart）。入队失败时框选结果照常保留
+    // （框与切片已落库，ReworkOutcome 仍是 success——不要让页面把
+    // “框选成功”等同于“OCR 已排队”），但记失败标志：末尾的 load()
+    // 按 _ocrEnqueueFailedQuestionId 保留它，页面显“题目已更新，
+    // OCR 未入队”横幅 + “重新入队”重试入口（见 retryOcrEnqueue）。
+    // 入队失败绝不能把重框本身拖垮：失败只记标志，不改返回值。
+    //
+    // M5 §七第二条的坑：本行 await 在 widget 测试的 fake async 里
+    // 曾挂住，所以当时改成 fire-and-forget。现在生产保持 await，
+    // 测试侧用可 fake 的缝 [enqueueOcrForTest]（见本文件顶部注释），
+    // 绝不为过测试把生产改回 unawaited。
+    var enqueueFailed = false;
+    try {
+      final updated = await repo.questionById(q.id);
+      if (updated != null) {
+        var toEnqueue = updated;
+        try {
+          final newHash = await sha256HexOfFile(File(sliceAbs));
+          final marked = markCandidateStale(updated, newHash);
+          if (!identical(marked, updated)) {
+            await repo.save(marked);
+            toEnqueue = marked;
+          }
+        } catch (_) {}
+        try {
+          await _enqueueForRework(repo.db, toEnqueue);
+        } catch (_) {
+          enqueueFailed = true;
+        }
+      }
+    } catch (_) {
+      // 重读题目失败：没法入队，同样记失败（框选结果已落库，不受影响）。
+      enqueueFailed = true;
+    }
+    if (enqueueFailed) {
+      _ocrEnqueueFailedQuestionId = q.id;
+    } else if (_ocrEnqueueFailedQuestionId == q.id) {
+      // 本次入队成功：清掉这道题之前留下的失败标志（如下次重框前
+      // 曾重试失败过）；别题的标志不动（它属于别的题，load 时自会清）。
+      _ocrEnqueueFailedQuestionId = null;
+    }
     await load();
     return ReworkOutcome.success;
+  }
+
+  /// 十三批 P1-2：重框入队失败后的重试入口（页面“题目已更新，OCR 未入队”
+  /// 横幅上的“重新入队”调它，走同一入队路径 [enqueueOcrForQuestion]，
+  /// 不是另写一条入队逻辑）。
+  /// 成功（入队成功，或无切片可入队——按入队契约 null 不是失败）
+  /// 返回 true 并清掉失败标志（横幅消失）；入队抛错返回 false，
+  /// 标志保留、横幅不消失，可再点重试。
+  Future<bool> retryOcrEnqueue() async {
+    final q = state.question;
+    if (q == null) return false;
+    final repo = _repo;
+    try {
+      final fresh = await repo.questionById(q.id) ?? q;
+      await _enqueueForRework(repo.db, fresh);
+    } catch (_) {
+      return false;
+    }
+    if (_ocrEnqueueFailedQuestionId == q.id) {
+      _ocrEnqueueFailedQuestionId = null;
+    }
+    if (!_disposed) {
+      state = state.copyWith(ocrEnqueueFailed: false);
+      unawaited(_refreshOcrStatus(q));
+    }
+    return true;
   }
 
   // ---------- 内联新建（原 `_newTag` / `_newFolder` /

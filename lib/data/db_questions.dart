@@ -605,6 +605,12 @@ Question _questionFromDb(DbQuestion r) => Question(
   slicePath: r.slicePath,
   sliceWidth: r.sliceWidth,
   sliceHeight: r.sliceHeight,
+  // 十三批 M2：OCR 字段（缺了这段，整行写回会把库里的 OCR 值抹掉）。
+  ocrRaw: r.ocrRaw,
+  ocrStem: r.ocrStem,
+  ocrSplitStatus: r.ocrSplitStatus,
+  ocrManualEdited: r.ocrManualEdited == 1,
+  contentVersion: r.contentVersion,
 );
 
 QuestionsCompanion _questionCompanion(
@@ -640,6 +646,14 @@ QuestionsCompanion _questionCompanion(
   slicePath: Value(q.slicePath),
   sliceWidth: Value(q.sliceWidth),
   sliceHeight: Value(q.sliceHeight),
+  // 十三批 M2：OCR 字段全列写回（缺了这段，upsert 会把库里的 OCR 值
+  // 抹回默认值；SR2-14 的“整行写不带 review_count”是例外，OCR 列
+  // 不在例外里——它们只能经模型写回）。
+  ocrRaw: Value(q.ocrRaw),
+  ocrStem: Value(q.ocrStem),
+  ocrSplitStatus: Value(q.ocrSplitStatus),
+  ocrManualEdited: Value(q.ocrManualEdited ? 1 : 0),
+  contentVersion: Value(q.contentVersion),
 );
 
 CauseRecord _causeRecordFromDb(DbCauseRecord r) => CauseRecord(

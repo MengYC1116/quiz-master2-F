@@ -7,8 +7,10 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../data/database.dart';
+import '../../data/data_change_events.dart';
 import '../../data/repository.dart';
 import '../../models/models.dart';
+import '../../modules/ocr/ocr_stem_section.dart';
 import '../../state/organize_notifier.dart';
 import '../../state/subject_sort.dart';
 import '../../state/wrongbook_notifier.dart';
@@ -164,8 +166,96 @@ class _OrganizeViewState extends ConsumerState<_OrganizeView> {
 
   OrganizeNotifier get _notifier => ref.read(organizeProvider.notifier);
 
+  /// 十三批 M5：活页内 OCR 事件订阅（见 [_onDataChange] 的守门规则）。
+  StreamSubscription<DataChangeEvent>? _ocrSub;
+
+  /// 纠错编辑器是否正开着、正在编哪道题（守门用：编辑中的题不刷新）。
+  bool _stemEditorOpen = false;
+  String? _stemEditorQuestionId;
+
+  /// 编辑中 OCR 回来了：只取到的候选题干（不碰 Notifier 状态，
+  /// 只传给 [OcrStemSection] 显示“有新的识别结果”横幅）。
+  String? _candidateWhileEditing;
+
+  @override
+  void initState() {
+    super.initState();
+    _ocrSub = DataChangeBus.instance.stream.listen(_onDataChange);
+  }
+
+  /// 十三批 M5：活页内刷新守门（M3 报告的警告，必守）。
+  ///
+  /// 收到 questions 事件后：
+  /// - 事件没带 questionId（批量写入/备份恢复）：只当没在编辑时刷新
+  ///   当前题的 OCR 状态行；编辑中直接跳过（批量事件不携带候选，
+  ///   编辑器里的横幅等编辑结束、页面重读后再出现）。
+  /// - 事件是正在被纠错编辑器编辑的那道题：绝不调
+  ///   `refresh()`/`loadForm()`，也不调 `refreshOcrForQuestion`
+  ///   （换队列行会换掉编辑器拿到的 question 对象）；只另行取一次
+  ///   候选题干（[OrganizeNotifier.candidateStemFor]，不改任何状态），
+  ///   有候选就在编辑器里显“有新的识别结果”横幅，草稿一个字不动。
+  /// - 其余题：调 `refreshOcrForQuestion` 只换该题的队列行与
+  ///   （是当前题时）任务行，不碰表单值与 formResetKey。
+  Future<void> _onDataChange(DataChangeEvent event) async {
+    if (!event.kinds.contains(DataChangeKind.questions)) return;
+    if (!mounted) return;
+    final id = event.questionId;
+    if (id == null) {
+      if (_stemEditorOpen) return;
+      final currentId = ref.read(organizeProvider).current?.id;
+      if (currentId != null) {
+        await _notifier.refreshOcrForQuestion(currentId);
+      }
+      return;
+    }
+    if (_stemEditorOpen && id == _stemEditorQuestionId) {
+      final candidate = await _notifier.candidateStemFor(id);
+      if (!mounted) return;
+      if (candidate != null) {
+        setState(() => _candidateWhileEditing = candidate);
+      }
+      return;
+    }
+    await _notifier.refreshOcrForQuestion(id);
+  }
+
+  // ---------- 十三批 M5：纠错保存（失败时提示，编辑器不收起） ----------
+
+  Future<bool> _saveStemEdit(String newStem) async {
+    final ok = await _notifier.saveStemEdit(newStem);
+    if (!mounted) return ok;
+    _snack(ok ? '题干已保存' : '保存失败，请重试');
+    return ok;
+  }
+
+  // 十三批 P1-1：接受的题干一律从库里 ocr_raw 包取（接受时重验证），
+  // 这里收到的 candidateStem 只是预览字符串，不再传给 Notifier。
+  Future<bool> _acceptOcrCandidate(String candidateStem) async {
+    final reason = await _notifier.acceptOcrCandidateWithReason();
+    if (!mounted) return reason == null;
+    _snack(reason == null ? '已用新的识别结果替换' : candidateRejectionMessage(reason));
+    return reason == null;
+  }
+
+  Future<void> _dismissOcrCandidate() async {
+    final ok = await _notifier.dismissOcrCandidate();
+    if (!mounted) return;
+    if (!ok) _snack('保存失败，请重试');
+  }
+
+  Future<void> _rerecognizeStem() async {
+    final ok = await _notifier.rerecognizeCurrent();
+    if (!mounted) return;
+    if (ok) {
+      _snack('已重新识别，稍等片刻');
+    } else {
+      _snack('重新识别失败：没有可识别的切片');
+    }
+  }
+
   @override
   void dispose() {
+    _ocrSub?.cancel();
     _queueEntry?.remove();
     _queueEntry = null;
     _answerCtrl.dispose();
@@ -706,6 +796,30 @@ class _OrganizeViewState extends ConsumerState<_OrganizeView> {
             child: _slicesSection(q, st),
           ),
         ],
+        // 十三批 M5：识别题干区——在切片图正下方（修框切片段之后），
+        // 与详情页共用同一套 [OcrStemSection]。Key 按题 id：
+        // 换题时编辑器收起、草稿不跨题。
+        SizedBox(height: DesignTokens.organizeSectionGap * scale),
+        OcrStemSection(
+          key: ValueKey('ocr-stem-${q.id}'),
+          question: q,
+          jobs: st.ocrJobs,
+          hasApiKey: st.hasOcrApiKey,
+          candidateStemOverride: _stemEditorQuestionId == q.id
+              ? _candidateWhileEditing
+              : null,
+          onSaveEdited: _saveStemEdit,
+          onAcceptCandidate: _acceptOcrCandidate,
+          onDismissCandidate: _dismissOcrCandidate,
+          onRerecognize: _rerecognizeStem,
+          onEditingChanged: (open) {
+            setState(() {
+              _stemEditorOpen = open;
+              _stemEditorQuestionId = open ? q.id : null;
+              if (!open) _candidateWhileEditing = null;
+            });
+          },
+        ),
       ],
     );
   }

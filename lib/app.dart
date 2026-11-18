@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -6,6 +7,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../data/database.dart';
 import '../data/repository.dart';
 import '../models/models.dart';
+import '../services/ocr_queue.dart';
 import '../services/recheck_reminder.dart';
 import '../state/badge_counts_provider.dart';
 import '../state/settings_notifier.dart';
@@ -87,6 +89,18 @@ class _QuizMasterAppState extends ConsumerState<QuizMasterApp> {
   final _navigatorKey = GlobalKey<NavigatorState>();
 
   late final QuestionRepository repo = QuestionRepository(AppDatabase.instance);
+
+  @override
+  void initState() {
+    super.initState();
+    // 十三批 M3：应用启动时启动 OCR 后台 worker（幂等；启动时回收过期租约）。
+    // 启动失败不抛（worker 内部已兜底），绝不拖垮应用启动。
+    // flutter test 下不启动（FLUTTER_TEST=true）：避免 widget 测试里
+    // 后台轮询碰库；单测直接构造 OcrWorker，不走单例。
+    if (Platform.environment['FLUTTER_TEST'] != 'true') {
+      unawaited(OcrWorker.ensureStarted());
+    }
+  }
 
   /// B4.1：复查提醒一轮应用只判断一次（启动时；切页不重复弹）。
   bool _reminderChecked = false;

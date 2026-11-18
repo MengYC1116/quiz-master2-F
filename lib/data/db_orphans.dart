@@ -5,7 +5,8 @@ part of 'database.dart';
 
 /// §4.5：库里引用到的全部文件相对路径（questions 的
 /// source_path / page_image_path / slice_path +
-/// collect_tasks 的 source_path），外加存续收集任务的派生文件。
+/// collect_tasks 的 source_path + 十三批 M2：ocr_jobs 的 crop_path），
+/// 外加存续收集任务的派生文件。
 ///
 /// SR-P0-1：未拆分任务的派生文件没有任何行引用——PDF 任务渲染出的
 /// 页图在 `imports/<taskId>/pages/`、图片任务的 EXIF 归一化副本在
@@ -40,6 +41,12 @@ Future<Set<String>> _referencedRelativePaths(
     add(row.sourcePath);
     add(row.pageImagePath);
     add(row.slicePath);
+  }
+  // 十三批 M2：ocr_jobs 的 crop_path 也是被引用的切片文件——
+  // 不加这路，crop 指向的切片会被孤儿扫描误删、也不会进 zip 备份
+  //（crop 通常就是 questions.slice_path 同一文件，此时是去重后的同一条）。
+  for (final row in await db.select(db.ocrJobs).get()) {
+    add(row.cropPath);
   }
   for (final row in await db.select(db.collectTasks).get()) {
     add(row.sourcePath);

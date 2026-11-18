@@ -52,6 +52,7 @@ import '../models/models.dart';
 import '../modules/collect/batch_import.dart';
 import '../services/import_guess.dart';
 import '../services/import_service.dart';
+import '../services/ocr_queue.dart';
 import '../services/page_image_pipeline.dart';
 import '../services/pdf_render_service.dart';
 import '../services/yolo_onnx_service.dart';
@@ -298,6 +299,17 @@ class CollectState {
       retryingTaskIds: retryingTaskIds ?? this.retryingTaskIds,
     );
   }
+}
+
+/// 十三批 P1-2 任务 c：批量入队后没排上的题数。
+/// [OcrWorker.enqueueForQuestions] 只返回成功建/已存在的任务行，
+/// 逐道失败都被它内部吞掉；调用方按 questionId 比对——返回列表里
+/// 没有该题 id 的即没排上（无切片返回 null 也算没排上，调用方按此数
+/// 提示“其中 X 道题 OCR 未入队”）。纯函数，单测直接覆盖。
+@visibleForTesting
+int ocrEnqueueMissedCount(List<Question> questions, List<OcrJob> jobs) {
+  final enqueued = {for (final job in jobs) job.questionId};
+  return questions.where((q) => !enqueued.contains(q.id)).length;
 }
 
 /// 同 sourcePath 的拆分任务（待整理/已整理）所在页就是已拆页。
@@ -1221,10 +1233,36 @@ class CollectNotifier extends Notifier<CollectState> {
       debugPrint('SR2-25：saveRecentTask 失败，已忽略：$e');
     }
     await load();
+    // 十三批 P1-2 任务 c：确认分框后批量入队——OcrWorker.enqueueForQuestions
+    // 仍逐道吞错、只返回成功列表（见 ocr_queue.dart，P1-1 遗留 2）。
+    // 调用点按 questionId 比对，没排上的题数必须告诉用户（非阻塞提示，
+    // 附在成功提示后面），绝不能让批量入队失败静默。整理主流程绝不被
+    // OCR 卡住：入队失败只改提示文案，outcome.kind 仍是 done，
+    // 题已生成、列表已刷新；没排上的题可在详情页重新识别补救。
+    // worker 未启动时（单测里 instanceOrNull 为 null）同样没排上，
+    // 计全部未入队——生产上 worker 随应用启动拉起，null 只在启动
+    // 失败/单测时出现，此时题确实没进队，提示是诚实的。
+    var ocrMissed = 0;
+    try {
+      final worker = OcrWorker.instanceOrNull;
+      if (worker == null) {
+        ocrMissed = questions.length;
+      } else {
+        final jobs = await worker.enqueueForQuestions(questions);
+        ocrMissed = ocrEnqueueMissedCount(questions, jobs);
+      }
+    } catch (_) {
+      // 整批入队调用本身抛错（enqueueForQuestions 内部已逐道吞错，
+      // 这里只是兜底）：按全部未入队报，宁可多报不可静默丢题。
+      ocrMissed = questions.length;
+    }
     final base = unboxedPages.isNotEmpty
         ? '已生成 $total 道题去整理，还有 ${unboxedPages.length} 页没框留在任务里'
         : '已生成 $total 道题，去整理吧';
-    return ConfirmSplitOutcome.done(base);
+    final message = ocrMissed > 0
+        ? '$base。其中 $ocrMissed 道题 OCR 未入队，可在详情页重新识别。'
+        : base;
+    return ConfirmSplitOutcome.done(message);
   }
 
   // ---------- 删除 ----------

@@ -36,16 +36,21 @@ Future<String> exportBackupJsonFromImpl(QuizDatabase db) async {
 /// 反馈，importBackupJsonInto 里再调一次，双保险）。
 /// 校验顺序：① `_meta.schemaVersion` 存在且为整数（缺失 → 按 v1
 /// 备份处理，拒绝：v1 从未发布、老库已删，不存在合法的 v1 备份）；
-/// ② v2 与 v3 放行（v2 备份恢复时迁移进 v3：新表缺键视为 empty，
-/// collect_tasks 行缺 source_hash 视为 NULL），`> 3` 拒绝（备份来自
-/// 更新的版本），`< 2` 也拒绝；③ 按版本取表清单（v2 13 张、v3 14 张），
-/// 键齐全且为数组；④ 每行是对象、主键非空、必填列齐全
-/// 且类型正确；⑤ 文件路径合法（见 [_validateBackupRowPaths]）；
+/// ② v2、v3 与 v4 放行（v2 备份恢复时迁移进 v4：新表缺键视为 empty，
+/// collect_tasks 行缺 source_hash 视为 NULL；v3 备份恢复时迁移进 v4：
+/// ocr_jobs 缺键视为 empty，questions 行缺 5 个 OCR 列走 DDL 默认值），
+/// `> 4` 拒绝（备份来自更新的版本），`< 2` 也拒绝；③ 按版本取表清单
+///（v2 13 张、v3 14 张、v4 15 张），键齐全且为数组；④ 每行是对象、主键
+/// 非空、必填列齐全且类型正确；⑤ 文件路径合法（见
+/// [_validateBackupRowPaths]）；
 /// ⑥ 9 个 JSON 列是字符串且能解析为对应形状（见
 /// [_validateBackupRowJsonColumns]，FR-07）；
 /// ⑦ 枚举/布尔列的值域（见 [_validateBackupRowDomains]，FR-23：
 /// `cause_records.status` ∈ {pending, inProgress, solved}、
-/// questions 的 5 个布尔列 ∈ {0, 1}；JSON 列非字符串由 ⑥ 覆盖）。
+/// questions 的 5 个布尔列 ∈ {0, 1}；十三批 M2：questions 的
+/// ocr_split_status ∈ {未切分, 自动切分, 存在歧义, 人工调整}、
+/// ocr_manual_edited ∈ {0, 1}、ocr_jobs.status ∈
+/// {pending, running, completed, failed}；JSON 列非字符串由 ⑥ 覆盖）。
 /// 任一步不过 → 抛 BackupRestoreException（带具体原因），
 /// 调用方一律不动原库。
 /// SR-P2-4：旧写法只强制 subjects/questions 为数组，其它表键缺失时
@@ -75,8 +80,13 @@ void validateBackupDataImpl(Map<String, dynamic> data) {
   // 十二批 D-91：v2 备份仍可恢复（迁移进 v3）：新表缺键视为 empty，
   // collect_tasks 行缺 source_hash 列视为 NULL（无指纹基线）。
   // v2 的表清单只有 13 张，按版本取。
-  final requiredTables =
-      sv == 2 ? AppDatabase.backupTablesV2 : AppDatabase.backupTables;
+  // 十三批 M2：v3 备份仍可恢复（迁移进 v4）：ocr_jobs 缺键视为 empty，
+  // questions 行缺 5 个 OCR 列走 DDL 默认值；v3 的表清单是 14 张。
+  final requiredTables = switch (sv) {
+    2 => AppDatabase.backupTablesV2,
+    3 => AppDatabase.backupTablesV3,
+    _ => AppDatabase.backupTables,
+  };
   for (final t in requiredTables) {
     final rows = data[t];
     // SR-P2-4：缺表键即拒绝，不再按空表处理（恢复是清表再插回，
@@ -147,6 +157,10 @@ const Map<String, Map<String, Type>> _requiredBackupColumns = {
     'question_id': String,
     'viewed_at': int,
   },
+  // 十三批 M2：ocr_jobs（主键 id；created_at / updated_at 是 NOT NULL
+  // 列，插库时 _ri 会拦缺失/类型错，这里只列业务必填列，与 questions
+  // 只列 id/title/subject_id 的口径一致）。
+  'ocr_jobs': {'id': String, 'question_id': String},
   'settings': {'key': String, 'value': String},
 };
 
@@ -163,6 +177,8 @@ const _integerIdBackupTables = {
 /// recently_viewed_questions 的主键是 question_id
 ///（db_schema.dart：`question_id TEXT PRIMARY KEY`），根本没有
 /// id 列——有浏览历史的备份一恢复就报“缺少主键 id”（备份本身没坏）。
+/// 十三批 M2：ocr_jobs 的主键就是 id（默认口径已对），settings 的主键
+/// 是 key，recently_viewed_questions 的主键是 question_id；其余表默认 id。
 const _backupPkColumn = {
   'settings': 'key',
   'recently_viewed_questions': 'question_id',
@@ -336,19 +352,59 @@ void _validateBackupRowDomains(String table, Map row) {
         );
       }
     }
+    // 十三批 M2：OCR 列的值域。键缺失放行（走 DDL 默认值）；键在但值
+    // 为 null 或域外值 → 拒绝整个恢复。
+    if (row.containsKey('ocr_split_status')) {
+      final value = row['ocr_split_status'];
+      if (value is! String ||
+          (value != '未切分' &&
+              value != '自动切分' &&
+              value != '存在歧义' &&
+              value != '人工调整')) {
+        throw BackupRestoreException(
+          '这份备份文件已损坏：questions 表 $id 行的 ocr_split_status 不是合法的'
+          '切分状态（应为 未切分 / 自动切分 / 存在歧义 / 人工调整）：$value',
+        );
+      }
+    }
+    if (row.containsKey('ocr_manual_edited')) {
+      final value = row['ocr_manual_edited'];
+      if (value is! int || (value != 0 && value != 1)) {
+        throw BackupRestoreException(
+          '这份备份文件已损坏：questions 表 $id 行的 ocr_manual_edited 不是合法的'
+          '布尔值（应为 0 或 1）：$value',
+        );
+      }
+    }
+  }
+  // 十三批 M2：ocr_jobs.status ∈ {pending, running, completed, failed}。
+  if (table == 'ocr_jobs' && row.containsKey('status')) {
+    final value = row['status'];
+    if (value is! String ||
+        (value != 'pending' &&
+            value != 'running' &&
+            value != 'completed' &&
+            value != 'failed')) {
+      throw BackupRestoreException(
+        '这份备份文件已损坏：ocr_jobs 表 $id 行的 status 不是合法的'
+        '任务状态（应为 pending / running / completed / failed）：$value',
+      );
+    }
   }
 }
 
 /// B3-P01：校验备份里一行携带的文件路径（见
 /// [AppDatabase.isAllowedDataRelativePath]）。只校验存文件路径的列：
 /// questions 的 source_path / page_image_path / slice_path，
-/// collect_tasks 的 source_path。空值（null / ''）表示没有
-/// 文件，放行；非字符串或不合法路径 → 抛 [BackupRestoreException]
-///（带表名、行 id、列名与原值，拒绝整个恢复）。
+/// collect_tasks 的 source_path，ocr_jobs 的 crop_path（十三批 M2：
+/// 本次识别用的切片，相对数据目录、imports/ 或 slices/ 下）。
+/// 空值（null / ''）表示没有文件，放行；非字符串或不合法路径 → 抛
+/// [BackupRestoreException]（带表名、行 id、列名与原值，拒绝整个恢复）。
 void _validateBackupRowPaths(String table, Map row) {
   const pathColumns = {
     'questions': ['source_path', 'page_image_path', 'slice_path'],
     'collect_tasks': ['source_path'],
+    'ocr_jobs': ['crop_path'],
   };
   final columns = pathColumns[table];
   if (columns == null) return;
@@ -422,6 +478,12 @@ Future<void> _backupInsertRowTyped(
       'slice_path',
       'slice_width',
       'slice_height',
+      // 十三批 M2：OCR 列。
+      'ocr_raw',
+      'ocr_stem',
+      'ocr_split_status',
+      'ocr_manual_edited',
+      'content_version',
     },
     'question_boxes': {
       'id',
@@ -475,6 +537,25 @@ Future<void> _backupInsertRowTyped(
     'review_history': {'id', 'question_id', 'result', 'reviewed_at'},
     'recent_tasks': {'id', 'kind', 'subject_id', 'title', 'updated_at'},
     'recently_viewed_questions': {'question_id', 'viewed_at'},
+    // 十三批 M2：ocr_jobs（GPT 评审 §2.2 字段表，15 列全列出；
+    // 十三批 P1-1 加 lease_token）。
+    'ocr_jobs': {
+      'id',
+      'question_id',
+      'crop_path',
+      'input_hash',
+      'status',
+      'attempt_count',
+      'available_at',
+      'started_at',
+      'lease_until',
+      'lease_token',
+      'last_error_code',
+      'last_error_message',
+      'created_at',
+      'updated_at',
+      'completed_at',
+    },
     'settings': {'key', 'value'},
   };
   final allowed = knownColumns[table];
@@ -535,6 +616,15 @@ Future<void> _backupInsertRowTyped(
               slicePath: Value(_rsN(row, 'slice_path')),
               sliceWidth: Value(_riN(row, 'slice_width')),
               sliceHeight: Value(_riN(row, 'slice_height')),
+              // 十三批 M2：OCR 列。v2/v3 备份行缺这些键时走 Value.absent()
+              // 落 DDL 默认值（ocr_raw/ocr_stem 为 NULL、ocr_split_status
+              // 为 '未切分'、ocr_manual_edited/content_version 为 0），
+              // 与旧写法“缺键不写”同口径。
+              ocrRaw: Value(_rsN(row, 'ocr_raw')),
+              ocrStem: Value(_rsN(row, 'ocr_stem')),
+              ocrSplitStatus: _vStrDef(row, 'ocr_split_status'),
+              ocrManualEdited: _vIntDef(row, 'ocr_manual_edited'),
+              contentVersion: _vIntDef(row, 'content_version'),
             ),
             mode: InsertMode.insertOrReplace,
           );
@@ -701,6 +791,35 @@ Future<void> _backupInsertRowTyped(
             ),
             mode: InsertMode.insertOrReplace,
           );
+    case 'ocr_jobs':
+      // 十三批 M2：ocr_jobs 行插库。status / attempt_count 缺键时走
+      // Value.absent() 落 DDL 默认值（'pending' / 0）；时间列缺失或
+      // 类型不对时 _ri/_riN 抛错（created_at / updated_at 是 NOT NULL
+      // 列，不静默默认值）；v2/v3 备份没有 ocr_jobs 键，整表跳过。
+      // 十三批 P1-1：lease_token 缺键走 NULL（旧备份的任务行本来就
+      // 没有租约；恢复后 running 行由启动时租约回收处理）。
+      await db
+          .into(db.ocrJobs)
+          .insert(
+            OcrJobsCompanion(
+              id: Value(_rs(row, 'id')),
+              questionId: Value(_rs(row, 'question_id')),
+              cropPath: Value(_rsN(row, 'crop_path')),
+              inputHash: Value(_rsN(row, 'input_hash')),
+              status: _vStrDef(row, 'status'),
+              attemptCount: _vIntDef(row, 'attempt_count'),
+              availableAt: Value(_riN(row, 'available_at')),
+              startedAt: Value(_riN(row, 'started_at')),
+              leaseUntil: Value(_riN(row, 'lease_until')),
+              leaseToken: Value(_rsN(row, 'lease_token')),
+              lastErrorCode: Value(_rsN(row, 'last_error_code')),
+              lastErrorMessage: Value(_rsN(row, 'last_error_message')),
+              createdAt: Value(_ri(row, 'created_at')),
+              updatedAt: Value(_ri(row, 'updated_at')),
+              completedAt: Value(_riN(row, 'completed_at')),
+            ),
+            mode: InsertMode.insertOrReplace,
+          );
     case 'settings':
       await db
           .into(db.settings)
@@ -746,6 +865,8 @@ Future<void> _clearBackupTable(QuizDatabase db, String table) async {
       await db.delete(db.recentTasks).go();
     case 'recently_viewed_questions':
       await db.delete(db.recentlyViewedQuestions).go();
+    case 'ocr_jobs':
+      await db.delete(db.ocrJobs).go();
     case 'settings':
       await db.delete(db.settings).go();
     default:
@@ -1339,8 +1460,9 @@ String _nextRestoreTaskId() {
 }
 
 /// FR-28：进程内补偿后“库行引用文件存在性”复核（plan v9 §四第 5 条）。
-/// 只核对库行直接引用的 4 列（questions 的 source_path /
-/// page_image_path / slice_path + collect_tasks 的 source_path）。
+/// 只核对库行直接引用的 5 列（questions 的 source_path /
+/// page_image_path / slice_path + collect_tasks 的 source_path +
+/// 十三批 M2：ocr_jobs 的 crop_path）。
 /// 与孤儿扫描口径 [_referencedRelativePaths] 的列相同，但不用它本身：
 /// 它另有两类派生保护（任务的 page-normalized.png 与 pages/ 下页图，
 /// “有行即保护”、文件本身未必存在），直接做存在性检查会把未渲染过的
@@ -1364,6 +1486,10 @@ Future<List<String>> _missingReferencedFiles(
   }
   for (final row in await db.select(db.collectTasks).get()) {
     add(row.sourcePath);
+  }
+  // 十三批 M2：ocr_jobs 的 crop_path 也是库行直接引用的文件。
+  for (final row in await db.select(db.ocrJobs).get()) {
+    add(row.cropPath);
   }
   final missing = <String>[];
   for (final rel in refs) {

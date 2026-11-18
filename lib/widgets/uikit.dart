@@ -793,6 +793,9 @@ class QmTextField extends StatefulWidget {
     this.enabled = true,
     this.focusNode,
     this.semanticLabel,
+    // M6：BigModel key 输入框要遮蔽（obscureText），默认不遮蔽，
+    // 其他调用点行为不变。
+    this.obscureText = false,
   });
 
   final TextEditingController controller;
@@ -804,6 +807,7 @@ class QmTextField extends StatefulWidget {
   final bool enabled;
   final FocusNode? focusNode;
   final String? semanticLabel;
+  final bool obscureText;
 
   @override
   State<QmTextField> createState() => _QmTextFieldState();
@@ -862,6 +866,7 @@ class _QmTextFieldState extends State<QmTextField> {
           focusNode: _innerFocus,
           autofocus: widget.autofocus,
           enabled: widget.enabled,
+          obscureText: widget.obscureText,
           maxLength: widget.maxLength,
           maxLengthEnforcement: MaxLengthEnforcement.enforced,
           onSubmitted: widget.onSubmitted,

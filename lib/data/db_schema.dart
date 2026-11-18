@@ -19,15 +19,17 @@ bool shouldFallbackAfterOpenFailureImpl(String dbPath) {
   }
 }
 
-/// §2.2：删老库（v1）+ 建 v3 新库的唯一打开入口（§8.1 的测试工厂）：
-/// - 文件不存在 → 全新安装，直接建 v3 新库；
-/// - 文件是 v3（user_version == 3）→ 正常打开；
-/// - 文件是 v2（user_version == 2）→ 保留，Drift onUpgrade 迁到 v3
-///   （十二批 D-91：建 recently_viewed_questions 表 + collect_tasks
-///   加 source_hash 列，数据全保留，不再删库）；
+/// §2.2：删老库（v1）+ 建 v4 新库的唯一打开入口（§8.1 的测试工厂）：
+/// - 文件不存在 → 全新安装，直接建 v4 新库；
+/// - 文件是 v4（user_version == 4）→ 正常打开；
+/// - 文件是 v3（user_version == 3）→ 保留，Drift onUpgrade 迁到 v4
+///   （十三批 M2：questions 加 5 个 OCR 列 + 新建 ocr_jobs 表，
+///   数据全保留，不再删除）；
+/// - 文件是 v2（user_version == 2）→ 保留，Drift onUpgrade 先迁到 v3
+///   再迁到 v4（两步链式，数据全保留）；
 /// - 文件是老版本（v1，user_version < 2）→ 删除库文件（含 -wal / -shm），
-///   再建 v3 新库；无 v1 迁移；
-/// - 文件是更新的版本（user_version > 3）→ 预检不动它，Drift onUpgrade
+///   再建 v4 新库；无 v1 迁移；
+/// - 文件是更新的版本（user_version > 4）→ 预检不动它，Drift onUpgrade
 ///   按 from > to 抛“请用新版打开”，不静默删掉新版库；
 /// - 删除失败 → 抛错、拒绝打开（不许在老库尚在的情况下建新库，
 ///   避免新旧库并存、读写串库），下次启动重试删除。
@@ -62,10 +64,10 @@ Future<QuizDatabase> openAtImpl(String dbPath) async {
   return db;
 }
 
-/// §2.2：删老库（可单测版）：文件不存在或版本 >= 2（v2 待迁移、v3
-/// 已是当前版）时什么都不做，返回 false；删掉老库文件（含 -wal / -shm）
+/// §2.2：删老库（可单测版）：文件不存在或版本 >= 2（v2 待迁移、v3/v4
+/// 已是当前版或待迁移）时什么都不做，返回 false；删掉老库文件（含 -wal / -shm）
 /// 时返回 true。十二批 D-91：只删 user_version < 2 的 v1 老库；v2
-/// 不再删（走 Drift 迁移到 v3），更新的版本（> 3）也不删（交给
+/// 不再删（走 Drift 迁移到 v3），更新的版本（> 4）也不删（交给
 /// Drift onUpgrade 按 from > to 抛“请用新版打开”）。
 /// 删除失败抛 StateError（调用方拒绝打开、不建新库）。
 /// B1-Drift：只读探针改走 `package:sqlite3` 的 `open(mode: readOnly)` +
@@ -139,7 +141,11 @@ Future<void> createTablesImpl(QuizDatabase db) async {
       slice_text TEXT NOT NULL DEFAULT '',
       source_path TEXT, source_kind TEXT, source_page INTEGER,
       page_image_path TEXT, slice_path TEXT,
-      slice_width INTEGER, slice_height INTEGER)''');
+      slice_width INTEGER, slice_height INTEGER,
+      ocr_raw TEXT, ocr_stem TEXT,
+      ocr_split_status TEXT NOT NULL DEFAULT '未切分',
+      ocr_manual_edited INTEGER NOT NULL DEFAULT 0,
+      content_version INTEGER NOT NULL DEFAULT 0)''');
   await db.customStatement('''
     CREATE TABLE folders(
       id TEXT PRIMARY KEY, name TEXT NOT NULL, subject_id TEXT NOT NULL,
@@ -191,6 +197,28 @@ Future<void> createTablesImpl(QuizDatabase db) async {
   await db.customStatement('''
     CREATE TABLE recently_viewed_questions(
       question_id TEXT PRIMARY KEY, viewed_at INTEGER NOT NULL)''');
+  // 十三批 M2：ocr_jobs（OCR 持久化队列，GPT 评审 §2.2 字段表；字段名/
+  // 类型/枚举取值见 lib/models/models.dart 的 OcrJob）。
+  // DDL 须与 quiz_database.dart 的 onUpgrade 3→4 迁移字面量一字不差
+  //（十二批 D-91 的教训：迁移后库与全新 v4 库 sqlite_master 逐字一致）。
+  // 十三批 P1-1：加 lease_token（租约 token，见 db_ocr_jobs.dart）。
+  await db.customStatement('''
+    CREATE TABLE ocr_jobs(
+      id TEXT PRIMARY KEY, question_id TEXT NOT NULL,
+      crop_path TEXT, input_hash TEXT,
+      status TEXT NOT NULL DEFAULT 'pending',
+      attempt_count INTEGER NOT NULL DEFAULT 0,
+      available_at INTEGER, started_at INTEGER, lease_until INTEGER,
+      lease_token TEXT,
+      last_error_code TEXT, last_error_message TEXT,
+      created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+      completed_at INTEGER)''');
+  await db.customStatement(
+    'CREATE INDEX idx_ocr_jobs_question ON ocr_jobs(question_id)',
+  );
+  await db.customStatement(
+    'CREATE INDEX idx_ocr_jobs_pending ON ocr_jobs(status, available_at)',
+  );
   await db.customStatement('''
     CREATE TABLE settings(
       key TEXT PRIMARY KEY, value TEXT NOT NULL)''');
@@ -300,8 +328,8 @@ Future<void> _seed(QuizDatabase db) async {
           ),
         );
   }
-  // §2.1：settings 表写 schemaVersion = '3'（与备份 _meta 同一口径；
+  // §2.1：settings 表写 schemaVersion = '4'（与备份 _meta 同一口径；
   // 与 PRAGMA user_version 是两回事）。新库从空开始，不预置演示
   // 数据（§6 第 1 条）：演示题、演示解决记录、演示 recent_tasks 一律不建。
-  await _upsertSettingInto(db, 'schemaVersion', '3');
+  await _upsertSettingInto(db, 'schemaVersion', '4');
 }

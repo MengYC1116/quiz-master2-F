@@ -28,6 +28,7 @@ part 'db_collect.dart';
 part 'db_orphans.dart';
 part 'db_settings.dart';
 part 'db_recently_viewed.dart';
+part 'db_ocr_jobs.dart';
 part 'db_backup.dart';
 
 /// §2.2：老库处理失败（文件无法确认版本 / 删除失败）：调用方拒绝
@@ -120,17 +121,39 @@ class AppDatabase {
   /// §2：备份/恢复与 settings 表共用的 schema 版本号（与
   /// `PRAGMA user_version` 是两回事，别混用——后者是打开时驱动的，
   /// 前者是给备份/恢复与排障看的）。
-  /// 十二批 D-91：v3（新表 recently_viewed_questions + collect_tasks
-  /// 新增 source_hash 列；v2 库走 Drift 迁移到 v3，不再删除）。
-  static const int schemaVersion = 3;
+  /// 十三批 M2：v4（questions 加 5 个 OCR 列 + 新建 ocr_jobs 表；
+  /// v3 库走 Drift 迁移到 v4，不再删除）。
+  static const int schemaVersion = 4;
 
   /// §2.3：备份里的应用版本号（与 pubspec.yaml 的 version 一致）。
   static const String appVersion = '0.1.0+1';
 
   /// B4.2：备份表清单（导出与恢复共用；恢复只插这里的表）。
-  /// v3 共 14 张表：v2 的 13 张 + 十二批的 recently_viewed_questions。
+  /// v4 共 15 张表：v3 的 14 张 + 十三批的 ocr_jobs。
   /// `_meta` 不是表，不在这里；导出时另加，恢复时跳过。
   static const List<String> backupTables = [
+    'subjects',
+    'questions',
+    'question_boxes',
+    'folders',
+    'tags',
+    'exams',
+    'knowledge_points',
+    'cause_records',
+    'collect_tasks',
+    'review_state',
+    'review_history',
+    'recent_tasks',
+    'recently_viewed_questions',
+    'ocr_jobs',
+    'settings',
+  ];
+
+  /// 十三批 M2：v3 备份的表清单（v3 只有 14 张表，没有 ocr_jobs；
+  /// questions 行也没有 5 个 OCR 列）。v3 备份恢复时按这份清单校验，
+  /// 新表缺键视为 empty、新列缺失走 DDL 默认值，不静默清空——
+  /// ocr_jobs 在 v3 里本来就没有，旧题的 OCR 字段本来就是空的。
+  static const List<String> backupTablesV3 = [
     'subjects',
     'questions',
     'question_boxes',
@@ -695,6 +718,80 @@ class AppDatabase {
   static Future<List<({Question question, DateTime viewedAt})>>
   recentlyViewedQuestionsFrom(QuizDatabase db) =>
       recentlyViewedQuestionsIntoImpl(db);
+  // -- db_ocr_jobs.dart --
+
+  /// 十三批 M3：入队（同一题 + 同一切片哈希的未完成任务已存在时返回它）。
+  static Future<OcrJob> enqueueOcrJobInto(QuizDatabase db, OcrJob job) =>
+      enqueueOcrJobIntoImpl(db, job);
+
+  /// 十三批 M3：领任务（最早创建的一条可跑 pending 任务改 running + 写租约）。
+  static Future<OcrJob?> claimNextOcrJobInto(
+    QuizDatabase db, {
+    required Duration leaseDuration,
+    DateTime? now,
+  }) => claimNextOcrJobIntoImpl(db, leaseDuration: leaseDuration, now: now);
+
+  /// 十三批 M3：回收过期租约（running 且租约已过 → pending）。返回行数。
+  static Future<int> reclaimExpiredLeasesInto(
+    QuizDatabase db, {
+    DateTime? now,
+  }) => reclaimExpiredLeasesIntoImpl(db, now: now);
+
+  /// 十三批 M3：发请求前记一次尝试（attempt_count +1）。
+  static Future<OcrJob?> markOcrJobAttemptInto(
+    QuizDatabase db,
+    String id, {
+    DateTime? now,
+  }) => markOcrJobAttemptIntoImpl(db, id, now: now);
+
+  /// 十三批 M3：可重试的失败（回 pending + 退避到期点 + 记错误）。
+  static Future<OcrJob?> retryOcrJobInto(
+    QuizDatabase db,
+    String id, {
+    required DateTime availableAt,
+    required String errorCode,
+    String? errorMessage,
+    DateTime? now,
+  }) => retryOcrJobIntoImpl(
+    db,
+    id,
+    availableAt: availableAt,
+    errorCode: errorCode,
+    errorMessage: errorMessage,
+    now: now,
+  );
+
+  /// 十三批 M3：终态失败。
+  static Future<OcrJob?> failOcrJobInto(
+    QuizDatabase db,
+    String id, {
+    required String errorCode,
+    String? errorMessage,
+    DateTime? now,
+  }) => failOcrJobIntoImpl(
+    db,
+    id,
+    errorCode: errorCode,
+    errorMessage: errorMessage,
+    now: now,
+  );
+
+  /// 十三批 M3：终态完成。
+  static Future<OcrJob?> completeOcrJobInto(
+    QuizDatabase db,
+    String id, {
+    DateTime? now,
+  }) => completeOcrJobIntoImpl(db, id, now: now);
+
+  /// 十三批 M3：按 id 读一条任务。
+  static Future<OcrJob?> ocrJobByIdFrom(QuizDatabase db, String id) =>
+      ocrJobByIdIntoImpl(db, id);
+
+  /// 十三批 M3：按题读任务（最新在前）。
+  static Future<List<OcrJob>> ocrJobsForQuestionFrom(
+    QuizDatabase db,
+    String questionId,
+  ) => ocrJobsForQuestionIntoImpl(db, questionId);
   // -- db_backup.dart --
 
   static Future<String> exportBackupJsonFrom(QuizDatabase db) =>

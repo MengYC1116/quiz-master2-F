@@ -5370,6 +5370,62 @@ class $QuestionsTable extends Questions
     type: DriftSqlType.int,
     requiredDuringInsert: false,
   );
+  static const VerificationMeta _ocrRawMeta = const VerificationMeta('ocrRaw');
+  @override
+  late final GeneratedColumn<String> ocrRaw = GeneratedColumn<String>(
+    'ocr_raw',
+    aliasedName,
+    true,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+  );
+  static const VerificationMeta _ocrStemMeta = const VerificationMeta(
+    'ocrStem',
+  );
+  @override
+  late final GeneratedColumn<String> ocrStem = GeneratedColumn<String>(
+    'ocr_stem',
+    aliasedName,
+    true,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+  );
+  static const VerificationMeta _ocrSplitStatusMeta = const VerificationMeta(
+    'ocrSplitStatus',
+  );
+  @override
+  late final GeneratedColumn<String> ocrSplitStatus = GeneratedColumn<String>(
+    'ocr_split_status',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+    defaultValue: const Constant('未切分'),
+  );
+  static const VerificationMeta _ocrManualEditedMeta = const VerificationMeta(
+    'ocrManualEdited',
+  );
+  @override
+  late final GeneratedColumn<int> ocrManualEdited = GeneratedColumn<int>(
+    'ocr_manual_edited',
+    aliasedName,
+    false,
+    type: DriftSqlType.int,
+    requiredDuringInsert: false,
+    defaultValue: const Constant(0),
+  );
+  static const VerificationMeta _contentVersionMeta = const VerificationMeta(
+    'contentVersion',
+  );
+  @override
+  late final GeneratedColumn<int> contentVersion = GeneratedColumn<int>(
+    'content_version',
+    aliasedName,
+    false,
+    type: DriftSqlType.int,
+    requiredDuringInsert: false,
+    defaultValue: const Constant(0),
+  );
   @override
   List<GeneratedColumn> get $columns => [
     id,
@@ -5400,6 +5456,11 @@ class $QuestionsTable extends Questions
     slicePath,
     sliceWidth,
     sliceHeight,
+    ocrRaw,
+    ocrStem,
+    ocrSplitStatus,
+    ocrManualEdited,
+    contentVersion,
   ];
   @override
   String get aliasedName => _alias ?? actualTableName;
@@ -5574,6 +5635,45 @@ class $QuestionsTable extends Questions
         ),
       );
     }
+    if (data.containsKey('ocr_raw')) {
+      context.handle(
+        _ocrRawMeta,
+        ocrRaw.isAcceptableOrUnknown(data['ocr_raw']!, _ocrRawMeta),
+      );
+    }
+    if (data.containsKey('ocr_stem')) {
+      context.handle(
+        _ocrStemMeta,
+        ocrStem.isAcceptableOrUnknown(data['ocr_stem']!, _ocrStemMeta),
+      );
+    }
+    if (data.containsKey('ocr_split_status')) {
+      context.handle(
+        _ocrSplitStatusMeta,
+        ocrSplitStatus.isAcceptableOrUnknown(
+          data['ocr_split_status']!,
+          _ocrSplitStatusMeta,
+        ),
+      );
+    }
+    if (data.containsKey('ocr_manual_edited')) {
+      context.handle(
+        _ocrManualEditedMeta,
+        ocrManualEdited.isAcceptableOrUnknown(
+          data['ocr_manual_edited']!,
+          _ocrManualEditedMeta,
+        ),
+      );
+    }
+    if (data.containsKey('content_version')) {
+      context.handle(
+        _contentVersionMeta,
+        contentVersion.isAcceptableOrUnknown(
+          data['content_version']!,
+          _contentVersionMeta,
+        ),
+      );
+    }
     return context;
   }
 
@@ -5705,6 +5805,26 @@ class $QuestionsTable extends Questions
         DriftSqlType.int,
         data['${effectivePrefix}slice_height'],
       ),
+      ocrRaw: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}ocr_raw'],
+      ),
+      ocrStem: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}ocr_stem'],
+      ),
+      ocrSplitStatus: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}ocr_split_status'],
+      )!,
+      ocrManualEdited: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}ocr_manual_edited'],
+      )!,
+      contentVersion: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}content_version'],
+      )!,
     );
   }
 
@@ -5754,6 +5874,17 @@ class DbQuestion extends DataClass implements Insertable<DbQuestion> {
   final String? slicePath;
   final int? sliceWidth;
   final int? sliceHeight;
+
+  /// 十三批 M2：OCR 字段（与 db_schema.dart 的 DDL 逐字对应）。
+  /// ocrRaw 是 GLM 原始结果（内部存，绝不外露）；ocrStem 是切分后题干；
+  /// ocrSplitStatus 取值见 OcrSplitStatus（未切分 / 自动切分 /
+  /// 存在歧义 / 人工调整）；ocrManualEdited 是人工编辑标记（0/1）；
+  /// contentVersion 是内容版本（默认 0，递增规则由 M3 定）。
+  final String? ocrRaw;
+  final String? ocrStem;
+  final String ocrSplitStatus;
+  final int ocrManualEdited;
+  final int contentVersion;
   const DbQuestion({
     required this.id,
     required this.title,
@@ -5783,6 +5914,11 @@ class DbQuestion extends DataClass implements Insertable<DbQuestion> {
     this.slicePath,
     this.sliceWidth,
     this.sliceHeight,
+    this.ocrRaw,
+    this.ocrStem,
+    required this.ocrSplitStatus,
+    required this.ocrManualEdited,
+    required this.contentVersion,
   });
   @override
   Map<String, Expression> toColumns(bool nullToAbsent) {
@@ -5857,6 +5993,15 @@ class DbQuestion extends DataClass implements Insertable<DbQuestion> {
     if (!nullToAbsent || sliceHeight != null) {
       map['slice_height'] = Variable<int>(sliceHeight);
     }
+    if (!nullToAbsent || ocrRaw != null) {
+      map['ocr_raw'] = Variable<String>(ocrRaw);
+    }
+    if (!nullToAbsent || ocrStem != null) {
+      map['ocr_stem'] = Variable<String>(ocrStem);
+    }
+    map['ocr_split_status'] = Variable<String>(ocrSplitStatus);
+    map['ocr_manual_edited'] = Variable<int>(ocrManualEdited);
+    map['content_version'] = Variable<int>(contentVersion);
     return map;
   }
 
@@ -5912,6 +6057,15 @@ class DbQuestion extends DataClass implements Insertable<DbQuestion> {
       sliceHeight: sliceHeight == null && nullToAbsent
           ? const Value.absent()
           : Value(sliceHeight),
+      ocrRaw: ocrRaw == null && nullToAbsent
+          ? const Value.absent()
+          : Value(ocrRaw),
+      ocrStem: ocrStem == null && nullToAbsent
+          ? const Value.absent()
+          : Value(ocrStem),
+      ocrSplitStatus: Value(ocrSplitStatus),
+      ocrManualEdited: Value(ocrManualEdited),
+      contentVersion: Value(contentVersion),
     );
   }
 
@@ -5951,6 +6105,11 @@ class DbQuestion extends DataClass implements Insertable<DbQuestion> {
       slicePath: serializer.fromJson<String?>(json['slicePath']),
       sliceWidth: serializer.fromJson<int?>(json['sliceWidth']),
       sliceHeight: serializer.fromJson<int?>(json['sliceHeight']),
+      ocrRaw: serializer.fromJson<String?>(json['ocrRaw']),
+      ocrStem: serializer.fromJson<String?>(json['ocrStem']),
+      ocrSplitStatus: serializer.fromJson<String>(json['ocrSplitStatus']),
+      ocrManualEdited: serializer.fromJson<int>(json['ocrManualEdited']),
+      contentVersion: serializer.fromJson<int>(json['contentVersion']),
     );
   }
   @override
@@ -5985,6 +6144,11 @@ class DbQuestion extends DataClass implements Insertable<DbQuestion> {
       'slicePath': serializer.toJson<String?>(slicePath),
       'sliceWidth': serializer.toJson<int?>(sliceWidth),
       'sliceHeight': serializer.toJson<int?>(sliceHeight),
+      'ocrRaw': serializer.toJson<String?>(ocrRaw),
+      'ocrStem': serializer.toJson<String?>(ocrStem),
+      'ocrSplitStatus': serializer.toJson<String>(ocrSplitStatus),
+      'ocrManualEdited': serializer.toJson<int>(ocrManualEdited),
+      'contentVersion': serializer.toJson<int>(contentVersion),
     };
   }
 
@@ -6017,6 +6181,11 @@ class DbQuestion extends DataClass implements Insertable<DbQuestion> {
     Value<String?> slicePath = const Value.absent(),
     Value<int?> sliceWidth = const Value.absent(),
     Value<int?> sliceHeight = const Value.absent(),
+    Value<String?> ocrRaw = const Value.absent(),
+    Value<String?> ocrStem = const Value.absent(),
+    String? ocrSplitStatus,
+    int? ocrManualEdited,
+    int? contentVersion,
   }) => DbQuestion(
     id: id ?? this.id,
     title: title ?? this.title,
@@ -6048,6 +6217,11 @@ class DbQuestion extends DataClass implements Insertable<DbQuestion> {
     slicePath: slicePath.present ? slicePath.value : this.slicePath,
     sliceWidth: sliceWidth.present ? sliceWidth.value : this.sliceWidth,
     sliceHeight: sliceHeight.present ? sliceHeight.value : this.sliceHeight,
+    ocrRaw: ocrRaw.present ? ocrRaw.value : this.ocrRaw,
+    ocrStem: ocrStem.present ? ocrStem.value : this.ocrStem,
+    ocrSplitStatus: ocrSplitStatus ?? this.ocrSplitStatus,
+    ocrManualEdited: ocrManualEdited ?? this.ocrManualEdited,
+    contentVersion: contentVersion ?? this.contentVersion,
   );
   DbQuestion copyWithCompanion(QuestionsCompanion data) {
     return DbQuestion(
@@ -6109,6 +6283,17 @@ class DbQuestion extends DataClass implements Insertable<DbQuestion> {
       sliceHeight: data.sliceHeight.present
           ? data.sliceHeight.value
           : this.sliceHeight,
+      ocrRaw: data.ocrRaw.present ? data.ocrRaw.value : this.ocrRaw,
+      ocrStem: data.ocrStem.present ? data.ocrStem.value : this.ocrStem,
+      ocrSplitStatus: data.ocrSplitStatus.present
+          ? data.ocrSplitStatus.value
+          : this.ocrSplitStatus,
+      ocrManualEdited: data.ocrManualEdited.present
+          ? data.ocrManualEdited.value
+          : this.ocrManualEdited,
+      contentVersion: data.contentVersion.present
+          ? data.contentVersion.value
+          : this.contentVersion,
     );
   }
 
@@ -6142,7 +6327,12 @@ class DbQuestion extends DataClass implements Insertable<DbQuestion> {
           ..write('pageImagePath: $pageImagePath, ')
           ..write('slicePath: $slicePath, ')
           ..write('sliceWidth: $sliceWidth, ')
-          ..write('sliceHeight: $sliceHeight')
+          ..write('sliceHeight: $sliceHeight, ')
+          ..write('ocrRaw: $ocrRaw, ')
+          ..write('ocrStem: $ocrStem, ')
+          ..write('ocrSplitStatus: $ocrSplitStatus, ')
+          ..write('ocrManualEdited: $ocrManualEdited, ')
+          ..write('contentVersion: $contentVersion')
           ..write(')'))
         .toString();
   }
@@ -6177,6 +6367,11 @@ class DbQuestion extends DataClass implements Insertable<DbQuestion> {
     slicePath,
     sliceWidth,
     sliceHeight,
+    ocrRaw,
+    ocrStem,
+    ocrSplitStatus,
+    ocrManualEdited,
+    contentVersion,
   ]);
   @override
   bool operator ==(Object other) =>
@@ -6209,7 +6404,12 @@ class DbQuestion extends DataClass implements Insertable<DbQuestion> {
           other.pageImagePath == this.pageImagePath &&
           other.slicePath == this.slicePath &&
           other.sliceWidth == this.sliceWidth &&
-          other.sliceHeight == this.sliceHeight);
+          other.sliceHeight == this.sliceHeight &&
+          other.ocrRaw == this.ocrRaw &&
+          other.ocrStem == this.ocrStem &&
+          other.ocrSplitStatus == this.ocrSplitStatus &&
+          other.ocrManualEdited == this.ocrManualEdited &&
+          other.contentVersion == this.contentVersion);
 }
 
 class QuestionsCompanion extends UpdateCompanion<DbQuestion> {
@@ -6241,6 +6441,11 @@ class QuestionsCompanion extends UpdateCompanion<DbQuestion> {
   final Value<String?> slicePath;
   final Value<int?> sliceWidth;
   final Value<int?> sliceHeight;
+  final Value<String?> ocrRaw;
+  final Value<String?> ocrStem;
+  final Value<String> ocrSplitStatus;
+  final Value<int> ocrManualEdited;
+  final Value<int> contentVersion;
   final Value<int> rowid;
   const QuestionsCompanion({
     this.id = const Value.absent(),
@@ -6271,6 +6476,11 @@ class QuestionsCompanion extends UpdateCompanion<DbQuestion> {
     this.slicePath = const Value.absent(),
     this.sliceWidth = const Value.absent(),
     this.sliceHeight = const Value.absent(),
+    this.ocrRaw = const Value.absent(),
+    this.ocrStem = const Value.absent(),
+    this.ocrSplitStatus = const Value.absent(),
+    this.ocrManualEdited = const Value.absent(),
+    this.contentVersion = const Value.absent(),
     this.rowid = const Value.absent(),
   });
   QuestionsCompanion.insert({
@@ -6302,6 +6512,11 @@ class QuestionsCompanion extends UpdateCompanion<DbQuestion> {
     this.slicePath = const Value.absent(),
     this.sliceWidth = const Value.absent(),
     this.sliceHeight = const Value.absent(),
+    this.ocrRaw = const Value.absent(),
+    this.ocrStem = const Value.absent(),
+    this.ocrSplitStatus = const Value.absent(),
+    this.ocrManualEdited = const Value.absent(),
+    this.contentVersion = const Value.absent(),
     this.rowid = const Value.absent(),
   }) : id = Value(id),
        title = Value(title),
@@ -6336,6 +6551,11 @@ class QuestionsCompanion extends UpdateCompanion<DbQuestion> {
     Expression<String>? slicePath,
     Expression<int>? sliceWidth,
     Expression<int>? sliceHeight,
+    Expression<String>? ocrRaw,
+    Expression<String>? ocrStem,
+    Expression<String>? ocrSplitStatus,
+    Expression<int>? ocrManualEdited,
+    Expression<int>? contentVersion,
     Expression<int>? rowid,
   }) {
     return RawValuesInsertable({
@@ -6367,6 +6587,11 @@ class QuestionsCompanion extends UpdateCompanion<DbQuestion> {
       if (slicePath != null) 'slice_path': slicePath,
       if (sliceWidth != null) 'slice_width': sliceWidth,
       if (sliceHeight != null) 'slice_height': sliceHeight,
+      if (ocrRaw != null) 'ocr_raw': ocrRaw,
+      if (ocrStem != null) 'ocr_stem': ocrStem,
+      if (ocrSplitStatus != null) 'ocr_split_status': ocrSplitStatus,
+      if (ocrManualEdited != null) 'ocr_manual_edited': ocrManualEdited,
+      if (contentVersion != null) 'content_version': contentVersion,
       if (rowid != null) 'rowid': rowid,
     });
   }
@@ -6400,6 +6625,11 @@ class QuestionsCompanion extends UpdateCompanion<DbQuestion> {
     Value<String?>? slicePath,
     Value<int?>? sliceWidth,
     Value<int?>? sliceHeight,
+    Value<String?>? ocrRaw,
+    Value<String?>? ocrStem,
+    Value<String>? ocrSplitStatus,
+    Value<int>? ocrManualEdited,
+    Value<int>? contentVersion,
     Value<int>? rowid,
   }) {
     return QuestionsCompanion(
@@ -6431,6 +6661,11 @@ class QuestionsCompanion extends UpdateCompanion<DbQuestion> {
       slicePath: slicePath ?? this.slicePath,
       sliceWidth: sliceWidth ?? this.sliceWidth,
       sliceHeight: sliceHeight ?? this.sliceHeight,
+      ocrRaw: ocrRaw ?? this.ocrRaw,
+      ocrStem: ocrStem ?? this.ocrStem,
+      ocrSplitStatus: ocrSplitStatus ?? this.ocrSplitStatus,
+      ocrManualEdited: ocrManualEdited ?? this.ocrManualEdited,
+      contentVersion: contentVersion ?? this.contentVersion,
       rowid: rowid ?? this.rowid,
     );
   }
@@ -6534,6 +6769,21 @@ class QuestionsCompanion extends UpdateCompanion<DbQuestion> {
     if (sliceHeight.present) {
       map['slice_height'] = Variable<int>(sliceHeight.value);
     }
+    if (ocrRaw.present) {
+      map['ocr_raw'] = Variable<String>(ocrRaw.value);
+    }
+    if (ocrStem.present) {
+      map['ocr_stem'] = Variable<String>(ocrStem.value);
+    }
+    if (ocrSplitStatus.present) {
+      map['ocr_split_status'] = Variable<String>(ocrSplitStatus.value);
+    }
+    if (ocrManualEdited.present) {
+      map['ocr_manual_edited'] = Variable<int>(ocrManualEdited.value);
+    }
+    if (contentVersion.present) {
+      map['content_version'] = Variable<int>(contentVersion.value);
+    }
     if (rowid.present) {
       map['rowid'] = Variable<int>(rowid.value);
     }
@@ -6571,6 +6821,897 @@ class QuestionsCompanion extends UpdateCompanion<DbQuestion> {
           ..write('slicePath: $slicePath, ')
           ..write('sliceWidth: $sliceWidth, ')
           ..write('sliceHeight: $sliceHeight, ')
+          ..write('ocrRaw: $ocrRaw, ')
+          ..write('ocrStem: $ocrStem, ')
+          ..write('ocrSplitStatus: $ocrSplitStatus, ')
+          ..write('ocrManualEdited: $ocrManualEdited, ')
+          ..write('contentVersion: $contentVersion, ')
+          ..write('rowid: $rowid')
+          ..write(')'))
+        .toString();
+  }
+}
+
+class $OcrJobsTable extends OcrJobs with TableInfo<$OcrJobsTable, DbOcrJob> {
+  @override
+  final GeneratedDatabase attachedDatabase;
+  final String? _alias;
+  $OcrJobsTable(this.attachedDatabase, [this._alias]);
+  static const VerificationMeta _idMeta = const VerificationMeta('id');
+  @override
+  late final GeneratedColumn<String> id = GeneratedColumn<String>(
+    'id',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: true,
+    $customConstraints: 'PRIMARY KEY',
+  );
+  static const VerificationMeta _questionIdMeta = const VerificationMeta(
+    'questionId',
+  );
+  @override
+  late final GeneratedColumn<String> questionId = GeneratedColumn<String>(
+    'question_id',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _cropPathMeta = const VerificationMeta(
+    'cropPath',
+  );
+  @override
+  late final GeneratedColumn<String> cropPath = GeneratedColumn<String>(
+    'crop_path',
+    aliasedName,
+    true,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+  );
+  static const VerificationMeta _inputHashMeta = const VerificationMeta(
+    'inputHash',
+  );
+  @override
+  late final GeneratedColumn<String> inputHash = GeneratedColumn<String>(
+    'input_hash',
+    aliasedName,
+    true,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+  );
+  static const VerificationMeta _statusMeta = const VerificationMeta('status');
+  @override
+  late final GeneratedColumn<String> status = GeneratedColumn<String>(
+    'status',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+    defaultValue: const Constant('pending'),
+  );
+  static const VerificationMeta _attemptCountMeta = const VerificationMeta(
+    'attemptCount',
+  );
+  @override
+  late final GeneratedColumn<int> attemptCount = GeneratedColumn<int>(
+    'attempt_count',
+    aliasedName,
+    false,
+    type: DriftSqlType.int,
+    requiredDuringInsert: false,
+    defaultValue: const Constant(0),
+  );
+  static const VerificationMeta _availableAtMeta = const VerificationMeta(
+    'availableAt',
+  );
+  @override
+  late final GeneratedColumn<int> availableAt = GeneratedColumn<int>(
+    'available_at',
+    aliasedName,
+    true,
+    type: DriftSqlType.int,
+    requiredDuringInsert: false,
+  );
+  static const VerificationMeta _startedAtMeta = const VerificationMeta(
+    'startedAt',
+  );
+  @override
+  late final GeneratedColumn<int> startedAt = GeneratedColumn<int>(
+    'started_at',
+    aliasedName,
+    true,
+    type: DriftSqlType.int,
+    requiredDuringInsert: false,
+  );
+  static const VerificationMeta _leaseUntilMeta = const VerificationMeta(
+    'leaseUntil',
+  );
+  @override
+  late final GeneratedColumn<int> leaseUntil = GeneratedColumn<int>(
+    'lease_until',
+    aliasedName,
+    true,
+    type: DriftSqlType.int,
+    requiredDuringInsert: false,
+  );
+  static const VerificationMeta _leaseTokenMeta = const VerificationMeta(
+    'leaseToken',
+  );
+  @override
+  late final GeneratedColumn<String> leaseToken = GeneratedColumn<String>(
+    'lease_token',
+    aliasedName,
+    true,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+  );
+  static const VerificationMeta _lastErrorCodeMeta = const VerificationMeta(
+    'lastErrorCode',
+  );
+  @override
+  late final GeneratedColumn<String> lastErrorCode = GeneratedColumn<String>(
+    'last_error_code',
+    aliasedName,
+    true,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+  );
+  static const VerificationMeta _lastErrorMessageMeta = const VerificationMeta(
+    'lastErrorMessage',
+  );
+  @override
+  late final GeneratedColumn<String> lastErrorMessage = GeneratedColumn<String>(
+    'last_error_message',
+    aliasedName,
+    true,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+  );
+  static const VerificationMeta _createdAtMeta = const VerificationMeta(
+    'createdAt',
+  );
+  @override
+  late final GeneratedColumn<int> createdAt = GeneratedColumn<int>(
+    'created_at',
+    aliasedName,
+    false,
+    type: DriftSqlType.int,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _updatedAtMeta = const VerificationMeta(
+    'updatedAt',
+  );
+  @override
+  late final GeneratedColumn<int> updatedAt = GeneratedColumn<int>(
+    'updated_at',
+    aliasedName,
+    false,
+    type: DriftSqlType.int,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _completedAtMeta = const VerificationMeta(
+    'completedAt',
+  );
+  @override
+  late final GeneratedColumn<int> completedAt = GeneratedColumn<int>(
+    'completed_at',
+    aliasedName,
+    true,
+    type: DriftSqlType.int,
+    requiredDuringInsert: false,
+  );
+  @override
+  List<GeneratedColumn> get $columns => [
+    id,
+    questionId,
+    cropPath,
+    inputHash,
+    status,
+    attemptCount,
+    availableAt,
+    startedAt,
+    leaseUntil,
+    leaseToken,
+    lastErrorCode,
+    lastErrorMessage,
+    createdAt,
+    updatedAt,
+    completedAt,
+  ];
+  @override
+  String get aliasedName => _alias ?? actualTableName;
+  @override
+  String get actualTableName => $name;
+  static const String $name = 'ocr_jobs';
+  @override
+  VerificationContext validateIntegrity(
+    Insertable<DbOcrJob> instance, {
+    bool isInserting = false,
+  }) {
+    final context = VerificationContext();
+    final data = instance.toColumns(true);
+    if (data.containsKey('id')) {
+      context.handle(_idMeta, id.isAcceptableOrUnknown(data['id']!, _idMeta));
+    } else if (isInserting) {
+      context.missing(_idMeta);
+    }
+    if (data.containsKey('question_id')) {
+      context.handle(
+        _questionIdMeta,
+        questionId.isAcceptableOrUnknown(data['question_id']!, _questionIdMeta),
+      );
+    } else if (isInserting) {
+      context.missing(_questionIdMeta);
+    }
+    if (data.containsKey('crop_path')) {
+      context.handle(
+        _cropPathMeta,
+        cropPath.isAcceptableOrUnknown(data['crop_path']!, _cropPathMeta),
+      );
+    }
+    if (data.containsKey('input_hash')) {
+      context.handle(
+        _inputHashMeta,
+        inputHash.isAcceptableOrUnknown(data['input_hash']!, _inputHashMeta),
+      );
+    }
+    if (data.containsKey('status')) {
+      context.handle(
+        _statusMeta,
+        status.isAcceptableOrUnknown(data['status']!, _statusMeta),
+      );
+    }
+    if (data.containsKey('attempt_count')) {
+      context.handle(
+        _attemptCountMeta,
+        attemptCount.isAcceptableOrUnknown(
+          data['attempt_count']!,
+          _attemptCountMeta,
+        ),
+      );
+    }
+    if (data.containsKey('available_at')) {
+      context.handle(
+        _availableAtMeta,
+        availableAt.isAcceptableOrUnknown(
+          data['available_at']!,
+          _availableAtMeta,
+        ),
+      );
+    }
+    if (data.containsKey('started_at')) {
+      context.handle(
+        _startedAtMeta,
+        startedAt.isAcceptableOrUnknown(data['started_at']!, _startedAtMeta),
+      );
+    }
+    if (data.containsKey('lease_until')) {
+      context.handle(
+        _leaseUntilMeta,
+        leaseUntil.isAcceptableOrUnknown(data['lease_until']!, _leaseUntilMeta),
+      );
+    }
+    if (data.containsKey('lease_token')) {
+      context.handle(
+        _leaseTokenMeta,
+        leaseToken.isAcceptableOrUnknown(data['lease_token']!, _leaseTokenMeta),
+      );
+    }
+    if (data.containsKey('last_error_code')) {
+      context.handle(
+        _lastErrorCodeMeta,
+        lastErrorCode.isAcceptableOrUnknown(
+          data['last_error_code']!,
+          _lastErrorCodeMeta,
+        ),
+      );
+    }
+    if (data.containsKey('last_error_message')) {
+      context.handle(
+        _lastErrorMessageMeta,
+        lastErrorMessage.isAcceptableOrUnknown(
+          data['last_error_message']!,
+          _lastErrorMessageMeta,
+        ),
+      );
+    }
+    if (data.containsKey('created_at')) {
+      context.handle(
+        _createdAtMeta,
+        createdAt.isAcceptableOrUnknown(data['created_at']!, _createdAtMeta),
+      );
+    } else if (isInserting) {
+      context.missing(_createdAtMeta);
+    }
+    if (data.containsKey('updated_at')) {
+      context.handle(
+        _updatedAtMeta,
+        updatedAt.isAcceptableOrUnknown(data['updated_at']!, _updatedAtMeta),
+      );
+    } else if (isInserting) {
+      context.missing(_updatedAtMeta);
+    }
+    if (data.containsKey('completed_at')) {
+      context.handle(
+        _completedAtMeta,
+        completedAt.isAcceptableOrUnknown(
+          data['completed_at']!,
+          _completedAtMeta,
+        ),
+      );
+    }
+    return context;
+  }
+
+  @override
+  Set<GeneratedColumn> get $primaryKey => {id};
+  @override
+  DbOcrJob map(Map<String, dynamic> data, {String? tablePrefix}) {
+    final effectivePrefix = tablePrefix != null ? '$tablePrefix.' : '';
+    return DbOcrJob(
+      id: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}id'],
+      )!,
+      questionId: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}question_id'],
+      )!,
+      cropPath: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}crop_path'],
+      ),
+      inputHash: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}input_hash'],
+      ),
+      status: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}status'],
+      )!,
+      attemptCount: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}attempt_count'],
+      )!,
+      availableAt: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}available_at'],
+      ),
+      startedAt: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}started_at'],
+      ),
+      leaseUntil: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}lease_until'],
+      ),
+      leaseToken: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}lease_token'],
+      ),
+      lastErrorCode: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}last_error_code'],
+      ),
+      lastErrorMessage: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}last_error_message'],
+      ),
+      createdAt: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}created_at'],
+      )!,
+      updatedAt: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}updated_at'],
+      )!,
+      completedAt: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}completed_at'],
+      ),
+    );
+  }
+
+  @override
+  $OcrJobsTable createAlias(String alias) {
+    return $OcrJobsTable(attachedDatabase, alias);
+  }
+}
+
+class DbOcrJob extends DataClass implements Insertable<DbOcrJob> {
+  final String id;
+  final String questionId;
+  final String? cropPath;
+  final String? inputHash;
+  final String status;
+  final int attemptCount;
+  final int? availableAt;
+  final int? startedAt;
+  final int? leaseUntil;
+  final String? leaseToken;
+  final String? lastErrorCode;
+  final String? lastErrorMessage;
+  final int createdAt;
+  final int updatedAt;
+  final int? completedAt;
+  const DbOcrJob({
+    required this.id,
+    required this.questionId,
+    this.cropPath,
+    this.inputHash,
+    required this.status,
+    required this.attemptCount,
+    this.availableAt,
+    this.startedAt,
+    this.leaseUntil,
+    this.leaseToken,
+    this.lastErrorCode,
+    this.lastErrorMessage,
+    required this.createdAt,
+    required this.updatedAt,
+    this.completedAt,
+  });
+  @override
+  Map<String, Expression> toColumns(bool nullToAbsent) {
+    final map = <String, Expression>{};
+    map['id'] = Variable<String>(id);
+    map['question_id'] = Variable<String>(questionId);
+    if (!nullToAbsent || cropPath != null) {
+      map['crop_path'] = Variable<String>(cropPath);
+    }
+    if (!nullToAbsent || inputHash != null) {
+      map['input_hash'] = Variable<String>(inputHash);
+    }
+    map['status'] = Variable<String>(status);
+    map['attempt_count'] = Variable<int>(attemptCount);
+    if (!nullToAbsent || availableAt != null) {
+      map['available_at'] = Variable<int>(availableAt);
+    }
+    if (!nullToAbsent || startedAt != null) {
+      map['started_at'] = Variable<int>(startedAt);
+    }
+    if (!nullToAbsent || leaseUntil != null) {
+      map['lease_until'] = Variable<int>(leaseUntil);
+    }
+    if (!nullToAbsent || leaseToken != null) {
+      map['lease_token'] = Variable<String>(leaseToken);
+    }
+    if (!nullToAbsent || lastErrorCode != null) {
+      map['last_error_code'] = Variable<String>(lastErrorCode);
+    }
+    if (!nullToAbsent || lastErrorMessage != null) {
+      map['last_error_message'] = Variable<String>(lastErrorMessage);
+    }
+    map['created_at'] = Variable<int>(createdAt);
+    map['updated_at'] = Variable<int>(updatedAt);
+    if (!nullToAbsent || completedAt != null) {
+      map['completed_at'] = Variable<int>(completedAt);
+    }
+    return map;
+  }
+
+  OcrJobsCompanion toCompanion(bool nullToAbsent) {
+    return OcrJobsCompanion(
+      id: Value(id),
+      questionId: Value(questionId),
+      cropPath: cropPath == null && nullToAbsent
+          ? const Value.absent()
+          : Value(cropPath),
+      inputHash: inputHash == null && nullToAbsent
+          ? const Value.absent()
+          : Value(inputHash),
+      status: Value(status),
+      attemptCount: Value(attemptCount),
+      availableAt: availableAt == null && nullToAbsent
+          ? const Value.absent()
+          : Value(availableAt),
+      startedAt: startedAt == null && nullToAbsent
+          ? const Value.absent()
+          : Value(startedAt),
+      leaseUntil: leaseUntil == null && nullToAbsent
+          ? const Value.absent()
+          : Value(leaseUntil),
+      leaseToken: leaseToken == null && nullToAbsent
+          ? const Value.absent()
+          : Value(leaseToken),
+      lastErrorCode: lastErrorCode == null && nullToAbsent
+          ? const Value.absent()
+          : Value(lastErrorCode),
+      lastErrorMessage: lastErrorMessage == null && nullToAbsent
+          ? const Value.absent()
+          : Value(lastErrorMessage),
+      createdAt: Value(createdAt),
+      updatedAt: Value(updatedAt),
+      completedAt: completedAt == null && nullToAbsent
+          ? const Value.absent()
+          : Value(completedAt),
+    );
+  }
+
+  factory DbOcrJob.fromJson(
+    Map<String, dynamic> json, {
+    ValueSerializer? serializer,
+  }) {
+    serializer ??= driftRuntimeOptions.defaultSerializer;
+    return DbOcrJob(
+      id: serializer.fromJson<String>(json['id']),
+      questionId: serializer.fromJson<String>(json['questionId']),
+      cropPath: serializer.fromJson<String?>(json['cropPath']),
+      inputHash: serializer.fromJson<String?>(json['inputHash']),
+      status: serializer.fromJson<String>(json['status']),
+      attemptCount: serializer.fromJson<int>(json['attemptCount']),
+      availableAt: serializer.fromJson<int?>(json['availableAt']),
+      startedAt: serializer.fromJson<int?>(json['startedAt']),
+      leaseUntil: serializer.fromJson<int?>(json['leaseUntil']),
+      leaseToken: serializer.fromJson<String?>(json['leaseToken']),
+      lastErrorCode: serializer.fromJson<String?>(json['lastErrorCode']),
+      lastErrorMessage: serializer.fromJson<String?>(json['lastErrorMessage']),
+      createdAt: serializer.fromJson<int>(json['createdAt']),
+      updatedAt: serializer.fromJson<int>(json['updatedAt']),
+      completedAt: serializer.fromJson<int?>(json['completedAt']),
+    );
+  }
+  @override
+  Map<String, dynamic> toJson({ValueSerializer? serializer}) {
+    serializer ??= driftRuntimeOptions.defaultSerializer;
+    return <String, dynamic>{
+      'id': serializer.toJson<String>(id),
+      'questionId': serializer.toJson<String>(questionId),
+      'cropPath': serializer.toJson<String?>(cropPath),
+      'inputHash': serializer.toJson<String?>(inputHash),
+      'status': serializer.toJson<String>(status),
+      'attemptCount': serializer.toJson<int>(attemptCount),
+      'availableAt': serializer.toJson<int?>(availableAt),
+      'startedAt': serializer.toJson<int?>(startedAt),
+      'leaseUntil': serializer.toJson<int?>(leaseUntil),
+      'leaseToken': serializer.toJson<String?>(leaseToken),
+      'lastErrorCode': serializer.toJson<String?>(lastErrorCode),
+      'lastErrorMessage': serializer.toJson<String?>(lastErrorMessage),
+      'createdAt': serializer.toJson<int>(createdAt),
+      'updatedAt': serializer.toJson<int>(updatedAt),
+      'completedAt': serializer.toJson<int?>(completedAt),
+    };
+  }
+
+  DbOcrJob copyWith({
+    String? id,
+    String? questionId,
+    Value<String?> cropPath = const Value.absent(),
+    Value<String?> inputHash = const Value.absent(),
+    String? status,
+    int? attemptCount,
+    Value<int?> availableAt = const Value.absent(),
+    Value<int?> startedAt = const Value.absent(),
+    Value<int?> leaseUntil = const Value.absent(),
+    Value<String?> leaseToken = const Value.absent(),
+    Value<String?> lastErrorCode = const Value.absent(),
+    Value<String?> lastErrorMessage = const Value.absent(),
+    int? createdAt,
+    int? updatedAt,
+    Value<int?> completedAt = const Value.absent(),
+  }) => DbOcrJob(
+    id: id ?? this.id,
+    questionId: questionId ?? this.questionId,
+    cropPath: cropPath.present ? cropPath.value : this.cropPath,
+    inputHash: inputHash.present ? inputHash.value : this.inputHash,
+    status: status ?? this.status,
+    attemptCount: attemptCount ?? this.attemptCount,
+    availableAt: availableAt.present ? availableAt.value : this.availableAt,
+    startedAt: startedAt.present ? startedAt.value : this.startedAt,
+    leaseUntil: leaseUntil.present ? leaseUntil.value : this.leaseUntil,
+    leaseToken: leaseToken.present ? leaseToken.value : this.leaseToken,
+    lastErrorCode: lastErrorCode.present
+        ? lastErrorCode.value
+        : this.lastErrorCode,
+    lastErrorMessage: lastErrorMessage.present
+        ? lastErrorMessage.value
+        : this.lastErrorMessage,
+    createdAt: createdAt ?? this.createdAt,
+    updatedAt: updatedAt ?? this.updatedAt,
+    completedAt: completedAt.present ? completedAt.value : this.completedAt,
+  );
+  DbOcrJob copyWithCompanion(OcrJobsCompanion data) {
+    return DbOcrJob(
+      id: data.id.present ? data.id.value : this.id,
+      questionId: data.questionId.present
+          ? data.questionId.value
+          : this.questionId,
+      cropPath: data.cropPath.present ? data.cropPath.value : this.cropPath,
+      inputHash: data.inputHash.present ? data.inputHash.value : this.inputHash,
+      status: data.status.present ? data.status.value : this.status,
+      attemptCount: data.attemptCount.present
+          ? data.attemptCount.value
+          : this.attemptCount,
+      availableAt: data.availableAt.present
+          ? data.availableAt.value
+          : this.availableAt,
+      startedAt: data.startedAt.present ? data.startedAt.value : this.startedAt,
+      leaseUntil: data.leaseUntil.present
+          ? data.leaseUntil.value
+          : this.leaseUntil,
+      leaseToken: data.leaseToken.present
+          ? data.leaseToken.value
+          : this.leaseToken,
+      lastErrorCode: data.lastErrorCode.present
+          ? data.lastErrorCode.value
+          : this.lastErrorCode,
+      lastErrorMessage: data.lastErrorMessage.present
+          ? data.lastErrorMessage.value
+          : this.lastErrorMessage,
+      createdAt: data.createdAt.present ? data.createdAt.value : this.createdAt,
+      updatedAt: data.updatedAt.present ? data.updatedAt.value : this.updatedAt,
+      completedAt: data.completedAt.present
+          ? data.completedAt.value
+          : this.completedAt,
+    );
+  }
+
+  @override
+  String toString() {
+    return (StringBuffer('DbOcrJob(')
+          ..write('id: $id, ')
+          ..write('questionId: $questionId, ')
+          ..write('cropPath: $cropPath, ')
+          ..write('inputHash: $inputHash, ')
+          ..write('status: $status, ')
+          ..write('attemptCount: $attemptCount, ')
+          ..write('availableAt: $availableAt, ')
+          ..write('startedAt: $startedAt, ')
+          ..write('leaseUntil: $leaseUntil, ')
+          ..write('leaseToken: $leaseToken, ')
+          ..write('lastErrorCode: $lastErrorCode, ')
+          ..write('lastErrorMessage: $lastErrorMessage, ')
+          ..write('createdAt: $createdAt, ')
+          ..write('updatedAt: $updatedAt, ')
+          ..write('completedAt: $completedAt')
+          ..write(')'))
+        .toString();
+  }
+
+  @override
+  int get hashCode => Object.hash(
+    id,
+    questionId,
+    cropPath,
+    inputHash,
+    status,
+    attemptCount,
+    availableAt,
+    startedAt,
+    leaseUntil,
+    leaseToken,
+    lastErrorCode,
+    lastErrorMessage,
+    createdAt,
+    updatedAt,
+    completedAt,
+  );
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      (other is DbOcrJob &&
+          other.id == this.id &&
+          other.questionId == this.questionId &&
+          other.cropPath == this.cropPath &&
+          other.inputHash == this.inputHash &&
+          other.status == this.status &&
+          other.attemptCount == this.attemptCount &&
+          other.availableAt == this.availableAt &&
+          other.startedAt == this.startedAt &&
+          other.leaseUntil == this.leaseUntil &&
+          other.leaseToken == this.leaseToken &&
+          other.lastErrorCode == this.lastErrorCode &&
+          other.lastErrorMessage == this.lastErrorMessage &&
+          other.createdAt == this.createdAt &&
+          other.updatedAt == this.updatedAt &&
+          other.completedAt == this.completedAt);
+}
+
+class OcrJobsCompanion extends UpdateCompanion<DbOcrJob> {
+  final Value<String> id;
+  final Value<String> questionId;
+  final Value<String?> cropPath;
+  final Value<String?> inputHash;
+  final Value<String> status;
+  final Value<int> attemptCount;
+  final Value<int?> availableAt;
+  final Value<int?> startedAt;
+  final Value<int?> leaseUntil;
+  final Value<String?> leaseToken;
+  final Value<String?> lastErrorCode;
+  final Value<String?> lastErrorMessage;
+  final Value<int> createdAt;
+  final Value<int> updatedAt;
+  final Value<int?> completedAt;
+  final Value<int> rowid;
+  const OcrJobsCompanion({
+    this.id = const Value.absent(),
+    this.questionId = const Value.absent(),
+    this.cropPath = const Value.absent(),
+    this.inputHash = const Value.absent(),
+    this.status = const Value.absent(),
+    this.attemptCount = const Value.absent(),
+    this.availableAt = const Value.absent(),
+    this.startedAt = const Value.absent(),
+    this.leaseUntil = const Value.absent(),
+    this.leaseToken = const Value.absent(),
+    this.lastErrorCode = const Value.absent(),
+    this.lastErrorMessage = const Value.absent(),
+    this.createdAt = const Value.absent(),
+    this.updatedAt = const Value.absent(),
+    this.completedAt = const Value.absent(),
+    this.rowid = const Value.absent(),
+  });
+  OcrJobsCompanion.insert({
+    required String id,
+    required String questionId,
+    this.cropPath = const Value.absent(),
+    this.inputHash = const Value.absent(),
+    this.status = const Value.absent(),
+    this.attemptCount = const Value.absent(),
+    this.availableAt = const Value.absent(),
+    this.startedAt = const Value.absent(),
+    this.leaseUntil = const Value.absent(),
+    this.leaseToken = const Value.absent(),
+    this.lastErrorCode = const Value.absent(),
+    this.lastErrorMessage = const Value.absent(),
+    required int createdAt,
+    required int updatedAt,
+    this.completedAt = const Value.absent(),
+    this.rowid = const Value.absent(),
+  }) : id = Value(id),
+       questionId = Value(questionId),
+       createdAt = Value(createdAt),
+       updatedAt = Value(updatedAt);
+  static Insertable<DbOcrJob> custom({
+    Expression<String>? id,
+    Expression<String>? questionId,
+    Expression<String>? cropPath,
+    Expression<String>? inputHash,
+    Expression<String>? status,
+    Expression<int>? attemptCount,
+    Expression<int>? availableAt,
+    Expression<int>? startedAt,
+    Expression<int>? leaseUntil,
+    Expression<String>? leaseToken,
+    Expression<String>? lastErrorCode,
+    Expression<String>? lastErrorMessage,
+    Expression<int>? createdAt,
+    Expression<int>? updatedAt,
+    Expression<int>? completedAt,
+    Expression<int>? rowid,
+  }) {
+    return RawValuesInsertable({
+      if (id != null) 'id': id,
+      if (questionId != null) 'question_id': questionId,
+      if (cropPath != null) 'crop_path': cropPath,
+      if (inputHash != null) 'input_hash': inputHash,
+      if (status != null) 'status': status,
+      if (attemptCount != null) 'attempt_count': attemptCount,
+      if (availableAt != null) 'available_at': availableAt,
+      if (startedAt != null) 'started_at': startedAt,
+      if (leaseUntil != null) 'lease_until': leaseUntil,
+      if (leaseToken != null) 'lease_token': leaseToken,
+      if (lastErrorCode != null) 'last_error_code': lastErrorCode,
+      if (lastErrorMessage != null) 'last_error_message': lastErrorMessage,
+      if (createdAt != null) 'created_at': createdAt,
+      if (updatedAt != null) 'updated_at': updatedAt,
+      if (completedAt != null) 'completed_at': completedAt,
+      if (rowid != null) 'rowid': rowid,
+    });
+  }
+
+  OcrJobsCompanion copyWith({
+    Value<String>? id,
+    Value<String>? questionId,
+    Value<String?>? cropPath,
+    Value<String?>? inputHash,
+    Value<String>? status,
+    Value<int>? attemptCount,
+    Value<int?>? availableAt,
+    Value<int?>? startedAt,
+    Value<int?>? leaseUntil,
+    Value<String?>? leaseToken,
+    Value<String?>? lastErrorCode,
+    Value<String?>? lastErrorMessage,
+    Value<int>? createdAt,
+    Value<int>? updatedAt,
+    Value<int?>? completedAt,
+    Value<int>? rowid,
+  }) {
+    return OcrJobsCompanion(
+      id: id ?? this.id,
+      questionId: questionId ?? this.questionId,
+      cropPath: cropPath ?? this.cropPath,
+      inputHash: inputHash ?? this.inputHash,
+      status: status ?? this.status,
+      attemptCount: attemptCount ?? this.attemptCount,
+      availableAt: availableAt ?? this.availableAt,
+      startedAt: startedAt ?? this.startedAt,
+      leaseUntil: leaseUntil ?? this.leaseUntil,
+      leaseToken: leaseToken ?? this.leaseToken,
+      lastErrorCode: lastErrorCode ?? this.lastErrorCode,
+      lastErrorMessage: lastErrorMessage ?? this.lastErrorMessage,
+      createdAt: createdAt ?? this.createdAt,
+      updatedAt: updatedAt ?? this.updatedAt,
+      completedAt: completedAt ?? this.completedAt,
+      rowid: rowid ?? this.rowid,
+    );
+  }
+
+  @override
+  Map<String, Expression> toColumns(bool nullToAbsent) {
+    final map = <String, Expression>{};
+    if (id.present) {
+      map['id'] = Variable<String>(id.value);
+    }
+    if (questionId.present) {
+      map['question_id'] = Variable<String>(questionId.value);
+    }
+    if (cropPath.present) {
+      map['crop_path'] = Variable<String>(cropPath.value);
+    }
+    if (inputHash.present) {
+      map['input_hash'] = Variable<String>(inputHash.value);
+    }
+    if (status.present) {
+      map['status'] = Variable<String>(status.value);
+    }
+    if (attemptCount.present) {
+      map['attempt_count'] = Variable<int>(attemptCount.value);
+    }
+    if (availableAt.present) {
+      map['available_at'] = Variable<int>(availableAt.value);
+    }
+    if (startedAt.present) {
+      map['started_at'] = Variable<int>(startedAt.value);
+    }
+    if (leaseUntil.present) {
+      map['lease_until'] = Variable<int>(leaseUntil.value);
+    }
+    if (leaseToken.present) {
+      map['lease_token'] = Variable<String>(leaseToken.value);
+    }
+    if (lastErrorCode.present) {
+      map['last_error_code'] = Variable<String>(lastErrorCode.value);
+    }
+    if (lastErrorMessage.present) {
+      map['last_error_message'] = Variable<String>(lastErrorMessage.value);
+    }
+    if (createdAt.present) {
+      map['created_at'] = Variable<int>(createdAt.value);
+    }
+    if (updatedAt.present) {
+      map['updated_at'] = Variable<int>(updatedAt.value);
+    }
+    if (completedAt.present) {
+      map['completed_at'] = Variable<int>(completedAt.value);
+    }
+    if (rowid.present) {
+      map['rowid'] = Variable<int>(rowid.value);
+    }
+    return map;
+  }
+
+  @override
+  String toString() {
+    return (StringBuffer('OcrJobsCompanion(')
+          ..write('id: $id, ')
+          ..write('questionId: $questionId, ')
+          ..write('cropPath: $cropPath, ')
+          ..write('inputHash: $inputHash, ')
+          ..write('status: $status, ')
+          ..write('attemptCount: $attemptCount, ')
+          ..write('availableAt: $availableAt, ')
+          ..write('startedAt: $startedAt, ')
+          ..write('leaseUntil: $leaseUntil, ')
+          ..write('leaseToken: $leaseToken, ')
+          ..write('lastErrorCode: $lastErrorCode, ')
+          ..write('lastErrorMessage: $lastErrorMessage, ')
+          ..write('createdAt: $createdAt, ')
+          ..write('updatedAt: $updatedAt, ')
+          ..write('completedAt: $completedAt, ')
           ..write('rowid: $rowid')
           ..write(')'))
         .toString();
@@ -6597,6 +7738,7 @@ abstract class _$QuizDatabase extends GeneratedDatabase {
   late final $CollectTasksTable collectTasks = $CollectTasksTable(this);
   late final $QuestionBoxesTable questionBoxes = $QuestionBoxesTable(this);
   late final $QuestionsTable questions = $QuestionsTable(this);
+  late final $OcrJobsTable ocrJobs = $OcrJobsTable(this);
   late final Index idxBoxesTaskPage = Index(
     'idx_boxes_task_page',
     'CREATE INDEX idx_boxes_task_page ON question_boxes (collect_task_id, page)',
@@ -6632,6 +7774,7 @@ abstract class _$QuizDatabase extends GeneratedDatabase {
     collectTasks,
     questionBoxes,
     questions,
+    ocrJobs,
     idxBoxesTaskPage,
     idxBoxesQuestion,
     idxBoxesParent,
@@ -9544,6 +10687,11 @@ typedef $$QuestionsTableCreateCompanionBuilder = QuestionsCompanion Function({
   Value<String?> slicePath,
   Value<int?> sliceWidth,
   Value<int?> sliceHeight,
+  Value<String?> ocrRaw,
+  Value<String?> ocrStem,
+  Value<String> ocrSplitStatus,
+  Value<int> ocrManualEdited,
+  Value<int> contentVersion,
   Value<int> rowid,
 });
 typedef $$QuestionsTableUpdateCompanionBuilder = QuestionsCompanion Function({
@@ -9575,6 +10723,11 @@ typedef $$QuestionsTableUpdateCompanionBuilder = QuestionsCompanion Function({
   Value<String?> slicePath,
   Value<int?> sliceWidth,
   Value<int?> sliceHeight,
+  Value<String?> ocrRaw,
+  Value<String?> ocrStem,
+  Value<String> ocrSplitStatus,
+  Value<int> ocrManualEdited,
+  Value<int> contentVersion,
   Value<int> rowid,
 });
 
@@ -9731,6 +10884,31 @@ class $$QuestionsTableFilterComposer
     column: $table.sliceHeight,
     builder: (column) => ColumnFilters(column),
   );
+
+  ColumnFilters<String> get ocrRaw => $composableBuilder(
+    column: $table.ocrRaw,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get ocrStem => $composableBuilder(
+    column: $table.ocrStem,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get ocrSplitStatus => $composableBuilder(
+    column: $table.ocrSplitStatus,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<int> get ocrManualEdited => $composableBuilder(
+    column: $table.ocrManualEdited,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<int> get contentVersion => $composableBuilder(
+    column: $table.contentVersion,
+    builder: (column) => ColumnFilters(column),
+  );
 }
 
 class $$QuestionsTableOrderingComposer
@@ -9881,6 +11059,31 @@ class $$QuestionsTableOrderingComposer
     column: $table.sliceHeight,
     builder: (column) => ColumnOrderings(column),
   );
+
+  ColumnOrderings<String> get ocrRaw => $composableBuilder(
+    column: $table.ocrRaw,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get ocrStem => $composableBuilder(
+    column: $table.ocrStem,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get ocrSplitStatus => $composableBuilder(
+    column: $table.ocrSplitStatus,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<int> get ocrManualEdited => $composableBuilder(
+    column: $table.ocrManualEdited,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<int> get contentVersion => $composableBuilder(
+    column: $table.contentVersion,
+    builder: (column) => ColumnOrderings(column),
+  );
 }
 
 class $$QuestionsTableAnnotationComposer
@@ -10008,6 +11211,27 @@ class $$QuestionsTableAnnotationComposer
     column: $table.sliceHeight,
     builder: (column) => column,
   );
+
+  GeneratedColumn<String> get ocrRaw =>
+      $composableBuilder(column: $table.ocrRaw, builder: (column) => column);
+
+  GeneratedColumn<String> get ocrStem =>
+      $composableBuilder(column: $table.ocrStem, builder: (column) => column);
+
+  GeneratedColumn<String> get ocrSplitStatus => $composableBuilder(
+    column: $table.ocrSplitStatus,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<int> get ocrManualEdited => $composableBuilder(
+    column: $table.ocrManualEdited,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<int> get contentVersion => $composableBuilder(
+    column: $table.contentVersion,
+    builder: (column) => column,
+  );
 }
 
 class $$QuestionsTableTableManager
@@ -10069,6 +11293,11 @@ class $$QuestionsTableTableManager
                 Value<String?> slicePath = const Value.absent(),
                 Value<int?> sliceWidth = const Value.absent(),
                 Value<int?> sliceHeight = const Value.absent(),
+                Value<String?> ocrRaw = const Value.absent(),
+                Value<String?> ocrStem = const Value.absent(),
+                Value<String> ocrSplitStatus = const Value.absent(),
+                Value<int> ocrManualEdited = const Value.absent(),
+                Value<int> contentVersion = const Value.absent(),
                 Value<int> rowid = const Value.absent(),
               }) => QuestionsCompanion(
                 id: id,
@@ -10099,6 +11328,11 @@ class $$QuestionsTableTableManager
                 slicePath: slicePath,
                 sliceWidth: sliceWidth,
                 sliceHeight: sliceHeight,
+                ocrRaw: ocrRaw,
+                ocrStem: ocrStem,
+                ocrSplitStatus: ocrSplitStatus,
+                ocrManualEdited: ocrManualEdited,
+                contentVersion: contentVersion,
                 rowid: rowid,
               ),
           createCompanionCallback:
@@ -10131,6 +11365,11 @@ class $$QuestionsTableTableManager
                 Value<String?> slicePath = const Value.absent(),
                 Value<int?> sliceWidth = const Value.absent(),
                 Value<int?> sliceHeight = const Value.absent(),
+                Value<String?> ocrRaw = const Value.absent(),
+                Value<String?> ocrStem = const Value.absent(),
+                Value<String> ocrSplitStatus = const Value.absent(),
+                Value<int> ocrManualEdited = const Value.absent(),
+                Value<int> contentVersion = const Value.absent(),
                 Value<int> rowid = const Value.absent(),
               }) => QuestionsCompanion.insert(
                 id: id,
@@ -10161,6 +11400,11 @@ class $$QuestionsTableTableManager
                 slicePath: slicePath,
                 sliceWidth: sliceWidth,
                 sliceHeight: sliceHeight,
+                ocrRaw: ocrRaw,
+                ocrStem: ocrStem,
+                ocrSplitStatus: ocrSplitStatus,
+                ocrManualEdited: ocrManualEdited,
+                contentVersion: contentVersion,
                 rowid: rowid,
               ),
           withReferenceMapper: (p0) => p0
@@ -10192,6 +11436,413 @@ typedef $$QuestionsTableProcessedTableManager =
       $$QuestionsTableUpdateCompanionBuilder,
       (DbQuestion, BaseReferences<_$QuizDatabase, $QuestionsTable, DbQuestion>),
       DbQuestion,
+      PrefetchHooks Function()
+    >;
+typedef $$OcrJobsTableCreateCompanionBuilder = OcrJobsCompanion Function({
+  required String id,
+  required String questionId,
+  Value<String?> cropPath,
+  Value<String?> inputHash,
+  Value<String> status,
+  Value<int> attemptCount,
+  Value<int?> availableAt,
+  Value<int?> startedAt,
+  Value<int?> leaseUntil,
+  Value<String?> leaseToken,
+  Value<String?> lastErrorCode,
+  Value<String?> lastErrorMessage,
+  required int createdAt,
+  required int updatedAt,
+  Value<int?> completedAt,
+  Value<int> rowid,
+});
+typedef $$OcrJobsTableUpdateCompanionBuilder = OcrJobsCompanion Function({
+  Value<String> id,
+  Value<String> questionId,
+  Value<String?> cropPath,
+  Value<String?> inputHash,
+  Value<String> status,
+  Value<int> attemptCount,
+  Value<int?> availableAt,
+  Value<int?> startedAt,
+  Value<int?> leaseUntil,
+  Value<String?> leaseToken,
+  Value<String?> lastErrorCode,
+  Value<String?> lastErrorMessage,
+  Value<int> createdAt,
+  Value<int> updatedAt,
+  Value<int?> completedAt,
+  Value<int> rowid,
+});
+
+class $$OcrJobsTableFilterComposer
+    extends Composer<_$QuizDatabase, $OcrJobsTable> {
+  $$OcrJobsTableFilterComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  ColumnFilters<String> get id => $composableBuilder(
+    column: $table.id,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get questionId => $composableBuilder(
+    column: $table.questionId,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get cropPath => $composableBuilder(
+    column: $table.cropPath,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get inputHash => $composableBuilder(
+    column: $table.inputHash,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get status => $composableBuilder(
+    column: $table.status,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<int> get attemptCount => $composableBuilder(
+    column: $table.attemptCount,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<int> get availableAt => $composableBuilder(
+    column: $table.availableAt,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<int> get startedAt => $composableBuilder(
+    column: $table.startedAt,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<int> get leaseUntil => $composableBuilder(
+    column: $table.leaseUntil,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get leaseToken => $composableBuilder(
+    column: $table.leaseToken,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get lastErrorCode => $composableBuilder(
+    column: $table.lastErrorCode,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get lastErrorMessage => $composableBuilder(
+    column: $table.lastErrorMessage,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<int> get createdAt => $composableBuilder(
+    column: $table.createdAt,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<int> get updatedAt => $composableBuilder(
+    column: $table.updatedAt,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<int> get completedAt => $composableBuilder(
+    column: $table.completedAt,
+    builder: (column) => ColumnFilters(column),
+  );
+}
+
+class $$OcrJobsTableOrderingComposer
+    extends Composer<_$QuizDatabase, $OcrJobsTable> {
+  $$OcrJobsTableOrderingComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  ColumnOrderings<String> get id => $composableBuilder(
+    column: $table.id,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get questionId => $composableBuilder(
+    column: $table.questionId,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get cropPath => $composableBuilder(
+    column: $table.cropPath,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get inputHash => $composableBuilder(
+    column: $table.inputHash,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get status => $composableBuilder(
+    column: $table.status,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<int> get attemptCount => $composableBuilder(
+    column: $table.attemptCount,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<int> get availableAt => $composableBuilder(
+    column: $table.availableAt,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<int> get startedAt => $composableBuilder(
+    column: $table.startedAt,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<int> get leaseUntil => $composableBuilder(
+    column: $table.leaseUntil,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get leaseToken => $composableBuilder(
+    column: $table.leaseToken,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get lastErrorCode => $composableBuilder(
+    column: $table.lastErrorCode,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get lastErrorMessage => $composableBuilder(
+    column: $table.lastErrorMessage,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<int> get createdAt => $composableBuilder(
+    column: $table.createdAt,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<int> get updatedAt => $composableBuilder(
+    column: $table.updatedAt,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<int> get completedAt => $composableBuilder(
+    column: $table.completedAt,
+    builder: (column) => ColumnOrderings(column),
+  );
+}
+
+class $$OcrJobsTableAnnotationComposer
+    extends Composer<_$QuizDatabase, $OcrJobsTable> {
+  $$OcrJobsTableAnnotationComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  GeneratedColumn<String> get id =>
+      $composableBuilder(column: $table.id, builder: (column) => column);
+
+  GeneratedColumn<String> get questionId => $composableBuilder(
+    column: $table.questionId,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<String> get cropPath =>
+      $composableBuilder(column: $table.cropPath, builder: (column) => column);
+
+  GeneratedColumn<String> get inputHash =>
+      $composableBuilder(column: $table.inputHash, builder: (column) => column);
+
+  GeneratedColumn<String> get status =>
+      $composableBuilder(column: $table.status, builder: (column) => column);
+
+  GeneratedColumn<int> get attemptCount => $composableBuilder(
+    column: $table.attemptCount,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<int> get availableAt => $composableBuilder(
+    column: $table.availableAt,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<int> get startedAt =>
+      $composableBuilder(column: $table.startedAt, builder: (column) => column);
+
+  GeneratedColumn<int> get leaseUntil => $composableBuilder(
+    column: $table.leaseUntil,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<String> get leaseToken => $composableBuilder(
+    column: $table.leaseToken,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<String> get lastErrorCode => $composableBuilder(
+    column: $table.lastErrorCode,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<String> get lastErrorMessage => $composableBuilder(
+    column: $table.lastErrorMessage,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<int> get createdAt =>
+      $composableBuilder(column: $table.createdAt, builder: (column) => column);
+
+  GeneratedColumn<int> get updatedAt =>
+      $composableBuilder(column: $table.updatedAt, builder: (column) => column);
+
+  GeneratedColumn<int> get completedAt => $composableBuilder(
+    column: $table.completedAt,
+    builder: (column) => column,
+  );
+}
+
+class $$OcrJobsTableTableManager
+    extends
+        RootTableManager<
+          _$QuizDatabase,
+          $OcrJobsTable,
+          DbOcrJob,
+          $$OcrJobsTableFilterComposer,
+          $$OcrJobsTableOrderingComposer,
+          $$OcrJobsTableAnnotationComposer,
+          $$OcrJobsTableCreateCompanionBuilder,
+          $$OcrJobsTableUpdateCompanionBuilder,
+          (DbOcrJob, BaseReferences<_$QuizDatabase, $OcrJobsTable, DbOcrJob>),
+          DbOcrJob,
+          PrefetchHooks Function()
+        > {
+  $$OcrJobsTableTableManager(_$QuizDatabase db, $OcrJobsTable table)
+    : super(
+        TableManagerState(
+          db: db,
+          table: table,
+          createFilteringComposer: () =>
+              $$OcrJobsTableFilterComposer($db: db, $table: table),
+          createOrderingComposer: () =>
+              $$OcrJobsTableOrderingComposer($db: db, $table: table),
+          createComputedFieldComposer: () =>
+              $$OcrJobsTableAnnotationComposer($db: db, $table: table),
+          updateCompanionCallback:
+              ({
+                Value<String> id = const Value.absent(),
+                Value<String> questionId = const Value.absent(),
+                Value<String?> cropPath = const Value.absent(),
+                Value<String?> inputHash = const Value.absent(),
+                Value<String> status = const Value.absent(),
+                Value<int> attemptCount = const Value.absent(),
+                Value<int?> availableAt = const Value.absent(),
+                Value<int?> startedAt = const Value.absent(),
+                Value<int?> leaseUntil = const Value.absent(),
+                Value<String?> leaseToken = const Value.absent(),
+                Value<String?> lastErrorCode = const Value.absent(),
+                Value<String?> lastErrorMessage = const Value.absent(),
+                Value<int> createdAt = const Value.absent(),
+                Value<int> updatedAt = const Value.absent(),
+                Value<int?> completedAt = const Value.absent(),
+                Value<int> rowid = const Value.absent(),
+              }) => OcrJobsCompanion(
+                id: id,
+                questionId: questionId,
+                cropPath: cropPath,
+                inputHash: inputHash,
+                status: status,
+                attemptCount: attemptCount,
+                availableAt: availableAt,
+                startedAt: startedAt,
+                leaseUntil: leaseUntil,
+                leaseToken: leaseToken,
+                lastErrorCode: lastErrorCode,
+                lastErrorMessage: lastErrorMessage,
+                createdAt: createdAt,
+                updatedAt: updatedAt,
+                completedAt: completedAt,
+                rowid: rowid,
+              ),
+          createCompanionCallback:
+              ({
+                required String id,
+                required String questionId,
+                Value<String?> cropPath = const Value.absent(),
+                Value<String?> inputHash = const Value.absent(),
+                Value<String> status = const Value.absent(),
+                Value<int> attemptCount = const Value.absent(),
+                Value<int?> availableAt = const Value.absent(),
+                Value<int?> startedAt = const Value.absent(),
+                Value<int?> leaseUntil = const Value.absent(),
+                Value<String?> leaseToken = const Value.absent(),
+                Value<String?> lastErrorCode = const Value.absent(),
+                Value<String?> lastErrorMessage = const Value.absent(),
+                required int createdAt,
+                required int updatedAt,
+                Value<int?> completedAt = const Value.absent(),
+                Value<int> rowid = const Value.absent(),
+              }) => OcrJobsCompanion.insert(
+                id: id,
+                questionId: questionId,
+                cropPath: cropPath,
+                inputHash: inputHash,
+                status: status,
+                attemptCount: attemptCount,
+                availableAt: availableAt,
+                startedAt: startedAt,
+                leaseUntil: leaseUntil,
+                leaseToken: leaseToken,
+                lastErrorCode: lastErrorCode,
+                lastErrorMessage: lastErrorMessage,
+                createdAt: createdAt,
+                updatedAt: updatedAt,
+                completedAt: completedAt,
+                rowid: rowid,
+              ),
+          withReferenceMapper: (p0) => p0
+              .map(
+                (e) => (
+                  e.readTable<$OcrJobsTable, DbOcrJob>(table),
+                  BaseReferences<_$QuizDatabase, $OcrJobsTable, DbOcrJob>(
+                    db,
+                    table,
+                    e,
+                  ),
+                ),
+              )
+              .toList(),
+          prefetchHooksCallback: null,
+        ),
+      );
+}
+
+typedef $$OcrJobsTableProcessedTableManager =
+    ProcessedTableManager<
+      _$QuizDatabase,
+      $OcrJobsTable,
+      DbOcrJob,
+      $$OcrJobsTableFilterComposer,
+      $$OcrJobsTableOrderingComposer,
+      $$OcrJobsTableAnnotationComposer,
+      $$OcrJobsTableCreateCompanionBuilder,
+      $$OcrJobsTableUpdateCompanionBuilder,
+      (DbOcrJob, BaseReferences<_$QuizDatabase, $OcrJobsTable, DbOcrJob>),
+      DbOcrJob,
       PrefetchHooks Function()
     >;
 
@@ -10228,4 +11879,6 @@ class $QuizDatabaseManager {
       $$QuestionBoxesTableTableManager(_db, _db.questionBoxes);
   $$QuestionsTableTableManager get questions =>
       $$QuestionsTableTableManager(_db, _db.questions);
+  $$OcrJobsTableTableManager get ocrJobs =>
+      $$OcrJobsTableTableManager(_db, _db.ocrJobs);
 }

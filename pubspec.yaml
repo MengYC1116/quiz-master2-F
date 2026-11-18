@@ -40,8 +40,17 @@ dependencies:
   # 除此之外不升级任何依赖。
   onnxruntime: ^1.4.1
   pdfrx_engine: ^0.9.2
+  # M1 十三批公式渲染器 POC（2026-11-18）：flutter_math_fork 0.7.4
+  #（pub.dev 最新版；sdk >=3.0.0 <4.0.0、flutter >=3.0.0，与
+  # Dart 3.13.7 / Flutter 3.47.9 兼容；纯 Dart + KaTeX 子集，离线，
+  # Windows 与 Android 通用）。覆盖率实测见
+  # test/m1_formula_renderer_test.dart 与
+  # ~/workspace/batch13-work/M1-RENDERER-POC.md。
+  flutter_math_fork: ^0.7.4
   desktop_drop: ^0.8.4
   crypto: ^3.0.8
+  flutter_secure_storage: ^10.3.4
+  image: ^4.13.1
 
 dev_dependencies:
   flutter_test:

@@ -70,7 +70,23 @@ class ImportService {
       'imports/$taskId/pages/page-$page-r$degrees.png';
 
   /// 整题切片（相对数据目录）：`slices/<question-id>.png`。
+  /// 首次写盘（确认分框）用它——该路径尚无文件，是首写不是覆盖。
   static String sliceRelative(String questionId) => 'slices/$questionId.png';
+
+  /// 重框/自愈后写新切片的版本化路径（十三批 P1-1，GPT §2.4）：
+  /// `slices/<question-id>-v<毫秒时间戳>-<8 位随机>.png`。
+  /// 不变量：一个切片路径的字节在入队后永不变化——重框永远写新文件，
+  /// 绝不原地覆盖已有切片文件；旧文件留盘（孤儿扫描清理无引用文件，
+  /// 本次不删）。时间戳 + 随机后缀保证两次重框不撞名（同一毫秒内
+  /// 两次重框也有随机位区分）。
+  static String nextSliceRelative(String questionId) {
+    final r = math.Random.secure();
+    final rand8 = List.generate(
+      8,
+      (_) => '0123456789abcdef'[r.nextInt(16)],
+    ).join();
+    return 'slices/$questionId-v${DateTime.now().millisecondsSinceEpoch}-$rand8.png';
+  }
 
   /// PDF 渲染出的页图（相对数据目录）：
   /// `imports/<task-id>/pages/page-<页码三位>.png`。

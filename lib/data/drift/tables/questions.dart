@@ -46,4 +46,16 @@ class Questions extends Table {
   TextColumn get slicePath => text().nullable()();
   IntColumn get sliceWidth => integer().nullable()();
   IntColumn get sliceHeight => integer().nullable()();
+
+  /// 十三批 M2：OCR 字段（与 db_schema.dart 的 DDL 逐字对应）。
+  /// ocrRaw 是 GLM 原始结果（内部存，绝不外露）；ocrStem 是切分后题干；
+  /// ocrSplitStatus 取值见 OcrSplitStatus（未切分 / 自动切分 /
+  /// 存在歧义 / 人工调整）；ocrManualEdited 是人工编辑标记（0/1）；
+  /// contentVersion 是内容版本（默认 0，递增规则由 M3 定）。
+  TextColumn get ocrRaw => text().nullable()();
+  TextColumn get ocrStem => text().nullable()();
+  TextColumn get ocrSplitStatus =>
+      text().withDefault(const Constant('未切分'))();
+  IntColumn get ocrManualEdited => integer().withDefault(const Constant(0))();
+  IntColumn get contentVersion => integer().withDefault(const Constant(0))();
 }

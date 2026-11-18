@@ -309,6 +309,16 @@ class Question {
     this.slicePath,
     this.sliceWidth,
     this.sliceHeight,
+    // 十三批 M2（D-106）：OCR 字段。ocrRaw 是 GLM 返回的完整原始结果
+    //（内部存，绝不外露）；ocrStem 是切分后题干；ocrSplitStatus 见
+    // [OcrSplitStatus]；ocrManualEdited 是人工编辑标记；contentVersion
+    // 是内容版本（默认 0；递增规则由 M3 定，建议每次 OCR 自动应用或
+    // 人工编辑保存时 +1，供 worker 校验“任务开始后内容是否变过”）。
+    this.ocrRaw,
+    this.ocrStem,
+    this.ocrSplitStatus = OcrSplitStatus.unsegmented,
+    this.ocrManualEdited = false,
+    this.contentVersion = 0,
   });
 
   final String id;
@@ -340,6 +350,13 @@ class Question {
   final String? slicePath;
   final int? sliceWidth;
   final int? sliceHeight;
+  // 十三批 M2：OCR 字段（列定义见 lib/data/db_schema.dart，值域见
+  // [OcrSplitStatus]；LaTeX 源码只存 ocrRaw，永不展示给用户）。
+  final String? ocrRaw;
+  final String? ocrStem;
+  final String ocrSplitStatus;
+  final bool ocrManualEdited;
+  final int contentVersion;
 
   /// 全部错因（固定枚举 + 自定义）。
   /// SR2-23：保序去重——旧数据里同名自定义（如固定名“其他”又存了一份
@@ -371,6 +388,12 @@ class Question {
     String? slicePath,
     int? sliceWidth,
     int? sliceHeight,
+    // 十三批 M2：OCR 字段。
+    String? ocrRaw,
+    String? ocrStem,
+    String? ocrSplitStatus,
+    bool? ocrManualEdited,
+    int? contentVersion,
     // 传 null 表示“保持原值”；要把字段清空时用这些标志（整理/详情页
     // 把答案、解析、笔记清空后保存必须真正清掉，不能留旧值）。
     bool clearExamId = false,
@@ -380,6 +403,8 @@ class Question {
     bool clearSourcePath = false,
     bool clearPageImagePath = false,
     bool clearSlicePath = false,
+    bool clearOcrRaw = false,
+    bool clearOcrStem = false,
   }) {
     return Question(
       id: id,
@@ -411,8 +436,30 @@ class Question {
       slicePath: clearSlicePath ? null : (slicePath ?? this.slicePath),
       sliceWidth: sliceWidth ?? this.sliceWidth,
       sliceHeight: sliceHeight ?? this.sliceHeight,
+      ocrRaw: clearOcrRaw ? null : (ocrRaw ?? this.ocrRaw),
+      ocrStem: clearOcrStem ? null : (ocrStem ?? this.ocrStem),
+      ocrSplitStatus: ocrSplitStatus ?? this.ocrSplitStatus,
+      ocrManualEdited: ocrManualEdited ?? this.ocrManualEdited,
+      contentVersion: contentVersion ?? this.contentVersion,
     );
   }
+}
+
+/// 十三批 M2：题干切分状态（存 questions.ocr_split_status，TEXT）。
+/// 取值是中文原文（GPT 评审 §1.5 + D-106），不是英文枚举名。
+/// 默认 [unsegmented]：OCR 还没跑、或没选项标记整段当题干时都是它。
+class OcrSplitStatus {
+  static const String unsegmented = '未切分';
+  static const String autoSegmented = '自动切分';
+  static const String ambiguous = '存在歧义';
+  static const String manualAdjusted = '人工调整';
+
+  static const Set<String> values = {
+    unsegmented,
+    autoSegmented,
+    ambiguous,
+    manualAdjusted,
+  };
 }
 
 /// 收集任务：任务名 = 文件名 + 页 + 题号，不可改名。
@@ -479,6 +526,115 @@ class CollectTask {
   /// ImportService.contentHashOfFile）。重试时重算库内原图哈希比对；
   /// 旧行（v2 备份恢复、v2 库迁移而来）为 null，无基线可比。
   final String? sourceHash;
+}
+
+/// 十三批 M2：OCR 任务状态（存 ocr_jobs.status，TEXT，存枚举名）。
+/// pending 待处理 / running 进行中 / completed 已完成 / failed 失败。
+enum OcrJobStatus { pending, running, completed, failed }
+
+extension OcrJobStatusLabel on OcrJobStatus {
+  String get label => switch (this) {
+    OcrJobStatus.pending => '待处理',
+    OcrJobStatus.running => '进行中',
+    OcrJobStatus.completed => '已完成',
+    OcrJobStatus.failed => '失败',
+  };
+}
+
+/// 十三批 M2：OCR 任务（ocr_jobs 表的一行，GPT 评审 §2.2 字段表）。
+/// 队列 worker（M3）按它领任务、写结果；本文件只定义类型，不含队列逻辑。
+/// 时间全是毫秒时间戳对应的 DateTime（与 Question.createdAt 同口径）：
+/// availableAt 下次允许重试的时间（退避到期点；null = 立即可跑）；
+/// startedAt 本次开始处理时间；leaseUntil worker 租约到期时间
+///（启动时只回收租约已过期的 running 任务）；completedAt 完成时间
+///（成功或失败终态都填，pending/running 为 null）。
+/// inputHash 是本次识别用的切片 SHA-256：任务完成时须重算切片哈希比对，
+/// 不一致不自动应用结果（旧切片结果不得写入新切片对应的题）。
+/// lastErrorCode 是错误类型（如 api_key_missing / timeout / http_429，
+/// 具体码表由 M3 定）；lastErrorMessage 是最近一次错误信息。
+class OcrJob {
+  OcrJob({
+    required this.id,
+    required this.questionId,
+    this.cropPath,
+    this.inputHash,
+    this.status = OcrJobStatus.pending,
+    this.attemptCount = 0,
+    this.availableAt,
+    this.startedAt,
+    this.leaseUntil,
+    this.leaseToken,
+    this.lastErrorCode,
+    this.lastErrorMessage,
+    required this.createdAt,
+    required this.updatedAt,
+    this.completedAt,
+  });
+
+  final String id;
+  final String questionId;
+
+  /// 本次识别使用的切片路径（相对数据目录，imports/ 或 slices/ 下，
+  /// 与 questions.slicePath 同口径；备份校验按该口径拦非法路径）。
+  final String? cropPath;
+  final String? inputHash;
+  final OcrJobStatus status;
+
+  /// 实际发起请求的次数（首次请求算 1；“重试 3 次”= 最多 4 次请求）。
+  final int attemptCount;
+  final DateTime? availableAt;
+  final DateTime? startedAt;
+  final DateTime? leaseUntil;
+
+  /// 十三批 P1-1：租约 token（ocr_jobs.lease_token）。claim 时生成唯一
+  /// 值并存入；complete / fail / retry / markAttempt 时须与当前持有者
+  /// 一致才写库——任务被回收重领后，旧 worker 的任何写操作都不生效。
+  /// pending / failed / completed 行恒为 null（不持有租约）。
+  final String? leaseToken;
+
+  final String? lastErrorCode;
+  final String? lastErrorMessage;
+  final DateTime createdAt;
+  final DateTime updatedAt;
+  final DateTime? completedAt;
+
+  OcrJob copyWith({
+    String? cropPath,
+    String? inputHash,
+    OcrJobStatus? status,
+    int? attemptCount,
+    DateTime? availableAt,
+    DateTime? startedAt,
+    DateTime? leaseUntil,
+    String? leaseToken,
+    String? lastErrorCode,
+    String? lastErrorMessage,
+    DateTime? updatedAt,
+    DateTime? completedAt,
+    bool clearAvailableAt = false,
+    bool clearStartedAt = false,
+    bool clearLeaseUntil = false,
+    bool clearLeaseToken = false,
+    bool clearCompletedAt = false,
+  }) {
+    return OcrJob(
+      id: id,
+      questionId: questionId,
+      cropPath: cropPath ?? this.cropPath,
+      inputHash: inputHash ?? this.inputHash,
+      status: status ?? this.status,
+      attemptCount: attemptCount ?? this.attemptCount,
+      availableAt: clearAvailableAt ? null : (availableAt ?? this.availableAt),
+      startedAt: clearStartedAt ? null : (startedAt ?? this.startedAt),
+      leaseUntil: clearLeaseUntil ? null : (leaseUntil ?? this.leaseUntil),
+      leaseToken: clearLeaseToken ? null : (leaseToken ?? this.leaseToken),
+      lastErrorCode: lastErrorCode ?? this.lastErrorCode,
+      lastErrorMessage: lastErrorMessage ?? this.lastErrorMessage,
+      createdAt: createdAt,
+      updatedAt: updatedAt ?? this.updatedAt,
+      completedAt: clearCompletedAt ? null : (completedAt ?? this.completedAt),
+    );
+  }
 }
 
 /// 题级框：layer 1 整题框（完整题目就是最小单位，永不拆题）。

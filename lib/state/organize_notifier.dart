@@ -43,6 +43,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../data/data_change_events.dart';
 import '../data/repository.dart';
 import '../models/models.dart';
+import '../modules/ocr/stem_correction.dart';
+import '../services/ocr_queue.dart';
 import 'repository_provider.dart';
 import 'subject_sort.dart';
 
@@ -86,6 +88,9 @@ class OrganizeState {
     this.customTypes = const [],
     this.tags = const [],
     this.formResetKey = 0,
+    // 十三批 M5：当前题的 OCR 任务行与 key 有无（识别题干状态推导用）。
+    this.ocrJobs = const [],
+    this.hasOcrApiKey = false,
   });
 
   /// 待整理队列（未整理、未归档）。
@@ -134,6 +139,12 @@ class OrganizeState {
   /// 控制器文本按当前题重建并收起内联新建框（原 `_loadForm` 里
   /// 设控制器文本 + 收框的部分）。
   final int formResetKey;
+
+  /// 十三批 M5：当前题的 OCR 任务行（最新在前）与设置里是否已存
+  /// BigModel key。只供识别题干状态推导（[OcrStemSection]）用；
+  /// 刷新它们绝不碰表单值与 formResetKey（见 [_refreshOcrStatus]）。
+  final List<OcrJob> ocrJobs;
+  final bool hasOcrApiKey;
 
   Question? get current =>
       queue.isEmpty ? null : queue[index.clamp(0, queue.length - 1)];
@@ -218,6 +229,8 @@ class OrganizeState {
     List<String>? customTypes,
     List<String>? tags,
     int? formResetKey,
+    List<OcrJob>? ocrJobs,
+    bool? hasOcrApiKey,
   }) {
     return OrganizeState(
       queue: queue ?? this.queue,
@@ -240,6 +253,8 @@ class OrganizeState {
       customTypes: customTypes ?? this.customTypes,
       tags: tags ?? this.tags,
       formResetKey: formResetKey ?? this.formResetKey,
+      ocrJobs: ocrJobs ?? this.ocrJobs,
+      hasOcrApiKey: hasOcrApiKey ?? this.hasOcrApiKey,
     );
   }
 }
@@ -352,6 +367,161 @@ class OrganizeNotifier extends Notifier<OrganizeState> {
     );
     await loadFolders();
     loadForm();
+    // 十三批 M5：读当前题的 OCR 任务行与 key 有无（状态推导用）。
+    // 不 await：它是装饰性 best-effort 加载，失败/挂起都不能挡
+    // loadForm() 之后的流程；读到了再更新 state（见 _refreshOcrStatus）。
+    unawaited(_refreshOcrStatus());
+  }
+
+  /// 十三批 M5：只刷新当前题的 OCR 状态（任务行 + key 有无）。
+  /// 绝不碰表单值与 formResetKey——活页内 OCR 到达时调它不会重置
+  /// 正在编辑的表单（M3 警告：不要直接调 refresh()/loadForm()）。
+  /// 读库失败时保持旧值，不抛。
+  Future<void> _refreshOcrStatus() async {
+    final current = state.current;
+    if (current == null || _disposed) return;
+    final repo = _repo;
+    try {
+      final jobs = await repo.ocrJobsForQuestion(current.id);
+      final hasKey = await repo.hasOcrApiKey();
+      if (_disposed || state.current?.id != current.id) return;
+      state = state.copyWith(ocrJobs: jobs, hasOcrApiKey: hasKey);
+    } catch (_) {
+      // OCR 状态读不到：界面按题本身的 OCR 字段推导（无任务时），不挡整理。
+    }
+  }
+
+  /// 十三批 M5：活页内刷新守门后的单题刷新（页面订阅 DataChangeBus
+  /// 的 questions 事件后调，见 organize_page.dart 的 _onDataChange）。
+  ///
+  /// 只做两件事，不碰表单：
+  /// 1. 把 [questionId] 对应的题按库里最新行换进队列（OCR 字段更新了，
+  ///    文件夹/错因等表单值在 state 里另存，不受影响）；
+  /// 2. 是当前题时同时刷新它的 OCR 任务行与 key 有无。
+  /// formResetKey 不动，页面不会重建表单控制器。
+  /// 调用方（页面）须先守门：该题正在被纠错编辑器编辑时不调本方法，
+  /// 改走 [candidateStemFor] 只取候选（见页面 _onDataChange）。
+  Future<void> refreshOcrForQuestion(String questionId) async {
+    if (_disposed) return;
+    final repo = _repo;
+    try {
+      final fresh = await repo.questionById(questionId);
+      if (fresh == null || _disposed) return;
+      final queue = [...state.queue];
+      final i = queue.indexWhere((x) => x.id == questionId);
+      if (i < 0) return;
+      queue[i] = fresh;
+      var jobs = state.ocrJobs;
+      var hasKey = state.hasOcrApiKey;
+      if (state.current?.id == questionId) {
+        jobs = await repo.ocrJobsForQuestion(questionId);
+        hasKey = await repo.hasOcrApiKey();
+      }
+      if (_disposed) return;
+      state = state.copyWith(queue: queue, ocrJobs: jobs, hasOcrApiKey: hasKey);
+    } catch (_) {
+      // OCR 状态读不到：保持旧行，不挡整理。
+    }
+  }
+
+  /// 十三批 M5：读一道题的候选题干（守门分支用，不改任何状态）。
+  Future<String?> candidateStemFor(String questionId) =>
+      candidateStemForQuestion(_repo, questionId);
+
+  // ---------- 十三批 M5：纠错保存（见 stem_correction.dart 的规则） ----------
+
+  /// 保存手动编辑的题干：版本 +1、人工标记、切分状态“人工调整”、
+  /// 候选标志清掉；成功后把新行写回内存队列（与 saveCurrent 同款
+  /// SR2-6：只写库不同步内存时，下次表单保存会拿旧行整行覆盖）。
+  /// 返回 false 时页面提示“保存失败，请重试”，编辑器不收起。
+  Future<bool> saveStemEdit(String newStem) async {
+    final q = state.current;
+    if (q == null) return false;
+    final repo = _repo;
+    try {
+      final updated = applyManualStemEdit(q, newStem);
+      await repo.save(updated);
+      _replaceQueueRow(updated);
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// 接受候选（十三批 P1-1）：接受的题干一律从库里 ocr_raw 包取，
+  /// 接受时重验证（题目仍存在、input_hash 与当前切片一致、候选仍
+  /// pending）；任一不符返回 false（编辑器不收起，P1-2/M5 后续按
+  /// [CandidateRejection.reason] 给明确原因）。切分状态写回、
+  /// 人工标记保持 1、版本 +1、raw 候选状态写 accepted。
+  /// 失败返回 false，编辑器不收起。
+  Future<bool> acceptOcrCandidate() async =>
+      await acceptOcrCandidateWithReason() == null;
+
+  /// 接受候选并返回失败原因（十三批 P1-2 任务 e，与 DetailNotifier
+  /// 同款）：成功返回 null；失败返回 [CandidateRejection.reason]
+  ///（question_deleted / no_candidate / not_pending / hash_mismatch /
+  /// slice_missing），其余失败返回 'save_failed'，无当前题返回
+  /// 'no_question'。页面按 reason 给明确文案（见 ocr_stem_section.dart
+  /// 的 [candidateRejectionMessage]）。
+  Future<String?> acceptOcrCandidateWithReason() async {
+    final q = state.current;
+    if (q == null) return 'no_question';
+    final repo = _repo;
+    try {
+      // 十三批 P1 第二轮：acceptCandidateStem 在事务内原子校验并落库，
+      // 返回的就是已保存的题，不再另行 repo.save。
+      final updated = await acceptCandidateStem(repo, q);
+      _replaceQueueRow(updated);
+      return null;
+    } on CandidateRejection catch (e) {
+      return e.reason;
+    } catch (_) {
+      return 'save_failed';
+    }
+  }
+
+  /// 忽略候选：只清 raw 里的候选标志（版本 +1）。无候选时直接返回 true。
+  Future<bool> dismissOcrCandidate() async {
+    final q = state.current;
+    if (q == null) return true;
+    if (!hasPendingOcrCandidate(q)) return true;
+    final repo = _repo;
+    try {
+      final updated = dismissOcrCandidateFlag(q);
+      await repo.save(updated);
+      _replaceQueueRow(updated);
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// 手动“重新识别”：为当前题建 OCR 任务（调 M3 入队接口），
+  /// 入队后刷新任务行。入队失败（无切片等）返回 false，页面提示；
+  /// 入队本身绝不拦整理流程。
+  /// 十三批 P1-1：入队失败抛错时这里接住返回 false（P1-2 改为向
+  /// 用户展示“OCR 未入队”+重试入口）。
+  Future<bool> rerecognizeCurrent() async {
+    final q = state.current;
+    if (q == null) return false;
+    OcrJob? job;
+    try {
+      job = await enqueueOcrForQuestion(_repo.db, q);
+    } catch (_) {
+      return false;
+    }
+    if (job == null) return false;
+    // 任务行刷新不 await（best-effort：读到了再更新 state，见上）。
+    unawaited(_refreshOcrStatus());
+    return true;
+  }
+
+  void _replaceQueueRow(Question updated) {
+    final i = state.queue.indexWhere((x) => x.id == updated.id);
+    if (i < 0) return;
+    final queue = [...state.queue];
+    queue[i] = updated;
+    state = state.copyWith(queue: queue);
   }
 
   /// 读当前题所属学科的文件夹（原 `_loadFolders`）：无当前题时直接返回。

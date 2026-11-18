@@ -3,6 +3,7 @@ import '../data/data_change_events.dart';
 import '../models/exam_event.dart';
 import '../models/models.dart';
 import '../services/import_service.dart';
+import '../services/ocr_key_store.dart';
 
 /// 一道题的复习归属（互斥拆分）：首页焦点卡“待解决 / 复查”与错题本
 /// 封面三数共用此口径，同一道题只落一个桶。
@@ -23,8 +24,13 @@ enum ReviewBucket { pending, recheck, solved, none }
 /// 不直接读其他模块的状态，只读数据层。
 /// v2：旧翻卡 + 1/3/7/14 天间隔已废弃；复习是治错因模型。
 class QuestionRepository {
-  QuestionRepository(this._db);
+  QuestionRepository(this._db, {OcrKeyStore? keyStore})
+    : _keyStore = keyStore ?? OcrKeyStore();
   final AppDatabase _db;
+
+  /// BigModel key 的安全存储（十三批 M3 契约：键名 bigmodel_api_key 冻结；
+  /// 本仓库只问“有没有 key”，不读出 key 值、不记日志）。
+  final OcrKeyStore _keyStore;
 
   /// 一道题的复习归属：按它的全部错因记录互斥分类（见 [ReviewBucket]）。
   /// 首页焦点卡的待解决 / 复查拆分与错题本封面三数都走这里，
@@ -53,6 +59,31 @@ class QuestionRepository {
   }
 
   Future<Question?> questionById(String id) => _db.questionById(id);
+
+  /// 十三批 M5：读一道题的 OCR 任务行（最新在前，供识别题干状态推导用）。
+  /// 读库失败时返回空列表——OCR 状态是锦上添花，绝不能拖垮页面。
+  /// 注意：这里不能加 `.timeout()`——widget 测试的 fake async 里
+  /// 未完成的 Timer 会在测试结束时按“仍有待处理 Timer”判失败
+  /// （实测：detail_page_test 41 项全灭于此）；调用方（Notifier）
+  /// 用不 await 的方式调它（见 _refreshOcrStatus），读不到就保持旧值。
+  Future<List<OcrJob>> ocrJobsForQuestion(String questionId) async {
+    try {
+      return await _db.ocrJobsForQuestion(questionId);
+    } catch (_) {
+      return const [];
+    }
+  }
+
+  /// 十三批 M5：设置里是否已存 BigModel key（只问有无，不读出 key 值）。
+  /// 安全存储不可用（测试环境无平台实现等）时返回 false——
+  /// 没 key 时状态只显示“等待设置 API Key”，不影响题目本身。
+  Future<bool> hasOcrApiKey() async {
+    try {
+      return await _keyStore.hasApiKey();
+    } catch (_) {
+      return false;
+    }
+  }
 
   Future<List<({String result, DateTime reviewedAt})>> reviewHistory(
     String questionId,

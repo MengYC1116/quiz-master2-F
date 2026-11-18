@@ -8,6 +8,8 @@ import '../../data/database.dart';
 import '../../models/exam_event.dart';
 import '../../models/models.dart';
 import '../../services/import_service.dart';
+import '../../services/ocr_key_store.dart';
+import '../../services/ocr_queue.dart';
 import '../../state/settings_notifier.dart';
 import '../../theme/design_tokens.dart';
 import '../../widgets/uikit.dart';
@@ -27,7 +29,8 @@ import '../../widgets/uikit.dart';
 /// 数据备份/恢复（恢复先选文件再弹窗确认，含备份题数与当前题数）、
 /// 数据库位置（改后提示重启才生效）、空间占用与孤儿清理（P3 §4.5：
 /// 打开数据组时统计/扫描，清理前预览确认）、缓存清理（先预览临时文件数 +
-/// 缩略图数 + 约多少 MB，再确认）；启动页 + 关于
+/// 缩略图数 + 约多少 MB，再确认）、BigModel key（M6：OCR 服务凭据，
+/// 密码式输入、只显示已设置/未设置）；启动页 + 关于
 /// （版本 v0.1.0、作者 Meng（个人项目）、更新说明）。
 /// 不做的项不出现：首页显示内容开关、封面计数牌开关、导入文件大小、
 /// 整理台默认排序（与 HTML psub 的“不做”清单一致）。
@@ -37,6 +40,9 @@ class SettingsPage extends ConsumerStatefulWidget {
     this.loadFailed = false,
     this.onBackupFailed,
     this.initialOpenGroup,
+    // M6：BigModel key 存储。生产默认走平台安全存储（OcrKeyStore
+    // 默认后端）；单测传内存假后端，不碰平台通道。
+    this.keyStore,
   });
 
   /// 设置读取失败时由 app 传入：显示错误横幅，已显示默认设置。
@@ -50,6 +56,10 @@ class SettingsPage extends ConsumerStatefulWidget {
   /// 'appearance' / 'review' / 'wrongbook' / 'exams' / 'data' /
   /// 'startup'。
   final String? initialOpenGroup;
+
+  /// M6：BigModel key 存储（可注入，见构造参数注释）。为 null 时
+  /// State 里建默认实例（生产走 flutter_secure_storage）。
+  final OcrKeyStore? keyStore;
 
   @override
   ConsumerState<SettingsPage> createState() => _SettingsPageState();
@@ -104,13 +114,25 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
   final _examNameController = TextEditingController();
   DateTime? _newExamDate;
 
+  // M6：BigModel key（OCR 服务凭据，见 _buildData 末尾）。
+  // key 只进安全存储：本页只调 OcrKeyStore 的 set/has/clear，
+  // 绝不读出 key 值（不调用 getApiKey）、不显示、不记日志。
+  // 输入框平时为空，保存后立即清空，不让 key 滞留在控制器里。
+  late final OcrKeyStore _keyStore;
+  final _apiKeyController = TextEditingController();
+  bool? _keySet; // null = 还没读过（数据组没打开过）；true/false = 已设置/未设置
+  bool _keyBusy = false;
+
   @override
   void initState() {
     super.initState();
+    _keyStore = widget.keyStore ?? OcrKeyStore();
     _greetingController.text = _s.greeting;
     // B11-9：从首页倒计时点进来时直接展开考试组（平时为 null，全折）。
     _openGroup = widget.initialOpenGroup;
     _loadQuestionCount();
+    // M6：直接展开数据组时同样读一次 key 状态。
+    if (_openGroup == 'data') _loadKeyStatus();
     // B11-9：考试列表平时不读——只在考试组打开时才读（见 _toggleGroup），
     // 这样不打开考试组的用例（包括只 pump 设置页的旧测试）完全不受影响。
     // 从首页倒计时点进来时组已展开，这里直接读一次。
@@ -152,6 +174,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
   void dispose() {
     _greetingController.dispose();
     _examNameController.dispose();
+    _apiKeyController.dispose();
     super.dispose();
   }
 
@@ -167,9 +190,64 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
       _openGroup = _openGroup == key ? null : key;
       if (_openGroup == 'data' && !_cacheScanned) _scanCache();
       if (_openGroup == 'data') _scanStorageAndOrphans();
+      // M6：打开数据组时读一次 key 状态（只读 hasApiKey，不读 key 本身）。
+      if (_openGroup == 'data') _loadKeyStatus();
       // B11-9：考试组打开时才读考试列表（平时不读，见 initState 注释）。
       if (_openGroup == 'exams') _loadExamEvents();
     });
+  }
+
+  // ---------- 数据：BigModel key（M6，OCR 服务凭据） ----------
+
+  /// 只读“有没有 key”，绝不读出 key 值。读不到时状态保持上次的值，
+  /// 设置页本身不受影响。
+  Future<void> _loadKeyStatus() async {
+    try {
+      final has = await _keyStore.hasApiKey();
+      if (!mounted) return;
+      setState(() => _keySet = has);
+    } catch (_) {}
+  }
+
+  /// 保存 key：空串按 OcrKeyStore 契约视为清除。保存后立即清空
+  /// 输入框（key 不滞留）；存入了非空 key 才唤醒 worker——排队的
+  /// OCR 任务不用等满 10 分钟才跑（worker 没启动时是空操作）。
+  /// 十三批 P1-1（GPT §3.3）：唤醒前先清掉“等 key”的 available_at，
+  /// 否则只是唤醒循环、任务仍被 10 分钟延迟挡住。
+  Future<void> _saveApiKey() async {
+    if (_keyBusy) return;
+    final text = _apiKeyController.text;
+    setState(() => _keyBusy = true);
+    try {
+      await _keyStore.setApiKey(text);
+      if (text.trim().isNotEmpty) {
+        await OcrWorker.instanceOrNull?.notifyApiKeySaved();
+      }
+      _apiKeyController.clear();
+      await _loadKeyStatus();
+      _snack(text.trim().isEmpty ? 'BigModel key 已清除' : 'BigModel key 已保存');
+    } catch (_) {
+      _snack('没保存上，稍后再试');
+    } finally {
+      if (mounted) setState(() => _keyBusy = false);
+    }
+  }
+
+  /// 清除 key（输入框内容不动，只清已存的 key；输入框本身保存后
+  /// 已是空的，平时也不预填 key）。
+  Future<void> _clearApiKey() async {
+    if (_keyBusy) return;
+    setState(() => _keyBusy = true);
+    try {
+      await _keyStore.clearApiKey();
+      _apiKeyController.clear();
+      await _loadKeyStatus();
+      _snack('BigModel key 已清除');
+    } catch (_) {
+      _snack('没清除掉，稍后再试');
+    } finally {
+      if (mounted) setState(() => _keyBusy = false);
+    }
   }
 
   /// P3 §4.5/§6 第 9 条：打开数据组时统计空间占用、扫描孤儿文件。
@@ -1158,6 +1236,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
 
   Widget _buildData() {
     final scale = qmScaleOf(context);
+    final palette = DesignTokens.of(Theme.of(context).brightness);
     final preview = _cachePreview;
     // P3 §6 第 9 条：空间占用与上限提示（打开数据组时统计）。
     final storageTotal = _storageUsage == null
@@ -1284,6 +1363,59 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                 ? '其中含导入失败的残留文件 ${preview.failedCount} 个，缩略图之后用到时会自动重新生成。'
                 : '缩略图之后用到时会自动重新生成。',
           ),
+        // M6：BigModel key（OCR 服务凭据）。放数据组：它是 OCR 服务的
+        // 凭据，与备份/数据库位置同属“数据”范畴；其他组（外观/复习/
+        // 错题本/考试/启动与关于）都不贴切。输入框密码式遮蔽，平时
+        // 为空、从不预填 key；状态只显示已设置/未设置，key 值本身
+        // 永不显示（本页不调用 getApiKey）。
+        _row(
+          'BigModel key',
+          'OCR 识别用的 BigModel API Key，只存在本机安全存储，不进题库、不进备份。保存后排队的识别任务会立即开始，不用等。',
+          SizedBox(
+            width: 460 * scale,
+            child: Row(
+              children: [
+                Expanded(
+                  child: QmTextField(
+                    key: const Key('bigmodel-key-field'),
+                    controller: _apiKeyController,
+                    hintText: '粘贴 BigModel API Key',
+                    obscureText: true,
+                    enabled: !_keyBusy,
+                    onSubmitted: (_) => _saveApiKey(),
+                  ),
+                ),
+                SizedBox(width: 8 * scale),
+                QmButton(
+                  key: const Key('bigmodel-key-save'),
+                  label: '保存',
+                  size: QmButtonSize.small,
+                  onPressed: _keyBusy ? null : _saveApiKey,
+                ),
+                SizedBox(width: 8 * scale),
+                QmButton(
+                  key: const Key('bigmodel-key-clear'),
+                  label: '清除',
+                  variant: QmButtonVariant.plain,
+                  size: QmButtonSize.small,
+                  onPressed: _keyBusy ? null : _clearApiKey,
+                ),
+              ],
+            ),
+          ),
+        ),
+        Text(
+          _keySet == null
+              ? '状态：读取中…'
+              : _keySet!
+              ? '状态：已设置'
+              : '状态：未设置',
+          key: const Key('bigmodel-key-status'),
+          style: TextStyle(
+            fontSize: R10Tokens.settingsRowDescFontSize,
+            color: palette.muted,
+          ),
+        ),
       ],
     );
   }

@@ -19,6 +19,7 @@
 //
 // 颜色只取 DesignTokens；文字符号（D3），不用图标字体；
 // 三档缩放 1.00/1.15/1.30 由 app.dart TextScaler + qmScaleOf 统一做。
+import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
 
@@ -26,8 +27,10 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../data/database.dart';
+import '../../data/data_change_events.dart';
 import '../../data/repository.dart';
 import '../../models/models.dart';
+import '../../modules/ocr/ocr_stem_section.dart';
 import '../../services/question_export_service.dart';
 import '../../services/yolo_onnx_service.dart';
 import '../../state/detail_notifier.dart';
@@ -194,8 +197,100 @@ class _DetailViewState extends ConsumerState<_DetailView> {
   /// 当前业务状态（build 里 `ref.watch` 订阅后，构建方法内用它读值）。
   DetailState get _st => ref.read(detailProvider);
 
+  /// 十三批 M5：活页内 OCR 事件订阅（见 [_onDataChange] 的守门规则）。
+  StreamSubscription<DataChangeEvent>? _ocrSub;
+
+  /// 纠错编辑器是否正开着、正在编哪道题（守门用：编辑中的题不刷新）。
+  bool _stemEditorOpen = false;
+  String? _stemEditorQuestionId;
+
+  /// 编辑中 OCR 回来了：只取到的候选题干（不碰 Notifier 状态，
+  /// 只传给 [OcrStemSection] 显示“有新的识别结果”横幅）。
+  String? _candidateWhileEditing;
+
+  @override
+  void initState() {
+    super.initState();
+    _ocrSub = DataChangeBus.instance.stream.listen(_onDataChange);
+  }
+
+  /// 十三批 M5：活页内刷新守门（M3 报告的警告，必守）。
+  ///
+  /// 收到 questions 事件后：
+  /// - 事件不是当前题：忽略（详情页一次只看一道题）。
+  /// - 事件是当前题、且纠错编辑器正开着：绝不调 `load()`
+  ///   （会重建题目对象；主编辑表单虽不受影响，但纠错编辑器
+  ///   拿到的 question 对象会被换掉）；只另行取一次候选题干
+  ///   （[DetailNotifier.candidateStemFor]，不改任何状态），
+  ///   有候选就在编辑器里显“有新的识别结果”横幅，草稿一个字不动。
+  /// - 事件是当前题、编辑器没开：调 `refreshStemStatus()` 只重读
+  ///   当前题 + 任务行，不碰编辑表单值与 formResetKey。
+  Future<void> _onDataChange(DataChangeEvent event) async {
+    if (!event.kinds.contains(DataChangeKind.questions)) return;
+    if (!mounted) return;
+    final id = event.questionId;
+    final currentId = ref.read(detailProvider).currentId;
+    if (id != null && id != currentId) return;
+    if (_stemEditorOpen && (id == null || id == _stemEditorQuestionId)) {
+      final candidate = await _notifier.candidateStemFor(currentId);
+      if (!mounted) return;
+      if (candidate != null) {
+        setState(() => _candidateWhileEditing = candidate);
+      }
+      return;
+    }
+    await _notifier.refreshStemStatus();
+  }
+
+  // ---------- 十三批 M5：纠错保存（失败时提示，编辑器不收起） ----------
+
+  Future<bool> _saveStemEdit(String newStem) async {
+    final ok = await _notifier.saveStemEdit(newStem);
+    if (!mounted) return ok;
+    _snack(ok ? '题干已保存' : '保存失败，请重试');
+    return ok;
+  }
+
+  // 十三批 P1-1：接受的题干一律从库里 ocr_raw 包取（接受时重验证），
+  // 这里收到的 candidateStem 只是预览字符串，不再传给 Notifier。
+  // 十三批 P1-2 任务 e：失败时按 CandidateRejection.reason 给明确文案
+  //（见 ocr_stem_section.dart 的 candidateRejectionMessage），
+  // 不再一律显示通用“保存失败，请重试”。
+  Future<bool> _acceptOcrCandidate(String candidateStem) async {
+    final reason = await _notifier.acceptOcrCandidateWithReason();
+    if (!mounted) return reason == null;
+    _snack(reason == null ? '已用新的识别结果替换' : candidateRejectionMessage(reason));
+    return reason == null;
+  }
+
+  /// 十三批 P1-2 任务 a：重框入队失败横幅上的“重新入队”——走同一入队
+  /// 路径重试（DetailNotifier.retryOcrEnqueue）。成功后横幅消失
+  ///（Notifier 清掉失败标志）；失败时横幅保留，可再点重试。
+  Future<void> _retryOcrEnqueue() async {
+    final ok = await _notifier.retryOcrEnqueue();
+    if (!mounted) return;
+    _snack(ok ? '已重新加入识别队列' : '重新入队失败，请重试');
+  }
+
+  Future<void> _dismissOcrCandidate() async {
+    final ok = await _notifier.dismissOcrCandidate();
+    if (!mounted) return;
+    if (!ok) _snack('保存失败，请重试');
+  }
+
+  Future<void> _rerecognizeStem() async {
+    final ok = await _notifier.rerecognizeCurrent();
+    if (!mounted) return;
+    if (ok) {
+      _snack('已重新识别，稍等片刻');
+    } else {
+      _snack('重新识别失败：没有可识别的切片');
+    }
+  }
+
   @override
   void dispose() {
+    _ocrSub?.cancel();
     _titleCtrl.dispose();
     _answerCtrl.dispose();
     _explanationCtrl.dispose();
@@ -837,6 +932,38 @@ class _DetailViewState extends ConsumerState<_DetailView> {
                   ],
                   SizedBox(height: 12 * scale),
                   _buildImageBlock(q, imageMaxHeight),
+                  // 十三批 P1-2 任务 a：重框成功但 OCR 未入队时的横幅——
+                  // 框选结果已保留（题图与切片都是新的），只说明 OCR
+                  // 没排上，并给“重新入队”重试入口。不要让页面把
+                  // “已重新框选，切片已更新”等同于“OCR 已排队”。
+                  if (st.ocrEnqueueFailed) ...[
+                    SizedBox(height: 12 * scale),
+                    _ocrEnqueueFailedBanner(scale),
+                  ],
+                  SizedBox(height: 12 * scale),
+                  // 十三批 M5：识别题干区——在题目图下方，长期可用，
+                  // 与整理工作台共用同一套 [OcrStemSection]。
+                  // Key 按题 id：换题时编辑器收起、草稿不跨题。
+                  OcrStemSection(
+                    key: ValueKey('ocr-stem-${q.id}'),
+                    question: q,
+                    jobs: st.ocrJobs,
+                    hasApiKey: st.hasOcrApiKey,
+                    candidateStemOverride: _stemEditorQuestionId == q.id
+                        ? _candidateWhileEditing
+                        : null,
+                    onSaveEdited: _saveStemEdit,
+                    onAcceptCandidate: _acceptOcrCandidate,
+                    onDismissCandidate: _dismissOcrCandidate,
+                    onRerecognize: _rerecognizeStem,
+                    onEditingChanged: (open) {
+                      setState(() {
+                        _stemEditorOpen = open;
+                        _stemEditorQuestionId = open ? q.id : null;
+                        if (!open) _candidateWhileEditing = null;
+                      });
+                    },
+                  ),
                   SizedBox(height: 12 * scale),
                   _buildSection('answer', '答案解析', _buildAnswerSection(q)),
                   SizedBox(height: 12 * scale),
@@ -850,6 +977,46 @@ class _DetailViewState extends ConsumerState<_DetailView> {
             ),
           ),
         ),
+      ),
+    );
+  }
+
+  /// 十三批 P1-2 任务 a：重框入队失败横幅——“题目已更新，OCR 未入队”
+  /// + “重新入队”按钮（调 [_retryOcrEnqueue]，成功后横幅消失）。
+  /// 只有重框入队失败时才出现（[DetailState.ocrEnqueueFailed]），
+  /// 入队成功 / 切到别的题时不出现。
+  Widget _ocrEnqueueFailedBanner(double scale) {
+    final palette = DesignTokens.of(Theme.of(context).brightness);
+    return Container(
+      key: const Key('ocr-enqueue-failed-banner'),
+      width: double.infinity,
+      padding: EdgeInsets.symmetric(
+        horizontal: 12 * scale,
+        vertical: 10 * scale,
+      ),
+      decoration: BoxDecoration(
+        color: palette.surface2,
+        border: Border.all(color: palette.errInk),
+        borderRadius: BorderRadius.circular(8 * scale),
+      ),
+      child: Row(
+        children: [
+          Expanded(
+            child: Text(
+              '题目已更新，OCR 未入队',
+              style: TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w700,
+                color: palette.ink,
+              ),
+            ),
+          ),
+          QmButton(
+            label: '重新入队',
+            size: QmButtonSize.small,
+            onPressed: _retryOcrEnqueue,
+          ),
+        ],
       ),
     );
   }
