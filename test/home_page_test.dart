@@ -107,6 +107,15 @@ class FakeRepo extends QuestionRepository {
 
   @override
   Future<List<ExamEvent>> examEvents() async => examEventsList;
+
+  /// 十二批功能 4（D-91）：最近查看列表（默认空，首页不显示该区；
+  /// 不覆盖会走到真实库，fake async 里永不完成、拖死 pumpAndSettle，
+  /// 见 D-88）。
+  List<({Question question, DateTime viewedAt})> historyList = const [];
+
+  @override
+  Future<List<({Question question, DateTime viewedAt})>>
+  recentlyViewedQuestions() async => List.of(historyList);
 }
 
 /// SR2-61：repo 参数放宽为 QuestionRepository（FakeRepo 是其子类，

@@ -107,6 +107,10 @@ class FakeExportRepo extends QuestionRepository {
   // loading 一直 true、转圈拖死 pumpAndSettle。
   @override
   Future<AppSettings> settings() async => AppSettings.defaults;
+
+  /// 十二批功能 4（D-91）：记一次查看的桩（同上，不碰真实库）。
+  @override
+  Future<void> recordQuestionViewed(String questionId) async {}
 }
 
 /// 导出服务的假实现：三个外部边界（剪贴板写、另存为对话框、

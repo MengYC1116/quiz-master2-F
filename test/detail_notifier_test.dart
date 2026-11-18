@@ -107,6 +107,16 @@ class FakeDetailNotifierRepo extends QuestionRepository {
   @override
   Future<AppSettings> settings() async => settingsValue;
 
+  /// 十二批功能 4（D-91）：记一次查看的桩——只记 id，不碰真实库
+  ///（不覆盖会落到基类读真实 Drift 库，fake async 里永不完成，
+  /// 见 D-88；`load()` 里 await 它，挂住会拖死测试）。
+  final List<String> recordedViews = [];
+
+  @override
+  Future<void> recordQuestionViewed(String questionId) async {
+    recordedViews.add(questionId);
+  }
+
   final List<Question> saved = [];
   final List<String> deletedIds = [];
   int syncCauseRecordsCalls = 0;

@@ -126,6 +126,11 @@ class _SweepDetailRepo extends QuestionRepository {
 
   @override
   Future<List<KnowledgePoint>> knowledgePoints() async => const [];
+
+  /// 十二批功能 4（D-91）：记一次查看的桩（不碰真实库；不覆盖会落到
+  /// 基类读真实 Drift 库，fake async 里永不完成，见 D-88）。
+  @override
+  Future<void> recordQuestionViewed(String questionId) async {}
 }
 
 // ---------------------------------------------------------------- 整理页

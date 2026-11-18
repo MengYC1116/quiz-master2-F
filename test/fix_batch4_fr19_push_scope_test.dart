@@ -91,6 +91,13 @@ class Fr19FakeRepo extends QuestionRepository {
   Future<List<({String result, DateTime reviewedAt})>> reviewHistory(
     String qid,
   ) async => [];
+
+  /// 十二批功能 4（D-91）：最近查看列表（默认空；home 用例会走
+  /// HomeNotifier.load，不覆盖会落到真实库、fake async 里永不完成，
+  /// 见 D-88）。
+  @override
+  Future<List<({Question question, DateTime viewedAt})>>
+  recentlyViewedQuestions() async => const [];
 }
 
 /// 根 Scope + push：点按钮进嵌套 ProviderScope 包裹的路由，路由内

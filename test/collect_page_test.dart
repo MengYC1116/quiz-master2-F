@@ -137,6 +137,51 @@ class _SelectiveYolo extends YoloOnnxService {
   }
 }
 
+/// 十二批 Stage B：返回调用方给定的框列表（按给定顺序，不排序），
+// 供题序测试——故意按旧 y-then-x 顺序给，看编辑器是否按阅读顺序重排。
+class _OrderedYolo extends YoloOnnxService {
+  _OrderedYolo(this.boxes);
+
+  final List<QuestionBox> boxes;
+
+  @override
+  Future<DetectionResult> detectPage({
+    required String imagePath,
+    required int page,
+  }) async =>
+      DetectionResult(boxes: List.of(boxes), usedFallback: false);
+}
+
+/// 十二批 Stage B：双栏 4 框（左栏 L1/L2、右栏 R1/R2）。
+// 旧 y-then-x 顺序是 [L1, R1, L2, R2]，阅读顺序是 [L1, L2, R1, R2]。
+// 顶部留 0.20 空条，供拖框测试把框拖到 L1 上方而不重叠。
+// [draftIds] 为真时用持久化格式 id（草稿重进测试用），否则用 box-qN。
+List<QuestionBox> _b12TwoColumnBoxes({bool draftIds = false}) {
+  QuestionBox box(String id, double x, double y) => QuestionBox(
+    id: id,
+    layer: 1,
+    type: 'question',
+    x: x,
+    y: y,
+    w: 0.40,
+    h: 0.15,
+    page: 1,
+  );
+  final ids = draftIds
+      ? [
+          'box-t-needbox-p1-00000001',
+          'box-t-needbox-p1-00000002',
+          'box-t-needbox-p1-00000003',
+          'box-t-needbox-p1-00000004',
+        ]
+      : ['box-q1', 'box-q2', 'box-q3', 'box-q4'];
+  final l1 = box(ids[0], 0.05, 0.20);
+  final r1 = box(ids[1], 0.55, 0.20);
+  final l2 = box(ids[2], 0.05, 0.40);
+  final r2 = box(ids[3], 0.55, 0.40);
+  return [l1, r1, l2, r2];
+}
+
 /// P1-2：给多页 PDF 任务在临时数据目录里种每页的页图
 ///（`imports/<id>/pages/page-00N.png`，都用同一张真实页图），
 ///否则 _openBoxEditor 会因页图缺失拒绝开编辑器。
@@ -183,6 +228,21 @@ Finder editorBoxHandle(String label) => find.ancestor(
         w.key is ValueKey<String> &&
         (w.key as ValueKey<String>).value.startsWith('editor-box-'),
   ),
+);
+
+/// 十二批 FR-03 核验：画布内当前标红的框边框个数。
+/// 框体/只读框/正在画的框共用此渲染口径（box_editor.dart _boxView /
+/// _frozenBoxView / _pendingBoxView：边框取 errInk），每道重叠的框恰好贡献 1 个。
+Finder redOverlapBorders() => find.descendant(
+  of: find.byKey(const Key('box-editor-canvas')),
+  matching: find.byWidgetPredicate((w) {
+    if (w is Container && w.decoration is BoxDecoration) {
+      final border = (w.decoration as BoxDecoration).border;
+      return border is Border &&
+          border.top.color == DesignTokens.of(Brightness.light).errInk;
+    }
+    return false;
+  }),
 );
 
 CollectTask task(
@@ -486,10 +546,16 @@ double editorVerticalPixels(WidgetTester tester) {
 /// 测试体在 fake async zone 里，真实 IO 的 Future 等不到完成；
 /// 须在 runAsync 内反复 pump + 真实延时推进（每步 IO 各需一次
 /// pump 刷 microtask + 一次真实延时让事件循环跑完）。
-Future<void> tapConfirmAndWait(WidgetTester tester, String label) async {
+Future<void> tapConfirmAndWait(
+  WidgetTester tester,
+  String label, {
+  // 十二批 Stage B：泵轮次可调——4 道题的切片比 2 道多，默认 20 轮
+  // 不够确认流程跑完（实测 30 轮才够），多给到 40 轮留余量。
+  int rounds = 20,
+}) async {
   await tester.runAsync(() async {
     await tester.tap(find.text(label));
-    for (var i = 0; i < 20; i++) {
+    for (var i = 0; i < rounds; i++) {
       await tester.pump();
       await Future<void>.delayed(const Duration(milliseconds: 200));
     }
@@ -924,6 +990,217 @@ void main() {
       expect(repo.deletedTaskIds, isEmpty);
     });
 
+    testWidgets('FR-03 核验(1)(2)(5)：拖动框进出重叠，红色与横幅实时同步', (tester) async {
+      final repo = FakeRepo([
+        task(
+          't-needbox',
+          '待框选文件.pdf · 第1页 · 第1题',
+          status: CollectStatus.needBox,
+        ),
+      ]);
+      await pumpCollect(tester, repo: repo);
+      await openEditor(tester, '修框');
+      final box = editorBoxHandle('题级框 1');
+      await tester.ensureVisible(box);
+      await tester.pumpAndSettle();
+      final boxRect = tester.getRect(box);
+      final pageW = boxRect.width / 0.88;
+      final pageH = boxRect.height / 0.85;
+      final origin = Offset(
+        boxRect.left - 0.06 * pageW,
+        boxRect.top - 0.05 * pageH,
+      );
+      // 先在页底空白条（框 1 在 y 0.05–0.90 之外）画一道不重叠的框。
+      await tester.dragFrom(
+        origin + Offset(0.10 * pageW, 0.92 * pageH),
+        Offset(0.50 * pageW, 0.07 * pageH),
+      );
+      await tester.pumpAndSettle();
+      expect(find.textContaining('框重叠'), findsNothing);
+      expect(redOverlapBorders(), findsNothing);
+      // 鼠标左键把题级框 2 往上拖进框 1：重叠出现，红色与横幅同步出现。
+      final box2 = editorBoxHandle('题级框 2');
+      await tester.dragFrom(
+        tester.getCenter(box2),
+        Offset(0, -0.50 * pageH),
+        kind: ui.PointerDeviceKind.mouse,
+      );
+      await tester.pumpAndSettle();
+      expect(find.textContaining('框重叠'), findsOneWidget);
+      expect(
+        find.textContaining('第 1、2 道题的框叠在一起，请调开再确认。'),
+        findsOneWidget,
+      );
+      expect(redOverlapBorders(), findsNWidgets(2));
+      // 再拖回页底：重叠消失，红色与横幅同步消失。
+      await tester.dragFrom(
+        tester.getCenter(box2),
+        Offset(0, 0.50 * pageH),
+        kind: ui.PointerDeviceKind.mouse,
+      );
+      await tester.pumpAndSettle();
+      expect(find.textContaining('框重叠'), findsNothing);
+      expect(redOverlapBorders(), findsNothing);
+    });
+
+    testWidgets('FR-03 核验(1)(5)：缩放柄拖动实时刷新红色', (tester) async {
+      final repo = FakeRepo([
+        task(
+          't-needbox',
+          '待框选文件.pdf · 第1页 · 第1题',
+          status: CollectStatus.needBox,
+        ),
+      ]);
+      await pumpCollect(tester, repo: repo);
+      await openEditor(tester, '修框');
+      final box = editorBoxHandle('题级框 1');
+      await tester.ensureVisible(box);
+      await tester.pumpAndSettle();
+      final boxRect = tester.getRect(box);
+      final pageW = boxRect.width / 0.88;
+      final pageH = boxRect.height / 0.85;
+      final origin = Offset(
+        boxRect.left - 0.06 * pageW,
+        boxRect.top - 0.05 * pageH,
+      );
+      // 框 2 从左下角空白起笔，盖住框 1 下半部。
+      await tester.dragFrom(
+        origin + Offset(0.02 * pageW, 0.95 * pageH),
+        Offset(0.88 * pageW, -0.25 * pageH),
+      );
+      await tester.pumpAndSettle();
+      expect(find.textContaining('框重叠'), findsOneWidget);
+      expect(redOverlapBorders(), findsNWidgets(2));
+      // 选中框 1，拖它的东南缩放柄往左上收。
+      await tester.tap(editorBoxHandle('题级框 1'));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('题级框 1 · 已选中'), findsOneWidget);
+      // 框 id 是持久化 id（含随机 uuid8，见 editorBoxHandle 注释），
+      // 柄 key 不能按 'editor-resize-se-box-q1' 精确找，按前缀找。
+      final seHandle = find.byWidgetPredicate(
+        (w) =>
+            w is GestureDetector &&
+            w.key is ValueKey<String> &&
+            (w.key as ValueKey<String>).value.startsWith('editor-resize-se-'),
+      );
+      expect(seHandle, findsOneWidget);
+      final gesture = await tester.startGesture(
+        tester.getCenter(seHandle),
+        kind: ui.PointerDeviceKind.mouse,
+      );
+      // 先拖一小段：框 1 仍盖住框 2，红色还在（拖动中已重算）。
+      await gesture.moveBy(Offset(-0.10 * pageW, -0.10 * pageH));
+      await tester.pump();
+      expect(find.textContaining('框重叠'), findsOneWidget);
+      expect(redOverlapBorders(), findsNWidgets(2));
+      // 继续往左上拖到框 2 上方之外：重叠消失，红色实时消失。
+      await gesture.moveBy(Offset(-0.30 * pageW, -0.30 * pageH));
+      await tester.pump();
+      expect(find.textContaining('框重叠'), findsNothing);
+      expect(redOverlapBorders(), findsNothing);
+      await gesture.up();
+      await tester.pumpAndSettle();
+      expect(find.textContaining('框重叠'), findsNothing);
+      expect(redOverlapBorders(), findsNothing);
+    });
+
+    testWidgets('FR-03 核验(3)(5)：三框互相重叠时三道框都标红', (tester) async {
+      final repo = FakeRepo([
+        task(
+          't-needbox',
+          '待框选文件.pdf · 第1页 · 第1题',
+          status: CollectStatus.needBox,
+        ),
+      ]);
+      await pumpCollect(tester, repo: repo);
+      await openEditor(tester, '修框');
+      final box = editorBoxHandle('题级框 1');
+      await tester.ensureVisible(box);
+      await tester.pumpAndSettle();
+      final boxRect = tester.getRect(box);
+      final pageW = boxRect.width / 0.88;
+      final pageH = boxRect.height / 0.85;
+      final origin = Offset(
+        boxRect.left - 0.06 * pageW,
+        boxRect.top - 0.05 * pageH,
+      );
+      // 框 2 从左缘空白起笔，盖住框 1 大部。
+      await tester.dragFrom(
+        origin + Offset(0.05 * pageW, 0.05 * pageH),
+        Offset(0.60 * pageW, 0.60 * pageH),
+      );
+      await tester.pumpAndSettle();
+      expect(redOverlapBorders(), findsNWidgets(2));
+      // 框 2 落下后重叠横幅出现，画布重排、页重 fit——起笔几何须按新布局重算，
+      // 不能沿用开编辑器时算的 origin（旧几何的点会落在页外，画不出框）。
+      final boxRect2 = tester.getRect(editorBoxHandle('题级框 1'));
+      final pageW2 = boxRect2.width / 0.88;
+      final pageH2 = boxRect2.height / 0.85;
+      final origin2 = Offset(
+        boxRect2.left - 0.06 * pageW2,
+        boxRect2.top - 0.05 * pageH2,
+      );
+      // 框 3 从左缘空白起笔，向下盖住框 1 与框 2 的交叠区。
+      await tester.dragFrom(
+        origin2 + Offset(0.02 * pageW2, 0.25 * pageH2),
+        Offset(0.68 * pageW2, 0.70 * pageH2),
+      );
+      await tester.pumpAndSettle();
+      expect(find.textContaining('框重叠'), findsOneWidget);
+      expect(
+        find.textContaining('第 1、2、3 道题的框叠在一起，请调开再确认。'),
+        findsOneWidget,
+      );
+      expect(redOverlapBorders(), findsNWidgets(3));
+      // 确认仍被拦下。
+      await tester.tap(find.text('确认修框，拆成 3 个待整理任务'));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('修框 ·'), findsOneWidget);
+      expect(repo.deletedTaskIds, isEmpty);
+    });
+
+    testWidgets('FR-03 核验(4)(5)：取消重进后重叠状态重新算出', (tester) async {
+      final repo = FakeRepo([
+        task(
+          't-needbox',
+          '待框选文件.pdf · 第1页 · 第1题',
+          status: CollectStatus.needBox,
+        ),
+      ]);
+      await pumpCollect(tester, repo: repo);
+      await openEditor(tester, '修框');
+      final box = editorBoxHandle('题级框 1');
+      await tester.ensureVisible(box);
+      await tester.pumpAndSettle();
+      final boxRect = tester.getRect(box);
+      final pageW = boxRect.width / 0.88;
+      final pageH = boxRect.height / 0.85;
+      final origin = Offset(
+        boxRect.left - 0.06 * pageW,
+        boxRect.top - 0.05 * pageH,
+      );
+      await tester.dragFrom(
+        origin + Offset(0.05 * pageW, 0.05 * pageH),
+        Offset(0.60 * pageW, 0.60 * pageH),
+      );
+      await tester.pumpAndSettle();
+      expect(find.textContaining('框重叠'), findsOneWidget);
+      expect(redOverlapBorders(), findsNWidgets(2));
+      // 取消：草稿保存，任务留修框中。
+      await tester.tap(find.text('取消'));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('修框 ·'), findsNothing);
+      expect(repo.draftBoxes['t-needbox']?.length, 2);
+      // 重进：草稿恢复，重叠横幅与标红重新算出。
+      await openEditor(tester, '继续修框');
+      expect(find.textContaining('框重叠'), findsOneWidget);
+      expect(
+        find.textContaining('第 1、2 道题的框叠在一起，请调开再确认。'),
+        findsOneWidget,
+      );
+      expect(redOverlapBorders(), findsNWidgets(2));
+    });
+
     testWidgets('删掉全部框后出无框提示，确认不可点', (tester) async {
       final repo = FakeRepo([
         task(
@@ -1093,6 +1370,191 @@ void main() {
             .length,
         1,
       );
+    });
+
+    // 十二批 Stage B：画布页几何（复用画新框测试的算法）——
+    // 页在画布里居中 fit，返回（页原点，页宽，页高）。
+    (Offset, double, double) b12PageMetrics(WidgetTester tester) {
+      final r = tester.getRect(find.byKey(const Key('box-editor-canvas')));
+      final fit = math.min(
+        r.width / DesignTokens.collectEditorCanvasWidth,
+        r.height / DesignTokens.collectEditorCanvasHeight,
+      );
+      final pw = DesignTokens.collectEditorCanvasWidth * fit;
+      final ph = DesignTokens.collectEditorCanvasHeight * fit;
+      return (
+        Offset(r.left + (r.width - pw) / 2, r.top + (r.height - ph) / 2),
+        pw,
+        ph,
+      );
+    }
+
+    // 十二批 Stage B：断言某编号框的画布矩形约等于给定的页内几何。
+    void b12ExpectBoxRect(
+      WidgetTester tester,
+      String label,
+      double fx,
+      double fy,
+      double fw,
+      double fh,
+      Offset origin,
+      double pw,
+      double ph,
+    ) {
+      final rect = tester.getRect(editorBoxHandle(label));
+      expect(rect.left, closeTo(origin.dx + fx * pw, 2.0));
+      expect(rect.top, closeTo(origin.dy + fy * ph, 2.0));
+      expect(rect.width, closeTo(fw * pw, 2.0));
+      expect(rect.height, closeTo(fh * ph, 2.0));
+    }
+
+    testWidgets('Stage B：双栏检测框按阅读顺序编号，不按 y-then-x', (
+      tester,
+    ) async {
+      final repo = FakeRepo([
+        task(
+          't-needbox',
+          '待框选文件.pdf · 第1页 · 第1题',
+          status: CollectStatus.needBox,
+        ),
+      ]);
+      await pumpCollect(
+        tester,
+        repo: repo,
+        yoloService: _OrderedYolo(_b12TwoColumnBoxes()),
+      );
+      await openEditor(tester, '修框');
+      expect(find.text('确认修框，拆成 4 个待整理任务'), findsOneWidget);
+      // 检测给的是旧 y-then-x 顺序 [L1, R1, L2, R2]，编辑器进页后
+      // 应按阅读顺序 [L1, L2, R1, R2] 编号：2 号是左栏第二道，3 号
+      // 是右栏第一道（2009 上海卷触发 bug 的回归锁）。
+      final (origin, pw, ph) = b12PageMetrics(tester);
+      b12ExpectBoxRect(tester, '题级框 1', 0.05, 0.20, 0.40, 0.15, origin, pw, ph);
+      b12ExpectBoxRect(tester, '题级框 2', 0.05, 0.40, 0.40, 0.15, origin, pw, ph);
+      b12ExpectBoxRect(tester, '题级框 3', 0.55, 0.20, 0.40, 0.15, origin, pw, ph);
+      b12ExpectBoxRect(tester, '题级框 4', 0.55, 0.40, 0.40, 0.15, origin, pw, ph);
+      // 双栏分得清，置信度 high，不出题序横幅。
+      expect(find.textContaining('题序不太确定'), findsNothing);
+      // 确认拆题：第 N 题的框与阅读顺序一致（不只编号对，落库顺序也对）。
+      // 4 道题的切片比 2 道多，确认流程要更多泵轮次（见 tapConfirmAndWait）。
+      await tapConfirmAndWait(
+        tester,
+        '确认修框，拆成 4 个待整理任务',
+        rounds: 40,
+      );
+      expect(repo.savedQuestions.length, 4);
+      final confirmed =
+          repo.lastBoxesByQuestionId.values.map((bs) => bs.single).toList();
+      expect(confirmed.map((b) => (b.x, b.y)).toList(), [
+        (0.05, 0.20),
+        (0.05, 0.40),
+        (0.55, 0.20),
+        (0.55, 0.40),
+      ]);
+    });
+
+    testWidgets('Stage B：含糊重叠页出“题序不太确定”横幅', (tester) async {
+      final repo = FakeRepo([
+        task(
+          't-needbox',
+          '待框选文件.pdf · 第1页 · 第1题',
+          status: CollectStatus.needBox,
+        ),
+      ]);
+      await pumpCollect(
+        tester,
+        repo: repo,
+        yoloService: _OrderedYolo([
+          const QuestionBox(
+            id: 'box-q1',
+            layer: 1,
+            type: 'question',
+            x: 0.10,
+            y: 0.10,
+            w: 0.40,
+            h: 0.30,
+            page: 1,
+          ),
+          const QuestionBox(
+            id: 'box-q2',
+            layer: 1,
+            type: 'question',
+            x: 0.20,
+            y: 0.105,
+            w: 0.40,
+            h: 0.30,
+            page: 1,
+          ),
+        ]),
+      );
+      await openEditor(tester, '修框');
+      // 两框上缘差 0.005 且 x 重叠超一半：顺序真拿不准，横幅提醒核对。
+      expect(find.textContaining('题序不太确定'), findsOneWidget);
+      expect(
+        find.textContaining('请按实际题号核对一下顺序'),
+        findsOneWidget,
+      );
+      // 框仍按算法顺序编号展示（最优猜测），不伪装确定、不拦着看框。
+      expect(editorBoxLabel('题级框 1'), findsOneWidget);
+      expect(editorBoxLabel('题级框 2'), findsOneWidget);
+    });
+
+    testWidgets('Stage B：草稿重进按几何重排，不按 id 顺序', (tester) async {
+      final repo = FakeRepo([
+        task(
+          't-needbox',
+          '待框选文件.pdf · 第1页 · 第1题',
+          status: CollectStatus.needBox,
+        ),
+      ]);
+      // 草稿按旧 y-then-x 顺序存（id 是随机 uuid8 风格，库里读回按 id
+      // 排本就不是阅读顺序），重进编辑器应按几何重排。
+      repo.draftBoxes['t-needbox'] = _b12TwoColumnBoxes(draftIds: true);
+      await pumpCollect(tester, repo: repo);
+      await openEditor(tester, '修框');
+      final (origin, pw, ph) = b12PageMetrics(tester);
+      b12ExpectBoxRect(tester, '题级框 2', 0.05, 0.40, 0.40, 0.15, origin, pw, ph);
+      b12ExpectBoxRect(tester, '题级框 3', 0.55, 0.20, 0.40, 0.15, origin, pw, ph);
+      expect(find.textContaining('题序不太确定'), findsNothing);
+    });
+
+    testWidgets('Stage B：拖框松手后按新几何重排', (tester) async {
+      final repo = FakeRepo([
+        task(
+          't-needbox',
+          '待框选文件.pdf · 第1页 · 第1题',
+          status: CollectStatus.needBox,
+        ),
+      ]);
+      await pumpCollect(
+        tester,
+        repo: repo,
+        yoloService: _OrderedYolo(_b12TwoColumnBoxes()),
+      );
+      await openEditor(tester, '修框');
+      final (_, pw, ph) = b12PageMetrics(tester);
+      // 把 4 号框（右栏第二道）拖到左栏顶端空条（L1 上方，不重叠）。
+      final box4 = editorBoxHandle('题级框 4');
+      await tester.ensureVisible(box4);
+      await tester.pumpAndSettle();
+      await tester.dragFrom(
+        tester.getCenter(box4),
+        Offset(-0.50 * pw, -0.40 * ph),
+        kind: ui.PointerDeviceKind.mouse,
+      );
+      await tester.pumpAndSettle();
+      // 松手后重排：拖来的框变 1 号，L1 退到 2 号。
+      // 手势 slop 会吃掉一部分拖动距离，落点不按满额算（实测约 0.86 倍），
+      // 所以只断言顺序关系，不写死落点坐标：1 号在左栏最上方（中心在
+      // 左半页、上缘在 L1 之上），2/3/4 号是未动的 L1/L2/R1。
+      final (origin2, pw2, ph2) = b12PageMetrics(tester);
+      final r1 = tester.getRect(editorBoxHandle('题级框 1'));
+      final r2 = tester.getRect(editorBoxHandle('题级框 2'));
+      expect(r1.center.dx, lessThan(origin2.dx + 0.50 * pw2));
+      expect(r1.top, lessThan(r2.top));
+      b12ExpectBoxRect(tester, '题级框 2', 0.05, 0.20, 0.40, 0.15, origin2, pw2, ph2);
+      b12ExpectBoxRect(tester, '题级框 3', 0.05, 0.40, 0.40, 0.15, origin2, pw2, ph2);
+      b12ExpectBoxRect(tester, '题级框 4', 0.55, 0.20, 0.40, 0.15, origin2, pw2, ph2);
     });
   });
 

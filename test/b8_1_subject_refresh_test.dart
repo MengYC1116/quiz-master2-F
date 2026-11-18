@@ -81,6 +81,12 @@ class _B8FakeRepo extends QuestionRepository {
   /// 真实库——旧 Fake 必须补这一行，见 B11-9 报告 §6）。
   @override
   Future<List<ExamEvent>> examEvents() async => const [];
+
+  /// 十二批功能 4（D-91）：最近查看列表（默认空；不覆盖会走到真实库，
+  /// fake async 里永不完成，见 D-88）。
+  @override
+  Future<List<({Question question, DateTime viewedAt})>>
+  recentlyViewedQuestions() async => const [];
 }
 
 Future<void> _pumpNav(

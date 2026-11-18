@@ -295,7 +295,13 @@ Future<void> seedRichDb(QuizDatabase db) async {
           updatedAt: 1700000006000,
         ),
       );
-  for (final (k, v) in [('schemaVersion', '2'), ('lastRoute', '/home')]) {
+  // 十二批 D-91：种子模拟的是当前版本库，schemaVersion 须跟踪当前版本
+  // （恢复末尾会把 settings.schemaVersion 写回当前版本；种子若仍写
+  // 死 '2'，现场往返的两次导出会在该行上不一致）。
+  for (final (k, v) in [
+    ('schemaVersion', '${AppDatabase.schemaVersion}'),
+    ('lastRoute', '/home'),
+  ]) {
     await db
         .into(db.settings)
         .insert(SettingsCompanion.insert(key: k, value: v));
@@ -487,16 +493,19 @@ void main() {
       );
     });
 
-    test('重导出与黄金夹具对比：差异仅 7 处规范化', () async {
+    test('重导出与黄金夹具对比：差异仅 8 处规范化', () async {
       final db = await openMemoryDb();
       final golden = await readGoldenJson();
       await AppDatabase.importBackupJsonInto(db, golden);
       final reExported = jsonDecode(
         await AppDatabase.exportBackupJsonFrom(db),
       ) as Map<String, dynamic>;
+      // 十二批 D-91：黄金夹具是 v2 备份（_meta.schemaVersion = 2），
+      // 重导出盖的是当前版本戳（AppDatabase.schemaVersion = 3），
+      // 两者不等是迁移的正常结果，不是回归；断言当前版本。
       expect(
         (reExported['_meta'] as Map)['schemaVersion'],
-        (golden['_meta'] as Map)['schemaVersion'],
+        AppDatabase.schemaVersion,
       );
       String pkOf(Map row) => '${row['id'] ?? row['key']}';
       // cause_records 的主键是自增 id：遗留行的 pk 从黄金夹具里现取，
@@ -508,7 +517,11 @@ void main() {
       );
       final diffs = <String>[];
       for (final t in AppDatabase.backupTables) {
-        final oldRows = {for (final r in golden[t] as List) pkOf(r): r};
+        // 十二批 D-91：v2 黄金夹具里没有 recently_viewed_questions
+        // 键，缺键按空表算（v3 重导出里它是空列表）。
+        final oldRows = {
+          for (final r in (golden[t] as List? ?? [])) pkOf(r): r,
+        };
         final newRows = {for (final r in reExported[t] as List) pkOf(r): r};
         expect(
           newRows.keys.toSet(),
@@ -536,6 +549,9 @@ void main() {
           "questions/q-legacy-1/tags:  → []",
           "cause_records/$legacyCausePk/remedy_history:  → []",
           "collect_tasks/task-legacy/page_rotations:  → {}",
+          // 十二批 D-91：第 8 处是迁移写回——恢复把 settings.schemaVersion
+          // 写回当前版本（v3 的 '3'），黄金夹具（v2）里它是 '2'。
+          "settings/schemaVersion/value: 2 → 3",
         ]),
       );
     });

@@ -17,7 +17,7 @@ import 'package:quiz_master2/data/drift/quiz_database.dart';
 
 void main() {
   group('B4.2 backupTables', () {
-    test('含补齐的 4 张表 + question_boxes，共 13 张', () {
+    test('含补齐的 4 张表 + question_boxes + 最近查看，共 14 张', () {
       expect(
         AppDatabase.backupTables,
         containsAll([
@@ -26,9 +26,11 @@ void main() {
           'review_history',
           'recent_tasks',
           'question_boxes',
+          // 十二批 D-91：v3 新表。
+          'recently_viewed_questions',
         ]),
       );
-      expect(AppDatabase.backupTables.length, 13);
+      expect(AppDatabase.backupTables.length, 14);
     });
   });
 
@@ -152,7 +154,8 @@ void main() {
       expect((decoded['recent_tasks'] as List).first['title'], 'marker-task');
       // §2.3：_meta 在顶层，表名仍平铺。
       final meta = decoded['_meta'] as Map<String, dynamic>;
-      expect(meta['schemaVersion'], 2);
+      // 十二批 D-91：当前版本已是 v3，用常量跟踪，不写死 2。
+      expect(meta['schemaVersion'], AppDatabase.schemaVersion);
       expect(meta['appVersion'], isA<String>());
       expect(meta['exportedAt'], isA<int>());
       expect(decoded['question_boxes'], isA<List>());

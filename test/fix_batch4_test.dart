@@ -135,10 +135,18 @@ void main() {
     });
   });
 
-  group('FR-31 事件 kind 订阅口径：只 badges 有订阅方', () {
-    test('data_change_events.dart 头注释写明唯一订阅方与预留口径', () {
+  group('FR-31 事件 kind 订阅口径（D-94 后：订阅方共两个）', () {
+    test('data_change_events.dart 头注释写明两个订阅方与预留口径', () {
       final src = _src('data/data_change_events.dart');
-      expect(src, contains('当前唯一订阅方是 `badgeCountsProvider`'));
+      // 十二批 D-94：homeProvider 成为第二个订阅方（只消费
+      // recentlyViewed），“当前唯一订阅方”旧口径作废，头注释已改写
+      // 为“订阅方共两个”；其余四种 kind 仍无订阅方。
+      expect(src, contains('订阅方共两个'));
+      expect(src, contains('`badgeCountsProvider` 只消费'));
+      expect(
+        src,
+        contains('`homeProvider` 只消费 `DataChangeKind.recentlyViewed`'),
+      );
       expect(src, contains('其余四种 kind'));
       expect(src, contains('为将来订阅方预留'));
     });

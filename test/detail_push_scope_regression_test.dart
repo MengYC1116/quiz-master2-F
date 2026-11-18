@@ -54,6 +54,11 @@ class MechFakeRepo extends QuestionRepository {
   /// 本测试的 FakeRepo 须给桩，否则走真实库（见批四批报告）。
   @override
   Future<AppSettings> settings() async => AppSettings.defaults;
+
+  /// 十二批功能 4（D-91）：记一次查看的桩（不碰真实库；不覆盖会落到
+  /// 基类读真实 Drift 库，fake async 里永不完成，见 D-88）。
+  @override
+  Future<void> recordQuestionViewed(String questionId) async {}
 }
 
 final _q = Question(

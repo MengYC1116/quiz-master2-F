@@ -21,6 +21,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:quiz_master2/data/database.dart';
 import 'package:quiz_master2/data/drift/quiz_database.dart';
 import 'package:quiz_master2/models/models.dart';
+import 'package:quiz_master2/services/import_guess.dart';
 import 'package:quiz_master2/services/import_service.dart';
 import 'package:quiz_master2/services/pdf_render_service.dart';
 
@@ -243,7 +244,7 @@ void main() {
   });
 
   group('② B-NEW-10：失败后原图仍在、失败行可重试', () {
-    test('渲染失败后凭保留的原图重试成功，旧失败行保留', () async {
+    test('渲染失败后凭保留的原图重试成功，同一任务行原地变 needBox', () async {
       await openMemoryDb();
       _FlakyDoc.reset();
       final service = _service(engine: _FlakyEngine());
@@ -278,16 +279,13 @@ void main() {
         ).existsSync(),
         isTrue,
       );
-      // 与批量重试同款：成功建新任务行，旧失败行保留（不删历史）。
+      // 十二批 D-91 功能 7：原地重试——同一任务行/id，不建新行，
+      // 旧失败行不保留（B2 旧语义已废弃）。
+      expect(retried.id, failed.id);
       final after = await AppDatabase.instance.allCollectTasks();
-      expect(after.map((t) => t.status).toSet(), {
-        CollectStatus.failed,
-        CollectStatus.needBox,
-      });
-      expect(
-        after.firstWhere((t) => t.status == CollectStatus.failed).id,
-        failed.id,
-      );
+      expect(after.length, 1);
+      expect(after.first.id, failed.id);
+      expect(after.first.status, CollectStatus.needBox);
     });
 
     test('图片成功导入仍走立即持久化：needBox 行 sourcePath 正常', () async {
@@ -404,16 +402,6 @@ void main() {
 
     test('恰好一个候选：重试成功', () async {
       await openMemoryDb();
-      final task = CollectTask(
-        id: 'task-locate-one',
-        name: 'm.pdf · 第1页 · 第1题',
-        fileName: 'm.pdf',
-        subjectId: 'math',
-        status: CollectStatus.failed,
-        error: '导入失败：渲染这份 PDF 时出了问题',
-        sourcePath: 'imports/task-locate-one/original.pdf',
-      );
-      await AppDatabase.instance.upsertCollectTask(task);
       final dir = Directory(
         AppDatabase.resolveDataPath('imports/task-locate-one')!,
       );
@@ -422,6 +410,19 @@ void main() {
       await pdf.writeAsBytes(List.generate(2000, (i) => i % 251));
       await File('${dir.path}/original.pdf')
           .writeAsBytes(await pdf.readAsBytes());
+      // D-99：NULL hash 的任务重试会被拒绝；本用例验“恰好一个候选
+      // → 重试成功”，种子行须带与库内原图一致的哈希基线。
+      final task = CollectTask(
+        id: 'task-locate-one',
+        name: 'm.pdf · 第1页 · 第1题',
+        fileName: 'm.pdf',
+        subjectId: 'math',
+        status: CollectStatus.failed,
+        error: '导入失败：渲染这份 PDF 时出了问题',
+        sourcePath: 'imports/task-locate-one/original.pdf',
+        sourceHash: await sha256HexOfFile(pdf),
+      );
+      await AppDatabase.instance.upsertCollectTask(task);
 
       expect(
         ImportService.locateStoredOriginals('task-locate-one'),
