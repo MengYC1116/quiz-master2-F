@@ -70,6 +70,7 @@ class HomePage extends ConsumerStatefulWidget {
     required this.onGoOrganize,
     required this.onGoWrongbook,
     required this.onGoReview,
+    this.onOpenDetail,
     this.showBackupError = false,
     this.onBackupErrorDismissed,
     this.onGoSettings,
@@ -81,6 +82,10 @@ class HomePage extends ConsumerStatefulWidget {
   final VoidCallback onGoOrganize;
   final void Function(String subjectId) onGoWrongbook;
   final VoidCallback onGoReview;
+
+  /// 十二批功能 4：点“最近查看”里的一道题时调用——应用层进题目详情。
+  /// 为空时行仍显示、点按无动作（老调用方不传也不影响显示）。
+  final void Function(Question question, List<String> orderIds)? onOpenDetail;
 
   /// B11-9：点首页考试倒计时时调用——应用层进设置页并展开考试组。
   /// 为空时倒计时条仍显示、点按无动作（老调用方不传也不影响显示）。
@@ -261,6 +266,30 @@ class _HomePageState extends ConsumerState<HomePage> {
               onGoWrongbook: widget.onGoWrongbook,
               onGoReview: widget.onGoReview,
             ),
+          // 十二批功能 4：最近查看——学科行下方，最多 30 行紧凑行
+          //（标题、学科名、最后查看时间）；空时整区隐藏，首页不放
+          // 空状态提示；已归档 / 已掌握的题照常显示（详情页自己处理
+          // 归档显示）。点行进题目详情（与别处相同的导航方式）。
+          if (!home.loading && home.hasLoaded && home.history.isNotEmpty) ...[
+            SizedBox(height: DesignTokens.focusCardMarginBottom * scale),
+            Text(
+              '最近查看',
+              style: TextStyle(
+                fontSize: DesignTokens.homeSectionTitleFontSize,
+                fontWeight: FontWeight.w700,
+                letterSpacing: 0.08,
+                color: palette.muted,
+              ),
+            ),
+            SizedBox(height: 4 * scale),
+            _RecentlyViewedList(
+              scale: scale,
+              palette: palette,
+              history: home.history,
+              subjects: home.subjects,
+              onOpenDetail: widget.onOpenDetail,
+            ),
+          ],
         ],
       ),
     );
@@ -604,6 +633,105 @@ class _BuddyWithSay extends StatelessWidget {
             ),
           ),
         ),
+      ],
+    );
+  }
+}
+
+/// 十二批功能 4：最近查看列表——学科行下方，最多 30 行紧凑行。
+/// 每行：标题（单行省略）+ 学科名 · 最后查看时间（今天 / 昨天 HH:mm，
+/// 其余 MM-dd HH:mm，跨年带年，见 [formatRecentlyViewedTime]）。
+/// 点行进题目详情：上一题 / 下一题按本列表的顺序走（orderIds 即
+/// 列表顺序，与错题本 / 复习页的来源列表同款做法）。
+class _RecentlyViewedList extends StatelessWidget {
+  const _RecentlyViewedList({
+    required this.scale,
+    required this.palette,
+    required this.history,
+    required this.subjects,
+    required this.onOpenDetail,
+  });
+
+  final double scale;
+  final AppPalette palette;
+  final List<({Question question, DateTime viewedAt})> history;
+  final List<Subject> subjects;
+  final void Function(Question question, List<String> orderIds)? onOpenDetail;
+
+  /// 库里找学科名；找不到才回退 Subject.byId（数学兜底）。
+  String _subjectName(String id) => subjects
+      .firstWhere((s) => s.id == id, orElse: () => Subject.byId(id))
+      .name;
+
+  @override
+  Widget build(BuildContext context) {
+    final orderIds = history.map((e) => e.question.id).toList();
+    return Column(
+      children: [
+        for (var i = 0; i < history.length; i++) ...[
+          if (i > 0) SizedBox(height: 8 * scale),
+          InkWell(
+            key: Key('home-history-${history[i].question.id}'),
+            onTap: onOpenDetail == null
+                ? null
+                : () => onOpenDetail!(history[i].question, orderIds),
+            borderRadius:
+                BorderRadius.circular(DesignTokens.scaled(scale).radius),
+            child: Container(
+              width: double.infinity,
+              padding: EdgeInsets.symmetric(
+                vertical: 10 * scale,
+                horizontal: 14 * scale,
+              ),
+              decoration: BoxDecoration(
+                color: palette.surface,
+                border: Border.all(color: palette.line),
+                borderRadius:
+                    BorderRadius.circular(DesignTokens.scaled(scale).radius),
+              ),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          history[i].question.title,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontSize: DesignTokens.bodyFontSize,
+                            fontWeight: FontWeight.w700,
+                            color: palette.ink,
+                          ),
+                        ),
+                        SizedBox(height: 2 * scale),
+                        Text(
+                          '${_subjectName(history[i].question.subjectId)} · '
+                          '${formatRecentlyViewedTime(history[i].viewedAt)}',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontSize: DesignTokens.captionFontSize,
+                            color: palette.muted,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  SizedBox(width: 8 * scale),
+                  Text(
+                    '›',
+                    style: TextStyle(
+                      fontSize: DesignTokens.bodyFontSize,
+                      color: palette.muted,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
       ],
     );
   }

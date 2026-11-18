@@ -19,8 +19,11 @@
 // widget.repo)])`——`app.dart` 仍按老样子传 `repo`，不用改；测试
 // 里构造器传 FakeRepo 同样经这一层注入，不用再包一层 ProviderScope。
 // 本文件不认识任何 widget，不碰 `BuildContext`、不弹 Dialog、不调导航。
+import 'dart:async';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../data/data_change_events.dart';
 import '../data/repository.dart';
 import '../models/exam_event.dart';
 import '../models/models.dart';
@@ -36,6 +39,28 @@ final homeProvider = NotifierProvider.autoDispose<HomeNotifier, HomeState>(
   dependencies: [repositoryProvider],
 );
 
+/// 十二批功能 4：最近查看时间的显示格式（纯函数，便于单测；
+// 口径与 D-91 一致——同一天“今天 HH:mm”，昨天“昨天 HH:mm”，
+// 其余同年“MM-dd HH:mm”、跨年“yyyy-MM-dd HH:mm”。
+// 月 / 日 / 时 / 分零补齐，与库里 `yyyy-MM-dd` 的补零写法同款，
+// 不引 intl）。[now] 仅供测试定“今天”，生产调用不传。
+String formatRecentlyViewedTime(DateTime viewedAt, {DateTime? now}) {
+  final today = now ?? DateTime.now();
+  final day = DateTime(today.year, today.month, today.day);
+  final viewedDay = DateTime(viewedAt.year, viewedAt.month, viewedAt.day);
+  final diffDays = day.difference(viewedDay).inDays;
+  final hhmm =
+      '${viewedAt.hour.toString().padLeft(2, '0')}:'
+      '${viewedAt.minute.toString().padLeft(2, '0')}';
+  if (diffDays == 0) return '今天 $hhmm';
+  if (diffDays == 1) return '昨天 $hhmm';
+  final mmdd =
+      '${viewedAt.month.toString().padLeft(2, '0')}-'
+      '${viewedAt.day.toString().padLeft(2, '0')}';
+  if (viewedAt.year == today.year) return '$mmdd $hhmm';
+  return '${viewedAt.year}-$mmdd $hhmm';
+}
+
 /// 首页业务数据（原 `_HomePageState` 里的读库字段，原样搬移，行为零变）。
 class HomeState {
   const HomeState({
@@ -49,6 +74,7 @@ class HomeState {
     this.dueRecheck = 0,
     this.recent,
     this.nearestExam,
+    this.history = const [],
   });
 
   /// 首查进行中（原 `_loading`；初始 true，首帧先出加载卡）。
@@ -83,6 +109,9 @@ class HomeState {
   /// 最近一场考试（B11-9；原 `_nearestExam`，无考试时为 null）。
   final ExamEvent? nearestExam;
 
+  /// 十二批功能 4：最近查看的题（最新在前，最多 30 条；空时首页整区隐藏）。
+  final List<({Question question, DateTime viewedAt})> history;
+
   /// 要复习总数 = 待解决 + 复查（原 `_totalDue`）。
   int get totalDue => duePending + dueRecheck;
 
@@ -104,6 +133,7 @@ class HomeState {
     int? dueRecheck,
     ({String kind, String subjectId, String title})? recent,
     ExamEvent? nearestExam,
+    List<({Question question, DateTime viewedAt})>? history,
     bool clearRecent = false,
     bool clearNearestExam = false,
   }) {
@@ -119,6 +149,7 @@ class HomeState {
       recent: clearRecent ? null : (recent ?? this.recent),
       nearestExam:
           clearNearestExam ? null : (nearestExam ?? this.nearestExam),
+      history: history ?? this.history,
     );
   }
 }
@@ -135,6 +166,20 @@ class HomeNotifier extends Notifier<HomeState> {
 
   @override
   HomeState build() {
+    // D-94：先订阅、后首查（badge_counts_provider.dart 同款）——
+    // 详情页是 Navigator 压栈，首页仍挂载、autoDispose 不重建；
+    // 详情打开记一次查看后发 `recentlyViewed` 事件，收到后直接调
+    // `load()` 重读历史（不用 `ref.invalidateSelf`，那会把 state
+    // 重置回 loading、首页闪一下加载卡）。只响应与历史相关的 kind，
+    // 其余事件忽略。订阅在 Provider 销毁时取消，销毁后不再接收事件。
+    final subscription = DataChangeBus.instance.stream.listen((event) {
+      if (event.kinds.contains(DataChangeKind.recentlyViewed)) {
+        // load() 自己有 try/catch：订阅回调异常不反噬到事件发布方
+        //（记录查看的写库侧），重读失败只翻 loadError、旧内容留住。
+        unawaited(load());
+      }
+    });
+    ref.onDispose(subscription.cancel);
     ref.onDispose(() => _disposed = true);
     // 页面出现即读库（原 `initState` 的 `_load`）：不 await，
     // 读完后 state 一次性赋值，首帧先出加载卡。
@@ -142,7 +187,7 @@ class HomeNotifier extends Notifier<HomeState> {
     return const HomeState();
   }
 
-  /// 读库（原 `_load` 的 `Future.wait` 7 路 + 待解决/复查拆分，原样搬移）：
+  /// 读库（原 `_load` 的 `Future.wait` 8 路 + 待解决/复查拆分，原样搬移）：
   /// - 要复习数与导航速览同一口径（`homeRevCounts` / `dueToday`：手动加入
   ///   复习且已整理且至少一个错因未解决或已到复查时间，数题不数错因）；
   /// - 待解决 / 复查拆分按 `QuestionRepository.reviewBucketOf`，
@@ -166,6 +211,8 @@ class HomeNotifier extends Notifier<HomeState> {
         repo.subjects(),
         // B11-9：考试事件列表（首页只取最近一场做倒计时）。
         repo.examEvents(),
+        // 十二批功能 4：最近查看的题（最新在前，最多 30 条）。
+        repo.recentlyViewedQuestions(),
       ]);
       if (_disposed) return;
       final due = results[3] as List<Question>;
@@ -202,6 +249,8 @@ class HomeNotifier extends Notifier<HomeState> {
         dueRecheck: recheck,
         subjects: results[5] as List<Subject>,
         nearestExam: nearestExamEvent(results[6] as List<ExamEvent>),
+        history:
+            results[7] as List<({Question question, DateTime viewedAt})>,
       );
     } catch (_) {
       // 读库失败：不一直转圈（SR-P2-48），出错误横幅 + 重试入口。

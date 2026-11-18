@@ -459,6 +459,9 @@ class _QuizMasterAppState extends ConsumerState<QuizMasterApp> {
           onGoOrganize: () => _go('/organize'),
           onGoWrongbook: (subjectId) => _go('/wrongbook', subjectId: subjectId),
           onGoReview: () => _goReview(),
+          // 十二批功能 4：点“最近查看”里的一道题进详情（与错题本 /
+          // 复习页相同的 _openDetail 压栈方式，来源列表即历史列表顺序）。
+          onOpenDetail: (q, ids) => _openDetail(q, ids, sourceLabel: '首页'),
           showBackupError: _showBackupError,
           onBackupErrorDismissed: _clearBackupError,
           onGoSettings: () => _goSettings(group: 'exams'),

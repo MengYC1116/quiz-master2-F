@@ -239,6 +239,19 @@ class _CollectViewState extends ConsumerState<_CollectView> {
     }
   }
 
+  /// 十二批 D-91 功能 7：重试单个失败任务（原地重试，同一任务 id）。
+  /// 重试中该行按钮由 Notifier 的 retryingTaskIds 禁用；非法重试
+  /// 与重试后仍失败时 Notifier 返回 error 文案，这里弹 snack
+  ///（行上也显示新原因，仍可再重试）；成功无提示，直接看行状态。
+  Future<void> _retryFailedTask(CollectTask task) async {
+    final outcome = await _notifier.retryFailedTask(
+      task,
+      pdfRenderService: widget.pdfRenderService,
+    );
+    if (!mounted) return;
+    if (outcome.error != null) _snack(outcome.error!);
+  }
+
   Future<void> _confirmPendingImport() async {
     if (_picking) return;
     setState(() => _picking = true);
@@ -929,7 +942,10 @@ class _CollectViewState extends ConsumerState<_CollectView> {
                 child: Wrap(
                   spacing: 8 * scale,
                   runSpacing: 6 * scale,
-                  children: _taskActions(task),
+                  children: _taskActions(
+                    task,
+                    isRetrying: s.retryingTaskIds.contains(task.id),
+                  ),
                 ),
               ),
             ],
@@ -1030,7 +1046,7 @@ class _CollectViewState extends ConsumerState<_CollectView> {
     };
   }
 
-  List<Widget> _taskActions(CollectTask task) {
+  List<Widget> _taskActions(CollectTask task, {bool isRetrying = false}) {
     const small = QmButtonSize.small;
     return switch (task.status) {
       CollectStatus.importing => [
@@ -1089,6 +1105,14 @@ class _CollectViewState extends ConsumerState<_CollectView> {
         ),
       ],
       CollectStatus.failed => [
+        // 十二批 D-91 功能 7：原地重试（同一任务 id）；重试中禁用，
+        // 成功后行状态变 needBox、重试按钮随之消失（非 failed 守卫
+        // 也会拒绝，不产生重复题目）。
+        QmButton(
+          label: '重试',
+          size: small,
+          onPressed: isRetrying ? null : () => _retryFailedTask(task),
+        ),
         QmButton(
           label: '删除任务',
           variant: QmButtonVariant.plain,

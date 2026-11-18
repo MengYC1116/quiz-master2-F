@@ -203,6 +203,7 @@ class CollectState {
     this.batch,
     this.stagedPaths,
     this.subjectGuessHint,
+    this.retryingTaskIds = const {},
   });
 
   /// 任务列表（只按导入时间排，新的在上，来自 `collect_tasks` 的 rowid DESC）。
@@ -241,6 +242,11 @@ class CollectState {
   /// B11-2：按文件名猜学科后的提示（用户手动改下拉后清除；猜不出时为 null）。
   final String? subjectGuessHint;
 
+  /// 十二批 D-91 功能 7：正在原地重试的任务 id（单任务重试中标志，
+  /// 收集页据此禁用对应行的“重试”按钮；service 层另有 in-flight
+  /// 幂等，按钮禁用只是第一层防护）。
+  final Set<String> retryingTaskIds;
+
   /// 库里找学科：新学科用库里的名与色；找不到才回退 Subject.byId
   ///（数学兜底，只发生在数据不一致时）。
   Subject subjectOf(String id) =>
@@ -268,6 +274,7 @@ class CollectState {
     Object? batch = _unset,
     Object? stagedPaths = _unset,
     Object? subjectGuessHint = _unset,
+    Set<String>? retryingTaskIds,
   }) {
     return CollectState(
       tasks: tasks ?? this.tasks,
@@ -288,6 +295,7 @@ class CollectState {
       subjectGuessHint: subjectGuessHint == _unset
           ? this.subjectGuessHint
           : subjectGuessHint as String?,
+      retryingTaskIds: retryingTaskIds ?? this.retryingTaskIds,
     );
   }
 }
@@ -627,6 +635,51 @@ class CollectNotifier extends Notifier<CollectState> {
     );
   }
 
+  /// 十二批 D-91 功能 7：重试单个失败任务（原地重试，同一任务 id，
+  /// 复用 [ImportService.retryFromStoredOriginal]）。
+  /// 返回 `(task, error)`：成功时 task 为 needBox 行、error 为空；
+  /// 重试后仍失败时 task 为新的 failed 行、error 为新原因（页面弹
+  /// snack，行上也显示新原因，仍可再重试）；非法重试（非 failed
+  /// 任务）与其它异常时 task 为空、error 为提示文案，任务本身不动。
+  /// 重试期间该任务 id 进 [CollectState.retryingTaskIds]，页面据此
+  /// 禁用行上的“重试”按钮；结束后（成功/失败/异常）摘掉并重读。
+  Future<({CollectTask? task, String? error})> retryFailedTask(
+    CollectTask task, {
+    PdfRenderService? pdfRenderService,
+  }) async {
+    if (_disposed) return (task: null, error: '页面已离开，请重新打开收集页再试');
+    state = state.copyWith(
+      retryingTaskIds: {...state.retryingTaskIds, task.id},
+    );
+    try {
+      final service = ImportService(
+        _repo.db,
+        pdfRenderService: pdfRenderService,
+      );
+      final result = await service.retryFromStoredOriginal(task);
+      await load();
+      if (result.status == CollectStatus.failed) {
+        return (task: result, error: result.error ?? '重试失败，请再试一次');
+      }
+      return (task: result, error: null);
+    } on StateError catch (e) {
+      // 非 failed 任务（成功后重复点重试等）：走现有 snack 模式，
+      // 由页面弹 error 文案；任务本身不动。
+      return (task: null, error: e.message);
+    } catch (e) {
+      debugPrint('重试失败任务异常（已转为提示）：$e');
+      return (task: null, error: '重试失败，请稍后再试');
+    } finally {
+      if (!_disposed) {
+        state = state.copyWith(
+          retryingTaskIds: state.retryingTaskIds
+              .where((id) => id != task.id)
+              .toSet(),
+        );
+      }
+    }
+  }
+
   /// 待确认导入的“仍然再导一份”。
   Future<void> confirmPendingImport({
     PdfRenderService? pdfRenderService,
@@ -762,6 +815,9 @@ class CollectNotifier extends Notifier<CollectState> {
             createdAt: t.createdAt,
             sourcePath: t.sourcePath,
             pageRotations: t.pageRotations,
+            // 十二批 D-91：内存行重建也带上 sourceHash，别让进度
+            // 回调把哈希丢了（写库走全列写回，丢了就抹掉）。
+            sourceHash: t.sourceHash,
           );
           state = state.copyWith(tasks: updated);
         },
@@ -1129,6 +1185,8 @@ class CollectNotifier extends Notifier<CollectState> {
           for (final p in unboxedPages)
             if (rotationsByPage.containsKey(p)) p: rotationsByPage[p]!,
         },
+        // 十二批 D-91：同 id 重建必须带上 sourceHash，否则写回抹掉哈希。
+        sourceHash: task.sourceHash,
       );
       retainedBoxesByPage = {
         for (final p in unboxedPages)

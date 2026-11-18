@@ -36,8 +36,10 @@ Future<String> exportBackupJsonFromImpl(QuizDatabase db) async {
 /// 反馈，importBackupJsonInto 里再调一次，双保险）。
 /// 校验顺序：① `_meta.schemaVersion` 存在且为整数（缺失 → 按 v1
 /// 备份处理，拒绝：v1 从未发布、老库已删，不存在合法的 v1 备份）；
-/// ② `== 2` 才放行，`> 2` 拒绝（备份来自更新的版本），`< 2` 也拒绝；
-/// ③ 全部 13 张表键齐全且为数组；④ 每行是对象、主键非空、必填列齐全
+/// ② v2 与 v3 放行（v2 备份恢复时迁移进 v3：新表缺键视为 empty，
+/// collect_tasks 行缺 source_hash 视为 NULL），`> 3` 拒绝（备份来自
+/// 更新的版本），`< 2` 也拒绝；③ 按版本取表清单（v2 13 张、v3 14 张），
+/// 键齐全且为数组；④ 每行是对象、主键非空、必填列齐全
 /// 且类型正确；⑤ 文件路径合法（见 [_validateBackupRowPaths]）；
 /// ⑥ 9 个 JSON 列是字符串且能解析为对应形状（见
 /// [_validateBackupRowJsonColumns]，FR-07）；
@@ -67,10 +69,15 @@ void validateBackupDataImpl(Map<String, dynamic> data) {
   if (sv > AppDatabase.schemaVersion) {
     throw BackupRestoreException('这份备份来自更新的版本（v$sv），请先更新应用再恢复');
   }
-  if (sv != AppDatabase.schemaVersion) {
+  if (sv < 2) {
     throw BackupRestoreException('这份备份是旧版本（v$sv）的，新版不再支持恢复');
   }
-  for (final t in AppDatabase.backupTables) {
+  // 十二批 D-91：v2 备份仍可恢复（迁移进 v3）：新表缺键视为 empty，
+  // collect_tasks 行缺 source_hash 列视为 NULL（无指纹基线）。
+  // v2 的表清单只有 13 张，按版本取。
+  final requiredTables =
+      sv == 2 ? AppDatabase.backupTablesV2 : AppDatabase.backupTables;
+  for (final t in requiredTables) {
     final rows = data[t];
     // SR-P2-4：缺表键即拒绝，不再按空表处理（恢复是清表再插回，
     // 缺键按空处理等于静默清空该表，用户无从察觉）。
@@ -135,6 +142,10 @@ const Map<String, Map<String, Type>> _requiredBackupColumns = {
     'kind': String,
     'subject_id': String,
     'title': String,
+  },
+  'recently_viewed_questions': {
+    'question_id': String,
+    'viewed_at': int,
   },
   'settings': {'key': String, 'value': String},
 };
@@ -452,10 +463,12 @@ Future<void> _backupInsertRowTyped(
       'created_at',
       'source_path',
       'page_rotations',
+      'source_hash',
     },
     'review_state': {'id', 'queue', 'position', 'updated_at'},
     'review_history': {'id', 'question_id', 'result', 'reviewed_at'},
     'recent_tasks': {'id', 'kind', 'subject_id', 'title', 'updated_at'},
+    'recently_viewed_questions': {'question_id', 'viewed_at'},
     'settings': {'key', 'value'},
   };
   final allowed = knownColumns[table];
@@ -625,6 +638,11 @@ Future<void> _backupInsertRowTyped(
               createdAt: _vIntDef(row, 'created_at'),
               sourcePath: _vStrDef(row, 'source_path'),
               pageRotations: _vRotationsDef(row, 'page_rotations'),
+              // 十二批 D-91：v2 备份行缺 source_hash → Value.absent()
+              // 落 NULL（无指纹基线）；有则校验为字符串或 null。
+              sourceHash: row.containsKey('source_hash')
+                  ? Value(_rsN(row, 'source_hash'))
+                  : const Value.absent(),
             ),
             mode: InsertMode.insertOrReplace,
           );
@@ -664,6 +682,16 @@ Future<void> _backupInsertRowTyped(
               subjectId: Value(_rs(row, 'subject_id')),
               title: Value(_rs(row, 'title')),
               updatedAt: Value(_ri(row, 'updated_at')),
+            ),
+            mode: InsertMode.insertOrReplace,
+          );
+    case 'recently_viewed_questions':
+      await db
+          .into(db.recentlyViewedQuestions)
+          .insert(
+            RecentlyViewedQuestionsCompanion(
+              questionId: Value(_rs(row, 'question_id')),
+              viewedAt: Value(_ri(row, 'viewed_at')),
             ),
             mode: InsertMode.insertOrReplace,
           );
@@ -710,6 +738,8 @@ Future<void> _clearBackupTable(QuizDatabase db, String table) async {
       await db.delete(db.reviewHistory).go();
     case 'recent_tasks':
       await db.delete(db.recentTasks).go();
+    case 'recently_viewed_questions':
+      await db.delete(db.recentlyViewedQuestions).go();
     case 'settings':
       await db.delete(db.settings).go();
     default:
@@ -827,8 +857,9 @@ Future<void> importBackupJsonIntoImpl(
           await _backupInsertRowTyped(db, t, Map<String, Object?>.from(row));
         }
       }
-      // §2.3：恢复后 settings.schemaVersion 写回 2（备份里的 settings
-      // 行若缺这一键，在此补写；若有，也以 2 为准）。
+      // §2.3：恢复后 settings.schemaVersion 写回当前版本
+      // （AppDatabase.schemaVersion；备份里的 settings 行若缺这一键，
+      // 在此补写；若有，也以当前版本为准）。
       // B2：走 db_settings 的类型化 upsert（db.into(db.settings)，
       // 不再手写 INSERT OR REPLACE SQL；与事务同连接，失败随事务回滚）。
       await _upsertSettingInto(
@@ -1769,8 +1800,9 @@ extension AppDatabaseBackup on AppDatabase {
   /// 清表/插表只按 backupTables 一份清单走（§2.3：删掉另一份手写
   /// 清单）；question_boxes 先清、随 questions 之后插（外键是逻辑
   /// 上的，没有声明 FK，顺序只是为可读性）。
-  /// 恢复后 settings.schemaVersion 写回 2。
-  /// Stage 4：恢复成功后只发一个含全部五种 kind 的事件（方案 §四）。
+  /// 恢复后 settings.schemaVersion 写回当前版本。
+  /// Stage 4：恢复成功后只发一个含全部六种 kind 的事件（方案 §四；
+  /// D-94：恢复覆盖 recently_viewed_questions 表，历史也在内）。
   Future<void> importBackupJson(Map<String, dynamic> data) async {
     await AppDatabase.importBackupJsonInto(await db, data);
     DataChangeBus.instance.emit(
@@ -1781,6 +1813,7 @@ extension AppDatabaseBackup on AppDatabase {
           DataChangeKind.subjects,
           DataChangeKind.questions,
           DataChangeKind.settings,
+          DataChangeKind.recentlyViewed,
         },
       ),
     );
@@ -1791,7 +1824,7 @@ extension AppDatabaseBackup on AppDatabase {
       AppDatabase.exportBackupZipFrom(await db);
 
   /// zip 备份恢复（实例版，按已读到的字节恢复）。成功后只发一个含
-  /// 全部五种 kind 的事件（方案 §四）。
+  /// 全部六种 kind 的事件（方案 §四；D-94：同上，历史也在内）。
   /// GPT-P1：只接受字节，不再提供按文件路径重读的入口——校验过的
   /// 字节与导入的字节必须是同一份，消除校验与使用之间的 TOCTOU
   /// 窗口（旧 `importBackupZipFile` 已删除）。
@@ -1805,6 +1838,7 @@ extension AppDatabaseBackup on AppDatabase {
           DataChangeKind.subjects,
           DataChangeKind.questions,
           DataChangeKind.settings,
+          DataChangeKind.recentlyViewed,
         },
       ),
     );

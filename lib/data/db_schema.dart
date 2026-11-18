@@ -19,18 +19,23 @@ bool shouldFallbackAfterOpenFailureImpl(String dbPath) {
   }
 }
 
-/// §2.2：删老库（v1）+ 建 v2 新库的唯一打开入口（§8.1 的测试工厂）：
-/// - 文件不存在 → 全新安装，直接建 v2 新库；
-/// - 文件是 v2（user_version == 2）→ 正常打开；
-/// - 文件是老版本（v1，user_version == 1，或其它非 2 值）→
-///   删除库文件（含 -wal / -shm），再建 v2 新库；无迁移、无 onUpgrade；
+/// §2.2：删老库（v1）+ 建 v3 新库的唯一打开入口（§8.1 的测试工厂）：
+/// - 文件不存在 → 全新安装，直接建 v3 新库；
+/// - 文件是 v3（user_version == 3）→ 正常打开；
+/// - 文件是 v2（user_version == 2）→ 保留，Drift onUpgrade 迁到 v3
+///   （十二批 D-91：建 recently_viewed_questions 表 + collect_tasks
+///   加 source_hash 列，数据全保留，不再删库）；
+/// - 文件是老版本（v1，user_version < 2）→ 删除库文件（含 -wal / -shm），
+///   再建 v3 新库；无 v1 迁移；
+/// - 文件是更新的版本（user_version > 3）→ 预检不动它，Drift onUpgrade
+///   按 from > to 抛“请用新版打开”，不静默删掉新版库；
 /// - 删除失败 → 抛错、拒绝打开（不许在老库尚在的情况下建新库，
 ///   避免新旧库并存、读写串库），下次启动重试删除。
 /// 只读读 user_version 时不触发 onCreate/onUpgrade，删之前库是
 /// 完整可读的旧库，不会拷到半截库。
 /// B1-Drift：预检（deleteLegacyDatabaseIfPresent）仍在 Drift 打开之前
 /// 跑；建表 + 播种走 QuizDatabase 的 onCreateTables 回调，B9-1 回填
-/// 走 onBeforeOpen 回调（每次开库都跑；新库刚建完表时无行可扫，
+/// 与十二批中断导入回填走 onBeforeOpen 回调（每次开库都跑；新库刚建完表时无行可扫，
 /// 是空操作；只读探针用自己的 sqlite3 连接，不走这里）。
 /// onCreate 在 onBeforeOpen 之前跑，表一定已存在。
 Future<QuizDatabase> openAtImpl(String dbPath) async {
@@ -41,7 +46,10 @@ Future<QuizDatabase> openAtImpl(String dbPath) async {
       await createTablesImpl(db);
       await _seed(db);
     },
-    onBeforeOpen: (db) async => backfillCollectDoneIntoImpl(db),
+    onBeforeOpen: (db) async {
+      await backfillCollectDoneIntoImpl(db);
+      await backfillInterruptedImportsIntoImpl(db);
+    },
   );
   // B1-Drift：Drift 是懒打开——不发查询就不建文件、不跑 onCreate /
   // beforeOpen；sqflite 的 openDatabase 则是打开即建库。Stage 1 要求
@@ -54,8 +62,11 @@ Future<QuizDatabase> openAtImpl(String dbPath) async {
   return db;
 }
 
-/// §2.2：删老库（可单测版）：文件不存在或已是 v2 时什么都不做，
-/// 返回 false；删掉老库文件（含 -wal / -shm）时返回 true。
+/// §2.2：删老库（可单测版）：文件不存在或版本 >= 2（v2 待迁移、v3
+/// 已是当前版）时什么都不做，返回 false；删掉老库文件（含 -wal / -shm）
+/// 时返回 true。十二批 D-91：只删 user_version < 2 的 v1 老库；v2
+/// 不再删（走 Drift 迁移到 v3），更新的版本（> 3）也不删（交给
+/// Drift onUpgrade 按 from > to 抛“请用新版打开”）。
 /// 删除失败抛 StateError（调用方拒绝打开、不建新库）。
 /// B1-Drift：只读探针改走 `package:sqlite3` 的 `open(mode: readOnly)` +
 /// `PRAGMA user_version`（Drift 打开之前探，探针关闭后再删）；
@@ -77,7 +88,7 @@ Future<bool> deleteLegacyDatabaseIfPresentImpl(String dbPath) async {
     // 保守起见拒绝打开，不删——删了可能是丢数据。
     throw LegacyDatabaseException('数据库文件无法打开，无法确认版本，已拒绝打开：$dbPath');
   }
-  if (version == AppDatabase.schemaVersion) return false;
+  if (version >= 2) return false;
   // 老库：删 -wal / -shm 再删主库（SR-P2-11）。
   // 旧顺序是先删主库、附属删失败才抛错：主库已删、抛错却称
   // “删除失败，下次启动重试”——下次启动文件已不存在、直接建空库，
@@ -151,7 +162,8 @@ Future<void> createTablesImpl(QuizDatabase db) async {
       page INTEGER NOT NULL DEFAULT 1, error TEXT, question_id TEXT,
       created_at INTEGER NOT NULL DEFAULT 0,
       source_path TEXT NOT NULL DEFAULT '',
-      page_rotations TEXT NOT NULL DEFAULT '{}')''');
+      page_rotations TEXT NOT NULL DEFAULT '{}',
+      source_hash TEXT)''');
   await db.customStatement('''
     CREATE TABLE cause_records(
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -176,6 +188,9 @@ Future<void> createTablesImpl(QuizDatabase db) async {
       id INTEGER PRIMARY KEY CHECK (id = 1), kind TEXT NOT NULL,
       subject_id TEXT NOT NULL, title TEXT NOT NULL,
       updated_at INTEGER NOT NULL)''');
+  await db.customStatement('''
+    CREATE TABLE recently_viewed_questions(
+      question_id TEXT PRIMARY KEY, viewed_at INTEGER NOT NULL)''');
   await db.customStatement('''
     CREATE TABLE settings(
       key TEXT PRIMARY KEY, value TEXT NOT NULL)''');
@@ -285,8 +300,8 @@ Future<void> _seed(QuizDatabase db) async {
           ),
         );
   }
-  // §2.1：settings 表写 schemaVersion = '2'（与备份 _meta 同一口径；
+  // §2.1：settings 表写 schemaVersion = '3'（与备份 _meta 同一口径；
   // 与 PRAGMA user_version 是两回事）。新库从空开始，不预置演示
   // 数据（§6 第 1 条）：演示题、演示解决记录、演示 recent_tasks 一律不建。
-  await _upsertSettingInto(db, 'schemaVersion', '2');
+  await _upsertSettingInto(db, 'schemaVersion', '3');
 }

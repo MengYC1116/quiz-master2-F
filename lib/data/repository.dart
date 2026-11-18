@@ -611,6 +611,18 @@ class QuestionRepository {
   Future<int> organizedTodayCount({DateTime? now}) =>
       _db.organizedTodayCount(now: now);
 
+  /// 十二批功能 4：首页历史——打开题目详情记一次查看（同一题只留一条，
+  /// 时间更新为最后一次；超过 30 条剪掉最旧的）。调用方
+  /// `DetailNotifier.load` 成功后调，且包 try/catch（D-88：记录失败
+  /// 绝不能拖垮详情加载）。
+  Future<void> recordQuestionViewed(String questionId) =>
+      _db.recordQuestionViewed(questionId);
+
+  /// 十二批功能 4：首页历史——最近查看的题（最新在前，最多 30 条；
+  /// 已删题跳过；已归档 / 已掌握的题照常返回）。
+  Future<List<({Question question, DateTime viewedAt})>>
+  recentlyViewedQuestions() => _db.recentlyViewedQuestions();
+
   /// B4.3：切换数据库位置并迁移旧库与文件目录（见 database.dart）。
   /// 目标已有库时先问用户，`overwrite` 按用户选择传（覆盖 / 保留 /
   /// 取消；文件目录沿用同一选择）。`onProgress` / `isCancelled`

@@ -2037,6 +2037,234 @@ class RecentTasksCompanion extends UpdateCompanion<DbRecentTask> {
   }
 }
 
+class $RecentlyViewedQuestionsTable extends RecentlyViewedQuestions
+    with TableInfo<$RecentlyViewedQuestionsTable, RecentlyViewedQuestion> {
+  @override
+  final GeneratedDatabase attachedDatabase;
+  final String? _alias;
+  $RecentlyViewedQuestionsTable(this.attachedDatabase, [this._alias]);
+  static const VerificationMeta _questionIdMeta = const VerificationMeta(
+    'questionId',
+  );
+  @override
+  late final GeneratedColumn<String> questionId = GeneratedColumn<String>(
+    'question_id',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: true,
+    $customConstraints: 'PRIMARY KEY',
+  );
+  static const VerificationMeta _viewedAtMeta = const VerificationMeta(
+    'viewedAt',
+  );
+  @override
+  late final GeneratedColumn<int> viewedAt = GeneratedColumn<int>(
+    'viewed_at',
+    aliasedName,
+    false,
+    type: DriftSqlType.int,
+    requiredDuringInsert: true,
+  );
+  @override
+  List<GeneratedColumn> get $columns => [questionId, viewedAt];
+  @override
+  String get aliasedName => _alias ?? actualTableName;
+  @override
+  String get actualTableName => $name;
+  static const String $name = 'recently_viewed_questions';
+  @override
+  VerificationContext validateIntegrity(
+    Insertable<RecentlyViewedQuestion> instance, {
+    bool isInserting = false,
+  }) {
+    final context = VerificationContext();
+    final data = instance.toColumns(true);
+    if (data.containsKey('question_id')) {
+      context.handle(
+        _questionIdMeta,
+        questionId.isAcceptableOrUnknown(data['question_id']!, _questionIdMeta),
+      );
+    } else if (isInserting) {
+      context.missing(_questionIdMeta);
+    }
+    if (data.containsKey('viewed_at')) {
+      context.handle(
+        _viewedAtMeta,
+        viewedAt.isAcceptableOrUnknown(data['viewed_at']!, _viewedAtMeta),
+      );
+    } else if (isInserting) {
+      context.missing(_viewedAtMeta);
+    }
+    return context;
+  }
+
+  @override
+  Set<GeneratedColumn> get $primaryKey => {questionId};
+  @override
+  RecentlyViewedQuestion map(Map<String, dynamic> data, {String? tablePrefix}) {
+    final effectivePrefix = tablePrefix != null ? '$tablePrefix.' : '';
+    return RecentlyViewedQuestion(
+      questionId: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}question_id'],
+      )!,
+      viewedAt: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}viewed_at'],
+      )!,
+    );
+  }
+
+  @override
+  $RecentlyViewedQuestionsTable createAlias(String alias) {
+    return $RecentlyViewedQuestionsTable(attachedDatabase, alias);
+  }
+}
+
+class RecentlyViewedQuestion extends DataClass
+    implements Insertable<RecentlyViewedQuestion> {
+  final String questionId;
+  final int viewedAt;
+  const RecentlyViewedQuestion({
+    required this.questionId,
+    required this.viewedAt,
+  });
+  @override
+  Map<String, Expression> toColumns(bool nullToAbsent) {
+    final map = <String, Expression>{};
+    map['question_id'] = Variable<String>(questionId);
+    map['viewed_at'] = Variable<int>(viewedAt);
+    return map;
+  }
+
+  RecentlyViewedQuestionsCompanion toCompanion(bool nullToAbsent) {
+    return RecentlyViewedQuestionsCompanion(
+      questionId: Value(questionId),
+      viewedAt: Value(viewedAt),
+    );
+  }
+
+  factory RecentlyViewedQuestion.fromJson(
+    Map<String, dynamic> json, {
+    ValueSerializer? serializer,
+  }) {
+    serializer ??= driftRuntimeOptions.defaultSerializer;
+    return RecentlyViewedQuestion(
+      questionId: serializer.fromJson<String>(json['questionId']),
+      viewedAt: serializer.fromJson<int>(json['viewedAt']),
+    );
+  }
+  @override
+  Map<String, dynamic> toJson({ValueSerializer? serializer}) {
+    serializer ??= driftRuntimeOptions.defaultSerializer;
+    return <String, dynamic>{
+      'questionId': serializer.toJson<String>(questionId),
+      'viewedAt': serializer.toJson<int>(viewedAt),
+    };
+  }
+
+  RecentlyViewedQuestion copyWith({String? questionId, int? viewedAt}) =>
+      RecentlyViewedQuestion(
+        questionId: questionId ?? this.questionId,
+        viewedAt: viewedAt ?? this.viewedAt,
+      );
+  RecentlyViewedQuestion copyWithCompanion(
+    RecentlyViewedQuestionsCompanion data,
+  ) {
+    return RecentlyViewedQuestion(
+      questionId: data.questionId.present
+          ? data.questionId.value
+          : this.questionId,
+      viewedAt: data.viewedAt.present ? data.viewedAt.value : this.viewedAt,
+    );
+  }
+
+  @override
+  String toString() {
+    return (StringBuffer('RecentlyViewedQuestion(')
+          ..write('questionId: $questionId, ')
+          ..write('viewedAt: $viewedAt')
+          ..write(')'))
+        .toString();
+  }
+
+  @override
+  int get hashCode => Object.hash(questionId, viewedAt);
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      (other is RecentlyViewedQuestion &&
+          other.questionId == this.questionId &&
+          other.viewedAt == this.viewedAt);
+}
+
+class RecentlyViewedQuestionsCompanion
+    extends UpdateCompanion<RecentlyViewedQuestion> {
+  final Value<String> questionId;
+  final Value<int> viewedAt;
+  final Value<int> rowid;
+  const RecentlyViewedQuestionsCompanion({
+    this.questionId = const Value.absent(),
+    this.viewedAt = const Value.absent(),
+    this.rowid = const Value.absent(),
+  });
+  RecentlyViewedQuestionsCompanion.insert({
+    required String questionId,
+    required int viewedAt,
+    this.rowid = const Value.absent(),
+  }) : questionId = Value(questionId),
+       viewedAt = Value(viewedAt);
+  static Insertable<RecentlyViewedQuestion> custom({
+    Expression<String>? questionId,
+    Expression<int>? viewedAt,
+    Expression<int>? rowid,
+  }) {
+    return RawValuesInsertable({
+      if (questionId != null) 'question_id': questionId,
+      if (viewedAt != null) 'viewed_at': viewedAt,
+      if (rowid != null) 'rowid': rowid,
+    });
+  }
+
+  RecentlyViewedQuestionsCompanion copyWith({
+    Value<String>? questionId,
+    Value<int>? viewedAt,
+    Value<int>? rowid,
+  }) {
+    return RecentlyViewedQuestionsCompanion(
+      questionId: questionId ?? this.questionId,
+      viewedAt: viewedAt ?? this.viewedAt,
+      rowid: rowid ?? this.rowid,
+    );
+  }
+
+  @override
+  Map<String, Expression> toColumns(bool nullToAbsent) {
+    final map = <String, Expression>{};
+    if (questionId.present) {
+      map['question_id'] = Variable<String>(questionId.value);
+    }
+    if (viewedAt.present) {
+      map['viewed_at'] = Variable<int>(viewedAt.value);
+    }
+    if (rowid.present) {
+      map['rowid'] = Variable<int>(rowid.value);
+    }
+    return map;
+  }
+
+  @override
+  String toString() {
+    return (StringBuffer('RecentlyViewedQuestionsCompanion(')
+          ..write('questionId: $questionId, ')
+          ..write('viewedAt: $viewedAt, ')
+          ..write('rowid: $rowid')
+          ..write(')'))
+        .toString();
+  }
+}
+
 class $ReviewHistoryTable extends ReviewHistory
     with TableInfo<$ReviewHistoryTable, DbReviewHistory> {
   @override
@@ -3383,6 +3611,17 @@ class $CollectTasksTable extends CollectTasks
     requiredDuringInsert: false,
     defaultValue: const Constant('{}'),
   ).withConverter<Map<int, int>>($CollectTasksTable.$converterpageRotations);
+  static const VerificationMeta _sourceHashMeta = const VerificationMeta(
+    'sourceHash',
+  );
+  @override
+  late final GeneratedColumn<String> sourceHash = GeneratedColumn<String>(
+    'source_hash',
+    aliasedName,
+    true,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+  );
   @override
   List<GeneratedColumn> get $columns => [
     id,
@@ -3398,6 +3637,7 @@ class $CollectTasksTable extends CollectTasks
     createdAt,
     sourcePath,
     pageRotations,
+    sourceHash,
   ];
   @override
   String get aliasedName => _alias ?? actualTableName;
@@ -3488,6 +3728,12 @@ class $CollectTasksTable extends CollectTasks
         sourcePath.isAcceptableOrUnknown(data['source_path']!, _sourcePathMeta),
       );
     }
+    if (data.containsKey('source_hash')) {
+      context.handle(
+        _sourceHashMeta,
+        sourceHash.isAcceptableOrUnknown(data['source_hash']!, _sourceHashMeta),
+      );
+    }
     return context;
   }
 
@@ -3551,6 +3797,10 @@ class $CollectTasksTable extends CollectTasks
           data['${effectivePrefix}page_rotations'],
         )!,
       ),
+      sourceHash: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}source_hash'],
+      ),
     );
   }
 
@@ -3577,6 +3827,12 @@ class DbCollectTask extends DataClass implements Insertable<DbCollectTask> {
   final int createdAt;
   final String sourcePath;
   final Map<int, int> pageRotations;
+
+  /// 十二批 D-91：导入时存进来的原文件 SHA-256（contentHashOfFile）。
+  /// 重试时重算库内原图的哈希比对，内容被换过即拒绝重试。旧行（v2
+  /// 备份恢复、v2 库迁移而来）为 NULL——无基线可比，重试时跳过指纹
+  /// 校验（仍受单候选 + 任务目录口径约束）。
+  final String? sourceHash;
   const DbCollectTask({
     required this.id,
     required this.name,
@@ -3591,6 +3847,7 @@ class DbCollectTask extends DataClass implements Insertable<DbCollectTask> {
     required this.createdAt,
     required this.sourcePath,
     required this.pageRotations,
+    this.sourceHash,
   });
   @override
   Map<String, Expression> toColumns(bool nullToAbsent) {
@@ -3616,6 +3873,9 @@ class DbCollectTask extends DataClass implements Insertable<DbCollectTask> {
         $CollectTasksTable.$converterpageRotations.toSql(pageRotations),
       );
     }
+    if (!nullToAbsent || sourceHash != null) {
+      map['source_hash'] = Variable<String>(sourceHash);
+    }
     return map;
   }
 
@@ -3638,6 +3898,9 @@ class DbCollectTask extends DataClass implements Insertable<DbCollectTask> {
       createdAt: Value(createdAt),
       sourcePath: Value(sourcePath),
       pageRotations: Value(pageRotations),
+      sourceHash: sourceHash == null && nullToAbsent
+          ? const Value.absent()
+          : Value(sourceHash),
     );
   }
 
@@ -3660,6 +3923,7 @@ class DbCollectTask extends DataClass implements Insertable<DbCollectTask> {
       createdAt: serializer.fromJson<int>(json['createdAt']),
       sourcePath: serializer.fromJson<String>(json['sourcePath']),
       pageRotations: serializer.fromJson<Map<int, int>>(json['pageRotations']),
+      sourceHash: serializer.fromJson<String?>(json['sourceHash']),
     );
   }
   @override
@@ -3679,6 +3943,7 @@ class DbCollectTask extends DataClass implements Insertable<DbCollectTask> {
       'createdAt': serializer.toJson<int>(createdAt),
       'sourcePath': serializer.toJson<String>(sourcePath),
       'pageRotations': serializer.toJson<Map<int, int>>(pageRotations),
+      'sourceHash': serializer.toJson<String?>(sourceHash),
     };
   }
 
@@ -3696,6 +3961,7 @@ class DbCollectTask extends DataClass implements Insertable<DbCollectTask> {
     int? createdAt,
     String? sourcePath,
     Map<int, int>? pageRotations,
+    Value<String?> sourceHash = const Value.absent(),
   }) => DbCollectTask(
     id: id ?? this.id,
     name: name ?? this.name,
@@ -3710,6 +3976,7 @@ class DbCollectTask extends DataClass implements Insertable<DbCollectTask> {
     createdAt: createdAt ?? this.createdAt,
     sourcePath: sourcePath ?? this.sourcePath,
     pageRotations: pageRotations ?? this.pageRotations,
+    sourceHash: sourceHash.present ? sourceHash.value : this.sourceHash,
   );
   DbCollectTask copyWithCompanion(CollectTasksCompanion data) {
     return DbCollectTask(
@@ -3732,6 +3999,9 @@ class DbCollectTask extends DataClass implements Insertable<DbCollectTask> {
       pageRotations: data.pageRotations.present
           ? data.pageRotations.value
           : this.pageRotations,
+      sourceHash: data.sourceHash.present
+          ? data.sourceHash.value
+          : this.sourceHash,
     );
   }
 
@@ -3750,7 +4020,8 @@ class DbCollectTask extends DataClass implements Insertable<DbCollectTask> {
           ..write('questionId: $questionId, ')
           ..write('createdAt: $createdAt, ')
           ..write('sourcePath: $sourcePath, ')
-          ..write('pageRotations: $pageRotations')
+          ..write('pageRotations: $pageRotations, ')
+          ..write('sourceHash: $sourceHash')
           ..write(')'))
         .toString();
   }
@@ -3770,6 +4041,7 @@ class DbCollectTask extends DataClass implements Insertable<DbCollectTask> {
     createdAt,
     sourcePath,
     pageRotations,
+    sourceHash,
   );
   @override
   bool operator ==(Object other) =>
@@ -3787,7 +4059,8 @@ class DbCollectTask extends DataClass implements Insertable<DbCollectTask> {
           other.questionId == this.questionId &&
           other.createdAt == this.createdAt &&
           other.sourcePath == this.sourcePath &&
-          other.pageRotations == this.pageRotations);
+          other.pageRotations == this.pageRotations &&
+          other.sourceHash == this.sourceHash);
 }
 
 class CollectTasksCompanion extends UpdateCompanion<DbCollectTask> {
@@ -3804,6 +4077,7 @@ class CollectTasksCompanion extends UpdateCompanion<DbCollectTask> {
   final Value<int> createdAt;
   final Value<String> sourcePath;
   final Value<Map<int, int>> pageRotations;
+  final Value<String?> sourceHash;
   final Value<int> rowid;
   const CollectTasksCompanion({
     this.id = const Value.absent(),
@@ -3819,6 +4093,7 @@ class CollectTasksCompanion extends UpdateCompanion<DbCollectTask> {
     this.createdAt = const Value.absent(),
     this.sourcePath = const Value.absent(),
     this.pageRotations = const Value.absent(),
+    this.sourceHash = const Value.absent(),
     this.rowid = const Value.absent(),
   });
   CollectTasksCompanion.insert({
@@ -3835,6 +4110,7 @@ class CollectTasksCompanion extends UpdateCompanion<DbCollectTask> {
     this.createdAt = const Value.absent(),
     this.sourcePath = const Value.absent(),
     this.pageRotations = const Value.absent(),
+    this.sourceHash = const Value.absent(),
     this.rowid = const Value.absent(),
   }) : id = Value(id),
        name = Value(name),
@@ -3854,6 +4130,7 @@ class CollectTasksCompanion extends UpdateCompanion<DbCollectTask> {
     Expression<int>? createdAt,
     Expression<String>? sourcePath,
     Expression<String>? pageRotations,
+    Expression<String>? sourceHash,
     Expression<int>? rowid,
   }) {
     return RawValuesInsertable({
@@ -3870,6 +4147,7 @@ class CollectTasksCompanion extends UpdateCompanion<DbCollectTask> {
       if (createdAt != null) 'created_at': createdAt,
       if (sourcePath != null) 'source_path': sourcePath,
       if (pageRotations != null) 'page_rotations': pageRotations,
+      if (sourceHash != null) 'source_hash': sourceHash,
       if (rowid != null) 'rowid': rowid,
     });
   }
@@ -3888,6 +4166,7 @@ class CollectTasksCompanion extends UpdateCompanion<DbCollectTask> {
     Value<int>? createdAt,
     Value<String>? sourcePath,
     Value<Map<int, int>>? pageRotations,
+    Value<String?>? sourceHash,
     Value<int>? rowid,
   }) {
     return CollectTasksCompanion(
@@ -3904,6 +4183,7 @@ class CollectTasksCompanion extends UpdateCompanion<DbCollectTask> {
       createdAt: createdAt ?? this.createdAt,
       sourcePath: sourcePath ?? this.sourcePath,
       pageRotations: pageRotations ?? this.pageRotations,
+      sourceHash: sourceHash ?? this.sourceHash,
       rowid: rowid ?? this.rowid,
     );
   }
@@ -3952,6 +4232,9 @@ class CollectTasksCompanion extends UpdateCompanion<DbCollectTask> {
         $CollectTasksTable.$converterpageRotations.toSql(pageRotations.value),
       );
     }
+    if (sourceHash.present) {
+      map['source_hash'] = Variable<String>(sourceHash.value);
+    }
     if (rowid.present) {
       map['rowid'] = Variable<int>(rowid.value);
     }
@@ -3974,6 +4257,7 @@ class CollectTasksCompanion extends UpdateCompanion<DbCollectTask> {
           ..write('createdAt: $createdAt, ')
           ..write('sourcePath: $sourcePath, ')
           ..write('pageRotations: $pageRotations, ')
+          ..write('sourceHash: $sourceHash, ')
           ..write('rowid: $rowid')
           ..write(')'))
         .toString();
@@ -6305,6 +6589,8 @@ abstract class _$QuizDatabase extends GeneratedDatabase {
   late final $FoldersTable folders = $FoldersTable(this);
   late final $SubjectsTable subjects = $SubjectsTable(this);
   late final $RecentTasksTable recentTasks = $RecentTasksTable(this);
+  late final $RecentlyViewedQuestionsTable recentlyViewedQuestions =
+      $RecentlyViewedQuestionsTable(this);
   late final $ReviewHistoryTable reviewHistory = $ReviewHistoryTable(this);
   late final $CauseRecordsTable causeRecords = $CauseRecordsTable(this);
   late final $ReviewStateTable reviewState = $ReviewStateTable(this);
@@ -6339,6 +6625,7 @@ abstract class _$QuizDatabase extends GeneratedDatabase {
     folders,
     subjects,
     recentTasks,
+    recentlyViewedQuestions,
     reviewHistory,
     causeRecords,
     reviewState,
@@ -7585,6 +7872,182 @@ typedef $$RecentTasksTableProcessedTableManager =
       DbRecentTask,
       PrefetchHooks Function()
     >;
+typedef $$RecentlyViewedQuestionsTableCreateCompanionBuilder =
+    RecentlyViewedQuestionsCompanion Function({
+      required String questionId,
+      required int viewedAt,
+      Value<int> rowid,
+    });
+typedef $$RecentlyViewedQuestionsTableUpdateCompanionBuilder =
+    RecentlyViewedQuestionsCompanion Function({
+      Value<String> questionId,
+      Value<int> viewedAt,
+      Value<int> rowid,
+    });
+
+class $$RecentlyViewedQuestionsTableFilterComposer
+    extends Composer<_$QuizDatabase, $RecentlyViewedQuestionsTable> {
+  $$RecentlyViewedQuestionsTableFilterComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  ColumnFilters<String> get questionId => $composableBuilder(
+    column: $table.questionId,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<int> get viewedAt => $composableBuilder(
+    column: $table.viewedAt,
+    builder: (column) => ColumnFilters(column),
+  );
+}
+
+class $$RecentlyViewedQuestionsTableOrderingComposer
+    extends Composer<_$QuizDatabase, $RecentlyViewedQuestionsTable> {
+  $$RecentlyViewedQuestionsTableOrderingComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  ColumnOrderings<String> get questionId => $composableBuilder(
+    column: $table.questionId,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<int> get viewedAt => $composableBuilder(
+    column: $table.viewedAt,
+    builder: (column) => ColumnOrderings(column),
+  );
+}
+
+class $$RecentlyViewedQuestionsTableAnnotationComposer
+    extends Composer<_$QuizDatabase, $RecentlyViewedQuestionsTable> {
+  $$RecentlyViewedQuestionsTableAnnotationComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  GeneratedColumn<String> get questionId => $composableBuilder(
+    column: $table.questionId,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<int> get viewedAt =>
+      $composableBuilder(column: $table.viewedAt, builder: (column) => column);
+}
+
+class $$RecentlyViewedQuestionsTableTableManager
+    extends
+        RootTableManager<
+          _$QuizDatabase,
+          $RecentlyViewedQuestionsTable,
+          RecentlyViewedQuestion,
+          $$RecentlyViewedQuestionsTableFilterComposer,
+          $$RecentlyViewedQuestionsTableOrderingComposer,
+          $$RecentlyViewedQuestionsTableAnnotationComposer,
+          $$RecentlyViewedQuestionsTableCreateCompanionBuilder,
+          $$RecentlyViewedQuestionsTableUpdateCompanionBuilder,
+          (
+            RecentlyViewedQuestion,
+            BaseReferences<
+              _$QuizDatabase,
+              $RecentlyViewedQuestionsTable,
+              RecentlyViewedQuestion
+            >,
+          ),
+          RecentlyViewedQuestion,
+          PrefetchHooks Function()
+        > {
+  $$RecentlyViewedQuestionsTableTableManager(
+    _$QuizDatabase db,
+    $RecentlyViewedQuestionsTable table,
+  ) : super(
+        TableManagerState(
+          db: db,
+          table: table,
+          createFilteringComposer: () =>
+              $$RecentlyViewedQuestionsTableFilterComposer(
+                $db: db,
+                $table: table,
+              ),
+          createOrderingComposer: () =>
+              $$RecentlyViewedQuestionsTableOrderingComposer(
+                $db: db,
+                $table: table,
+              ),
+          createComputedFieldComposer: () =>
+              $$RecentlyViewedQuestionsTableAnnotationComposer(
+                $db: db,
+                $table: table,
+              ),
+          updateCompanionCallback:
+              ({
+                Value<String> questionId = const Value.absent(),
+                Value<int> viewedAt = const Value.absent(),
+                Value<int> rowid = const Value.absent(),
+              }) => RecentlyViewedQuestionsCompanion(
+                questionId: questionId,
+                viewedAt: viewedAt,
+                rowid: rowid,
+              ),
+          createCompanionCallback:
+              ({
+                required String questionId,
+                required int viewedAt,
+                Value<int> rowid = const Value.absent(),
+              }) => RecentlyViewedQuestionsCompanion.insert(
+                questionId: questionId,
+                viewedAt: viewedAt,
+                rowid: rowid,
+              ),
+          withReferenceMapper: (p0) => p0
+              .map(
+                (e) => (
+                  e.readTable<
+                    $RecentlyViewedQuestionsTable,
+                    RecentlyViewedQuestion
+                  >(table),
+                  BaseReferences<
+                    _$QuizDatabase,
+                    $RecentlyViewedQuestionsTable,
+                    RecentlyViewedQuestion
+                  >(db, table, e),
+                ),
+              )
+              .toList(),
+          prefetchHooksCallback: null,
+        ),
+      );
+}
+
+typedef $$RecentlyViewedQuestionsTableProcessedTableManager =
+    ProcessedTableManager<
+      _$QuizDatabase,
+      $RecentlyViewedQuestionsTable,
+      RecentlyViewedQuestion,
+      $$RecentlyViewedQuestionsTableFilterComposer,
+      $$RecentlyViewedQuestionsTableOrderingComposer,
+      $$RecentlyViewedQuestionsTableAnnotationComposer,
+      $$RecentlyViewedQuestionsTableCreateCompanionBuilder,
+      $$RecentlyViewedQuestionsTableUpdateCompanionBuilder,
+      (
+        RecentlyViewedQuestion,
+        BaseReferences<
+          _$QuizDatabase,
+          $RecentlyViewedQuestionsTable,
+          RecentlyViewedQuestion
+        >,
+      ),
+      RecentlyViewedQuestion,
+      PrefetchHooks Function()
+    >;
 typedef $$ReviewHistoryTableCreateCompanionBuilder =
     ReviewHistoryCompanion Function({
       Value<int> id,
@@ -8289,6 +8752,7 @@ typedef $$CollectTasksTableCreateCompanionBuilder =
       Value<int> createdAt,
       Value<String> sourcePath,
       Value<Map<int, int>> pageRotations,
+      Value<String?> sourceHash,
       Value<int> rowid,
     });
 typedef $$CollectTasksTableUpdateCompanionBuilder =
@@ -8306,6 +8770,7 @@ typedef $$CollectTasksTableUpdateCompanionBuilder =
       Value<int> createdAt,
       Value<String> sourcePath,
       Value<Map<int, int>> pageRotations,
+      Value<String?> sourceHash,
       Value<int> rowid,
     });
 
@@ -8383,6 +8848,11 @@ class $$CollectTasksTableFilterComposer
     column: $table.pageRotations,
     builder: (column) => ColumnWithTypeConverterFilters(column),
   );
+
+  ColumnFilters<String> get sourceHash => $composableBuilder(
+    column: $table.sourceHash,
+    builder: (column) => ColumnFilters(column),
+  );
 }
 
 class $$CollectTasksTableOrderingComposer
@@ -8458,6 +8928,11 @@ class $$CollectTasksTableOrderingComposer
     column: $table.pageRotations,
     builder: (column) => ColumnOrderings(column),
   );
+
+  ColumnOrderings<String> get sourceHash => $composableBuilder(
+    column: $table.sourceHash,
+    builder: (column) => ColumnOrderings(column),
+  );
 }
 
 class $$CollectTasksTableAnnotationComposer
@@ -8514,6 +8989,11 @@ class $$CollectTasksTableAnnotationComposer
         column: $table.pageRotations,
         builder: (column) => column,
       );
+
+  GeneratedColumn<String> get sourceHash => $composableBuilder(
+    column: $table.sourceHash,
+    builder: (column) => column,
+  );
 }
 
 class $$CollectTasksTableTableManager
@@ -8560,6 +9040,7 @@ class $$CollectTasksTableTableManager
                 Value<int> createdAt = const Value.absent(),
                 Value<String> sourcePath = const Value.absent(),
                 Value<Map<int, int>> pageRotations = const Value.absent(),
+                Value<String?> sourceHash = const Value.absent(),
                 Value<int> rowid = const Value.absent(),
               }) => CollectTasksCompanion(
                 id: id,
@@ -8575,6 +9056,7 @@ class $$CollectTasksTableTableManager
                 createdAt: createdAt,
                 sourcePath: sourcePath,
                 pageRotations: pageRotations,
+                sourceHash: sourceHash,
                 rowid: rowid,
               ),
           createCompanionCallback:
@@ -8592,6 +9074,7 @@ class $$CollectTasksTableTableManager
                 Value<int> createdAt = const Value.absent(),
                 Value<String> sourcePath = const Value.absent(),
                 Value<Map<int, int>> pageRotations = const Value.absent(),
+                Value<String?> sourceHash = const Value.absent(),
                 Value<int> rowid = const Value.absent(),
               }) => CollectTasksCompanion.insert(
                 id: id,
@@ -8607,6 +9090,7 @@ class $$CollectTasksTableTableManager
                 createdAt: createdAt,
                 sourcePath: sourcePath,
                 pageRotations: pageRotations,
+                sourceHash: sourceHash,
                 rowid: rowid,
               ),
           withReferenceMapper: (p0) => p0
@@ -9727,6 +10211,11 @@ class $QuizDatabaseManager {
       $$SubjectsTableTableManager(_db, _db.subjects);
   $$RecentTasksTableTableManager get recentTasks =>
       $$RecentTasksTableTableManager(_db, _db.recentTasks);
+  $$RecentlyViewedQuestionsTableTableManager get recentlyViewedQuestions =>
+      $$RecentlyViewedQuestionsTableTableManager(
+        _db,
+        _db.recentlyViewedQuestions,
+      );
   $$ReviewHistoryTableTableManager get reviewHistory =>
       $$ReviewHistoryTableTableManager(_db, _db.reviewHistory);
   $$CauseRecordsTableTableManager get causeRecords =>

@@ -27,4 +27,10 @@ class CollectTasks extends Table {
   TextColumn get sourcePath => text().withDefault(const Constant(''))();
   TextColumn get pageRotations =>
       text().map(const RotationsConverter()).withDefault(const Constant('{}'))();
+
+  /// 十二批 D-91：导入时存进来的原文件 SHA-256（contentHashOfFile）。
+  /// 重试时重算库内原图的哈希比对，内容被换过即拒绝重试。旧行（v2
+  /// 备份恢复、v2 库迁移而来）为 NULL——无基线可比，重试时跳过指纹
+  /// 校验（仍受单候选 + 任务目录口径约束）。
+  TextColumn get sourceHash => text().nullable()();
 }

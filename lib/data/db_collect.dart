@@ -27,6 +27,7 @@ CollectTask _collectTaskFromDb(DbCollectTask r) => CollectTask(
       : DateTime.fromMillisecondsSinceEpoch(r.createdAt),
   sourcePath: r.sourcePath,
   pageRotations: r.pageRotations,
+  sourceHash: r.sourceHash,
 );
 
 /// upsert 的 UPDATE 分支：除 created_at 外全列写回（旧 UPDATE 语句
@@ -45,6 +46,7 @@ CollectTasksCompanion _collectTaskUpdateCompanion(CollectTask t) =>
       questionId: Value(t.questionId),
       sourcePath: Value(t.sourcePath),
       pageRotations: Value(t.pageRotations),
+      sourceHash: Value(t.sourceHash),
     );
 
 /// upsert 的 INSERT 分支：全列写，created_at 调用方没给就写当前时间。
@@ -66,6 +68,7 @@ CollectTasksCompanion _collectTaskInsertCompanion(CollectTask t) =>
       ),
       sourcePath: Value(t.sourcePath),
       pageRotations: Value(t.pageRotations),
+      sourceHash: Value(t.sourceHash),
     );
 
 QuestionBox _questionBoxFromDb(DbQuestionBox r) => QuestionBox(
@@ -157,6 +160,25 @@ Future<int> backfillCollectDoneIntoImpl(QuizDatabase db) async {
             t.questionId.isInQuery(organizedIds),
       ))
       .write(const CollectTasksCompanion(status: Value('done')));
+}
+
+/// 十二批功能 7（D-91）：启动恢复——把上次导入/重试中途退出而卡在
+/// importing 的任务行置为 failed（可重试），返回治好的行数。导入只在
+/// 应用活着时跑，启动时没有任何任务应处于 importing；卡住的行只能是
+/// 崩溃/杀进程残留。其它状态一律不动；失败原因写明“上次导入被中断”，
+/// 用户点重试即走正常重试流程。单条 UPDATE，幂等。
+/// 调用点：[AppDatabase.openAtImpl] 的 onBeforeOpen（每次开库扫一遍，
+/// 与 B9-1 回填同批跑）。
+Future<int> backfillInterruptedImportsIntoImpl(QuizDatabase db) async {
+  return (db.update(db.collectTasks)
+        ..where((t) => t.status.equals('importing')))
+      .write(
+        const CollectTasksCompanion(
+          status: Value('failed'),
+          progress: Value(0),
+          error: Value('上次导入被中断，请重试'),
+        ),
+      );
 }
 
 /// §1.2(c) + B2-6a：删任务（可单测版）：一次事务，不 bump。

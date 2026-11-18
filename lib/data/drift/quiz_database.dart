@@ -26,6 +26,7 @@ import 'tables/knowledge_points.dart';
 import 'tables/question_boxes.dart';
 import 'tables/questions.dart';
 import 'tables/recent_tasks.dart';
+import 'tables/recently_viewed_questions.dart';
 import 'tables/review_history.dart';
 import 'tables/review_state.dart';
 import 'tables/settings.dart';
@@ -43,6 +44,7 @@ part 'quiz_database.g.dart';
     Folders,
     Subjects,
     RecentTasks,
+    RecentlyViewedQuestions,
     ReviewHistory,
     CauseRecords,
     ReviewState,
@@ -71,7 +73,7 @@ class QuizDatabase extends _$QuizDatabase {
   final Future<void> Function(QuizDatabase db)? onBeforeOpen;
 
   @override
-  int get schemaVersion => 2;
+  int get schemaVersion => 3;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -79,11 +81,38 @@ class QuizDatabase extends _$QuizDatabase {
       await onCreateTables?.call(this);
     },
     // Drift 2.35 的 MigrationStrategy 没有独立的 onDowngrade 槽位：
-    // 升版与降版都走 onUpgrade（from < to 为升版，from > to 为降版），
-    // 因此在这里按 from/to 分流，两种都抛 StateError——任何迁移
-    // 触发都是 bug（v2 库无迁移历史，老库由打开前的
-    // deleteLegacyDatabaseIfPresent 预检删掉）。
+    // 升版与降版都走 onUpgrade（from < to 为升版，from > to 为降版）。
+    // 十二批 D-91：v2 → v3 是本项目第一次真正的迁移——建
+    // recently_viewed_questions 表 + collect_tasks 加 source_hash 列，
+    // 数据全保留。其它 from/to 一律抛错：v1 及更老由打开前的
+    // deleteLegacyDatabaseIfPresent 预检删掉；from > to（新版库用旧版
+    // 打开）请用新版打开。
     onUpgrade: (m, from, to) async {
+      if (from == 2 && to == 3) {
+        // DDL 必须与 createTablesImpl 的手写字面量一字不差（B1 纪律：
+        // 迁移后的库与全新 v3 库在 sqlite_master 里逐字一致）。Drift 的
+        // m.createTable / m.addColumn 生成的 DDL 带引号（"source_hash"
+        // TEXT NULL），与手写文本不一致，故此处走 customStatement，
+        // 用同一份字面量；语义与 Drift 生成的 DDL 等价。
+        await m.database.customStatement(
+          'CREATE TABLE recently_viewed_questions(\n'
+          '  question_id TEXT PRIMARY KEY, viewed_at INTEGER NOT NULL)',
+        );
+        await m.database.customStatement(
+          'ALTER TABLE collect_tasks ADD COLUMN source_hash TEXT',
+        );
+        // settings 里的 schemaVersion 也写回 3，与 user_version 一致
+        // （真实 v2 库的 settings 本来就有这行；手造夹具库若缺这行，
+        // insertOrReplace 会补一行）。本文件是独立 library，不能调
+        // database.dart 库私有的 _upsertSettingInto；attachedDatabase
+        // 的静态类型是 GeneratedDatabase，cast 后走 Drift 类型化写入。
+        final db = attachedDatabase as QuizDatabase;
+        await db.into(db.settings).insert(
+          SettingsCompanion.insert(key: 'schemaVersion', value: '3'),
+          mode: InsertMode.insertOrReplace,
+        );
+        return;
+      }
       if (from > to) {
         throw StateError(
           '数据库是新版格式（v$from），请用新版打开（当前要求 v$to）',

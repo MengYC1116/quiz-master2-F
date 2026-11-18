@@ -271,6 +271,11 @@ class DetailNotifier extends Notifier<DetailState> {
   String? _sliceHealCheckedKey;
   bool _sliceHealRunning = false;
 
+  /// 十二批功能 4：最近一次已记录查看的题 id。load() 会在收藏 /
+  /// 编辑保存等写操作后重读——那不是一次新的“打开”，同题不重复记；
+  /// 切到另一题（goTo）或重新打开本页（新 Notifier 实例）时才再记。
+  String? _lastViewRecordedId;
+
   @override
   DetailState build() {
     ref.onDispose(() => _disposed = true);
@@ -321,6 +326,23 @@ class DetailNotifier extends Notifier<DetailState> {
       recheckIntervalDays: settings.recheckIntervalDays,
       loading: false,
     );
+    // 十二批功能 4（D-91）：题目加载成功后记一次查看（同一题只留一条，
+    // 时间更新为最后一次）。D-88：load() 本来就没有 try/catch，任一
+    // repo 抛错都会停在 loading——记录失败必须自己吞掉，绝不能拖垮
+    // 详情加载；题不存在（q == null）时不记；同题重复 load（收藏 /
+    // 编辑保存后的重读、build 微任务首查与显式 load 的重合）不重复记，
+    // 只在切到另一题或重新打开本页时再记。标志位在 await 之前先置——
+    // 两路 load 并发时检查-await 之间会交错，都通过检查就记了两次；
+    // 失败时清掉标志，下次 load 再试一次。
+    if (q != null && q.id != _lastViewRecordedId) {
+      _lastViewRecordedId = q.id;
+      try {
+        await repo.recordQuestionViewed(q.id);
+      } catch (_) {
+        // 记录失败静默：首页历史少一条，不影响本题的详情展示。
+        _lastViewRecordedId = null;
+      }
+    }
     // SR3-10：打开详情页时自愈“库新图旧”的崩溃窗口（事务提交后、
     // rename 前被杀）。不 await：自愈是后台修复，不挡页面渲染；
     // 失败静默（见方法内注释），下次打开再试。

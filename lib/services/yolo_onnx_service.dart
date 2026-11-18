@@ -8,6 +8,7 @@ import 'package:flutter/services.dart';
 import 'package:onnxruntime/onnxruntime.dart';
 
 import '../models/models.dart';
+import 'question_order.dart';
 
 /// 检测结果（§1.3，P1-3 定稿）：模型失败不回占位框。
 /// - 成功：`boxes` 是检出的框，`usedFallback` 为 false；
@@ -290,16 +291,16 @@ class YoloOnnxService {
         ),
       );
     }
-    // 阅读顺序：先上后下、同行先左后右，再按顺序编号 box-q1…。
-    // 编号只换 id，置信度 / 来源 / 页码原样保留（§1.2(c) 小项-1：
-    // 检测服务须填 confidence 与 origin='yolo'，否则两列永远为空）。
-    questions.sort((a, b) {
-      final dy = a.y.compareTo(b.y);
-      return dy != 0 ? dy : a.x.compareTo(b.x);
-    });
+    // 阅读顺序：XY-cut 混合排序（十二批功能 8 Stage B，D-96；Stage A
+    // 验证 30/30，朴素 y-then-x 在多栏页上只有 8/30——2009 上海卷那个
+    // 编号跨栏跳号的 bug 就是它）。编号只换 id，置信度 / 来源 / 页码
+    // 原样保留（§1.2(c) 小项-1：检测服务须填 confidence 与 origin='yolo'，
+    // 否则两列永远为空）。
+    final ordered = QuestionOrder.orderBoxes(questions);
+    final orderedQuestions = ordered.boxes;
     final numbered = <QuestionBox>[];
-    for (var i = 0; i < questions.length; i++) {
-      final q = questions[i];
+    for (var i = 0; i < orderedQuestions.length; i++) {
+      final q = orderedQuestions[i];
       numbered.add(
         QuestionBox(
           id: 'box-q${i + 1}',

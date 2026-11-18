@@ -15,6 +15,7 @@ import 'package:flutter/material.dart';
 import '../../data/database.dart';
 import '../../models/models.dart';
 import '../../services/page_image_pipeline.dart';
+import '../../services/question_order.dart';
 import '../../services/yolo_onnx_service.dart';
 import '../../theme/design_tokens.dart';
 import '../../widgets/uikit.dart';
@@ -171,6 +172,11 @@ class _BoxEditorDialog extends StatefulWidget {
 class _BoxEditorDialogState extends State<_BoxEditorDialog> {
   late Map<int, List<QuestionBox>> _boxesByPage;
 
+  /// 十二批功能 8 Stage B（D-96）：每页题序置信度（页 → high/low）。
+  /// 只记内存态，不落库；草稿重进的页同样现算。low 时顶部出横幅
+  /// 提醒核对顺序，不伪装确定。
+  final Map<int, QuestionOrderConfidence> _orderConfidenceByPage = {};
+
   /// 按页旋转角度（页 → 角度，§1.6/§1.6.1：不用一个全局值，
   /// 多页/重框不会串页）。
   late Map<int, int> _rotationsByPage;
@@ -220,6 +226,13 @@ class _BoxEditorDialogState extends State<_BoxEditorDialog> {
     }
     return n;
   }
+
+  /// 十二批功能 8 Stage B（D-96）：当前页题序置信度低（栏数对不上 /
+  /// 有跨栏块 / 有含糊重叠），顶部出横幅提醒用户核对顺序。重框模式
+  /// 下本页只有目标题的框，置信度恒为 high，横幅不出。
+  bool get _orderLowConfidence =>
+      _orderConfidenceByPage[_currentPage] ==
+      QuestionOrderConfidence.low;
 
   bool get _anyOverlap {
     for (final entry in _boxesByPage.entries) {
@@ -302,9 +315,15 @@ class _BoxEditorDialogState extends State<_BoxEditorDialog> {
     _currentPage = widget.page;
     // 只有题级框：旧草稿里混进来的非题级框行直接丢弃，
     // 不进内存态、不随草稿保存写回。
+    // 十二批功能 8 Stage B（D-96）：草稿框按几何重排——草稿重读按
+    // (page, id) 排，持久 id 是随机 uuid8，不重排会把检测顺序洗成
+    // 随机顺序；同时记下每页题序置信度。
     _boxesByPage = {
       for (final e in widget.initialBoxesByPage.entries)
-        e.key: e.value.where((b) => b.layer == 1).toList(),
+        e.key: _sortBoxesForPage(
+          e.key,
+          e.value.where((b) => b.layer == 1).toList(),
+        ),
     };
     _rotationsByPage = Map.of(widget.initialRotations);
     // 草稿模式：本页无任何草稿框才用检测结果；有草稿以草稿为准。
@@ -377,18 +396,47 @@ class _BoxEditorDialogState extends State<_BoxEditorDialog> {
     await save(_currentDraft());
   }
 
+  /// 十二批功能 8 Stage B（D-96）：按几何现算一页的题序（动态计算，
+  /// 见 D-96 §7(1)）：返回阅读顺序的框，并记下本页题序置信度。
+  /// 调用点：init（草稿重进——草稿重读按 (page, id) 排，持久 id 是
+  /// 随机 uuid8，不重排会把检测顺序洗成随机顺序）、检测结果进页、
+  /// 画完新框、删框、整页旋转。拖动/缩放过程中不调（逐帧重排会抖），
+  /// 松手后由 [_resortCurrentPage] 一次排好。
+  List<QuestionBox> _sortBoxesForPage(
+    int page,
+    List<QuestionBox> boxes,
+  ) {
+    final ordered = QuestionOrder.orderBoxes(boxes);
+    _orderConfidenceByPage[page] = ordered.confidence;
+    return ordered.boxes;
+  }
+
+  /// 手势结束时按几何重排本页题序（Stage B，D-96）：拖动/缩放过程
+  /// 中只改坐标、不重排，松手后按新几何一次排好（编号跟着几何走，
+  /// 人工拖框调序即被采纳）。
+  void _resortCurrentPage() {
+    setState(() {
+      _boxesByPage[_currentPage] = _sortBoxesForPage(_currentPage, _boxes);
+    });
+  }
+
   /// 检测结果进本页题级框（只接第 1 层；检测服务不再返回别的层）。
+  /// 十二批功能 8 Stage B（D-96）：进页前按最终几何（已转到当前
+  /// 旋转角度的页坐标）重排一次——服务排的是未旋转页的顺序，转过
+  /// 90° 的页不重排仍是错的；同时记下本页题序置信度。
   void _ingestDetected(int page, List<QuestionBox> boxes) {
     // 检测输出是量出来的尺寸，只做越界钳制，不补最小尺寸
     // （见 YoloOnnxService.clampToPage 的 minSize 说明）；
     // 进库前先把检测 id（box-q1…）换成持久 id，跨页/跨任务不撞主键。
-    final persisted = boxes
+    final ordered =
+        _sortBoxesForPage(page, boxes.where((b) => b.layer == 1).toList());
+    final persisted = ordered
         .map((b) => b.copyWith(id: _persistedId(b, page), page: page))
         .toList();
     final clamped = persisted
         .map((b) => YoloOnnxService.clampToPage(b, minSize: false))
         .toList();
-    _boxesByPage[page] = clamped.where((b) => b.layer == 1).toList();
+    _boxesByPage[page] = clamped;
   }
 
   @override
@@ -615,7 +663,10 @@ class _BoxEditorDialogState extends State<_BoxEditorDialog> {
     setState(() {
       _rotationsByPage[_currentPage] = (_pageRotation + 90) % 360;
       QuestionBox turn(QuestionBox b) => rotateBoxToRotatedPage(b, 90);
-      _boxesByPage[_currentPage] = _boxes.map(turn).toList();
+      // 十二批功能 8 Stage B（D-96）：整页旋转改了全部框的几何，
+      // 按旋转后的几何重排题序。
+      _boxesByPage[_currentPage] =
+          _sortBoxesForPage(_currentPage, _boxes.map(turn).toList());
       if (_pendingBox != null) _pendingBox = turn(_pendingBox!);
     });
   }
@@ -624,7 +675,12 @@ class _BoxEditorDialogState extends State<_BoxEditorDialog> {
     setState(() {
       if (_selectedId != null) {
         final id = _selectedId!;
-        _boxesByPage[_currentPage] = _boxes.where((b) => b.id != id).toList();
+        // 十二批功能 8 Stage B（D-96）：删框后按剩余框的几何重排
+        // （并重算本页题序置信度）。
+        _boxesByPage[_currentPage] = _sortBoxesForPage(
+          _currentPage,
+          _boxes.where((b) => b.id != id).toList(),
+        );
         _selectedId = null;
       }
       _pendingBox = null;
@@ -892,9 +948,12 @@ class _BoxEditorDialogState extends State<_BoxEditorDialog> {
     }
     // 画框直接生成题级框，不再选类型。
     // B8-345（第 5 项）：新画的框也不补最小尺寸，只钳制在页内。
+    // 十二批功能 8 Stage B（D-96）：新框按几何排进题序（不是永远
+    // 追加到末尾），同时重算本页题序置信度。
     setState(() {
       final box = YoloOnnxService.clampToPage(pending, minSize: false);
-      _boxesByPage[_currentPage] = [..._boxes, box];
+      _boxesByPage[_currentPage] =
+          _sortBoxesForPage(_currentPage, [..._boxes, box]);
       _selectedId = box.id;
       _pendingBox = null;
       _pendingStart = null;
@@ -1017,6 +1076,16 @@ class _BoxEditorDialogState extends State<_BoxEditorDialog> {
                   tone: QmBannerTone.error,
                   title: '框重叠',
                   message: _overlapBannerMessage(),
+                ),
+              // 十二批功能 8 Stage B（D-96 §7(5)）：本页题序置信度低时
+              // 提醒用户按题号核对顺序，不伪装确定。框仍按算法顺序编号
+              // 展示（最优猜测）。0% 转人工率是本样本 + 本阈值的结果，
+              // 不推广，横幅文案不宣称算法“100% 准确”。
+              if (_orderLowConfidence)
+                const QmBanner(
+                  tone: QmBannerTone.warning,
+                  title: '题序不太确定',
+                  message: '这页的版式不太规则，题序是自动排的，请按实际题号核对一下顺序。',
                 ),
               SizedBox(height: 8 * scale),
               _toolbar(scale, palette),
@@ -1692,6 +1761,10 @@ class _BoxEditorDialogState extends State<_BoxEditorDialog> {
         }),
         onPanUpdate: (details) =>
             _moveBox(box.id, details.delta.dx, details.delta.dy, pw, ph),
+        // 十二批功能 8 Stage B（D-96）：拖动过程中只改坐标、不重排，
+        // 松手/取消后按新几何一次排好。
+        onPanEnd: (_) => _resortCurrentPage(),
+        onPanCancel: _resortCurrentPage,
         child: _boxBody(
           box,
           palette,
@@ -1787,8 +1860,15 @@ class _BoxEditorDialogState extends State<_BoxEditorDialog> {
         key: Key('editor-resize-$corner-${box.id}'),
         behavior: HitTestBehavior.opaque,
         onPanDown: (_) => _suppressDraw = true,
-        onPanEnd: (_) => _suppressDraw = false,
-        onPanCancel: () => _suppressDraw = false,
+        // 十二批功能 8 Stage B（D-96）：缩放结束/取消后按新几何重排题序。
+        onPanEnd: (_) {
+          _suppressDraw = false;
+          _resortCurrentPage();
+        },
+        onPanCancel: () {
+          _suppressDraw = false;
+          _resortCurrentPage();
+        },
         onPanUpdate: (details) => _resizeBox(
           box.id,
           details.delta.dx,

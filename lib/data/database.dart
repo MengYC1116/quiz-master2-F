@@ -27,6 +27,7 @@ part 'db_catalog.dart';
 part 'db_collect.dart';
 part 'db_orphans.dart';
 part 'db_settings.dart';
+part 'db_recently_viewed.dart';
 part 'db_backup.dart';
 
 /// §2.2：老库处理失败（文件无法确认版本 / 删除失败）：调用方拒绝
@@ -119,15 +120,37 @@ class AppDatabase {
   /// §2：备份/恢复与 settings 表共用的 schema 版本号（与
   /// `PRAGMA user_version` 是两回事，别混用——后者是打开时驱动的，
   /// 前者是给备份/恢复与排障看的）。
-  static const int schemaVersion = 2;
+  /// 十二批 D-91：v3（新表 recently_viewed_questions + collect_tasks
+  /// 新增 source_hash 列；v2 库走 Drift 迁移到 v3，不再删除）。
+  static const int schemaVersion = 3;
 
   /// §2.3：备份里的应用版本号（与 pubspec.yaml 的 version 一致）。
   static const String appVersion = '0.1.0+1';
 
   /// B4.2：备份表清单（导出与恢复共用；恢复只插这里的表）。
-  /// v2 共 13 张表：原 12 张 + §1.2(c) 的 question_boxes。
+  /// v3 共 14 张表：v2 的 13 张 + 十二批的 recently_viewed_questions。
   /// `_meta` 不是表，不在这里；导出时另加，恢复时跳过。
   static const List<String> backupTables = [
+    'subjects',
+    'questions',
+    'question_boxes',
+    'folders',
+    'tags',
+    'exams',
+    'knowledge_points',
+    'cause_records',
+    'collect_tasks',
+    'review_state',
+    'review_history',
+    'recent_tasks',
+    'recently_viewed_questions',
+    'settings',
+  ];
+
+  /// 十二批 D-91：v2 备份的表清单（v2 只有 13 张表，没有
+  /// recently_viewed_questions）。v2 备份恢复时按这份清单校验，
+  /// 新表缺键视为 empty，不静默清空——新表在 v2 里本来就没有。
+  static const List<String> backupTablesV2 = [
     'subjects',
     'questions',
     'question_boxes',
@@ -654,6 +677,24 @@ class AppDatabase {
     QuizDatabase db, {
     DateTime? now,
   }) => bumpOrganizedTodayIntoImpl(db, now: now);
+  // -- db_recently_viewed.dart --
+
+  /// 十二批功能 4：记一次查看（同一题只留一条，时间更新为最后一次；
+  /// 超过 30 条时剪掉最旧的）。
+  static Future<void> recordQuestionViewedInto(
+    QuizDatabase db,
+    String questionId, {
+    int? viewedAtMillis,
+  }) => recordQuestionViewedIntoImpl(
+    db,
+    questionId,
+    viewedAtMillis: viewedAtMillis,
+  );
+
+  /// 十二批功能 4：读最近查看的题（最新在前，最多 30 条；已删题跳过）。
+  static Future<List<({Question question, DateTime viewedAt})>>
+  recentlyViewedQuestionsFrom(QuizDatabase db) =>
+      recentlyViewedQuestionsIntoImpl(db);
   // -- db_backup.dart --
 
   static Future<String> exportBackupJsonFrom(QuizDatabase db) =>

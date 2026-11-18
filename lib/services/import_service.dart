@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'dart:math' as math;
 import 'dart:typed_data';
@@ -29,6 +30,11 @@ class ImportService {
     : _pdfRenderService = pdfRenderService ?? PdfRenderService();
   final AppDatabase _db;
   final PdfRenderService _pdfRenderService;
+
+  /// 十二批 D-91 功能 7：进行中的原地重试（任务 id → 结果 future）。
+  /// 二次并发调用 await 同一 future，管线只跑一次（不只靠 UI 禁用）；
+  /// 完成后从表里摘掉，下一次重试重新跑。
+  final Map<String, Future<CollectTask>> _retryInFlight = {};
 
   /// SR-P2-60：任务 id 的随机段来源（见 enqueue 的 id 生成）。
   static final _idRandom = math.Random();
@@ -424,6 +430,10 @@ class ImportService {
         // sourcePath：把任务现有的全部字段值原样带回，只改
         // sourcePath（与已写库的进度 lastDbPct）；状态仍为 importing，
         // created_at 不变（UPDATE 分支不碰它）。
+        // 十二批 D-91 功能 7：原文件拷进任务目录后算 SHA-256 存进
+        // 持久化行（重试时重算比对，原文件被替换就拒绝）；算不出
+        // （刚拷完读不到）时存 null，重试跳过比对。
+        final sourceHash = await contentHashOfFile(File(targetAbs));
         final persistedTask = CollectTask(
           id: task.id,
           name: task.name,
@@ -438,6 +448,7 @@ class ImportService {
           createdAt: task.createdAt,
           sourcePath: originalRelative(id, ext),
           pageRotations: task.pageRotations,
+          sourceHash: sourceHash,
         );
         try {
           await _db.upsertCollectTask(persistedTask);
@@ -477,100 +488,9 @@ class ImportService {
           tasks[tasks.length - 1] = done;
           continue;
         }
-        // EXIF 方向归一化（仅 != 1 时生成副本；镜像方向显式失败）。
-        // SR2-1(b)：分清两种失败——
-        //   (1) “已判定解不开图片”（canDecode 为假 / 镜像方向 2/4/5/7）：
-        //       走 _failAndClean（B-NEW-10：只清派生文件、保留原图，
-        //       失败行 sourcePath 仍指向原图，可重试），失败后绝不
-        //       再复活成 needBox；
-        //   (2) “读盘 / 写盘失败”（读不到原图、归一化写盘失败）：
-        //       原因不明，保留旧降级（原图已拷进库，修框时按原图走）。
-        Uint8List? bytes;
-        try {
-          bytes = await File(targetAbs).readAsBytes();
-        } catch (_) {
-          bytes = null;
-        }
-        String? decodeError;
-        if (bytes != null) {
-          try {
-            // SR-P2-61：先校验图片能不能解码。改后缀的非图片文件（如 .txt
-            // 改 .jpg）能通过扩展名检查，解不开时不再静默按原图进 needBox，
-            // 任务直接失败并提示“这张图片打不开”（修框时才暴露太晚了）。
-            if (!await canDecodeImageBytes(bytes)) {
-              decodeError = '这张图片打不开，请确认文件是完好的图片再导入';
-            } else {
-              final normalized = await normalizeExifImageBytes(bytes);
-              if (normalized.orientation >= 2 &&
-                  normalized.orientation <= 7 &&
-                  exifOrientationToClockwiseDegrees(normalized.orientation) ==
-                      null) {
-                // 镜像方向（2/4/5/7）：暂不支持，不可静默按旋转处理。
-                decodeError =
-                    '这张照片是镜像方向（EXIF ${normalized.orientation}），暂不支持，请先转存为正向照片再导入';
-              } else if (normalized.wasNormalized) {
-                final normAbs = AppDatabase.resolveDataPath(
-                  normalizedPageRelative(id),
-                )!;
-                await File(normAbs).writeAsBytes(normalized.bytes);
-              }
-            }
-          } catch (_) {
-            // 归一化 / 写盘失败：原因不明 → 旧降级（decodeError 保持
-            // null，原图还在）。canDecode 本身不抛错，走到这里的不是
-            // 解码失败，而是 normalize / 写盘失败。
-            decodeError = null;
-          }
-        }
-        if (decodeError != null) {
-          // B2 B-NEW-10：与 _failAndClean 同款——只清派生文件、保留
-          // 原图（原图已在立即持久化时写进 sourcePath，失败行指向
-          // 真实存在的文件，可重试）；不再整目录删掉。
-          task = await _failAndClean(task, dirAbs, decodeError);
-          tasks[tasks.length - 1] = task;
-          continue;
-        }
-        // 读盘失败（bytes 为 null）或归一化失败：旧降级，按原图进 needBox。
-        // 读不到 / 归一化失败等原因不明的失败：保留旧降级（原图已拷进
-        // 库，修框时按原图走）。SR-P2-61 只把“确实解不开的图片”判
-        // 失败，上面 canDecodeImageBytes 已先行拦截，走到这里的不是
-        // 解码失败，而是读盘 / 写盘等不明确的原因。
-        try {
-          safeOnProgress?.call(id, 90);
-        } catch (_) {}
-        try {
-          await _updateProgress(task, 90);
-        } catch (_) {}
-        task = CollectTask(
-          id: task.id,
-          name: task.name,
-          fileName: task.fileName,
-          subjectId: task.subjectId,
-          status: CollectStatus.needBox,
-          progress: 100,
-          pageCount: 1,
-          page: 1,
-          createdAt: task.createdAt,
-          sourcePath: originalRelative(id, ext),
-        );
-        // 状态变化（importing → needBox）才 bump（见 §4.3 节流）。
-        // SR2-1：图片尾部 upsert 与 PDF 分支同款包进 try/catch，
-        // 失败走 _failAndClean（失败任务 + 只清派生文件、保留原图）；
-        // 其自身写库再失败时只返回内存里的 failed 任务，绝不逃出 enqueue。
-        try {
-          await _db.upsertCollectTask(task);
-        } catch (e) {
-          task = await _failAndClean(
-            task,
-            dirAbs,
-            '导入失败：这张图片导进来了，但写不进任务列表（$e）',
-          );
-          tasks[tasks.length - 1] = task;
-          continue;
-        }
-        try {
-          safeOnProgress?.call(id, 100);
-        } catch (_) {}
+        // 图片分支（EXIF 归一化 → needBox）：见 [_importImage]，
+        // 重试入口复用同一条管线。
+        task = await _importImage(task, targetAbs, dirAbs, safeOnProgress);
         tasks[tasks.length - 1] = task;
       } catch (e) {
         // 兜底（SR2-1/SR2-2）：单个文件任何一步抛错都只影响本任务，
@@ -686,6 +606,8 @@ class ImportService {
       page: 1,
       createdAt: task.createdAt,
       sourcePath: originalRelative(task.id, 'pdf'),
+      pageRotations: task.pageRotations,
+      sourceHash: task.sourceHash,
     );
     // 状态变化（importing → needBox）才 bump（见 §4.3 节流）。
     // SR-P1-4：这一步写库失败也不能逃出 enqueue——先走
@@ -699,6 +621,114 @@ class ImportService {
     }
     try {
       onProgress?.call(task.id, 100);
+    } catch (_) {}
+    return done;
+  }
+
+  /// 图片导入（原文件已复制进库，[originalAbs] 是库内副本）：
+  /// EXIF 方向归一化 → needBox。十二批 D-91：从 [enqueue] 原样抽出
+  /// （纯重构，行为不变），重试入口复用同一条管线。
+  /// 返回成功（needBox）或失败任务；失败时走 _failAndClean
+  ///（B-NEW-10：只清派生文件、保留原图）。
+  Future<CollectTask> _importImage(
+    CollectTask task,
+    String originalAbs,
+    String dirAbs,
+    void Function(String taskId, int progress)? onProgress,
+  ) async {
+    final id = task.id;
+    final ext = originalAbs.split('.').last.toLowerCase();
+    // EXIF 方向归一化（仅 != 1 时生成副本；镜像方向显式失败）。
+    // SR2-1(b)：分清两种失败——
+    //   (1) “已判定解不开图片”（canDecode 为假 / 镜像方向 2/4/5/7）：
+    //       走 _failAndClean（B-NEW-10：只清派生文件、保留原图，
+    //       失败行 sourcePath 仍指向原图，可重试），失败后绝不
+    //       再复活成 needBox；
+    //   (2) “读盘 / 写盘失败”（读不到原图、归一化写盘失败）：
+    //       原因不明，保留旧降级（原图已拷进库，修框时按原图走）。
+    Uint8List? bytes;
+    try {
+      bytes = await File(originalAbs).readAsBytes();
+    } catch (_) {
+      bytes = null;
+    }
+    String? decodeError;
+    if (bytes != null) {
+      try {
+        // SR-P2-61：先校验图片能不能解码。改后缀的非图片文件（如 .txt
+        // 改 .jpg）能通过扩展名检查，解不开时不再静默按原图进 needBox，
+        // 任务直接失败并提示“这张图片打不开”（修框时才暴露太晚了）。
+        if (!await canDecodeImageBytes(bytes)) {
+          decodeError = '这张图片打不开，请确认文件是完好的图片再导入';
+        } else {
+          final normalized = await normalizeExifImageBytes(bytes);
+          if (normalized.orientation >= 2 &&
+              normalized.orientation <= 7 &&
+              exifOrientationToClockwiseDegrees(normalized.orientation) ==
+                  null) {
+            // 镜像方向（2/4/5/7）：暂不支持，不可静默按旋转处理。
+            decodeError =
+                '这张照片是镜像方向（EXIF ${normalized.orientation}），暂不支持，请先转存为正向照片再导入';
+          } else if (normalized.wasNormalized) {
+            final normAbs = AppDatabase.resolveDataPath(
+              normalizedPageRelative(id),
+            )!;
+            await File(normAbs).writeAsBytes(normalized.bytes);
+          }
+        }
+      } catch (_) {
+        // 归一化 / 写盘失败：原因不明 → 旧降级（decodeError 保持
+        // null，原图还在）。canDecode 本身不抛错，走到这里的不是
+        // 解码失败，而是 normalize / 写盘失败。
+        decodeError = null;
+      }
+    }
+    if (decodeError != null) {
+      // B2 B-NEW-10：与 _failAndClean 同款——只清派生文件、保留
+      // 原图（原图已在立即持久化时写进 sourcePath，失败行指向
+      // 真实存在的文件，可重试）；不再整目录删掉。
+      return _failAndClean(task, dirAbs, decodeError);
+    }
+    // 读盘失败（bytes 为 null）或归一化失败：旧降级，按原图进 needBox。
+    // 读不到 / 归一化失败等原因不明的失败：保留旧降级（原图已拷进
+    // 库，修框时按原图走）。SR-P2-61 只把“确实解不开的图片”判
+    // 失败，上面 canDecodeImageBytes 已先行拦截，走到这里的不是
+    // 解码失败，而是读盘 / 写盘等不明确的原因。
+    try {
+      onProgress?.call(id, 90);
+    } catch (_) {}
+    try {
+      await _updateProgress(task, 90);
+    } catch (_) {}
+    var done = CollectTask(
+      id: task.id,
+      name: task.name,
+      fileName: task.fileName,
+      subjectId: task.subjectId,
+      status: CollectStatus.needBox,
+      progress: 100,
+      pageCount: 1,
+      page: 1,
+      createdAt: task.createdAt,
+      sourcePath: originalRelative(id, ext),
+      pageRotations: task.pageRotations,
+      sourceHash: task.sourceHash,
+    );
+    // 状态变化（importing → needBox）才 bump（见 §4.3 节流）。
+    // SR2-1：图片尾部 upsert 与 PDF 分支同款包进 try/catch，
+    // 失败走 _failAndClean（失败任务 + 只清派生文件、保留原图）；
+    // 其自身写库再失败时只返回内存里的 failed 任务，绝不逃出 enqueue。
+    try {
+      await _db.upsertCollectTask(done);
+    } catch (e) {
+      return _failAndClean(
+        done,
+        dirAbs,
+        '导入失败：这张图片导进来了，但写不进任务列表（$e）',
+      );
+    }
+    try {
+      onProgress?.call(id, 100);
     } catch (_) {}
     return done;
   }
@@ -718,15 +748,19 @@ class ImportService {
   /// 所以没有需要先清的库路径字段；失败行引用的唯一文件就是保留
   /// 的原图，写库前校验它仍在盘上（sourcePath 若指向已不存在的
   /// 文件则清掉，不留悬空引用；路径解析不到时不动，不误删有效引用）。
+  /// [sourcePath] 非空时（目前只有指纹不一致传 ''）直接用它覆盖，
+  /// 不再走“文件在就保留”的校验——原文件已被替换，引用必须清掉。
   Future<CollectTask> _failAndClean(
     CollectTask task,
     String dirAbs,
-    String error,
-  ) async {
+    String error, {
+    String? sourcePath,
+  }) async {
     final failed = _failed(
       task,
       error,
-      sourcePath: _sourcePathIfFileExists(task.sourcePath),
+      sourcePath:
+          sourcePath ?? _sourcePathIfFileExists(task.sourcePath),
     );
     try {
       await _db.upsertCollectTask(failed);
@@ -734,6 +768,13 @@ class ImportService {
       return failed;
     }
     // 写库成功后才删派生文件；原图（original.*）一律保留。
+    await _deleteDerivedFiles(dirAbs);
+    return failed;
+  }
+
+  /// 只删派生文件（`pages/` 与 `page-normalized.png`），原图不动。
+  /// _failAndClean 与重试前的防御性清理共用。
+  Future<void> _deleteDerivedFiles(String dirAbs) async {
     try {
       final pagesDir = Directory('$dirAbs/pages');
       if (await pagesDir.exists()) {
@@ -744,7 +785,6 @@ class ImportService {
       final normalized = File('$dirAbs/page-normalized.png');
       if (await normalized.exists()) await normalized.delete();
     } catch (_) {}
-    return failed;
   }
 
   /// sourcePath 指向的文件若已不在盘上，返回 ''（不留悬空引用）；
@@ -771,25 +811,66 @@ class ImportService {
     }).toList();
   }
 
-  /// B2 ⑫：用库内保留的原图重试失败任务（导入/重试入口）。
-  /// 批量重试（collect_notifier 的 retryBatchFailures /
-  /// retryBatchPath）用的是用户原路径重导，不走这里；这里是
-  /// “原路径已不在手边、只能凭库内原图重试”的入口（崩溃后恢复的
-  /// 失败任务、以及后续收集页按任务重试的接线点——接线本身在
-  /// collect_notifier，不在本文件）。
-  /// - 恰好一个 original.* 候选：用它重新走一次 [enqueue]
-  ///   （与批量重试同一机制：成功时建新任务行，旧失败行保留——
-  ///   与批量重试“失败行留着、新行另建”的行为一致）；
+  /// 十二批 D-91 功能 7：用库内保留的原图重试失败任务（导入/重试入口），
+  /// 同一任务身份原地重试——复用同一任务行/id，不建新任务行
+  ///（B2 旧语义“建新任务行、旧失败行保留”已废弃）。
+  /// - 状态须为 failed，否则抛 [StateError]（调用方按失败处理，
+  ///   任务本身不动）；
+  /// - 并发二次调用 await 同一 future，管线只跑一次（见 [_retryInFlight]）；
   /// - 找不到原图，或找到多个候选：不挑其中一个、不删任何一个，
   ///   任务标失败并提示用户重新提供原文件（走 _failAndClean +
   ///   任务 error 文案，与其它失败同一通道，不新造提示体系）。
   ///   无文件时 sourcePath 会被清掉（原引用已悬空）；多候选时
-  ///   sourcePath 若仍指向真实存在的文件则保留，否则清掉。
-  /// 返回重试结果任务（成功为 needBox，异常为 failed）。
+  ///   sourcePath 若仍指向真实存在的文件则保留，否则清掉；
+  /// - 恰好一个候选：重算库内原文件 SHA-256 与存的
+  ///   `task.sourceHash` 比对，不一致 → 失败并提示原文件已被替换，
+  ///   同时清 sourcePath；sourceHash 为 NULL（v2 旧行）或算不出
+  ///   哈希时拒绝重试（D-99，GPT P1-01：无法验证 ≠ 验证通过），
+  ///   不再跳过比对；两种拒绝都不清 sourcePath；
+  /// - 比对通过后重置行（同 id、progress 0、error 清空，其余保留），
+  ///   防御性清掉 stale 派生文件，再按扩展名分发进现有管线
+  ///   （PDF 走 [_importPdf]，图片走 [_importImage]）。
+  /// 返回重试结果任务（成功为 needBox，异常为 failed），同一 id。
   Future<CollectTask> retryFromStoredOriginal(
     CollectTask task, {
     void Function(String taskId, int progress)? onProgress,
+  }) {
+    final existing = _retryInFlight[task.id];
+    if (existing != null) return existing;
+    final future = _retryFromStoredOriginal(task, onProgress: onProgress);
+    _retryInFlight[task.id] = future;
+    // 完成（成功/失败/抛错）后摘掉，下一次重试重新跑；只摘自己
+    // 登记的那一份，不误删后一次登记的 future。
+    // whenComplete 派生的 future 同样会带上原错误：不接住会变成
+    // 未处理的异步错误（StateError 明明已被调用方 await 到并处理，
+    // 测试仍会多报一个错）；这里显式吃掉，原 future 的错误仍由
+    // 调用方的 await 正常收到。
+    unawaited(
+      future
+          .whenComplete(() {
+            if (_retryInFlight[task.id] == future) {
+              _retryInFlight.remove(task.id);
+            }
+          })
+          .then<void>((_) {}, onError: (_) {}),
+    );
+    return future;
+  }
+
+  Future<CollectTask> _retryFromStoredOriginal(
+    CollectTask task, {
+    void Function(String taskId, int progress)? onProgress,
   }) async {
+    if (task.status != CollectStatus.failed) {
+      throw StateError('只有导入失败的任务可以重试');
+    }
+    final safeOnProgress = onProgress == null
+        ? null
+        : (String taskId, int progress) {
+            try {
+              onProgress(taskId, progress);
+            } catch (_) {}
+          };
     final dirAbs = AppDatabase.resolveDataPath(taskDirRelative(task.id));
     final candidates = locateStoredOriginals(task.id);
     if (candidates.length != 1) {
@@ -808,15 +889,95 @@ class ImportService {
       }
       return _failAndClean(task, dirAbs, error);
     }
-    final retried = await enqueue(
-      [candidates.single.path],
+    // 指纹比对：库内原文件现内容与导入时存的哈希不一致 → 原文件
+    // 在库内被替换/改动过，不能拿它重导（会导成另一份题），失败并
+    // 提示重供原文件，同时清 sourcePath（旧引用已不可信）。
+    // D-99（GPT P1-01）：“无法验证”不等于“验证通过”——两种无法
+    // 验证的情况都拒绝重试，不再跳过比对直接跑：
+    // (a) task.sourceHash 为 NULL（v2 旧行，无比对基线）→ 拒绝，
+    //     文案用 GPT 建议的原句；
+    // (b) 现文件算不出哈希（定位到文件、但读盘失败；基线在，现
+    //     文件读不出来）→ 同样拒绝，文案另写（缺的不是基线）。
+    // 两种拒绝都不清 sourcePath：无法验证不是已证伪，引用本身没
+    // 被证明不可信（与指纹不一致的清引用不同）；_failAndClean
+    // 不传 sourcePath 覆盖时，文件在就保留引用。
+    final currentHash = await contentHashOfFile(candidates.single);
+    if (task.sourceHash == null) {
+      return _failAndClean(
+        task,
+        dirAbs!,
+        '旧任务缺少原文件校验信息，请重新导入原文件',
+      );
+    }
+    if (currentHash == null) {
+      return _failAndClean(
+        task,
+        dirAbs!,
+        '原文件暂时读不出来，请重新提供原文件再导入',
+      );
+    }
+    if (currentHash != task.sourceHash) {
+      return _failAndClean(
+        task,
+        dirAbs!,
+        '原文件已被替换或改动，请重新提供原文件再导入',
+        sourcePath: '',
+      );
+    }
+    // 重置行：同 id、progress 0、error 清空；createdAt / name /
+    // fileName / subjectId / sourcePath / sourceHash 保留；状态回
+    // importing（崩溃/杀进程后启动恢复把它再置 failed，仍可重试）。
+    final resetTask = CollectTask(
+      id: task.id,
+      name: task.name,
+      fileName: task.fileName,
       subjectId: task.subjectId,
-      onProgress: onProgress,
+      status: CollectStatus.importing,
+      progress: 0,
+      pageCount: task.pageCount,
+      page: 1,
+      createdAt: task.createdAt,
+      sourcePath: task.sourcePath,
+      pageRotations: task.pageRotations,
+      sourceHash: task.sourceHash,
     );
-    return retried.first;
+    try {
+      await _db.upsertCollectTask(resetTask);
+    } catch (e) {
+      return _failAndClean(
+        task,
+        dirAbs!,
+        '导入失败：重试开始写不进任务列表（$e）',
+      );
+    }
+    // 防御性清 stale 派生文件（上次失败残留的 pages/ 与归一化副本），
+    // 原图不动；管线失败时 _failAndClean 还会再清一次。
+    await _deleteDerivedFiles(dirAbs!);
+    final originalAbs = candidates.single.path;
+    final ext = originalAbs.split('.').last.toLowerCase();
+    CollectTask done;
+    try {
+      done = ext == 'pdf'
+          ? await _importPdf(resetTask, originalAbs, dirAbs, safeOnProgress)
+          : await _importImage(
+              resetTask,
+              originalAbs,
+              dirAbs,
+              safeOnProgress,
+            );
+    } catch (e) {
+      done = await _failAndClean(
+        resetTask,
+        dirAbs,
+        '导入失败：重试时出了问题（$e）',
+      );
+    }
+    return done;
   }
 
   /// 进度更新：只写 progress，不改 status，不 bump（§4.3 节流）。
+  /// 十二批 D-91：全列写回必须带上 sourceHash，否则进度写库会把
+  /// 导入时存的哈希抹掉、重试失去比对基线。
   Future<void> _updateProgress(CollectTask task, int progress) async {
     final d = await _db.db;
     final updated = CollectTask(
@@ -833,12 +994,14 @@ class ImportService {
       createdAt: task.createdAt,
       sourcePath: task.sourcePath,
       pageRotations: task.pageRotations,
+      sourceHash: task.sourceHash,
     );
     await AppDatabase.upsertCollectTaskInto(d, updated);
   }
 
   /// [sourcePath] 为空串时把失败行的 sourcePath 清掉（原引用已悬空）；
   /// 不传时沿用任务现有的 sourcePath。
+  /// 十二批 D-91：失败行重建必须带上 sourceHash，否则写回抹掉哈希。
   CollectTask _failed(CollectTask task, String error, {String? sourcePath}) =>
       CollectTask(
         id: task.id,
@@ -853,5 +1016,6 @@ class ImportService {
         createdAt: task.createdAt,
         sourcePath: sourcePath ?? task.sourcePath,
         pageRotations: task.pageRotations,
+        sourceHash: task.sourceHash,
       );
 }

@@ -455,6 +455,8 @@ class CollectTask {
     // pageRotations 是草稿修框的按页旋转角度（页 → 角度，见 §1.6.1）。
     this.sourcePath = '',
     this.pageRotations = const {},
+    // 十二批 D-91：导入时存进来的原文件 SHA-256；旧行为 null。
+    this.sourceHash,
   });
   final String id;
   final String name;
@@ -473,6 +475,10 @@ class CollectTask {
   final String sourcePath;
   /// §1.6.1：草稿修框的按页旋转角度（页 → 角度，如 {1: 90}）。
   final Map<int, int> pageRotations;
+  /// 十二批 D-91：导入时存进来的原文件 SHA-256（见
+  /// ImportService.contentHashOfFile）。重试时重算库内原图哈希比对；
+  /// 旧行（v2 备份恢复、v2 库迁移而来）为 null，无基线可比。
+  final String? sourceHash;
 }
 
 /// 题级框：layer 1 整题框（完整题目就是最小单位，永不拆题）。

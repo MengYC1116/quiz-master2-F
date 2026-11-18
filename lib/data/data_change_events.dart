@@ -9,8 +9,10 @@ import 'dart:async';
 // 事件本身不做数据搬运。发布是“写后”不是“写前”：写入成功、事务提交
 // 后才 emit；写入抛异常或事务回滚时不 emit。
 //
-// FR-31（W2-14）：当前唯一订阅方是 `badgeCountsProvider`，且只消费
-// `DataChangeKind.badges`（`lib/state/badge_counts_provider.dart:92`）。
+// FR-31（W2-14）：订阅方共两个——`badgeCountsProvider` 只消费
+// `DataChangeKind.badges`（`lib/state/badge_counts_provider.dart:92`），
+// `homeProvider` 只消费 `DataChangeKind.recentlyViewed`
+//（`lib/state/home_provider.dart`，D-94：详情返回首页时重读历史）。
 // 其余四种 kind（questions / subjects / reviewRecords / settings）
 // 目前没有任何订阅方，是为将来订阅方预留的元数据——各页现靠
 // autoDispose“回页重建重读”刷新，不依赖总线。将来给某一 kind 加
@@ -18,7 +20,7 @@ import 'dart:async';
 // 发了事件但无人校验时序就是盲区）。
 // 一次独立写入或一次批量提交只发一个事件，该事件的 `kinds` 集合必须
 // 包含本次写入影响的全部类别；备份恢复只发一个事件，`kinds` 为全部
-// 五类。写入方法—事件类别对照表见
+// 六类。写入方法—事件类别对照表见
 // `docs/ui-replication/A-READING-GUIDE.md` §六，新增写入方法时必须
 // 同步补表。
 
@@ -38,6 +40,10 @@ enum DataChangeKind {
 
   /// 设置表（应用设置、考试事件、备份失败标志）。
   settings,
+
+  /// 首页“最近查看”写入（D-94：`recordQuestionViewed` 成功后发出，
+  /// `homeProvider` 订阅后重读历史）。
+  recentlyViewed,
 }
 
 /// 一次写入对应的变更事件。
