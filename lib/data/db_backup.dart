@@ -158,27 +158,33 @@ const _integerIdBackupTables = {
   'recent_tasks',
 };
 
+/// 各表备份行的真实主键列（校验口径以真实主键为准）。
+/// D-101：旧写法把所有非整数主键表都按 `id` 校验，但
+/// recently_viewed_questions 的主键是 question_id
+///（db_schema.dart：`question_id TEXT PRIMARY KEY`），根本没有
+/// id 列——有浏览历史的备份一恢复就报“缺少主键 id”（备份本身没坏）。
+const _backupPkColumn = {
+  'settings': 'key',
+  'recently_viewed_questions': 'question_id',
+};
+
 void _validateBackupRow(String table, Map row) {
-  final id = row['id'] ?? row['key'] ?? '?';
+  // D-101：主键列按表取真实值（_backupPkColumn），其余表默认 `id`。
+  final pkColumn = _backupPkColumn[table] ?? 'id';
+  final id = row[pkColumn] ?? row['id'] ?? row['key'] ?? '?';
   // 主键非空：TEXT 主键必须是非空字符串；整数主键出现时
   // 必须是非空整数；cause_records / review_history 的自增 id
   // 缺失时允许（入库自动编号），review_state / recent_tasks
   // 的 id 由必填列检查覆盖（_requiredBackupColumns 里是 int）。
   // SR2-16：`''` 是合法 String，旧写法只查 `is! String` 会放过
   // 空串主键（SQLite 的 TEXT PRIMARY KEY 允许空串），恢复后库里
-  // 出现 `id: ''` 的脏行；必填 String 列同理。
-  if (table == 'settings') {
-    if (row['key'] is! String || (row['key'] as String).isEmpty) {
-      throw BackupRestoreException('这份备份文件已损坏：settings 表里有行缺少主键 key');
-    }
-  } else if (_integerIdBackupTables.contains(table)) {
+  // 出现脏行；必填 String 列同理。空串拒绝口径落在真实主键列上。
+  if (_integerIdBackupTables.contains(table)) {
     if (row.containsKey('id') && row['id'] is! int) {
       throw BackupRestoreException('这份备份文件已损坏：$table 表 $id 行的主键 id 为空或类型不对');
     }
-  } else {
-    if (row['id'] is! String || (row['id'] as String).isEmpty) {
-      throw BackupRestoreException('这份备份文件已损坏：$table 表里有行缺少主键 id');
-    }
+  } else if (row[pkColumn] is! String || (row[pkColumn] as String).isEmpty) {
+    throw BackupRestoreException('这份备份文件已损坏：$table 表里有行缺少主键 $pkColumn');
   }
   final required = _requiredBackupColumns[table];
   if (required == null) return;

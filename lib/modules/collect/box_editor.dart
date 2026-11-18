@@ -207,6 +207,10 @@ class _BoxEditorDialogState extends State<_BoxEditorDialog> {
   QuestionBox? _pendingBox;
   Offset? _pendingStart;
   bool _helpOpen = false;
+
+  /// D-102：框重叠横幅是否被收起成右上角小红点（仅本次重叠有效；
+  /// 重叠消除后复位，下次再重叠默认重新展开，见 build 里的复位）。
+  bool _overlapBannerCollapsed = false;
   final _canvasKey = GlobalKey();
 
   List<QuestionBox> get _boxes =>
@@ -975,6 +979,16 @@ class _BoxEditorDialogState extends State<_BoxEditorDialog> {
     final dialogHeight = size.height - 48;
     final total = _totalBoxes;
     final overlap = _anyOverlap;
+    // D-102：收起态随重叠消除而复位——重叠没了就清掉，下次再重叠
+    // 横幅默认重新展开。build 里不能直接 setState，约到下一帧清。
+    if (!overlap && _overlapBannerCollapsed) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        if (!_anyOverlap && _overlapBannerCollapsed) {
+          setState(() => _overlapBannerCollapsed = false);
+        }
+      });
+    }
     final confirmEnabled = total > 0 && !overlap && _pendingBox == null;
     // FR-34：重框模式确认后回详情页，不去整理、也不拆任务，按钮
     // 按 mode 分支（草稿模式保持原两档文案）。
@@ -1071,12 +1085,8 @@ class _BoxEditorDialogState extends State<_BoxEditorDialog> {
                       ? '没框到题，请点「恢复自动框」找回检测框，或取消放弃本次修改'
                       : '没框到题，请用鼠标右键拖一个框：在画布空白处按住拖出一个框，松开就能继续，不用重新导入',
                 ),
-              if (overlap)
-                QmBanner(
-                  tone: QmBannerTone.error,
-                  title: '框重叠',
-                  message: _overlapBannerMessage(),
-                ),
+              // D-102：框重叠横幅已移出流式布局，悬浮在下方画布顶部
+              //（见 Expanded 里的 Stack），出现/消失不再挤压画布。
               // 十二批功能 8 Stage B（D-96 §7(5)）：本页题序置信度低时
               // 提醒用户按题号核对顺序，不伪装确定。框仍按算法顺序编号
               // 展示（最优猜测）。0% 转人工率是本样本 + 本阈值的结果，
@@ -1090,40 +1100,127 @@ class _BoxEditorDialogState extends State<_BoxEditorDialog> {
               SizedBox(height: 8 * scale),
               _toolbar(scale, palette),
               SizedBox(height: 8 * scale),
-              // 画布按页完整显示（HTML 原型：画布完整显示一页题）：
-              // 页按 560×700 的比例 fit 进可用区，滚轮在图上缩放再乘 _scale；
-              // 框按页面百分比存，fit 不改任何框坐标。
+              // D-102：画布外包 Stack，框重叠横幅用 Positioned 悬浮在
+              // 画布顶部（不占布局高度，出现/消失不改画布尺寸与缩放）。
+              // Positioned 的子节点不参与 Stack 定尺寸；画布本身用
+              // Positioned.fill 拿满 Expanded 的紧约束，和原来一致。
+              // 点 × 收起成右上角小红点，点红点再展开；其他横幅不动，
+              // 仍留在上方 Column 流式布局里。
               Expanded(
-                child: LayoutBuilder(
-                  builder: (context, constraints) {
-                    // 画布按页图真实比例 fit 进可用区（未知尺寸时按
-                    // 560×700 默认比例）；本页已旋转 90°/270° 时
-                    // 显示宽高互换，框坐标已是旋转后的坐标系。
-                    final baseSize =
-                        _pageImageSize ??
-                        const ui.Size(
-                          DesignTokens.collectEditorCanvasWidth,
-                          DesignTokens.collectEditorCanvasHeight,
-                        );
-                    final swapped = _pageRotation == 90 || _pageRotation == 270;
-                    final effW = swapped ? baseSize.height : baseSize.width;
-                    final effH = swapped ? baseSize.width : baseSize.height;
-                    final fit = math.min(
-                      constraints.maxWidth / effW,
-                      constraints.maxHeight / effH,
-                    );
-                    final fpw = effW * fit * _scale;
-                    final fph = effH * fit * _scale;
-                    return _canvas(
-                      fpw,
-                      fph,
-                      scale,
-                      palette,
-                      constraints.maxWidth,
-                      constraints.maxHeight,
-                      _overlappingBoxIds,
-                    );
-                  },
+                child: Stack(
+                  children: [
+                    Positioned.fill(
+                      child: LayoutBuilder(
+                        builder: (context, constraints) {
+                          // 画布按页图真实比例 fit 进可用区（未知尺寸时按
+                          // 560×700 默认比例）；本页已旋转 90°/270° 时
+                          // 显示宽高互换，框坐标已是旋转后的坐标系。
+                          final baseSize =
+                              _pageImageSize ??
+                              const ui.Size(
+                                DesignTokens.collectEditorCanvasWidth,
+                                DesignTokens.collectEditorCanvasHeight,
+                              );
+                          final swapped =
+                              _pageRotation == 90 || _pageRotation == 270;
+                          final effW = swapped
+                              ? baseSize.height
+                              : baseSize.width;
+                          final effH = swapped
+                              ? baseSize.width
+                              : baseSize.height;
+                          final fit = math.min(
+                            constraints.maxWidth / effW,
+                            constraints.maxHeight / effH,
+                          );
+                          final fpw = effW * fit * _scale;
+                          final fph = effH * fit * _scale;
+                          return _canvas(
+                            fpw,
+                            fph,
+                            scale,
+                            palette,
+                            constraints.maxWidth,
+                            constraints.maxHeight,
+                            _overlappingBoxIds,
+                          );
+                        },
+                      ),
+                    ),
+                    if (overlap && !_overlapBannerCollapsed)
+                      Positioned(
+                        top: 0,
+                        left: 0,
+                        right: 0,
+                        // 横幅本身不接指针：它盖在画布顶部，只做提示，
+                        // 画布顶部的框仍能正常点/拖（否则 B3“左键在框上
+                        // 拖动”会点在横幅上、框拖不动）；× 是单独的
+                        // 可点按钮，见下面一个 Positioned。
+                        child: IgnorePointer(
+                          child: QmBanner(
+                            tone: QmBannerTone.error,
+                            title: '框重叠',
+                            message: _overlapBannerMessage(),
+                            // 悬浮层里不要默认的 18px 下边距。
+                            margin: EdgeInsets.zero,
+                          ),
+                        ),
+                      ),
+                    if (overlap && !_overlapBannerCollapsed)
+                      Positioned(
+                        top: 6,
+                        right: 10,
+                        child: GestureDetector(
+                          key: const Key('overlap-banner-close'),
+                          onTap: () => setState(
+                            () => _overlapBannerCollapsed = true,
+                          ),
+                          child: Tooltip(
+                            message: '收起',
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 6,
+                                vertical: 2,
+                              ),
+                              child: Text(
+                                '×',
+                                style: TextStyle(
+                                  fontSize: 18,
+                                  fontWeight: FontWeight.w700,
+                                  color: palette.errInk,
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    if (overlap && _overlapBannerCollapsed)
+                      Positioned(
+                        top: 8,
+                        right: 8,
+                        child: GestureDetector(
+                          key: const Key('overlap-banner-dot'),
+                          onTap: () => setState(
+                            () => _overlapBannerCollapsed = false,
+                          ),
+                          child: Tooltip(
+                            message: '框重叠',
+                            child: Container(
+                              width: 16,
+                              height: 16,
+                              decoration: BoxDecoration(
+                                color: palette.errInk,
+                                shape: BoxShape.circle,
+                                border: Border.all(
+                                  color: palette.surface,
+                                  width: 2,
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                  ],
                 ),
               ),
               SizedBox(height: 8 * scale),
