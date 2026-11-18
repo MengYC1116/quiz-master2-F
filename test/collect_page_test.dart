@@ -1201,6 +1201,106 @@ void main() {
       expect(redOverlapBorders(), findsNWidgets(2));
     });
 
+    testWidgets('D-102 框重叠横幅悬浮不挤画布：出现/消除/再出现画布尺寸不变，× 收起/红点展开', (tester) async {
+      final repo = FakeRepo([
+        task(
+          't-needbox',
+          '待框选文件.pdf · 第1页 · 第1题',
+          status: CollectStatus.needBox,
+        ),
+      ]);
+      await pumpCollect(tester, repo: repo);
+      await openEditor(tester, '修框');
+      final canvasFinder = find.byKey(const Key('box-editor-canvas'));
+      final box = editorBoxHandle('题级框 1');
+      await tester.ensureVisible(box);
+      await tester.pumpAndSettle();
+      // 无重叠时的画布尺寸是基线；横幅出现/消失/收起都不应改动它。
+      final baseline = tester.getSize(canvasFinder);
+      final boxRect = tester.getRect(box);
+      final pageW = boxRect.width / 0.88;
+      final pageH = boxRect.height / 0.85;
+      final origin = Offset(
+        boxRect.left - 0.06 * pageW,
+        boxRect.top - 0.05 * pageH,
+      );
+      // 先在页底空白条画一道不重叠的框：无横幅，画布尺寸不变。
+      await tester.dragFrom(
+        origin + Offset(0.10 * pageW, 0.92 * pageH),
+        Offset(0.50 * pageW, 0.07 * pageH),
+      );
+      await tester.pumpAndSettle();
+      expect(find.textContaining('框重叠'), findsNothing);
+      expect(tester.getSize(canvasFinder), baseline);
+      // 把题级框 2 往上拖进框 1：重叠出现，横幅悬浮出现，画布尺寸不变。
+      final box2 = editorBoxHandle('题级框 2');
+      await tester.dragFrom(
+        tester.getCenter(box2),
+        Offset(0, -0.50 * pageH),
+        kind: ui.PointerDeviceKind.mouse,
+      );
+      await tester.pumpAndSettle();
+      expect(find.textContaining('框重叠'), findsOneWidget);
+      expect(
+        find.textContaining('第 1、2 道题的框叠在一起，请调开再确认。'),
+        findsOneWidget,
+      );
+      expect(redOverlapBorders(), findsNWidgets(2));
+      expect(tester.getSize(canvasFinder), baseline);
+      // 点 ×：横幅收起成右上角小红点，画布尺寸不变，重叠标红还在。
+      await tester.tap(find.text('×'));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('第 1、2 道题的框叠在一起'), findsNothing);
+      expect(
+        find.byKey(const Key('overlap-banner-dot')),
+        findsOneWidget,
+      );
+      expect(redOverlapBorders(), findsNWidgets(2));
+      expect(tester.getSize(canvasFinder), baseline);
+      // 点红点：横幅重新展开，画布尺寸不变。
+      await tester.tap(find.byKey(const Key('overlap-banner-dot')));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('框重叠'), findsOneWidget);
+      expect(
+        find.byKey(const Key('overlap-banner-dot')),
+        findsNothing,
+      );
+      expect(tester.getSize(canvasFinder), baseline);
+      // 拖回页底消除重叠：横幅与红点都消失，画布尺寸不变。
+      await tester.dragFrom(
+        tester.getCenter(box2),
+        Offset(0, 0.50 * pageH),
+        kind: ui.PointerDeviceKind.mouse,
+      );
+      await tester.pumpAndSettle();
+      expect(find.textContaining('框重叠'), findsNothing);
+      expect(
+        find.byKey(const Key('overlap-banner-dot')),
+        findsNothing,
+      );
+      expect(redOverlapBorders(), findsNothing);
+      expect(tester.getSize(canvasFinder), baseline);
+      // 再拖进重叠：横幅默认重新展开（不是收起态），画布尺寸仍不变。
+      await tester.dragFrom(
+        tester.getCenter(box2),
+        Offset(0, -0.50 * pageH),
+        kind: ui.PointerDeviceKind.mouse,
+      );
+      await tester.pumpAndSettle();
+      expect(find.textContaining('框重叠'), findsOneWidget);
+      expect(
+        find.byKey(const Key('overlap-banner-dot')),
+        findsNothing,
+      );
+      expect(redOverlapBorders(), findsNWidgets(2));
+      expect(tester.getSize(canvasFinder), baseline);
+      // 确认仍被拦下。
+      await tester.tap(find.text('确认修框，拆成 2 个待整理任务'));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('修框 ·'), findsOneWidget);
+      expect(repo.deletedTaskIds, isEmpty);
+    });
+
     testWidgets('删掉全部框后出无框提示，确认不可点', (tester) async {
       final repo = FakeRepo([
         task(
