@@ -920,3 +920,31 @@ layer-2 行保留不动，编辑器读到时直接丢弃）；③ `docs/代码�
 - 验收：重试相关 13 文件 202/202（b12_retry 19/19 + 12 回归文件 183/183）；`flutter analyze` No issues found；全量一次（日志 `~/workspace/batch12-work/full-suite-b12-p1.log`，10 分 04 秒）：**1432/1432，All tests passed!**，exit 0；演示库 md5 跑后不变（`8f7f9c64405dc6e484ac2bf8e5e1a807`，跑前备份 `~/workspace/demo-db-backup/quiz-master2.db.b12-p1-start`）；Linux Release 通过。
 - 计数说明：本次全量 1432 = 上一遍日志实测 1430（`full-suite-b12-2.log` 末行 +1430）+ 本次净增 2（b12_retry 17→19）。STATUS.md 与 gpt-review-batch12.md 里写的 1429 是逐项加总时漏计 1 项，与本次改动无关。
 - 其余 GPT 未定为 P0/P1 的事项一律未动（Stage A 口径、30 页泛化、动态题序、DDL 手写、事件刷新、并发重试、D-88/B1/zip 遗留）。
+
+## D-100 — 十二批推送 + edge-03 漏检数确认（2026-11-18 上午）
+
+- Meng 08:45 批准推送（批准邮件先发，id `1a1ec1d068eb49f5`）。推送执行员推 164 个文件（3 批：`0d25ebd0` 22 个 lib、`5adcd7e9` 27 个 test、`dea6061d` 115 个文件含决策日志 D-90~D-99、Stage A 离线工具、112 个题序夹具 JSON；修改 41、新增 123），新 head `dea6061dbd7d7b60a277e3840b4ec9f91d719876`（短 `dea6061d`），`git ls-remote` 核对，同步记录 23→26 条。未推：`b3-old-backup.zip`（已知）、662 张截图、3 份架构草稿、14 个 `.sh` 纯权限改动（644→755，内容 0 行）。
+- 完成邮件已发（任务汇报，id `1a1ec22ecdf0662c`）；tracked item `goal_471baecf41ff` 已关；30 分钟汇报与 5 分钟看门狗两个定时任务已删。
+- edge-03 漏检数 Meng 08:56 确认：**2 道**（Q2 平行板电容器、Q3 电磁感应）。`STAGE-A-REPORT.md` 三处待确认标记已改成已确认；D-95 原文不动（历史记录），以本条为准。
+- Win11 复核清单：`~/workspace/batch12-work/WIN11-CHECKLIST-BATCH12.md`（12 项），等 Meng 拉取后验证。
+- OCR 尖峰进行中：SimpleTex 接口调研已派调研员；Drive 查核：`test pictures/images/` 50 张 xt_p041–p090 抽查 3 张全是数学（专升本数学严选 800 题），Drive 上无以英语/政治命名的真题照片，英语和政治的尖峰照片仍需 Meng 提供（或先用演示库的题测）。
+
+## D-101 — 十二批 Win11 复核：备份恢复校验器认错主键（2026-11-18）
+
+- 现象：Meng 在 Win11 上备份后立即恢复，报错“这份备份文件已损坏：recently_viewed_questions 表里有行缺少主键 id”。他那份备份本身没坏（schemaVersion 3，含 4 条浏览历史，文件已核查）。
+- 根因：`lib/data/db_backup.dart` 的 `_validateBackupRow` 默认所有非整数主键表的主键都叫 `id`；但 `recently_viewed_questions` 的主键是 `question_id`（`db_schema.dart`：`question_id TEXT PRIMARY KEY`），根本没有 `id` 列，导出也是 `{question_id, viewed_at}`。十二批 D-91 加表时只补了导出/必填列/插库分流，没补校验口径；备份里历史为空时无行可校验，所以十二批测试没抓到。
+- 修法（只改 `_validateBackupRow` 附近）：新增 `_backupPkColumn`（settings→key，recently_viewed_questions→question_id，其余默认 id）；校验按每张表的真实主键列查，整数表（cause_records、review_history、review_state、recent_tasks）认 id 且缺失允许的原有行为不动；SR2-16 空串拒绝口径落在真实主键列上。报错文案仍是“这份备份文件已损坏：$table 表里有行缺少主键 $pkColumn”（settings 的 key、其余表的 id 文案与原来一字不差）。
+- 测试（新增 `test/b12fix_d101_backup_pk_test.dart`，5 项）：(a) 4 条浏览历史的备份往返恢复成功（question_id/viewed_at 全对）；(b) 缺 question_id 的行被拒绝且原库不动；(c) question_id 空串/非字符串被拒绝；(d) 只有 id、没有 question_id 的行仍被拒绝；(e) 空历史备份仍能恢复（修前唯一能过的情形）。另用 Meng 的真实备份文件 `~/workspace/user/files/quiz-master2-backup.qm2backup` 做过一次性验证（临时测试，跑完已删；原文件只读，操作的是 /tmp 下的副本，走 `importBackupZipInto` 整条 zip 恢复链路，4 条历史全数入库）——该文件修好后可直接恢复，不用重备。
+- 验收：备份相关 11 个文件 242/242（D-101 新 5 项 + FR-07 8 项 + p1_schema_backup、b3_backup_interop、s8b4/p3 迁移、b2 恢复流/日志、b3_p01、b5_p2_data、settings_controller）。Drift“一个测试里开了两个内存库”的 debug 警告与 FR-07 原文件相同，是既有模式，非本次引入。
+
+## D-102 — 十二批 Win11 复核：重叠横幅挤压画布（2026-11-18）
+
+- 现象：Meng 在 Win11 修框时反馈，重叠框功能本身没问题，但红色“框重叠”提示一弹出来，整个框题部分就缩小，非常影响操作。
+- 根因：`lib/modules/collect/box_editor.dart` 里“框重叠”横幅插在画布上方的 Column 流式布局里；横幅出现即挤占画布高度，画布按新可用区重算 fit 缩放，整页看起来缩了一圈，拖框中途反复跳变。
+- 修法（只动“框重叠”横幅，其他横幅不动）：
+  - 画布 `Expanded` 外包一层 `Stack`，画布本体用 `Positioned.fill` 包 `LayoutBuilder`（拿满 Expanded 的紧约束，和原来一致）；“框重叠”横幅改成 `Positioned(top: 0, left: 0, right: 0)` 悬浮在画布顶部、`margin: EdgeInsets.zero`，不占布局高度，出现/消失时画布尺寸和缩放纹丝不动。
+  - 横幅加 ×（`overlap-banner-close`）：点 × 收起成右上角一个 16px 小红点（`overlap-banner-dot`，红底白边圆点，点红点再展开）；重叠消除后经 `addPostFrameCallback` 复位收起状态，下次再重叠默认重新展开。
+  - 横幅本体包 `IgnorePointer`，× 是独立的可点按钮：横幅盖在画布顶部只做提示，画布顶部的框仍能正常点/拖。第一轮测试曾因横幅挡住左上角框的拖动导致 B3“左键在框上拖动”失败 1 项，改成 IgnorePointer + 独立 × 后全过。
+  - 其他横幅（重新框选、检测不可用、页图损坏、没框到题、题序不太确定）保持原样，仍在上方 Column 流式布局里——它们只在进页时出现，不会在拖框中途冒出来。横幅文案（点名哪几道框重叠）与确认拦截逻辑（重叠时确认仍被拦下）未动。
+- 测试（`test/collect_page_test.dart` 新增 1 项 widget 测试）：以 `box-editor-canvas` 的 `tester.getSize` 为基线，依次断言不重叠、拖进重叠、点 × 收起、点红点展开、拖开消除、再拖进重叠时画布尺寸始终等于基线；同时断言横幅点名“第 1、2 道题”、标红 2 框、重叠消除后横幅默认重新展开、确认仍被拦下。`collect_page_test.dart` 52/52。
+- 验收：全量一次（日志 `~/workspace/batch12-fix-work/full-suite-b12fix.log`，10 分 26 秒）：**1438/1438**（1432 基线 + D-101 5 项 + 本项 1 项），exit 0；`flutter analyze` 0 issue；演示库 md5 跑后不变（`8f7f9c64405dc6e484ac2bf8e5e1a807`，跑前备份 `~/workspace/demo-db-backup/quiz-master2.db.b12fix-start`）。
