@@ -948,3 +948,277 @@ layer-2 行保留不动，编辑器读到时直接丢弃）；③ `docs/代码�
   - 其他横幅（重新框选、检测不可用、页图损坏、没框到题、题序不太确定）保持原样，仍在上方 Column 流式布局里——它们只在进页时出现，不会在拖框中途冒出来。横幅文案（点名哪几道框重叠）与确认拦截逻辑（重叠时确认仍被拦下）未动。
 - 测试（`test/collect_page_test.dart` 新增 1 项 widget 测试）：以 `box-editor-canvas` 的 `tester.getSize` 为基线，依次断言不重叠、拖进重叠、点 × 收起、点红点展开、拖开消除、再拖进重叠时画布尺寸始终等于基线；同时断言横幅点名“第 1、2 道题”、标红 2 框、重叠消除后横幅默认重新展开、确认仍被拦下。`collect_page_test.dart` 52/52。
 - 验收：全量一次（日志 `~/workspace/batch12-fix-work/full-suite-b12fix.log`，10 分 26 秒）：**1438/1438**（1432 基线 + D-101 5 项 + 本项 1 项），exit 0；`flutter analyze` 0 issue；演示库 md5 跑后不变（`8f7f9c64405dc6e484ac2bf8e5e1a807`，跑前备份 `~/workspace/demo-db-backup/quiz-master2.db.b12fix-start`）。
+
+## D-103 — OCR 路线暂定 GLM-OCR（2026-11-18 14:10）
+
+- Meng 定：暂时采用 GLM-OCR 为 OCR 路线第一选择，PaddleOCR-VL-1.6 退为备用/交叉校验。
+  依据：同一批 6 道单题 +30% 白边，GLM 与 VL-1.6 同为 6/6、0 错（两轮输出逐字节相同）；
+  GLM 平均 1.1 秒/题（VL-1.6 最快一轮 7.5 秒/题），6 道 0.00033 元；
+  政治腿同批 8 页，GLM 正文错 4 字（VL 8、OCRv6 5），题号 10/11/12 与“单某”句全对。
+  报告：`~/workspace/batch13-work/glm-vs-vl16-compare.md`（含政治腿一节）。
+- “暂时”的含义：样本仍小（单题 6 道、政治整页 8 页），定稿前须扩大样本——
+  政治单题裁剪、英语真题照片、手机照片各一批，与 VL-1.6 同批复测后再锁定。
+- GLM 已知弱点（唯一稳定错型）：破折号读成“一”（政治腿 4 处错全是它：
+  “中国—东盟”×2、“平衡——”×2）。不做后处理归一化（误伤真“一”字风险），
+  靠详情页纠错入口兜底；等样本扩大后再评估是否值得修。
+- SimpleTex 对比仍待 Meng 的 token，改为不拦实现的交叉验证：GLM 公式已全对，
+  SimpleTex 翻盘可能性不大，token 到了跑一轮即可。
+- 路线：单题逐题调（1.1 秒/题已够快），整页调一次 + 块映射退为备选，不再纠结。
+- 待实现时再定的产品决策：BigModel key 管理——建议用户在设置里自填 key，
+  无 key 时 OCR 走原图兜底；Meng 自跑小代理为备选。成本不是问题（一题约 0.00005 元），
+  关键是 key 不写进客户端。
+
+## D-104 — 实验收尾：英语/手机照片不测，SimpleTex 不用，GLM 为最终选择（2026-11-18 14:16）
+
+- Meng 定：英语真题照片、手机拍的题不做实验；SimpleTex 不使用。
+- 后果：尖峰实验阶段收尾，不再扩大样本；GLM-OCR 由“暂定第一选择”转为最终选择，
+  VL-1.6 备用；政治单题裁剪对打也不测了。
+- 下一步：直接开十三批实现（OCR 进应用），等 Meng 点头开工。实现范围：
+  只识别题干；导入时自动做（后台队列）；详情页纠错入口；设置里自填 BigModel key
+  （无 key 走原图兜底）；LaTeX 渲染、失败回退原图、源码不外露；+30% 白边前处理；
+  schema v3→v4 迁移 + 备份互通重验。
+
+## D-105 — 通用性原则：设计不默认只有数英政三科（2026-11-18 14:38）
+
+- Meng 纠正：不能默认只有数学/英语/政治三科，须考虑到全部学科和大学专业。
+- OCR/切分/渲染/队列不按学科分支：学科只是元数据，管道里不写“如果是某学科就……”的分支。
+- 切分用通用选项标记（A–E，医学常 5 个选项；判断、配对、名词解释、论述等无选项题型走“整段当题干”兜底）；
+  保守策略兜底未知题型——不确定的不切、不丢内容。
+- 内容类型统一接口：文本 / 公式 / 代码（计算机题干里的程序代码，按等宽文本显示；缩进保留待验证）/
+  图（化学结构式、电路图、地图等一律原图）；画不出、认不出的回退原图。
+- 渲染：KaTeX 覆盖数理化生经工的数学公式；化学 \ce{} 待实测；结构式等图不进渲染器。
+- 学科在学科管理里用户可自行添加；初始预设仍为数英政三科（改预设另定）。
+- 诚实说明：GLM 只在数学、政治上实测过，其他学科识别准确率未测；兜底机制（原图 + 保守切分 + 手动纠错）
+  就是用来扛未知学科的。
+
+## D-106 — 十三批实现开工（2026-11-18 14:39）
+
+- Meng 批准按调整后方案（GPT 评审意见 + D-105 通用性原则）开始十三批实现。
+- 调整后方案要点：题干切分高置信度才切（A→B 序列、格式一致、C/D 非必要、只 A 不切、多候选待确认、
+  标记格式 A. A． A、 A) A） (A) （A） 全角Ａ、开头题号不盲删、存原始 OCR + 题干 + 切分状态）；
+  队列补 input_hash、租约、错误分类、超时连接 15 秒/请求 90–120 秒、最多 4 次、指数退避；
+  纠错按钮“编辑题干”+“重新识别”，状态细分，公式可恢复为原图，重新识别出候选再确认替换；
+  渲染先实测 flutter_math_fork 覆盖率（不行再 POC Ratex），统一渲染接口，\textcircled 预处理成圈号字符；
+  十三批不做公式编辑器；三条跨模块规则（原图为最终依据、不覆盖人工结果、内容独立于 OCR 服务）。
+- 跟踪项 goal_ced41f70cd8b（十三批 OCR 实现，slug ocr）；30 分钟进度汇报 + 5 分钟看门狗已开，
+  批次结束随跟踪项关闭一起删。
+- 推送仍须 Meng 明确批准（先邮件后卡片）；Win11 真机验证由 Meng 在推送后做。
+
+## D-107 — 十三批第一波完成：渲染器定选 + v3→v4 迁移 + 切分器（2026-11-18）
+
+- 渲染器定选（M1 实测）：采用 flutter_math_fork 0.7.4（真实 GLM 公式 25/25、
+  GPT 类型表 22/22；\textcircled 预处理 1–20 验证通过）；Ratex 不 POC
+  （fork 无大面积失败 + 本机无 Rust 工具链）；统一渲染接口
+  Text/Formula/ImageFallback/Code 已搭（lib/modules/ocr/）。Win11/安卓
+  真机目视验证待推送后由 Meng 做。
+- 迁移完成（M2）：schema v3→v4；questions 加 5 列（ocr_raw、ocr_stem、
+  ocr_split_status 默认“未切分”、ocr_manual_edited、content_version）；
+  新建 ocr_jobs 表（GPT 字段表）+ 2 索引；onUpgrade 用 customStatement
+  手写 DDL，迁移后与全新 v4 库逐字一致；备份互通 sv 2/3/4；主键校验
+  按真实主键列（D-101 口径沿用）。M2 测试 221/221。
+- 切分器完成（M4）：splitStem 纯函数，保守策略（A→B 序列才切、只 A 不切、
+  多候选待确认、A–E、开头题号不盲删）；double01-q1 一框两题判存在歧义、
+  整段保留，等上游拆框或 M5 人工处理。M4 测试 34/34。
+
+## D-108 — 十三批 M3 客户端 + 队列定稿（2026-11-18）
+
+- OcrKeyStore：flutter_secure_storage 10.3.4（Windows 实现 4.1.0，
+  AES-GCM 加密文件 + 密钥进 Windows 凭据管理器），键名 bigmodel_api_key 冻结；
+  Win11 构建须装 C++ ATL 库（构建环境要求，Meng 构建前确认）。
+- 客户端：dart:io HttpClient 调 layout_parsing；发送前每边 +30% 白边（内存里做，
+  磁盘切片不动）；md_results 做文本，layout_details 原样存 ocr_raw；
+  LaTeX 括号校验；连接 15 秒 / 单次请求 120 秒；14 码错误码表（OcrErrorCode）。
+- 队列：单 worker 并发 1，异步；租约 5 分钟，启动回收过期租约；最多 4 次总请求，
+  指数退避 30→60→120 秒封顶 5 分钟；429 尊重 Retry-After；没 key 只排队
+  （available_at +10 分钟，不记 attempt、不写 failed）；应用前必查 hash /
+  题目存在 / content_version；迟到结果只作候选（ocr_raw 包内
+  has_unseen_candidate 标志，M5 用 hasPendingOcrCandidate 判定）；
+  content_version：OCR 自动应用与人工编辑保存时 +1，其他保存不碰；
+  入队点确认分框；事件按 D-94 模式发。
+- 详情页重新框选后自动为新切片建 OCR 任务（统筹定：与导入时自动识别一致；
+  旧结果由哈希校验丢弃；人工改过的内容仍走候选保护）。
+- 整理页活页内刷新须守门（收到 questions 事件不许直接调 refresh()/loadForm()，
+  会重置正在编辑的表单；只当 OCR 的题不是当前正在编辑的题时才刷新）。
+- M3 测试 37/37 + 邻近回归 191/191；真机调用验证 2 次与尖峰首轮逐字一致。
+
+## D-109 — 十三批 M6 设置页 BigModel key（2026-11-18）
+
+- 位置：设置页 → “数据”组 → 最后一项（缓存清理行之后）。组结构未动
+  （注：设置页实际是六组，B11-9 加了考试组，之前“五组”的说法已过时）。
+- 界面：密码式输入框（QmTextField 加 obscureText 可选参数，默认 false）+
+  保存/清除按钮 + “已设置/未设置”状态行；说明文案写明 key 只存在本机
+  安全存储，不进题库、不进备份。
+- 只用 M3 冻结的 OcrKeyStore（键名 bigmodel_api_key）；本页不调用
+  getApiKey()，key 值永不显示、不记日志；空串保存视为清除；保存后
+  立即清空输入框；存入非空 key 后调 OcrWorker.instanceOrNull?.kick()
+  唤醒 worker。
+- M6 测试 8/8 + 邻近回归 83/83。
+
+## D-110 — 十三批 M5 纠错 UI（2026-11-18）
+
+- 只做一套编辑器：StemEditor + OcrStemSection（lib/modules/ocr/），
+  整理页在切片图正下方、详情页在题目图下方复用；原地展开，不跳页面。
+- 状态 7 态推导（deriveOcrStemStatus）：已手动修改 > 识别中（无 key 时
+  绝不显示，改显示“等待设置 API Key”）> 稍后自动重试 > 等待识别 >
+  识别失败 > 识别完成；候选标志另显“有新的识别结果”横幅。
+- 守门规则：编辑中题的事件绝不调 refresh()/loadForm()/load()，只无状态
+  取候选、只显横幅；别题只刷 OCR 状态行，表单值与 formResetKey 不动；
+  didUpdateWidget 仅题 id 变化才重建草稿。
+- 重框自动重识别：DetailNotifier.applyReworkBoxes 成功后、最终 load()
+  前调入队接口（fire-and-forget）；旧结果由哈希校验丢弃，人工内容
+  走候选保护。
+- 保存规则：人工编辑保存（版本+1、人工标记、切分“人工调整”、清候选）；
+  接受候选（重跑 splitStem 写回切分、人工标记保持 1、版本+1、清标志）；
+  忽略候选只清标志、版本+1。
+- 公式恢复为原图：保存时该公式从 ocr_stem 拿掉，只读区回退原图显示；
+  公式原文仍在 ocr_raw 里，可经重新识别恢复。实测 GLM 样本无 formula
+  块，通常走整张切片回退。
+- 回归中修的两个真问题：仓库读不要加 .timeout()（fake async 下未完成
+  Timer 会灭掉整文件测试）；重框入队不要 await（widget 测试里会挂住），
+  改 fire-and-forget。另修 saveEdit() 既有 bug：原来用全新 Question(...)
+  重建会静默丢掉 5 个 OCR 字段，现从 base 带上。
+- M5 测试 41/41 + 邻近回归 287/287。
+
+## D-111 — 十三批 M7 全量验收通过（2026-11-18）
+
+- 全量测试 1644/1644（基线 1438 + 新增 206：M1 69 + M2 新 17 + M3 37 +
+  M4 34 + M5 41 + M6 8），flutter analyze 0 问题，Linux Release 构建通过，
+  演示库 md5 不变（8f7f9c64405dc6e484ac2bf8e5e1a807），泄漏检查通过
+  （无硬编码 key、无 LaTeX 进日志/报错/复制路径、无 VL-1.6 实现、
+  无 SimpleTex 引用）。
+- Win11 复核清单 23 项已写（WIN11-CHECKLIST-B13.md），覆盖 ATL 前置、
+  设置 key、有/无 key 导入、失败重试、整理/详情纠错、重框自动重识别、
+  公式渲染目视、备份恢复、回归抽查。
+- 环境备注：Linux VM 补了 clang 垫片、ninja、libgtk-3-dev、libsecret-1-dev
+  才跑通全量与构建（只动本机系统包，未改仓库代码）；libzstd1 被从
+  hatch 后缀版降到 stock Ubuntu 版，如需恢复另行处理。
+
+## D-112 — P1-3 备份泄漏：Meng 定“留着，界面看不到就行”（2026-11-18）
+
+- sentinel 实测事实（P1-3，见 ~/workspace/batch13-work/P1-3-BACKUP-SENTINEL.md）：
+  备份 JSON 与 zip 内 backup.json 均命中 SENTINEL_A 与 \frac，
+  questions 行 ocr_raw、ocr_stem 两列均命中；本地 .db 文件关库后字节
+  搜索也命中（单反斜杠原样）；zip 不含 .db 文件；备份无加密。
+- Meng 2026-11-18 16:46 定：留着，界面看不到就行。备份文件与本地
+  SQLite 文件里明文存 LaTeX 可以接受，P1-3 按接受关闭；sentinel
+  实测报告与测试文件（test/b13_backup_sentinel_test.dart）作为证据保留，不删。
+- 边界（写进窄复审材料）：“不外露”只管界面（UI / 复制 / 报错 / 日志），
+  不含备份与本地库文件。此后泄漏检查的口径按此边界执行。
+
+## D-113 — 十三批 P1-1：OCR 候选来源绑定 + 应用原子性（GPT §2.3/§2.4）
+
+- ocr_raw 候选包加来源身份（`input_hash`、`claimed_content_version`、
+  `candidate_status` 五值 none/pending/accepted/ignored/stale、
+  `created_at` 与 `completed_at_ms` 同值）；接受候选时重验证（题目存在、
+  input_hash 与当前切片一致、候选仍 pending，任一不符拒绝并给明确原因，
+  hash 不一致标 stale；不要求 content_version 仍等于领取时版本；题干从
+  raw 包经 splitStem 取）；自动应用在同一 Drift 事务内做状态核验 +
+  版本比较 + 条件更新（安全档 `WHERE id=? AND content_version=? AND
+  ocr_manual_edited=0`，行数 ≠1 不算成功；人工改过只写 raw 作候选；
+  hash 不一致标 stale；租约丢了整笔回滚）；ocr_jobs 加 `lease_token` 列
+  （claim 生成唯一 token，complete/fail/retry/markAttempt 校验持有者，
+  不一致不写库；直接改未发布 v4 的两份 DDL，未建 v5）；切片用不可变版本
+  文件（重框/自愈写 `slices/<id>-v<时间戳>-<随机>.png`，旧文件留盘；
+  核验以题目行 slice_path 为准）；请求超时后 HttpClient 强制关闭（§3.1）；
+  保存 key 后等 key 的任务立即变为可领取（§3.3）；`enqueueOcrForQuestion`
+  契约冻结（成功 OcrJob / 无切片 null / 失败抛错，P1-2 按此接手调用点）。
+- P1-1 测试：新文件 26 项 + 邻近回归，模块 130/130、邻近 262/262，
+  analyze 0，演示库 md5 不变。
+
+## D-114 — 十三批 P1-2 + M4：重框入队 await 化 + 歧义独立提示（GPT §5.2/§4.2）
+
+- 重框入队改 await：DetailNotifier.applyReworkBoxes 在框与切片落库后 await
+  enqueueOcrForQuestion() 确认任务已持久化，只有 worker.kick() 可
+  fire-and-forget。入队失败不改 ReworkOutcome.success（框选结果保留），
+  记 DetailState.ocrEnqueueFailed，load() 按题 id 显式保留该标志（切题清掉），
+  详情页显“题目已更新，OCR 未入队”横幅 + “重新入队”按钮（走同一入队路径重试，
+  成功后横幅消失；无切片返回 null 不算失败）。
+- 批量入队诚实提示：CollectNotifier.confirmSplit 尾部按 questionId 比对
+  OcrWorker.enqueueForQuestions 返回的任务行，未入队数非阻塞附在成功提示后
+  （“其中 X 道题 OCR 未入队，可在详情页重新识别。”），worker 未启动按全部
+  未入队报，outcome.kind 仍是 done，整理主流程不被 OCR 卡住。
+- M4 歧义为独立内容状态：ocr_split_status = 存在歧义时，OcrStemSection 显
+  “识别结果待确认”横幅（正文为 GPT 文案“识别内容包含无法确定的选项边界，
+  请检查题干内容。”），不混进队列七态，deriveOcrStemStatus 不动。
+- 接受失败原因透传：acceptCandidateStem 的 CandidateRejection.reason 经
+  Notifier 的 acceptOcrCandidateWithReason() 原样返回（question_deleted /
+  no_candidate / not_pending / hash_mismatch / slice_missing），其余失败
+  'save_failed'，无当前题 'no_question'；详情页与整理页按 reason 给明确文案，
+  不再一律“保存失败，请重试”（整理页由统筹补上 P1-2 遗留 1）。
+- 测试缝：DetailNotifier.enqueueOcrForTest（@visibleForTesting 静态注入，
+  生产恒 null，走冻结契约）。真实 Drift 在 widget 测试 fake async 下连跑会
+  挂住，详情页重框 widget 测试走缝；真实入队路径由真实库 plain 测试覆盖。
+  生产绝不为过测试改回 unawaited。
+- P1-2 测试：新文件 14 项 + detail_page 43 项，邻近回归 373/373，analyze 0，
+  演示库 md5 不变。
+
+## D-115 — 十三批 P1 修复回归（2026-11-18）
+
+- P1-1 不可变切片后的全量回归 4 项失败全部是测试侧问题，生产代码零改动：
+  (1) SR3-10 自愈测试改断言新行为：自愈写版本化新文件
+  （`slices/<id>-v<时间戳>-<随机>.png`），旧文件字节永不动；
+  (2) SR-P2-3 重框事务失败测试：详情页打开时自愈（缺失文件分支）已首写出
+  库里记的现行切片，事务失败只删临时文件、绝不删现行切片（否则重演 SR2-3
+  丢图 bug），测试预摆尺寸相符旧切片、断言旧切片完好且无 `-v`/`.tmp-` 残留；
+  (3)(4) SR-P2-22 两项是共享 `_testTmp` 串扰：SR-P2-3 残留的自愈切片让
+  `slices/` 为空断言失败，生产清理（`writtenRels` 清单）单跑验证正常，
+  修复为 SR-P2-3 自带 `tearDown` 清理。
+- 构建环境：`libgtk-3-dev` 重装（3.24.41），`libzstd1` 须显式降级到发行版
+  `1.5.5+dfsg2-2build1.1`（`+hatch1` 版与 `libzstd-dev` 冲突，
+  `--allow-downgrades` 单独不解析）。
+- 验证：全量 1690/1690、analyze 0 问题、Linux Release 构建成功、演示库
+  md5 不变。
+
+## D-116 — 十三批 P1 第二轮：接受候选原子化 + lease token 核验（GPT 窄复审剩余 1 个 P1）
+
+- GPT 窄复审（2026-11-18 18:40–18:44，思考模式）有条件通过：P1-2、P1-3
+  PASS；P1-1 只剩人工接受候选 acceptCandidateStem 的校验与写入原子性
+  未证明——旧实现重读、算 hash、返回待保存对象、调用方再 repo.save，
+  三步分开；标 stale 的保存也无条件。
+- 修法：acceptCandidateStem（lib/modules/ocr/stem_correction.dart）重写
+  为单个 Drift 事务（照抄 applyClaimedResult 的既成模式）：事务内重读
+  题目行 → 确认候选仍 pending → 以事务内读到的 slice_path 为准、事务
+  内算文件 hash（切片是不可变版本文件，同一路径内容不会变）→ 条件更新
+  写题干/切分状态/候选状态/版本号，行数 ≠1 抛错回滚。成功写入 SQL：
+  `UPDATE questions SET ocr_stem=?, ocr_split_status=?, ocr_raw=?,
+  content_version = content_version + 1 WHERE id=? AND ocr_raw=?`
+  （最后参数是事务内读到的 pending raw 原串，把写操作绑定到验过的那个
+  候选上）。content_version 在 SQL 里 +1，不要求仍等于领取时版本
+  （人工改过仍可接受的规则未改）；题干一律从 raw.mdResults 经 splitStem
+  取；inputHash 为 null 的遗留包跳过 hash 核对。
+- hash 不符标 stale 也在同一事务内做条件更新：`UPDATE questions SET
+  ocr_raw=?, content_version = content_version + 1 WHERE id=? AND
+  ocr_raw=?`，行数 1 才算标上（迟到新候选已写回时行数 0，不误标）；
+  标完事务正常提交，提交后再抛 CandidateRejection('hash_mismatch', …)。
+  拒绝原因/文案契约不变。
+- 两处有意保留（复审材料里已写明证据）：(1) 接受 SQL 不写
+  ocr_manual_edited 列，返回对象保持事务内读到的原值——pending 候选只由
+  applyClaimedResult 的人工改过档写出（lib/services/ocr_queue.dart:626
+  是全库唯一的 withCandidate 调用点），且没有任何路径把该标志清回 0，
+  旧代码强制 true 与新行为在可达状态上等价；(2) 写库成功后发一次
+  DataChangeBus 事件 {badges, questions}——与旧流程 repo.save →
+  upsertQuestion 发的事件同口径（写后发），否则去掉 repo.save 会少一次
+  页面刷新。
+- 调用方：整理页与详情页的 acceptOcrCandidateWithReason() 删掉分开的
+  repo.save，接受在事务内落库并返回已保存的题；返回契约不变（成功 null /
+  原因原样返回 / 其余失败 'save_failed' / 无当前题 'no_question'）。
+- candidateStemForQuestion 预览 helper 未动：它是 widget 守门路径，调用方
+  用 fake repo；改成真实库事务会把守门 widget 测试卷进来，超出本批范围；
+  接受时原子重验兜底，误标窗口只影响一次预览展示，函数注释已注明。
+- Lease token 核验（GPT 留的代码核验点）：逐条读过
+  lib/services/ocr_queue.dart 与 lib/data/db_ocr_jobs.dart——worker 持有
+  任务后的全部状态修改在生产代码里都传了 job.leaseToken（没 key 等待重试、
+  请求前记 attempt、失败处理两路、事务内失败/完成）；不带 token 的只有
+  真正的管理操作（worker 启动时回收过期租约、清等 key 任务的等待）与测试
+  里的兼容调用；_updateJobRow 的 leaseToken == null 分支只剩测试调用。
+  测试补了 2 项 worker 级租约失效用例（租约丢了后可重试失败的 retry 与终态
+  失败的 fail 都不写库）。生产代码无漏传，无需补。
+- 测试：接受原子性组 3 项（stale 不误标新候选、6 轮并发接受+重框合法终态、
+  版本不一致人工改过仍可接受且返回即已落库）+ 租约失效 2 项；Notifier
+  接受测试迁移到真实测试库（FakeRepo 内存列表与真实库双插，断言改读真实
+  库），未给生产代码加测试缝。
+- 验证：全量 1695/1695（基线 1690 + 新增 5）、analyze 0 问题、Linux
+  Release 构建成功、演示库 md5 不变（跑前备份
+  quiz-master2.db.b13-p1r2）。第二轮窄复审材料
+  gpt-rereview-batch13-p1-round2.md 已备好，待主代理跑浏览器复审
+  （思考模式）。
