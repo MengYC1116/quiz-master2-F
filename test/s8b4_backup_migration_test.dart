@@ -17,7 +17,7 @@ import 'package:quiz_master2/data/drift/quiz_database.dart';
 
 void main() {
   group('B4.2 backupTables', () {
-    test('含补齐的 4 张表 + question_boxes + 最近查看，共 14 张', () {
+    test('含补齐的 4 张表 + question_boxes + 最近查看 + OCR 任务，共 15 张', () {
       expect(
         AppDatabase.backupTables,
         containsAll([
@@ -28,9 +28,11 @@ void main() {
           'question_boxes',
           // 十二批 D-91：v3 新表。
           'recently_viewed_questions',
+          // 十三批 M2：v4 新表。
+          'ocr_jobs',
         ]),
       );
-      expect(AppDatabase.backupTables.length, 14);
+      expect(AppDatabase.backupTables.length, 15);
     });
   });
 

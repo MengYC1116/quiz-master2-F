@@ -493,7 +493,7 @@ void main() {
       );
     });
 
-    test('重导出与黄金夹具对比：差异仅 8 处规范化', () async {
+    test('重导出与黄金夹具对比：差异仅 17 处规范化', () async {
       final db = await openMemoryDb();
       final golden = await readGoldenJson();
       await AppDatabase.importBackupJsonInto(db, golden);
@@ -501,7 +501,7 @@ void main() {
         await AppDatabase.exportBackupJsonFrom(db),
       ) as Map<String, dynamic>;
       // 十二批 D-91：黄金夹具是 v2 备份（_meta.schemaVersion = 2），
-      // 重导出盖的是当前版本戳（AppDatabase.schemaVersion = 3），
+      // 重导出盖的是当前版本戳（AppDatabase.schemaVersion = 4），
       // 两者不等是迁移的正常结果，不是回归；断言当前版本。
       expect(
         (reExported['_meta'] as Map)['schemaVersion'],
@@ -550,8 +550,20 @@ void main() {
           "cause_records/$legacyCausePk/remedy_history:  → []",
           "collect_tasks/task-legacy/page_rotations:  → {}",
           // 十二批 D-91：第 8 处是迁移写回——恢复把 settings.schemaVersion
-          // 写回当前版本（v3 的 '3'），黄金夹具（v2）里它是 '2'。
-          "settings/schemaVersion/value: 2 → 3",
+          // 写回当前版本（v4 的 '4'），黄金夹具（v2）里它是 '2'。
+          "settings/schemaVersion/value: 2 → 4",
+          // 十三批 M2：第 9–17 处是 v4 新列的 DDL 默认值——v2 黄金夹具
+          // 的 questions 行没有这 3 列（ocr_raw / ocr_stem 是可空列，
+          // 缺键与 NULL 同值，不产生差异），恢复时按 DDL 默认值补齐。
+          "questions/q-rich-1/ocr_split_status: null → 未切分",
+          "questions/q-rich-1/ocr_manual_edited: null → 0",
+          "questions/q-rich-1/content_version: null → 0",
+          "questions/q-rich-2/ocr_split_status: null → 未切分",
+          "questions/q-rich-2/ocr_manual_edited: null → 0",
+          "questions/q-rich-2/content_version: null → 0",
+          "questions/q-legacy-1/ocr_split_status: null → 未切分",
+          "questions/q-legacy-1/ocr_manual_edited: null → 0",
+          "questions/q-legacy-1/content_version: null → 0",
         ]),
       );
     });

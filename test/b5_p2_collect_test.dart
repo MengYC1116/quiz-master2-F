@@ -33,6 +33,10 @@ import 'package:quiz_master2/theme/app_theme.dart';
 late final Directory _testTmp;
 late final String _pagePngPath;
 
+/// 与库里尺寸相符的旧切片（200×100）：SR-P2-3 用它预摆 slices/q1.png，
+/// 让详情页自愈见尺寸相符直接返回，本用例只测重框事务失败这一条路径。
+late final String _slicePngPath;
+
 /// 最近一次编辑器确认返回的结果（harness 的按钮回调写入）。
 BoxEditorResult? _capturedResult;
 
@@ -221,6 +225,19 @@ void main() {
     final file = File('${_testTmp.path}/page.png');
     await file.writeAsBytes(png!.buffer.asUint8List());
     _pagePngPath = file.path;
+    // SR-P2-3 的旧切片：200×100 白图（与用例库里 sliceWidth/Height 相符）。
+    final sliceRecorder = ui.PictureRecorder();
+    final sliceCanvas = ui.Canvas(sliceRecorder);
+    sliceCanvas.drawRect(
+      const ui.Rect.fromLTWH(0, 0, 200, 100),
+      ui.Paint()..color = const ui.Color(0xFFFFFFFF),
+    );
+    final sliceImg = await sliceRecorder.endRecording().toImage(200, 100);
+    final slicePng = await sliceImg.toByteData(format: ui.ImageByteFormat.png);
+    sliceImg.dispose();
+    final sliceFile = File('${_testTmp.path}/slice-200x100.png');
+    await sliceFile.writeAsBytes(slicePng!.buffer.asUint8List());
+    _slicePngPath = sliceFile.path;
   });
 
   tearDownAll(() async {
@@ -822,6 +839,21 @@ void main() {
       final pageDir = Directory('${_testTmp.path}/imports/rework-task');
       pageDir.createSync(recursive: true);
       File(_pagePngPath).copySync('${pageDir.path}/page.png');
+      // 十三批 P1-1：详情页打开时自愈会先看切片——文件缺失时它会按
+      // 当前框重裁并首写到库里记的路径，之后就分不清“自愈写的”与
+      // “重框写的”。先把一张与库里尺寸相符（200×100）的旧切片摆好，
+      // 自愈见尺寸相符直接返回，本用例只测重框事务失败这一条路径。
+      final slicesDir = Directory('${_testTmp.path}/slices');
+      slicesDir.createSync(recursive: true);
+      final oldSliceFile = File('${slicesDir.path}/q1.png');
+      File(_slicePngPath).copySync(oldSliceFile.path);
+      final oldSliceBytes = oldSliceFile.readAsBytesSync();
+      // 本用例在共享 _testTmp 里写切片：结束后清掉，不留给后面的
+      // SR-P2-22（它断言 slices/ 为空）——之前 3&4 号失败就是这份
+      // 残留（自愈写出的 slices/q1.png）造成的串扰，不是确认清理坏了。
+      addTearDown(() {
+        if (slicesDir.existsSync()) slicesDir.deleteSync(recursive: true);
+      });
       final repo = _detailRepo(
         questions: [
           _dtq('q1', '函数极限', errorTypes: const ['概念不清']).copyWith(
@@ -865,10 +897,21 @@ void main() {
       expect(find.textContaining('修框 ·'), findsNothing);
       expect(repo.replaceCalled, isTrue);
       expect(find.text('重新框选失败：保存失败，请重试'), findsOneWidget);
-      // 刚写盘的新切片已删干净（未修前 slices/q1.png 不存在）。
+      // 十三批 P1-1 不可变切片：重框的新切片走版本化路径（经临时文件
+      // rename），事务失败时只删临时文件，正式路径上的旧切片从未被
+      // 动过——旧写法此时删的是刚覆盖掉旧图的正式文件（SR2-3 的丢图
+      // bug）。所以断言反过来：旧切片字节完好，且没有版本化新文件
+      // 与临时文件残留。
+      expect(oldSliceFile.existsSync(), isTrue);
+      expect(oldSliceFile.readAsBytesSync(), equals(oldSliceBytes));
       expect(
-        File('${_testTmp.path}/slices/q1.png').existsSync(),
-        isFalse,
+        slicesDir
+            .listSync()
+            .where(
+              (f) => f.path.contains('-v') || f.path.contains('.tmp-'),
+            )
+            .isEmpty,
+        isTrue,
       );
       // 框与题都没动：没有保存过题。
       expect(repo.saved.where((q) => q.id == 'q1'), isEmpty);

@@ -804,11 +804,20 @@ void main() {
         healed = repo.saved.any((q) => q.id == 'q1' && q.sliceWidth == 492);
       }
       expect(healed, isTrue);
-      expect(_pngSize(sliceFile.readAsBytesSync()).width, 492);
-      expect(_pngSize(sliceFile.readAsBytesSync()).height, 280);
       final savedQ = repo.saved.lastWhere((q) => q.id == 'q1');
+      // 十三批 P1-1 不可变切片：自愈写版本化新文件，库里 slice_path
+      // 指过去；旧文件字节永不动，不再是原地覆盖后的 492×280。
+      expect(savedQ.slicePath, isNot('slices/q1.png'));
+      expect(savedQ.slicePath?.startsWith('slices/q1-v'), isTrue);
       expect(savedQ.sliceWidth, 492);
       expect(savedQ.sliceHeight, 280);
+      final newSliceFile = File('${_testTmp.path}/${savedQ.slicePath}');
+      expect(_pngSize(newSliceFile.readAsBytesSync()).width, 492);
+      expect(_pngSize(newSliceFile.readAsBytesSync()).height, 280);
+      // 旧文件仍是原来的页图字节（560×700），一个字节都没变。
+      expect(sliceFile.readAsBytesSync(), equals(oldBytes));
+      expect(_pngSize(sliceFile.readAsBytesSync()).width, 560);
+      expect(_pngSize(sliceFile.readAsBytesSync()).height, 700);
     });
   });
 }

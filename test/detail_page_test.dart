@@ -15,6 +15,7 @@ import 'package:quiz_master2/data/database.dart';
 import 'package:quiz_master2/data/repository.dart';
 import 'package:quiz_master2/models/models.dart';
 import 'package:quiz_master2/modules/detail/question_detail_page.dart';
+import 'package:quiz_master2/state/detail_notifier.dart';
 import 'package:quiz_master2/theme/app_theme.dart';
 import 'package:quiz_master2/widgets/widgets.dart';
 
@@ -487,6 +488,24 @@ void main() {
     await _testTmp.delete(recursive: true);
   });
 
+  // 十三批 P1-2（任务 b）：重框入队走 DetailNotifier 的可 fake 缝——
+  // 真实 Drift 在 widget 测试的 fake async 下永不完成（M5 §七第二条），
+  // 用假入队代替；真实入队路径由 b13_stem_correction_test 的真实库
+  // 测试覆盖。个别用例（入队失败横幅）会在用例内改写本假实现。
+  setUp(() {
+    DetailNotifier.enqueueOcrForTest = (db, q) async => OcrJob(
+      id: 'fake-job-${q.id}',
+      questionId: q.id,
+      status: OcrJobStatus.pending,
+      createdAt: DateTime(2026, 11, 18),
+      updatedAt: DateTime(2026, 11, 18),
+    );
+  });
+
+  tearDown(() {
+    DetailNotifier.enqueueOcrForTest = null;
+  });
+
   group('结构与默认态', () {
     testWidgets('三段默认全折叠，标题 + 工具栏 + 无开始复习', (tester) async {
       await pumpDetail(tester);
@@ -844,9 +863,16 @@ void main() {
       // 反复 pump + 真实延时推进（collect_page_test 的同款做法）。
       await tester.runAsync(() async {
         await tester.tap(find.text('确认重新框选'));
-        for (var i = 0; i < 20; i++) {
+        // 十三批 P1-2：applyReworkBoxes 现在 await 入队（确认任务已持久化
+        // 才返回），成功提示要等入队落盘才出现；固定 20×200ms 在连跑
+        // 时不够（开库慢），改为轮询等提示出现/编辑器关闭，上限 10 秒。
+        for (var i = 0; i < 50; i++) {
           await tester.pump();
           await Future<void>.delayed(const Duration(milliseconds: 200));
+          if (find.text('已重新框选，切片已更新').evaluate().isNotEmpty ||
+              find.textContaining('修框 ·').evaluate().isEmpty) {
+            break;
+          }
         }
         await tester.pumpAndSettle();
       });
@@ -863,6 +889,162 @@ void main() {
       expect(savedQ.sliceHeight, greaterThan(0));
       final sliceAbs = AppDatabase.resolveDataPath(savedQ.slicePath!);
       expect(sliceAbs != null && File(sliceAbs).existsSync(), isTrue);
+    });
+
+    testWidgets('十三批 P1-2：重框入队失败显“题目已更新，OCR 未入队”横幅，点“重新入队”后横幅消失', (tester) async {
+      // 入队失败：缝改成抛错的假实现（模拟读盘/写库失败）。
+      DetailNotifier.enqueueOcrForTest = (db, q) async {
+        throw StateError('fake enqueue failure');
+      };
+      final repo = detailRepo();
+      repo.questions[0] = repo.questions[0].copyWith(
+        pageImagePath: _pagePngRel,
+        sourcePath: _pagePngRel,
+        slicePath: 'slices/q1.png',
+        sliceWidth: 200,
+        sliceHeight: 100,
+      );
+      repo.pageBoxes = [
+        QuestionBox(
+          id: 'q1-box',
+          layer: 1,
+          type: 'question',
+          x: 0.06,
+          y: 0.05,
+          w: 0.88,
+          h: 0.4,
+          page: 1,
+          questionId: 'q1',
+        ),
+      ];
+      await pumpDetail(tester, repo: repo);
+      await openSection(tester, '题目信息');
+      await tapText(tester, '重新框选这道题');
+      await tester.runAsync(() async {
+        await tester.tap(find.text('确认重新框选'));
+        for (var i = 0; i < 50; i++) {
+          await tester.pump();
+          await Future<void>.delayed(const Duration(milliseconds: 200));
+          if (find.text('已重新框选，切片已更新').evaluate().isNotEmpty ||
+              find.textContaining('修框 ·').evaluate().isEmpty) {
+            break;
+          }
+        }
+        await tester.pumpAndSettle();
+      });
+      await tester.pumpAndSettle();
+      // 框选本身成功（提示照常），但入队失败横幅出现。
+      expect(find.text('已重新框选，切片已更新'), findsOneWidget);
+      expect(
+        find.byKey(const Key('ocr-enqueue-failed-banner')),
+        findsOneWidget,
+      );
+      expect(find.text('题目已更新，OCR 未入队'), findsOneWidget);
+      expect(find.text('重新入队'), findsOneWidget);
+      // 切片确实换了（失败没把重框拖垮）：replace 已调且只换了目标题的框。
+      // 注意不用 repo.saved.lastWhere 断言新切片路径——打开页时的切片自愈
+      // （SR3-10）与重框并发跑，旧切片缺失时它会后保存一次旧路径，
+      // 切片路径断言会与自愈竞跑；版本化新路径由 P1-1 用例与本批 plain
+      // 测试覆盖。
+      expect(repo.replaceCalled, isTrue);
+      final replaced = repo.replacedBoxes['q1'];
+      expect(replaced, isNotNull);
+      expect(replaced!.where((b) => b.layer == 1).length, 1);
+
+      // 先等重框成功的 SnackBar 走完 4 秒：它的定时器是在 runAsync 的
+      // 真实时间区里建的，假时间 pump 拨不动；重试的提示会排在它后面，
+      // 不等它消失就看不到新提示。
+      await tester.runAsync(() async {
+        await Future<void>.delayed(const Duration(seconds: 5));
+      });
+      await tester.pumpAndSettle();
+      expect(find.text('已重新框选，切片已更新'), findsNothing);
+
+      // 重试：缝改回成功实现，点横幅上的“重新入队”。
+      DetailNotifier.enqueueOcrForTest = (db, q) async => OcrJob(
+        id: 'fake-job-${q.id}',
+        questionId: q.id,
+        status: OcrJobStatus.pending,
+        createdAt: DateTime(2026, 11, 18),
+        updatedAt: DateTime(2026, 11, 18),
+      );
+      await tester.tap(find.text('重新入队'));
+      await tester.pumpAndSettle();
+      expect(find.text('已重新加入识别队列'), findsOneWidget);
+      expect(
+        find.byKey(const Key('ocr-enqueue-failed-banner')),
+        findsNothing,
+      );
+      expect(find.text('题目已更新，OCR 未入队'), findsNothing);
+      // 收尾：把重试提示的 4 秒定时器走完再结束用例，否则它的
+      // hideCurrentSnackBar 在页面已销毁后才触发，测试框架报
+      // “after the test had completed”。假时间与真实时间各走 5 秒——
+      // 两个 SnackBar 的定时器分属不同时间区（重框的在 runAsync 的
+      // 真实区里建），只走一种盖不住。
+      await tester.pump(const Duration(seconds: 5));
+      await tester.runAsync(() async {
+        await Future<void>.delayed(const Duration(seconds: 5));
+      });
+      await tester.pumpAndSettle();
+    });
+
+    testWidgets('十三批 P1-1：重框写新版本文件，旧切片字节不动', (tester) async {
+      // 旧切片事先存在：用真实页图字节当旧切片内容。
+      final slicesDir = Directory('${_testTmp.path}/slices');
+      slicesDir.createSync(recursive: true);
+      final oldSliceFile = File('${slicesDir.path}/q1.png');
+      final oldBytes = File('${_testTmp.path}/$_pagePngRel').readAsBytesSync();
+      oldSliceFile.writeAsBytesSync(oldBytes);
+      final repo = detailRepo();
+      repo.questions[0] = repo.questions[0].copyWith(
+        pageImagePath: _pagePngRel,
+        sourcePath: _pagePngRel,
+        slicePath: 'slices/q1.png',
+        sliceWidth: 200,
+        sliceHeight: 100,
+      );
+      repo.pageBoxes = [
+        QuestionBox(
+          id: 'q1-box',
+          layer: 1,
+          type: 'question',
+          x: 0.06,
+          y: 0.05,
+          w: 0.88,
+          h: 0.4,
+          page: 1,
+          questionId: 'q1',
+        ),
+      ];
+      await pumpDetail(tester, repo: repo);
+      await openSection(tester, '题目信息');
+      await tapText(tester, '重新框选这道题');
+      await tester.runAsync(() async {
+        await tester.tap(find.text('确认重新框选'));
+        // 十三批 P1-2：applyReworkBoxes 现在 await 入队（确认任务已持久化
+        // 才返回），成功提示要等入队落盘才出现；固定 20×200ms 在连跑
+        // 时不够（开库慢），改为轮询等提示出现/编辑器关闭，上限 10 秒。
+        for (var i = 0; i < 50; i++) {
+          await tester.pump();
+          await Future<void>.delayed(const Duration(milliseconds: 200));
+          if (find.text('已重新框选，切片已更新').evaluate().isNotEmpty ||
+              find.textContaining('修框 ·').evaluate().isEmpty) {
+            break;
+          }
+        }
+        await tester.pumpAndSettle();
+      });
+      await tester.pumpAndSettle();
+      expect(find.text('已重新框选，切片已更新'), findsOneWidget);
+      // 旧文件逐字节不动；题指到新版本文件（slices/q1-v<时间戳>-<随机>.png）。
+      expect(oldSliceFile.readAsBytesSync(), oldBytes);
+      final savedQ = repo.saved.lastWhere((q) => q.id == 'q1');
+      expect(savedQ.slicePath, isNot('slices/q1.png'));
+      expect(savedQ.slicePath, startsWith('slices/q1-v'));
+      expect(savedQ.slicePath, endsWith('.png'));
+      final newAbs = AppDatabase.resolveDataPath(savedQ.slicePath!);
+      expect(newAbs != null && File(newAbs).existsSync(), isTrue);
+      expect(File(newAbs!).readAsBytesSync(), isNot(oldBytes));
     });
 
     testWidgets('SR2-3：事务失败时旧切片字节完好、框与题不动（有旧切片）', (tester) async {
@@ -902,18 +1084,30 @@ void main() {
       // 框把它重裁一次。先在 runAsync 内把自愈跑完（生产上用户打开
       // 页到点重框之间自愈早已完成），再以自愈后的切片为基线：
       // 本用例断言的是“事务失败不碰切片”，基线是自愈后的切片。
+      // 十三批 P1-1：自愈写新版本文件（旧文件字节不动），等自愈那次
+      // repo.save 落袋（slice_path 已指到 slices/q1-v…）才继续。
       // D-38：固定等 6 秒在 1.5 核 VM 全量负载下会抖（原生图片解码
-      // 慢于等待），改成按条件轮询——等到切片宽度变成自愈后的 492
+      // 慢于等待），改成按条件轮询——等到新切片宽度变成自愈后的 492
       // 且自愈那次 repo.save 已落袋才继续，断言本身不变。
-      // 注意顺序：自愈先写文件、再调 save 改库里尺寸；只等文件会
+      // 注意顺序：自愈先写文件、再调 save 改库里尺寸与路径；只等文件会
       // 破得太早，后面的 repo.saved.clear() 就清不到那次保存。
       await tester.runAsync(() async {
         for (var i = 0; i < 75; i++) {
           await tester.pump();
           try {
-            final healed = pngSize(oldSliceFile.readAsBytesSync()).width == 492;
-            final saved = repo.saved.any((q) => q.id == 'q1');
-            if (healed && saved) break;
+            Question? healedSaved;
+            for (final s in repo.saved) {
+              if (s.id == 'q1') healedSaved = s;
+            }
+            final healedPath = healedSaved?.slicePath;
+            if (healedPath != null && healedPath.startsWith('slices/q1-v')) {
+              final healedAbs = AppDatabase.resolveDataPath(healedPath);
+              if (healedAbs != null &&
+                  File(healedAbs).existsSync() &&
+                  pngSize(File(healedAbs).readAsBytesSync()).width == 492) {
+                break;
+              }
+            }
           } catch (_) {
             // 文件正被重写、解不出来时继续等。
           }
@@ -922,7 +1116,12 @@ void main() {
         await tester.pumpAndSettle();
       });
       await tester.pumpAndSettle();
-      final healedBytes = oldSliceFile.readAsBytesSync();
+      // 自愈写了新版本文件：旧文件字节不动，基线是自愈后的新切片。
+      expect(oldSliceFile.readAsBytesSync(), oldBytes);
+      final healedPath =
+          repo.saved.lastWhere((q) => q.id == 'q1').slicePath!;
+      final healedAbs = AppDatabase.resolveDataPath(healedPath)!;
+      final healedBytes = File(healedAbs).readAsBytesSync();
       expect(pngSize(healedBytes).width, 492);
       // 自愈会调一次 repo.save（把库里尺寸改成重裁尺寸），清掉它，
       // 后面“事务失败不存题”的断言才只量本次重框。
@@ -955,9 +1154,11 @@ void main() {
       expect(find.textContaining('修框 ·'), findsNothing);
       expect(repo.replaceCalled, isTrue);
       expect(find.text('重新框选失败：保存失败，请重试'), findsOneWidget);
-      // 旧切片字节完好（SR2-3 的核心断言；基线是打开页时自愈后的切片，
-      // 见本用例开头的说明——事务失败只保证不碰当时的切片）。
-      expect(oldSliceFile.readAsBytesSync(), equals(healedBytes));
+      // 旧切片与自愈后的新切片字节都完好（SR2-3 的核心断言；基线是
+      // 打开页时自愈后的切片，见本用例开头的说明——事务失败只保证
+      // 不碰当时的切片）。
+      expect(oldSliceFile.readAsBytesSync(), equals(oldBytes));
+      expect(File(healedAbs).readAsBytesSync(), equals(healedBytes));
       // 临时切片已清干净，不留 .tmp-*.png。
       expect(
         slicesDir.listSync().where((f) => f.path.contains('.tmp-')).isEmpty,
@@ -1007,9 +1208,16 @@ void main() {
       // 直接确认：框不丢失（仍是源页的 1 个题级框）。
       await tester.runAsync(() async {
         await tester.tap(find.text('确认重新框选'));
-        for (var i = 0; i < 20; i++) {
+        // 十三批 P1-2：applyReworkBoxes 现在 await 入队（确认任务已持久化
+        // 才返回），成功提示要等入队落盘才出现；固定 20×200ms 在连跑
+        // 时不够（开库慢），改为轮询等提示出现/编辑器关闭，上限 10 秒。
+        for (var i = 0; i < 50; i++) {
           await tester.pump();
           await Future<void>.delayed(const Duration(milliseconds: 200));
+          if (find.text('已重新框选，切片已更新').evaluate().isNotEmpty ||
+              find.textContaining('修框 ·').evaluate().isEmpty) {
+            break;
+          }
         }
         await tester.pumpAndSettle();
       });
@@ -1105,9 +1313,16 @@ void main() {
       // 确认：库里仍只有一个题级框（原框未被顶掉）。
       await tester.runAsync(() async {
         await tester.tap(find.text('确认重新框选'));
-        for (var i = 0; i < 20; i++) {
+        // 十三批 P1-2：applyReworkBoxes 现在 await 入队（确认任务已持久化
+        // 才返回），成功提示要等入队落盘才出现；固定 20×200ms 在连跑
+        // 时不够（开库慢），改为轮询等提示出现/编辑器关闭，上限 10 秒。
+        for (var i = 0; i < 50; i++) {
           await tester.pump();
           await Future<void>.delayed(const Duration(milliseconds: 200));
+          if (find.text('已重新框选，切片已更新').evaluate().isNotEmpty ||
+              find.textContaining('修框 ·').evaluate().isEmpty) {
+            break;
+          }
         }
         await tester.pumpAndSettle();
       });
@@ -1160,13 +1375,19 @@ void main() {
         await tester.pumpAndSettle();
       });
       await tester.pumpAndSettle();
-      // 切片已按当前框重裁：left=(0.06×560).round()=34、
+      // 切片已按当前框重裁到新版本文件：left=(0.06×560).round()=34、
       // right=(0.94×560).round()=526 → 宽 492；高 0.4×700=280。
-      final newBytes = sliceFile.readAsBytesSync();
+      // 十三批 P1-1：旧文件字节不动（不可变切片），题指到新文件。
+      expect(sliceFile.readAsBytesSync(), oldBytes);
+      final savedQ = repo.saved.lastWhere((q) => q.id == 'q1');
+      expect(savedQ.slicePath, isNot('slices/q1.png'));
+      expect(savedQ.slicePath, startsWith('slices/q1-v'));
+      final newAbs = AppDatabase.resolveDataPath(savedQ.slicePath!);
+      expect(newAbs != null && File(newAbs).existsSync(), isTrue);
+      final newBytes = File(newAbs!).readAsBytesSync();
       final size = pngSize(newBytes);
       expect(size.width, 492);
       expect(size.height, 280);
-      final savedQ = repo.saved.lastWhere((q) => q.id == 'q1');
       expect(savedQ.sliceWidth, 492);
       expect(savedQ.sliceHeight, 280);
       expect(tester.takeException(), isNull);
@@ -1226,9 +1447,16 @@ void main() {
       corruptFile.writeAsBytesSync([0, 1, 2, 3, 4, 5, 6, 7]);
       await tester.runAsync(() async {
         await tester.tap(find.text('确认重新框选'));
-        for (var i = 0; i < 20; i++) {
+        // 十三批 P1-2：applyReworkBoxes 现在 await 入队（确认任务已持久化
+        // 才返回），成功提示要等入队落盘才出现；固定 20×200ms 在连跑
+        // 时不够（开库慢），改为轮询等提示出现/编辑器关闭，上限 10 秒。
+        for (var i = 0; i < 50; i++) {
           await tester.pump();
           await Future<void>.delayed(const Duration(milliseconds: 200));
+          if (find.text('已重新框选，切片已更新').evaluate().isNotEmpty ||
+              find.textContaining('修框 ·').evaluate().isEmpty) {
+            break;
+          }
         }
         await tester.pumpAndSettle();
       });

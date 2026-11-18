@@ -2,6 +2,9 @@
 // v3 = v2 的 13 张表 + recently_viewed_questions 新表 + collect_tasks
 // 新增 source_hash 列。v2 库文件不再删除，走 Drift onUpgrade 迁移，
 // 数据全保留；v2 备份仍可恢复（见 p1_schema_backup_test 的 v2 备份用例）。
+// 十三批 M2：当前版本已是 v4，v2 库走 2→3 再 3→4 两步链式迁移到 v4
+//（本文件原断言的 user_version 3 / settings '3' 已按 D-98 的 stale
+// 断言口径更新为 4；单步 v3 → v4 见 test/b13_migration_test.dart）。
 // 全部用临时目录，不碰真实用户库。
 import 'dart:io';
 
@@ -72,8 +75,8 @@ Future<List<String>> _allDdl(String dbPath) async {
 }
 
 void main() {
-  group('十二批 D-91：v2 → v3 迁移', () {
-    test('v2 库打开即迁移到 v3：数据全保留，新表与新列就位', () async {
+  group('十二批 D-91 + 十三批 M2：v2 → v4 链式迁移', () {
+    test('v2 库打开即链式迁移到 v4：数据全保留，新表与新列就位', () async {
       final tmp = await Directory.systemTemp.createTemp('b12-migrate-');
       addTearDown(() async {
         try {
@@ -91,12 +94,18 @@ void main() {
         (await db.customSelect('PRAGMA user_version').get())
             .single
             .data['user_version'],
-        3,
+        4,
       );
       // 旧数据还在。
       final qs = await AppDatabase.allQuestionsFrom(db);
       expect(qs, hasLength(1));
       expect(qs.single.title, '迁移后还在的题');
+      // 十三批 M2：questions 的 5 个 OCR 列默认值就位。
+      expect(qs.single.ocrRaw, isNull);
+      expect(qs.single.ocrStem, isNull);
+      expect(qs.single.ocrSplitStatus, '未切分');
+      expect(qs.single.ocrManualEdited, isFalse);
+      expect(qs.single.contentVersion, 0);
       final tasks = await AppDatabase.allCollectTasksFrom(db);
       expect(tasks, hasLength(1));
       expect(tasks.single.status, CollectStatus.failed);
@@ -110,7 +119,12 @@ void main() {
             .get(),
         isEmpty,
       );
-      // settings.schemaVersion 写回 3。
+      // 十三批 M2：ocr_jobs 表存在且为空。
+      expect(
+        await db.customSelect('SELECT * FROM ocr_jobs').get(),
+        isEmpty,
+      );
+      // settings.schemaVersion 写回 4。
       final settings =
           (await db
                   .customSelect(
@@ -120,10 +134,10 @@ void main() {
                   .get())
               .map((r) => r.data)
               .toList();
-      expect(settings.single['value'], '3');
+      expect(settings.single['value'], '4');
     });
 
-    test('迁移后 DDL 与全新 v3 库逐字一致', () async {
+    test('迁移后 DDL 与全新 v4 库逐字一致', () async {
       final tmp = await Directory.systemTemp.createTemp('b12-migrate-ddl-');
       addTearDown(() async {
         try {

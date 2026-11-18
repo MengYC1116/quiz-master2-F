@@ -1,7 +1,9 @@
-// P1（§2 / §1.2 / §8）：删老库建 v3 新库 + 备份版本字段 + schema 结构。
+// P1（§2 / §1.2 / §8）：删老库建 v4 新库 + 备份版本字段 + schema 结构。
 // 十二批 D-91：v3（新表 recently_viewed_questions + collect_tasks
 // 新增 source_hash 列；v2 库走 Drift 迁移到 v3，不再删除；v2 备份
 // 仍可恢复、迁移进 v3）。
+// 十三批 M2：v4（questions 加 5 个 OCR 列 + 新表 ocr_jobs；v2/v3 库
+// 走 Drift 迁移到 v4，v2/v3 备份仍可恢复、迁移进 v4）。
 // 全部用临时目录 / 内存库，不碰真实用户库（§8.1）。
 import 'dart:convert';
 import 'dart:io';
@@ -338,7 +340,7 @@ void main() {
 
       final db = await AppDatabase.openAt(dbPath);
       addTearDown(() async => db.close());
-      expect(await dbVersion(db), 3);
+      expect(await dbVersion(db), 4);
       // 旧表没了，新库从空开始。
       final tables =
           (await db
@@ -371,7 +373,7 @@ void main() {
         await db.customSelect('SELECT * FROM folders').get(),
         hasLength(9),
       );
-      // settings.schemaVersion 写回 3。
+      // settings.schemaVersion 写回 4（十三批 M2：当前版本 v4）。
       final settings =
           (await db
                   .customSelect(
@@ -381,10 +383,10 @@ void main() {
                   .get())
               .map((r) => r.data)
               .toList();
-      expect(settings.single['value'], '3');
+      expect(settings.single['value'], '4');
     });
 
-    test('已是 v3 的库不删：再次打开数据还在', () async {
+    test('已是 v4 的库不删：再次打开数据还在', () async {
       final (tmp, db, dbPath) = await openTempDb();
       await AppDatabase.upsertQuestionInto(db, testQuestion());
       await db.close();
@@ -392,11 +394,11 @@ void main() {
       final reopened = await AppDatabase.openAt(dbPath);
       addTearDown(() async => reopened.close());
       expect(await AppDatabase.allQuestionsFrom(reopened), hasLength(1));
-      expect(await dbVersion(reopened), 3);
+      expect(await dbVersion(reopened), 4);
       expect(tmp.existsSync(), isTrue);
     });
 
-    test('不存在的库文件：直接建 v3 新库，不报错', () async {
+    test('不存在的库文件：直接建 v4 新库，不报错', () async {
       final tmp = await Directory.systemTemp.createTemp('p1-fresh-');
       addTearDown(() async {
         try {
@@ -407,7 +409,7 @@ void main() {
       expect(await AppDatabase.deleteLegacyDatabaseIfPresent(dbPath), isFalse);
       final db = await AppDatabase.openAt(dbPath);
       addTearDown(() async => db.close());
-      expect(await dbVersion(db), 3);
+      expect(await dbVersion(db), 4);
       expect(await db.customSelect('SELECT * FROM questions').get(), isEmpty);
     });
   });
@@ -632,7 +634,7 @@ void main() {
     });
   });
 
-  group('P1 §2.3 v3 备份恢复（v2 备份仍可恢复）', () {
+  group('P1 §2.3 v4 备份恢复（v2/v3 备份仍可恢复）', () {
     Future<Map<String, dynamic>> seedAndExport(QuizDatabase db) async {
       await AppDatabase.upsertQuestionInto(db, testQuestion());
       await AppDatabase.insertQuestionBoxInto(
@@ -655,16 +657,18 @@ void main() {
       return jsonDecode(exported) as Map<String, dynamic>;
     }
 
-    test('导出：平铺表名 + _meta，14 张表', () async {
+    test('导出：平铺表名 + _meta，15 张表', () async {
       final db = await openMemoryDb();
       final decoded = await seedAndExport(db);
       final meta = decoded['_meta'] as Map<String, dynamic>;
-      expect(meta['schemaVersion'], 3);
+      expect(meta['schemaVersion'], AppDatabase.schemaVersion);
       expect(meta['appVersion'], AppDatabase.appVersion);
       expect(meta['exportedAt'], isA<int>());
-      expect(AppDatabase.backupTables.length, 14);
+      expect(AppDatabase.backupTables.length, 15);
       expect(AppDatabase.backupTables, contains('question_boxes'));
       expect(AppDatabase.backupTables, contains('recently_viewed_questions'));
+      // 十三批 M2：v4 新表 ocr_jobs。
+      expect(AppDatabase.backupTables, contains('ocr_jobs'));
       for (final t in AppDatabase.backupTables) {
         expect(decoded, contains(t), reason: '导出缺表 $t');
       }
@@ -680,13 +684,15 @@ void main() {
       // 十二批 D-91：新表导出为空数组；collect_tasks 行带 source_hash
       // 列（本用例未设哈希，为 null）。
       expect(decoded['recently_viewed_questions'], isEmpty);
+      // 十三批 M2：新表导出为空数组。
+      expect(decoded['ocr_jobs'], isEmpty);
       expect(
         (decoded['collect_tasks'] as List).single,
         contains('source_hash'),
       );
     });
 
-    test('备份 → 清空 → 恢复：题/框/任务回来，schemaVersion 写回 3', () async {
+    test('备份 → 清空 → 恢复：题/框/任务回来，schemaVersion 写回 4', () async {
       final db = await openMemoryDb();
       final decoded = await seedAndExport(db);
       await db.customUpdate('DELETE FROM questions');
@@ -712,13 +718,13 @@ void main() {
                   .get())
               .map((r) => r.data)
               .toList();
-      expect(settings.single['value'], '3');
+      expect(settings.single['value'], '4');
     });
 
-    test('schemaVersion > 3：拒绝恢复，原库一动不动', () async {
+    test('schemaVersion > 4：拒绝恢复，原库一动不动', () async {
       final db = await openMemoryDb();
       final decoded = await seedAndExport(db);
-      (decoded['_meta'] as Map<String, dynamic>)['schemaVersion'] = 4;
+      (decoded['_meta'] as Map<String, dynamic>)['schemaVersion'] = 5;
       await expectLater(
         () => AppDatabase.importBackupJsonInto(db, decoded),
         throwsA(
@@ -759,7 +765,7 @@ void main() {
       );
     });
 
-    test('schemaVersion 不是 2 或 3（=1 / 非整数）：拒绝恢复', () async {
+    test('schemaVersion 不是 2、3 或 4（=1 / 非整数）：拒绝恢复', () async {
       final db = await openMemoryDb();
       final decoded = await seedAndExport(db);
       (decoded['_meta'] as Map<String, dynamic>)['schemaVersion'] = 1;
@@ -778,7 +784,9 @@ void main() {
 
     test('v2 备份恢复：新表缺键视为 empty，source_hash 为 NULL', () async {
       // 十二批 D-91：v2 备份（13 张表、无 recently_viewed_questions
-      // 键、collect_tasks 行无 source_hash 列）仍可恢复进 v3。
+      // 键、collect_tasks 行无 source_hash 列）仍可恢复进 v4
+      //（十三批 M2：v2 备份也没有 ocr_jobs 键与 questions 的 OCR 列，
+      // 新表缺键视为 empty、新列走 DDL 默认值）。
       final db = await openMemoryDb();
       final decoded = await seedAndExport(db);
       (decoded['_meta'] as Map<String, dynamic>)['schemaVersion'] = 2;
