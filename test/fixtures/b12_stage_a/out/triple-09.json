@@ -1,0 +1,25 @@
+{
+ "layout": "triple",
+ "evaluable": true,
+ "n_qboxes": 3,
+ "n_boxes": 3,
+ "confidence": "high",
+ "reasons": [],
+ "columns": 3,
+ "exact": true,
+ "adj_acc": 1.0,
+ "exact_yx": true,
+ "adj_acc_yx": 1.0,
+ "exact_col": true,
+ "adj_acc_col": 1.0,
+ "alg_order": [
+  "box-q1",
+  "box-q2",
+  "box-q3"
+ ],
+ "truth_order": [
+  "box-q1",
+  "box-q2",
+  "box-q3"
+ ]
+}

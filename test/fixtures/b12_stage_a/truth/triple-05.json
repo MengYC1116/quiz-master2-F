@@ -1,0 +1,1 @@
+{"detection_notes": "三栏，仅3题：左栏20题，中栏21题（含曲线图），右栏22题（含抛物线图）。", "layout": "triple", "order": ["box-q3", "box-q1", "box-q2"], "page": "triple-05", "uncertain": false, "detection_complete": true}

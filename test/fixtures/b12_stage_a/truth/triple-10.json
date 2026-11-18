@@ -1,0 +1,1 @@
+{"detection_notes": "三栏。框7=13题首行（薄框，题干第二行未框）；框10合并15、16两题。各栏内图均属本栏题。", "layout": "triple", "order": ["box-q4", "box-q5", "box-q8", "box-q11", "box-q12", "box-q14", "box-q16", "box-q17", "box-q18", "box-q19", "box-q2", "box-q3", "box-q6", "box-q7", "box-q9", "box-q10", "box-q15", "box-q1", "box-q13"], "page": "triple-10", "uncertain": false, "detection_complete": true}

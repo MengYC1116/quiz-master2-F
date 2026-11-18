@@ -798,3 +798,125 @@ layer-2 行保留不动，编辑器读到时直接丢弃）；③ `docs/代码�
 - 验收：相关测试 20/20 + 131/131 + 59/59，`flutter analyze` 0，全量串行 **1362/1362**（1360 + 3 − 1，9 分 43 秒，日志 `~/workspace/final-review/fix-gpt-p1-full2.log`），演示库 md5 不变。未推代码、未发邮件。
 - 环境插曲：首遍全量跑到 +1183（0 失败）时被 SIGTERM 中断，系 VM 重启清空 /usr 下 clang 与 ninja；恢复脚本两次在拉 Ubuntu 索引时断流（urllib 一次性读大流），变通为 curl 拉三个索引 + 本地闭包脚本恢复（`/tmp/restore-from-local.py`），clang 18.1.3 等均已验证可用。恢复脚本的索引拉取宜改 curl + retry，是否改由 Meng 定。
 - 批报告：`~/workspace/final-review/FIX-GPT-P1.md`。
+
+## D-90 — 十二批第 1 项：FR-03 核验全过，功能 1 不再单独实现（2026-11-17）
+
+- GPT 咨询回复 §2.1 的 5 个检查点逐项核验（测试 + 代码检查），全部通过：(1) 拖动/缩放时红色实时刷新——`_moveBox`/`_resizeBox` 都走 `_replaceBox` → `setState` → build 现算 `_overlappingBoxIds`/`_anyOverlap`，无缓存状态；(2) 拖开后红色消失；(3) 三框重叠三道都红；(4) 取消重进后重叠状态重新算出——两个 getter 每次 build 现算，`initState` 从草稿框重建，无残留；(5) 横幅与框状态一致——显隐用 `_anyOverlap`（全部页）、文案用 `_overlappingBoxIds`（当前页）。
+- 新增核验测试 4 项（`test/collect_page_test.dart`“修框编辑器”组 + `redOverlapBorders()` helper），产品代码零改动。验收：新 4 项 4/4；`collect_page_test.dart` + `fix_batch3_test.dart` 53/53；`flutter analyze` 0。
+- 结论：功能 1（重叠框标红）与 FR-03 基本重复，FR-03 即本体，不再单独实现。十二批第 1 项关闭。
+- 测试写法坑（已修正，均非产品问题）：① 框 id 是持久化 id（含随机 uuid8），缩放柄 key 须按前缀找；② 横幅出现会重排画布、页重 fit，后续画框起笔几何须按新布局重算 origin；③ 向上拖画框会与滚动视图抢手势，向下拖可靠。
+- 环境：核验中途 VM 重启清 /usr 工具链，恢复脚本 urllib 索引断流老问题复现，用 curl 断点续传拉索引 + 本地闭包脚本恢复（`~/workspace/batch12-work/restore-from-local.py`）；ninja 被覆回 Ubuntu 1.11.1（同款漂移，已验证无影响）。
+- 报告：`~/workspace/batch12-work/FR03-VERIFY.md`。
+
+## D-91 — 十二批共享迁移 v2→v3 + 功能 7 重试设计（2026-11-17 深夜）
+
+- 十二批第 2、3 项共用一次 schema 升级，先做迁移再并行两项。`AppDatabase.schemaVersion` 2 → 3：新表 `recently_viewed_questions(question_id TEXT PRIMARY KEY, viewed_at INTEGER NOT NULL)`（功能 4 用）；`collect_tasks` 新增可空列 `source_hash TEXT`（功能 7 重试指纹用，SHA-256）。
+- v2 库不再删除：`deleteLegacyDatabaseIfPresent` 只删 `user_version < 2`（v1）；v2 文件走 Drift `onUpgrade` 2→3 迁移，数据全保留；`from > 3` 仍抛“请用新版打开”。迁移后 settings.schemaVersion 写回 3，与 user_version 一致（onUpgrade 内补写——真实 v2 库 settings 本来就有这行）。
+- 迁移 DDL 必须与 `createTablesImpl` 的手写字面量一字不差（B1 纪律：迁移后库与全新 v3 库 sqlite_master 逐字一致）。Drift 的 `m.createTable` / `m.addColumn` 生成带引号的 DDL（`"source_hash" TEXT NULL`、`CREATE TABLE "recently_viewed_questions"...`），与手写文本不一致，故 onUpgrade 改走 `m.database.customStatement`，用同一份手写字面量（`CREATE TABLE recently_viewed_questions(...)` + `ALTER TABLE collect_tasks ADD COLUMN source_hash TEXT`）；`Migrator` 本身无 `customStatement`，须经 `m.database`。`_upsertSettingInto` 是 database.dart 库私有，quiz_database.dart 是独立 library 不可见，settings 写回改走 cast 后 `(attachedDatabase as QuizDatabase)` 的 Drift 类型化写入。
+- 备份互通：`validateBackupDataImpl` 接受 schemaVersion 2 与 3（v2 备份恢复进 v3：新表缺键视为空、`source_hash` 缺列为 NULL）；< 2 与 > 3 拒绝。必需表检查按版本分流（`backupTablesV2` 13 表 / `backupTables` 14 表）。v2 备份恢复后 settings.schemaVersion 写回 3（`_writeMetaSettingsInto` 用 `AppDatabase.schemaVersion`）。
+- 启动恢复 `backfillInterruptedImportsIntoImpl`（`db_collect.dart`，onBeforeOpen 与 B9-1 回填同批跑）：启动时 `importing` 行必是崩溃/杀进程残留 → 置 failed，原因“上次导入被中断，请重试”，progress 0；单条 UPDATE，幂等；其它状态不动。
+- `CollectTask` 增可空字段 `sourceHash`（`_collectTaskFromDb` / update+insert companion 全列写回——凡重建 `CollectTask` 处须把 `sourceHash` 带上，否则写回会抹掉哈希）。
+- 验收（迁移部分）：`test/b12_schema_v3_migration_test.dart` 新 4 项（v2 库迁移数据全保留、迁移后 DDL 与全新 v3 库逐字一致、v1 仍删、启动恢复幂等）+ `b1_stage1_schema_test.dart`（v3：18 条 DDL 逐字一致）+ `p1_schema_backup_test.dart`（v3 导出 14 表、v2 备份恢复、>3 拒绝、sv=1/非整数拒绝）共 27/27；`flutter analyze` 0。
+- 功能 7 重试设计（实现待做）：同一任务身份原地重试——`retryFromStoredOriginal` 改为复用同一任务行/id（B2 旧语义“建新任务行、旧失败行保留”与 GPT“同一任务身份”要求冲突，故改）；校验：状态须 failed（否则 StateError 拒绝）；in-flight 幂等用 `Map<String, Future<CollectTask>> _retryInFlight`（二次并发调用 await 同一 future，管线只跑一次）；原文件 0 个/多个 → 按现行 `_failAndClean` 文案失败；指纹：重算库内原文件 SHA-256 与存的 `task.sourceHash` 比对，不一致 → “原文件已被替换或改动，请重新提供原文件再导入”并清 sourcePath；NULL 存哈希（v2 旧行）跳过比对。重置行（同 id、progress 0、error 清空，createdAt/name/fileName/subjectId/sourcePath/sourceHash 保留）→ 防御性清 stale 派生文件（`pages/`、`page-normalized.png`）→ 按扩展名分发进现有管线（PDF 走已按 id 参数化的 `_importPdf`；图片分支从 `enqueue` 抽 `_importImage` 纯重构）。`enqueue` 改：原文件拷进任务目录后算哈希存行。Notifier 加 `CollectNotifier.retryFailedTask(task)`（单任务重试中标志、按钮禁用、StateError 走现有 snack）；收集页失败行加“重试”按钮。回归测试覆盖 GPT 8 点：同 id 保留、原文件删、原文件换、多个原文件、并发双重试只跑一次、非法重试拒绝、再失败仍可重试、崩溃恢复、成功后重试拒绝。
+- 功能 4 首页历史设计（实现待做）：新 part 文件 `lib/data/db_recently_viewed.dart`（`recordQuestionViewedIntoImpl` upsert + 剪到最新 30 条；`recentlyViewedQuestionsIntoImpl` 联表跳过已删题、最新在前、上限 30）；记录点 `DetailNotifier.load()` 成功后（try/catch 包住，绝不拖垮详情加载）；首页学科行下方“最近查看”区，最多 30 行（标题、学科名、最后查看时间：今天/昨天 HH:mm、其余 MM-dd HH:mm），点进详情；空时整区隐藏。
+
+## D-93 — 十二批功能 4 首页历史实现（2026-11-17 深夜）
+
+- 按 D-91 设计实现，未改迁移（schemaVersion 3、新表已建好，直接用）。口径 Meng 2026-11-17 22:44 定：最近查看的题、最近 30 道、每条带最后一次浏览时间+日期。
+- 数据层：新 part 文件 `lib/data/db_recently_viewed.dart`；`recordQuestionViewedIntoImpl` upsert + 同一事务内剪到最新 30 条（常量 `recentlyViewedMaxEntries = 30`）；`recentlyViewedQuestionsIntoImpl` 内联 questions（已删题跳过）、最新在前、上限 30；`AppDatabase` 静态转发 + extension 包装；仓库新增 `recordQuestionViewed` / `recentlyViewedQuestions`（返回 `List<({Question question, DateTime viewedAt})>`）。
+- 记录点：`DetailNotifier.load()` 成功后（try/catch 包住，记录失败不拖垮详情加载；题不存在不记）；同题防重 `_lastViewRecordedId`（收藏/编辑保存后的重读、首查与显式 load 的重合不重复记；标志位在 await 前先置，防两路 load 并发各记一次；失败清标志、下次再试）。
+- 首页：`HomeState.history`（`load()` 第 8 路）；学科行下方“最近查看”区，最多 30 行紧凑行（标题、学科名、最后查看时间）；时间格式 `formatRecentlyViewedTime`（纯函数，不引 intl）：今天/昨天 HH:mm、同年 MM-dd HH:mm、跨年 yyyy-MM-dd HH:mm；空时整区隐藏；已归档/已掌握照常显示；点行经 `onOpenDetail` 进详情（app.dart 接 `_openDetail`，sourceLabel '首页'，orderIds 为历史列表顺序，上一题/下一题按它走）。
+- FakeRepo 补桩 13 处（D-88）：新 repo 方法须给全部走到首页/详情加载的 FakeRepo 补桩，否则基类读真实库、fake async 永不完成。
+- 验收：新测试 20/20（`b12_history_data_test` 8、`b12_history_home_test` 8、`b12_history_detail_test` 4）；受影响既有测试 13 个文件 194/194；`flutter analyze` 0。统筹复核：新 3 文件 20/20 重跑通过，analyze 0。
+- 已知局限（另立项，不在本批修）：详情页是 Navigator 压栈，首页仍挂载、homeProvider（autoDispose）不重建，从详情返回首页时刚看过的题不会立刻顶到首位，要等下次回页才刷新。修法是 homeProvider 订阅 DataChangeBus + 记录成功后发变更事件（Stage 4 模式），属跨页刷新机制。
+
+## D-94 — 首页历史返回刷新小尾巴：十二批最后顺便修（Meng 2026-11-18 00:20 定）
+
+- 问题（D-93 已知局限）：详情页是 Navigator 压栈，首页仍挂载、homeProvider（autoDispose）不重建，从详情返回首页时刚看过的题不会立刻顶到“最近查看”首位，要等下次回页才刷新。
+- Meng 拍板：十二批四项全部做完之后顺便修，放在全量测试之前做，不另立项、不拖到十三批。
+- 修法（STATUS.md 已写明，沿用 Stage 4 模式）：homeProvider 订阅 DataChangeBus，记录一次查看成功后发变更事件，首页收到事件重读历史。
+- 回归测试：记录一次查看 → 返回首页 → 历史刷新（刚看的题顶到首位）。测试基线随修完后的新增测试数更新。
+- 本项与第 2–4 项一起进 GPT 关口审（`gpt-review-batch12.md`）与推送。
+
+## D-92 — 十二批功能 7 失败任务重试入口实现（2026-11-17 深夜）
+
+- `retryFromStoredOriginal` 改为同一任务行/id 原地重试，B2 旧语义“建新任务行、旧失败行保留”废弃（与 GPT“同一任务身份”要求冲突）；状态须 failed，否则 `StateError`（“只有导入失败的任务可以重试”）。
+- in-flight 幂等：`Map<String, Future<CollectTask>> _retryInFlight`，二次并发调用 await 同一 future，管线只跑一次，完成后摘掉（不只靠 UI 禁用）。
+- 原文件定位沿用 `locateStoredOriginals`：0 个/多个按现行 `_failAndClean` 文案失败。恰好 1 个时算 SHA-256 与 `task.sourceHash` 比对：不一致 → “原文件已被替换或改动，请重新提供原文件再导入”并清 `sourcePath`；`sourceHash` 为 NULL（v2 旧行）或算不出哈希时跳过比对。
+- 比对通过后重置行（同 id、progress 0、error 清空，其余保留）→ 防御性清 stale 派生文件（抽成 `_deleteDerivedFiles`，与 `_failAndClean` 共用）→ 按扩展名分发（PDF 走 `_importPdf`，图片走从 `enqueue` 原样抽出的 `_importImage` 纯重构）。
+- `enqueue`：原文件拷进任务目录后算哈希存进持久化行。`_failed`、`_updateProgress`、`_importPdf`/`_importImage` 成功行、立即持久化行全部带上 `sourceHash`（全列写回，缺一个就会抹哈希——尤其是 `_updateProgress`，渲染中途多次写库）。`_failAndClean` 加可选 `sourcePath` 覆盖参数（指纹不一致时传 `''` 清引用）。
+- Notifier：`CollectState.retryingTaskIds` + `retryFailedTask(task)`（返回 `({CollectTask? task, String? error})`；非法重试与异常走 error 文案，成功/再失败都重读）；另补 `importFiles` 进度回调与 `confirmSplit` 保留任务重建点的 `sourceHash`。
+- UI：收集页失败行加“重试”按钮（重试中禁用；成功后随状态消失；再失败行上显示新原因、仍可重试）。
+- 验收：新 `test/b12_retry_failed_task_test.dart` 17 项（enqueue 存哈希 PDF/图片、同 id 保留、原文件删/换/多、并发双重试只跑一次、非法重试拒绝、再失败仍可重试、成功后重试拒绝、图片重试、NULL 跳过、Notifier 三项、收集页两项）+ 回归 6 文件 102 项，全过；`flutter analyze` 0。统筹复核：新 17 + 回归 102 共 119/119 重跑通过，analyze 0。旧语义测试“旧失败行保留”按 D-91 改为同 id 原地。
+- 教训（测试期发现）：① `Future.whenComplete` 派生的 future 同样带原错误——`StateError` 已被调用方 await 到并处理，派生 future 无人接会变成未处理异步错误、测试多报一个错；已用 `.then(onError: (_) {})` + `unawaited` 显式吃掉。② widget 测试真库限制：testWidgets 的 fake 异步区里 Drift 查询不完成（Notifier 的 `load()` 读真库会让页面一直空列表、`pumpAndSettle` 可能 hang）；仓库先例是一律 FakeRepo 泵页面，真库操作包进 `tester.runAsync`；二次 `pumpWidget` 同型复用元素树、不重建 ProviderScope/notifier，重进页面验证需先泵占位 widget 卸掉旧 scope。
+
+## D-95 — 十二批功能 8 Stage A 离线验证通过，第 1 轮即过（2026-11-18 凌晨）
+
+- 验证集 37 页（单栏 5 / 双栏 12 / 三栏 11 / 拼版 5 / 边界 4；原 39 页，collage-04/07 是答案页，Meng 2026-11-18 00:55 定剔除）。检测：生产 YOLO 第 1 层（`tool/stage_a_detect.dart`），39 页 0 fallback，共 333 框（验证集 319 框）。标注：统筹逐页视觉判断，37 个 truth JSON（order 只含题内容框；纯标题/指令行/公式表误检框排除；延续框紧跟题干）。
+- 计数口径：题序指标只在“框齐全页”（detection_complete=true 且 ≥2 题框）上算，共 30 页；检测问题（漏检/误检/重叠）单列统计，不混进题序率。检测问题：漏检 10 道（collage-02 3、collage-03 1、collage-06 3、edge-03 2、triple-08 1）、误检 13 框（框齐全页 8 + 检测不全页 5）、重叠 6 对、合并框 ≥11。edge-03 漏检数 discrepancy 待 Meng 确认（他说 1 道，图上 Q2/Q3 两道未框）。
+- 跨栏题定义（Meng 2026-11-18 01:02 纠正、01:04 确认）：不是横占两栏，是题的组成部分分在两栏（题干左/选项右、AB 左/CD 右、整题左/配图右，另有大题小问分栏、材料左/问题右、题干断开续写、题干右/配图左、表格与问题分栏、选项两列按行读；跨页题另算）；位置按题干开头定，其他部分不单独占排序位置。三栏实测唯一跨栏现象是“整题左/配图右”3 例（triple-01 Q8、triple-04 Q9、triple-06 Q10，题干与配图是分开的两个框，配图框紧跟题干）。第 4 类（题干右、配图左）0 例，纯几何处理不了，记为 Stage B 已知局限。
+- 算法（独立脚本 `stage-a/xy_cut.py`，不进应用）：栏检测（x 投影 + 区间链接交叉校验）→ 栏内递归 XY-cut → 低置信度退化人工。校准：第一版回退一律低置信度 + 中心聚类校验，转人工 16/30（53%）；诊断后修正两处（区间链接替代中心聚类；回退仅在上缘近 tie <0.008 且 x 重叠 >50% 时才标低置信度；最小切分间隙 0.002→0.0005）→ 转人工 0/30，exact 保持 30/30。参数灵敏度：MIN_GAP_W 0.002–0.004、MAX_COVER 0.05 时稳定 30/30。
+- 指标（30 页）：全页完全正确率 30/30 = 100%（≥90% 通过），相邻顺序准确率 1.000，错误自动排序率 0%，转人工率 0%。基线：朴素 y-then-x（当前生产顺序）8/30；栏检测 + 栏内 y 排序 30/30——与 XY-cut 并列。真正修掉触发 bug 的是栏检测；XY-cut 的价值在栏内不规则排布（本样本零实例）与置信度机制。Stage B 仍用 XY-cut 混合。
+- 局限：样本全是规则版式，栏内并排/交错零实例，0% 转人工率不推广；第 4 类跨栏零实例；跨页题不在本批；检测问题独立于题序但真实使用时会叠加；含糊阈值 0.008 贴近样本边界（最小上缘差 0.010，阈值 0.012 时转人工 2/30）。
+- 按 Meng 2026-11-17 23:27 循环规则：第 1 轮即过，直接做 Stage B，不咨询 GPT。报告 `~/workspace/batch12-work/STAGE-A-REPORT.md`。
+
+## D-96 — 十二批功能 8 Stage B 接入设计：题序动态计算 + XY-cut 混合进生产（2026-11-18 凌晨）
+
+- 目标：把 Stage A 验证过的 XY-cut 混合算法接入应用，替换 `YoloOnnxService._detect` 里朴素的 y-then-x 框顺序。检测仍用现有 YOLO 第 1 层服务，不改检测。
+- 新服务 `lib/services/question_order.dart`（纯函数，无 IO）：`QuestionOrder.orderBoxes(List<QuestionBox>)` → `QuestionOrderResult{boxes（阅读顺序）, confidence（high/low）, reasons}`。Stage A 脚本 `stage-a/xy_cut.py` 的 Dart 移植，常量与语义一字不差（MIN_GAP_W 0.004、MAX_COVER 0.05、MIN_CUT_GAP 0.0005、CHAIN_TOL 0.003、AMBIG_TOP 0.008、AMBIG_XOVERLAP 0.5、SPAN_TOL 0.005、BINS 1000；栏检测 x 投影 + 区间链接交叉校验 → 栏内递归 XY-cut → 低置信度退化人工；跨栏块按上缘并回全局 y 排序）。
+- §7 五个待定设计问题，逐项定：
+  - (1) 题序是持久化字段还是动态计算 → **动态计算，不加字段、不升 schema**（v3 刚落地）。顺序是框几何的纯函数，计算点：检测输出（服务内）、编辑器接检测结果时、编辑器加载草稿时、框集合/几何提交变化时（画完、拖完、缩放完、删框、整页旋转）。冻结边界是确认拆题：confirmSplit 按当时列表顺序生成题（标题“第 N 题”+ 整理队列），题一旦生成，顺序即题的创建顺序，重检测碰不到已确认的题。
+  - (2) 人工调序后永不被重检测覆盖 → **本应用没有独立的“人工顺序”状态；人工调序 = 改框几何（画/移/缩放/删），顺序始终跟着几何现算。**重检测（“恢复自动框”）替换的是本页框集合，不是顺序；手动框已有确认弹窗守着（有 manual 框先弹确认），替换后顺序按新框几何重算。重框模式（单题）IoU 认领只换目标框原位，其余框与顺序不动。备选（持久化人工顺序 + 重检测 IoU 合并保留）不做：本批没有手动调序 UI 来表达“人工顺序”这个意图，改动面大；若 Meng 以后要显式调序 UI，另立项。
+  - (3) “自动排序过期”与“用户已确认排序” → **没有“过期”状态。**自动排序不缓存，每次用时现算，不存在过期；“已确认”只发生在确认拆题那一刻，之后顺序冻成题的创建顺序。
+  - (4) 题序与重试/重检测 → **重试不碰顺序。**重试（功能 7）只重跑导入，检测在修框时才跑；失败任务重试时还没有草稿框，顺序在修框检测时现算。重检测：草稿模式替换本页框 + 顺序重算（手动框有确认弹窗）；重框模式 IoU 认领单题、顺序不动。
+  - (5) 低置信度页在收集页的呈现 → **修框编辑器顶部横幅“题序不太确定”，不伪装确定。**置信度按页记在编辑器内存态；低置信度时出警告横幅，框仍按算法顺序编号展示（最优猜测），请用户按题号核对。草稿重进的页置信度同样现算（同一纯函数），不持久化。
+- 必须补的一点（否则 Stage B 修复会被重进洗掉）：草稿重读目前按 (page, id) 排序，持久 id 是随机 uuid8——重进编辑器会把检测顺序洗成随机顺序。所以编辑器 init 时必须按几何重排草稿框。
+- 旋转注意：检测在原页坐标上跑，`prepareBoxEditor` / `_autoDetectIfEmpty` / `_restoreAutoBoxes` 都在进编辑器前把框转到已旋转的页坐标；服务排的是未旋转页的顺序，编辑器 `_ingestDetected` 必须按旋转后的几何重排一次（同一纯函数），否则转过 90° 的页顺序仍是错的。
+- 拖动/缩放过程中只改坐标、不重排（逐帧重排会抖）；松手（onPanEnd/onPanCancel）后按新几何一次排好。
+- 诚实说明（Stage A §5.3）：Stage B 仍用 XY-cut 混合（不是只做栏 + y 排序），理由同报告：规则版式等价，不规则版式更一般，置信度机制同一套。0% 转人工率是“本样本 + 0.008 阈值”的结果，不推广；代码注释与 UI 文案都不宣称算法 100% 准确。
+- 已知局限（代码注释 + GPT 材料里写明）：第 4 类跨栏（题干右、配图左）本样本 0 例，纯几何发现不了，算法会把配图排到题干前面；遇上只能靠用户在编辑器里手动调框。检测问题（漏检 10 道、误检 13 框、重叠 6 对、合并框 ≥11）是检测的事，不进本题序工作；edge-03 漏检数 discrepancy（Meng 说 1 道、图上 2 道）不动，等 Meng 一句话。
+- 实现与验收（待做）：服务内替换排序 + 编辑器五处接线（init / ingest / 画完 / 手势结束 / 删框 / 旋转）+ 低置信度横幅；测试用 Stage A 30 页框 JSON + 真值做夹具（全页顺序逐页比对）+ 低置信度合成用例；D-94 小修由 worker 并行做（见 STATUS.md §5）。
+
+## D-97 — 十二批 D-94 小修：详情返回首页，“最近查看”立刻刷新（2026-11-18 凌晨）
+
+- 修法（Meng 2026-11-18 00:20 定，D-94；Stage 4 模式）：`homeProvider` 订阅 `DataChangeBus`，记录一次查看成功后发变更事件，首页收到事件重读历史。
+- 新 kind `DataChangeKind.recentlyViewed`（`lib/data/data_change_events.dart`，专用于“最近查看”写入）：订阅方现为两个——`badgeCountsProvider` 只消费 `badges`，`homeProvider` 只消费 `recentlyViewed`；其余四种 kind（questions / subjects / reviewRecords / settings）仍无订阅方，头注释已同步改准确（原来“唯一订阅方是 badgeCountsProvider”的说法已过期）。
+- 发事件点：`AppDatabaseRecentlyViewed.recordQuestionViewed` 扩展方法（`lib/data/db_recently_viewed.dart`），写库成功后发一次 `{recentlyViewed}` + questionId（写后发，不是写前；写库抛错不发）；可单测版 `recordQuestionViewedIntoImpl` 保持纯写库、不发。调用方 `DetailNotifier.load()` 已有 try/catch 包住记录调用，`emit` 本身不抛，订阅回调调 `load()`、`load()` 自己有 try/catch，订阅侧异常不反噬到写库侧。
+- 订阅点：`HomeNotifier.build()`（`lib/state/home_provider.dart`），照抄 `badge_counts_provider.dart` 的“先订阅、后首查 + ref.onDispose 取消订阅”模式；收到事件后直接调 `load()` 重读（不用 `ref.invalidateSelf`——那会把 state 重置回 loading、首页闪一下加载卡）；只响应含 `recentlyViewed` 的事件，其余忽略。
+- 顺带补齐（新 kind 加入的直接后果，不是扩范围）：备份恢复发的“全部 kind”事件两处（`importBackupJson` / `importBackupZip`，`lib/data/db_backup.dart`）的 kind 集由五类补到六类——恢复覆盖 `recently_viewed_questions` 表，历史也在内，不补则恢复后历史仍不刷新；两处注释“全部五种”→“全部六种”。`docs/ui-replication/A-READING-GUIDE.md` §六同步：FR-31 段改成两个订阅方、对照表加 `recordQuestionViewed` 行（`{recentlyViewed}` + 题 id，仅写库成功后发）、收尾核对段补 D-94 注（`emit` 处现为 34 处，D-94 只新增 1 处，其余是此前批次所加）。
+- 验收：新 `test/b12_history_refresh_test.dart` 7/7（数据层 3：写成功发一次含新 kind + questionId、纯写库版不发、写库失败不发；Provider 层 3：收到事件后重读、首位变 B 且不闪 loading、无关 kind 不重读、首查进行中发来的事件不丢失；页面层 1：首页打开 → 真实 `DetailNotifier.load()` 打开题 B 详情 → 返回首页不重进，题 B 顶到首位）。受影响既有测试 8 文件 113/113（b12_history 三文件、home_provider、home_page、stage4_badge、detail_notifier、p1_schema_backup）；`flutter analyze`：本项文件 0 问题，全仓仅剩 1 条既有 warning（`tool/stage_a_detect.dart` 的 `detectTimeoutForTest`，Stage A 工具文件，与本项无关）。
+- 测试写法教训（已修正，非产品问题）：Provider 测试须先配好 FakeRepo 再建 container——build 的 microtask 首查可能在 setUp 与测试体之间的 microtask 间隙里跑完，建完容器再配 historyList 的话首查读到空列表；时序测试的卡住点（Completer）同样须在建容器前置好，否则“首查进行中”的场景实际没卡住。
+- 测试基线：1407 + 7 = 1414（待统筹全量复核）。
+
+## D-98 — 十二批全量门禁首遍 5 项失败：v3 迁移后旧断言滞后，零产品回归（2026-11-18 凌晨）
+
+- 首遍全量 1424/1429（10 分 01 秒），失败 5 项，全部在 v3 迁移前写死的旧断言上，产品代码零改动（除 2 处注释）：
+  1. `s8b4_backup_migration_test.dart`“backupTables 共 13 张”：Expected 13、Actual 14——v3 新表 `recently_viewed_questions` 是第 14 张。修测试：14 张 + containsAll 加新表名。
+  2. 同文件“导出的 JSON 含 4 张表的数据 + _meta”：`meta['schemaVersion']` Expected 2、Actual 3——导出盖当前版本戳。修测试：改断言为 `AppDatabase.schemaVersion`（用常量跟踪，不再写死）。
+  3. `b3_backup_interop_test.dart`“重导出与黄金夹具对比”：`_meta.schemaVersion` Expected 2（黄金夹具 v2）、Actual 3（重导出盖当前版本）；diff 循环里 v2 黄金夹具缺 `recently_viewed_questions` 键（`null as List` 会抛，失败停在上一行没走到）。修测试：_meta 断言改当前版本；diff 循环缺键按空表算；期望 diff 从 7 处改为 8 处——第 8 处是 `settings/schemaVersion/value: 2 → 3`，即恢复把 settings.schemaVersion 写回当前版本（§2.3 既定行为），黄金夹具（v2）里它是 '2'。
+  4. 同文件“现场往返：两次导出除 _meta 外一致”：唯一差异是 settings.schemaVersion（首次导出 '2'、恢复后再导出 '3'）。根因是 `seedRichDb` 把 settings.schemaVersion 写死 '2'（B3 时代的遗留，当时当前版本就是 2），而恢复末尾按 §2.3 写回当前版本。修测试：种子改写 `'${AppDatabase.schemaVersion}'`（模拟当前版本库，永不再滞后）；“新备份 → 旧代码库”组里旧逻辑复刻的写死 '2' 不动（那是旧代码行为的复刻）。
+  5. `fix_batch4_test.dart` FR-31 头注释测试：期望含“当前唯一订阅方是 `badgeCountsProvider`”，D-94 后头注释已改写为“订阅方共两个”。修测试：断言改为“订阅方共两个”+ 两订阅方各自消费的 kind；“其余四种 kind 仍无订阅方”与“为将来订阅方预留”两断言仍成立，未动。
+- 顺带修的两处产品注释（只改注释，代码不动）：`lib/data/db_backup.dart` 两处“恢复后 settings.schemaVersion 写回 2”已与代码不符（代码写的是 `AppDatabase.schemaVersion`），改为“写回当前版本”。另有一处历史注释（`lib/data/database.dart:248` openForTest 的“B1-Drift：schemaVersion 为 2”）仍是 B1 时代的表述，未动（历史记录，非行为口径）。
+- 探针：一次性临时测试确认往返差异只在 settings.schemaVersion 一行（逐表比对，其余 13 张表逐字节一致），探针已删；另确认新鲜内存库 settings 表为空、user_version=3，排除“新库种子错”的可能。
+- 修复后 3 个文件复跑全过；`flutter analyze` 本批文件 0 问题；全仓 analyze 剩 1 条 warning（`tool/stage_a_detect.dart` 用 `detectTimeoutForTest`，Stage A 离线工具既有问题）——加 `// ignore: invalid_use_of_visible_for_testing_member` 恢复 0（离线工具故意用测试钩子放宽超时，不进应用、不进全量）。
+- 第二遍全量重跑中（日志 `~/workspace/batch12-work/full-suite-b12-2.log`）。
+- 第二遍全量（2026-11-18 02:15–02:26，10 分 51 秒）：**1429/1429，All tests passed!**（日志 `full-suite-b12-2.log`；`flutter analyze` 同一命令先跑，No issues found）；演示库 md5 跑后不变；Linux Release 通过。十二批门禁全绿。
+
+## D-99 — GPT 关口审 P1-01 修复：NULL hash / 算不出哈希时拒绝重试（2026-11-18 凌晨）
+
+- GPT 首审 FAIL 的唯一 P1（P1-01）：v2 迁移过来的失败任务 `sourceHash` 为 NULL，重试时旧逻辑跳过 SHA-256 比对直接跑——原文件在任务失败后被替换/改动，用户点重试会用错文件拆题，且看起来是正常成功。GPT 建议：NULL hash 时拒绝原地重试，提示“旧任务缺少原文件校验信息，请重新导入原文件”。
+- 修法（只改 `lib/services/import_service.dart` `_retryFromStoredOriginal` 的比对分支，`retryFromStoredOriginal` 的 doc 注释同步改）：
+  - `task.sourceHash == null`（v2 旧行，无比对基线）→ 走 `_failAndClean` 拒绝重试，文案一字不改用 GPT 建议原句：“旧任务缺少原文件校验信息，请重新导入原文件”。任务保持 failed 状态，仍在收集页可见，再点重试仍得同一拒绝（有回归测试锁定）。
+  - `currentHash == null`（算不出哈希：定位到 1 个候选、但读盘失败）与 NULL hash 是同一类洞——“无法验证”不等于“验证通过”，一并按拒绝处理。文案另写：“原文件暂时读不出来，请重新提供原文件再导入”（基线不是缺的，是现文件读不出来，用 NULL hash 的文案会说错原因）。该分支无确定性测试手段：触发条件是定位与读盘之间的竞态/读盘错误，测试以 root 运行、权限手段无效；未单独立测试——与 NULL hash 分支共用 `_failAndClean` 拒绝通道，仅文案不同，拒绝行为由 NULL hash 的 3 项测试覆盖同款通道。
+  - 其余分支不动：hash 不一致仍拒绝 + 清 sourcePath（原句不变）；hash 一致仍正常重试。
+- sourcePath 处理（NULL hash / 算不出哈希两种拒绝）：**不清**。理由：两种都是“无法验证”，不是“已证伪”——引用本身没被证明不可信（与指纹不一致不同，那是已证伪才清）。`_failAndClean` 不传 `sourcePath` 覆盖时，文件在就保留引用（`_sourcePathIfFileExists` 校验）；v2 旧行的 sourcePath 指向库内原图（真实存在），拒绝后保留，用户仍能看到原文件来源、重新导入时可凭它找回。原文件本身不动（`_failAndClean` 只清派生文件）。
+- Notifier/UI 不用改：service 返回 failed 行带 error，`CollectNotifier.retryFailedTask` 原样返回 `(task: failed行, error: 文案)`，收集页弹 snack 显示该文案、重试按钮仍在（有 Notifier 层测试锁定）。
+- 测试变化（`test/b12_retry_failed_task_test.dart` 17→19 项）：
+  - 原“NULL hash 跳过比对、重试成功”测试改写为“NULL hash 拒绝重试”：返回 failed、同 id、error 精确等于 GPT 原句；原文件不动、sourcePath 保留；库里行仍 failed、sourceHash 仍 NULL、error 为原句。
+  - 新增“NULL hash 拒绝后再次点击仍拒绝”：用库里拒绝后的行再 retry 一次，同样 failed + 同文案、同 id、sourcePath 保留。
+  - 新增 Notifier 层“NULL hash 拒绝经 Notifier 返回原句文案、行仍 failed、仍可再点”。
+  - hash 正常仍比对通过、hash 不一致仍拒绝已有测试覆盖（同 id 保留 / 原文件被替换），未重复造。
+  - 回归时另发现 1 项旧测试撞新语义（`test/b2_import_source_path_test.dart`“恰好一个候选：重试成功”，B2 时代种子行无 sourceHash）：种子行补与库内原图一致的哈希基线（`sha256HexOfFile`，加 `import_guess.dart` 导入），断言不动；该文件其余两项（无文件/多候选）走候选数分支、不受影响。测试数不变。
+- 验收：重试相关 13 文件 202/202（b12_retry 19/19 + 12 回归文件 183/183）；`flutter analyze` No issues found；全量一次（日志 `~/workspace/batch12-work/full-suite-b12-p1.log`，10 分 04 秒）：**1432/1432，All tests passed!**，exit 0；演示库 md5 跑后不变（`8f7f9c64405dc6e484ac2bf8e5e1a807`，跑前备份 `~/workspace/demo-db-backup/quiz-master2.db.b12-p1-start`）；Linux Release 通过。
+- 计数说明：本次全量 1432 = 上一遍日志实测 1430（`full-suite-b12-2.log` 末行 +1430）+ 本次净增 2（b12_retry 17→19）。STATUS.md 与 gpt-review-batch12.md 里写的 1429 是逐项加总时漏计 1 项，与本次改动无关。
+- 其余 GPT 未定为 P0/P1 的事项一律未动（Stage A 口径、30 页泛化、动态题序、DDL 手写、事件刷新、并发重试、D-88/B1/zip 遗留）。

@@ -1,0 +1,1 @@
+{"detection_complete":false,"detection_notes":"照片横转90°（按纸面方向阅读）。仅1框（conf 0.51），覆盖整页可见内容（1题杆+圆盘+手写推导），框过大；单框无法评题序。题序指标不计本页。","layout":"edge","order":["box-q1"],"page":"edge-04","uncertain":false}

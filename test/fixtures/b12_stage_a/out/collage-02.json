@@ -1,0 +1,29 @@
+{
+ "layout": "collage",
+ "evaluable": false,
+ "n_qboxes": 4,
+ "n_boxes": 4,
+ "confidence": "low",
+ "reasons": [
+  "column count disagreement: gap method 1 vs interval chaining 2"
+ ],
+ "columns": 1,
+ "exact": true,
+ "adj_acc": 1.0,
+ "exact_yx": false,
+ "adj_acc_yx": 0.3333333333333333,
+ "exact_col": false,
+ "adj_acc_col": 0.3333333333333333,
+ "alg_order": [
+  "box-q1",
+  "box-q2",
+  "box-q4",
+  "box-q3"
+ ],
+ "truth_order": [
+  "box-q1",
+  "box-q2",
+  "box-q4",
+  "box-q3"
+ ]
+}

@@ -1,0 +1,1 @@
+{"detection_notes": "框4=例题选项（非正式题）；框5=1题，框7=2题，框8=3题，框9合并4、5两题，框11合并6、7两题；右页框1=8-10题，框2=11-13题，框3=14-17题，框6=18-20题，框10=阅读A篇开头。第二节说明文字（0.68-0.75）未框。左页=第1页，右页=第2页。", "layout": "double", "order": ["box-q4", "box-q5", "box-q7", "box-q8", "box-q9", "box-q11", "box-q1", "box-q2", "box-q3", "box-q6", "box-q10"], "page": "double-07", "uncertain": false, "detection_complete": true}

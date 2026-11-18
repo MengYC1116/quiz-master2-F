@@ -146,10 +146,15 @@ await tester.pumpWidget(
 事件只由数据层在**写入成功后**发出，Repository 不持有 Ref、不
 import riverpod。`badgeCountsProvider`
 （`lib/state/badge_counts_provider.dart`，根节点常驻、绝不
-autoDispose）收到含 `badges` 的事件才重读角标计数；其余 kind
+autoDispose）收到含 `badges` 的事件才重读角标计数；`homeProvider`
+（`lib/state/home_provider.dart`，D-94）收到含 `recentlyViewed`
+的事件才重读首页历史；其余 kind
 只供以后各页订阅（A 完成时各页仍自己 `load()`，不订阅事件——
 详情页复习记录订阅 `reviewRecords` 是方案的终态，A 收尾时未接线，
-已立为单独事项，见 §七，不在 A 内做）。
+已立为单独事项，见 §七，不在 A 内做）。FR-31（2026-11-17）明确：
+截至本批，除 `badges` 与 `recentlyViewed` 外的四种 kind（questions /
+subjects / reviewRecords / settings）没有任何订阅方；将来加订阅方时把该页的
+刷新时序纳入回归。
 事件只描述“什么变了”，不携带新数据——订阅方收到后自己重读
 SQLite。订阅在初始查询之前建立（先订阅、后首查），`ref.onDispose`
 取消订阅；`badgeCountsProvider` 靠 `ref.invalidateSelf()` +
@@ -172,6 +177,7 @@ Riverpod 自身的失效语义处理并发重查，未另写代次号（方案 �
 |---|---|---|
 | `save` / `archive` / `toggleFavorite`（→ `upsertQuestion`） | `{badges, questions}` + 题 id |  |
 | `delete`（→ `deleteQuestion`） | `{badges, questions, reviewRecords}` + 题 id | 同事务删该题的错因记录与复习历史 |
+| `deleteQuestions`（→ `deleteQuestionsBatch`，FR-37） | `{badges, questions, reviewRecords}`，题 id 为空 | 整批一个事务；中途失败整批回滚 |
 | `saveRemedy`（→ `updateCauseRemedy`） | `{badges, reviewRecords}` + 题 id |  |
 | `setReviewJoined` | `{badges, reviewRecords}` + 题 id | 仅写入成功时；`ok=false` 不发 |
 | `recordSelfCheck`（→ `recordSelfCheckTxn`） | `{badges, reviewRecords}` + 题 id | 仅结果不是 `unsure` 时 |
@@ -191,19 +197,22 @@ Riverpod 自身的失效语义处理并发重查，未另写代次号（方案 �
 | `addKnowledgePoint`（→ `insertKnowledgePoint`）/ `renameKnowledgePoint` / `renameChapter` | `{subjects}` |  |
 | `deleteKnowledgePoint` / `deleteChapter` | `{subjects, questions}` | 同时改写题目行的知识点 |
 | `saveSettings` | `{settings}` |  |
-| `saveExamEvent` / `deleteExamEvent`（→ `saveExamEvents`） | `{settings}` |  |
+| `saveExamEvent` / `deleteExamEvent`（→ `saveExamEventFrom` / `deleteExamEventFrom`，FR-38/39） | `{settings}` | 同一事务内改原始 JSON 行；并发写不丢改动、坏行原样保留 |
 | `saveBackupFailed` | `{settings}` |  |
-| `importBackupJson` / `importBackupZip` / `importBackupZipFile` | 一次含全部五种 kind，题 id 为空 | `importBackupZipFile` 转调 `importBackupZip`，不另发 |
-| `syncCauseRecords` / `deleteCauseRecordsForQuestion` / `deleteCauseRecord` | 不发 | 调用方的 `save` 覆盖角标 |
+| `importBackupJson` / `importBackupZip` / `importBackupZipFile` | 一次含全部六种 kind，题 id 为空 | `importBackupZipFile` 转调 `importBackupZip`，不另发；D-94：恢复覆盖最近查看表，`recentlyViewed` 也在内 |
+| `recordQuestionViewed`（→ `AppDatabase.recordQuestionViewed` 扩展方法，D-94） | `{recentlyViewed}` + 题 id | 仅写库成功后发；写库抛错不发；可单测版 `recordQuestionViewedIntoImpl` 不发（纯写库） |
+| `syncCauseRecords` | 不发 | 调用方的 `save` 覆盖角标 |
 | `saveDraftBoxes` | 不发 | 草稿框不影响角标 |
 | `saveReviewState` / `clearReviewState` | 不发 | 仅复习会话内 |
 | `saveLastRoute` / `saveLastRecheckReminderDate` / `saveRecentTask` / `saveSetting` | 不发 | 路由记忆 / 提醒日期 / 最近任务标记 |
 | `migrateToDirectory` / `setCustomDataDirectory` / `cleanOrphans` | 不发 | 无数据内容变化 / 仅文件操作 |
-| `addCauseCheckHistory` / `ensureCauseRecords` | 不发 | 仅测试播种用（`test/p2_json_fields_test.dart`），Repository 不暴露、生产不调用；`recordSelfCheckTxn` 事务内写历史不经过它们 |
+| `ensureCauseRecords` | 不发 | 仅测试播种用（`test/p2_json_fields_test.dart`），Repository 不暴露、生产不调用；`recordSelfCheckTxn` 事务内写历史不经过它；FR-30 已删 `addCauseCheckHistory` / `deleteCauseRecordsForQuestion` / `deleteCauseRecord`（全仓零调用的死代码） |
 | `bumpOrganizedToday`（今日小结计数） | 不另发 | 搭在 `upsertQuestion` 的写路径内，随 `{badges, questions}` 事件一起发出；计数本身不影响角标 |
 
 收尾核对（2026-11-16，D-44）：全仓 30 处 `emit` 逐处核对，
-与上表 1:1 对应，无遗漏、无多余；`flutter_riverpod` 的 import
+与上表 1:1 对应，无遗漏、无多余；D-94（2026-11-18）：`emit`
+处现为 34 处——D-94 只新增 1 处（`recordQuestionViewed` 扩展方法），
+备份两处是原有 emit 的 kind 集补齐（五类→六类），上表已同步。`flutter_riverpod` 的 import
 只出现在 `lib/state/`、`lib/modules/`、`lib/app.dart`、`lib/main.dart`
 （`lib/data/` 只有 `data_change_events.dart` 注释里提到该词，
 不是 import）；旧 `_refreshBadges` / `badgeVersion` /

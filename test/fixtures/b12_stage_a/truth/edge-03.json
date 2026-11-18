@@ -1,0 +1,1 @@
+{"detection_complete":false,"detection_notes":"检测问题：一漏一多。漏检：左页2题、3题两道未框（Meng原话“漏检一道”，图上核对为两道：2题平行板电容器、3题电磁感应，已标出待确认）；误检：框1=卷首（校名/课程代码/得分表）整块被标为题。真题框顺序如order（左页1、4、5题，右页6、7、8题+判断题）。题序指标不计本页。","layout":"edge","order":["box-q5","box-q7","box-q8","box-q2","box-q3","box-q4","box-q6"],"page":"edge-03","uncertain":false}

@@ -1,0 +1,41 @@
+{
+ "layout": "double",
+ "evaluable": true,
+ "n_qboxes": 11,
+ "n_boxes": 11,
+ "confidence": "high",
+ "reasons": [],
+ "columns": 2,
+ "exact": true,
+ "adj_acc": 1.0,
+ "exact_yx": false,
+ "adj_acc_yx": 0.6,
+ "exact_col": true,
+ "adj_acc_col": 1.0,
+ "alg_order": [
+  "box-q5",
+  "box-q7",
+  "box-q8",
+  "box-q9",
+  "box-q10",
+  "box-q1",
+  "box-q2",
+  "box-q3",
+  "box-q4",
+  "box-q6",
+  "box-q11"
+ ],
+ "truth_order": [
+  "box-q5",
+  "box-q7",
+  "box-q8",
+  "box-q9",
+  "box-q10",
+  "box-q1",
+  "box-q2",
+  "box-q3",
+  "box-q4",
+  "box-q6",
+  "box-q11"
+ ]
+}

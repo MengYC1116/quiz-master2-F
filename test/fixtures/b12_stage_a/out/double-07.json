@@ -1,0 +1,43 @@
+{
+ "layout": "double",
+ "evaluable": true,
+ "n_qboxes": 11,
+ "n_boxes": 11,
+ "confidence": "high",
+ "reasons": [
+  "local-sort fallback on 2 group(s) (4 boxes), tops well separated, order kept high-confidence"
+ ],
+ "columns": 2,
+ "exact": true,
+ "adj_acc": 1.0,
+ "exact_yx": false,
+ "adj_acc_yx": 0.5,
+ "exact_col": true,
+ "adj_acc_col": 1.0,
+ "alg_order": [
+  "box-q4",
+  "box-q5",
+  "box-q7",
+  "box-q8",
+  "box-q9",
+  "box-q11",
+  "box-q1",
+  "box-q2",
+  "box-q3",
+  "box-q6",
+  "box-q10"
+ ],
+ "truth_order": [
+  "box-q4",
+  "box-q5",
+  "box-q7",
+  "box-q8",
+  "box-q9",
+  "box-q11",
+  "box-q1",
+  "box-q2",
+  "box-q3",
+  "box-q6",
+  "box-q10"
+ ]
+}

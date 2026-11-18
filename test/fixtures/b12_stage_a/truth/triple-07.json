@@ -1,0 +1,1 @@
+{"detection_notes": "三栏，仅3题：左栏20题，中栏21题，右栏22题（含三角形图）。", "layout": "triple", "order": ["box-q1", "box-q2", "box-q3"], "page": "triple-07", "uncertain": false, "detection_complete": true}

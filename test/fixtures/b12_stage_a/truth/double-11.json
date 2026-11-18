@@ -1,0 +1,1 @@
+{"detection_complete":true,"detection_notes":"框4=选择题标题+1题干（标题与题干同框，含题内容，保留）；框13合并6、7两题；框2=多选题标题+9题；框10=填空题标题（纯标题，误检，不进题序）；框14合并13、14两题。左页=第1页，右页=第2页。","layout":"double","order":["box-q4","box-q5","box-q7","box-q8","box-q9","box-q11","box-q13","box-q1","box-q2","box-q3","box-q6","box-q12","box-q14"],"page":"double-11","uncertain":false}

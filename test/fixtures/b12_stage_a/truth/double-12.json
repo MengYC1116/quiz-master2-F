@@ -1,0 +1,1 @@
+{"detection_notes": "框2=解答题标题+15题；框3=16题，框5=17题；框1=18题（含图），框4=19题。左页=第3页，右页=第4页。", "layout": "double", "order": ["box-q2", "box-q3", "box-q5", "box-q1", "box-q4"], "page": "double-12", "uncertain": false, "detection_complete": true}

@@ -1,0 +1,21 @@
+{
+ "layout": "edge",
+ "evaluable": false,
+ "n_qboxes": 1,
+ "n_boxes": 1,
+ "confidence": "high",
+ "reasons": [],
+ "columns": 1,
+ "exact": true,
+ "adj_acc": null,
+ "exact_yx": true,
+ "adj_acc_yx": null,
+ "exact_col": true,
+ "adj_acc_col": null,
+ "alg_order": [
+  "box-q1"
+ ],
+ "truth_order": [
+  "box-q1"
+ ]
+}

@@ -1,0 +1,1 @@
+{"detection_notes": "框1=30题；框3=31题+D篇正文+32-34题（大框）；框2=35题；框4=完形填空36-40（含选项A-G）；框5=语言运用完形开头（41-42可见）。左页=第5页，右页=第6页。", "layout": "double", "order": ["box-q1", "box-q3", "box-q2", "box-q4", "box-q5"], "page": "double-03", "uncertain": false, "detection_complete": true}

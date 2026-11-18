@@ -1,0 +1,33 @@
+{
+ "layout": "collage",
+ "evaluable": true,
+ "n_qboxes": 7,
+ "n_boxes": 7,
+ "confidence": "high",
+ "reasons": [],
+ "columns": 1,
+ "exact": true,
+ "adj_acc": 1.0,
+ "exact_yx": true,
+ "adj_acc_yx": 1.0,
+ "exact_col": true,
+ "adj_acc_col": 1.0,
+ "alg_order": [
+  "box-q1",
+  "box-q2",
+  "box-q3",
+  "box-q4",
+  "box-q5",
+  "box-q6",
+  "box-q7"
+ ],
+ "truth_order": [
+  "box-q1",
+  "box-q2",
+  "box-q3",
+  "box-q4",
+  "box-q5",
+  "box-q6",
+  "box-q7"
+ ]
+}
