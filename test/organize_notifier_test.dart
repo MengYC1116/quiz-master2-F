@@ -5,6 +5,8 @@
 // microtask 首查还没写回就被销毁），见 `_container`。
 // 首查直接调 `await notifier.refresh()`（与 review 单测调 `load()`
 // 同款），不等 build 里的 microtask。
+import 'dart:async';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:quiz_master2/data/database.dart';
@@ -85,10 +87,19 @@ class FakeOrganizeNotifierRepo extends QuestionRepository {
   Future<List<Question>> all({bool includeArchived = false}) async =>
       List.of(questions);
 
+  /// F1 回归用：folders() 被调时完成 [foldersEntered]，并在门处挂起
+  /// 等测试放行（模拟 refresh 跑到一半时用户离开页面）。
+  Completer<void>? foldersGate;
+  final foldersEntered = Completer<void>();
+
   @override
-  Future<List<Folder>> folders({String? subjectId}) async => subjectId == null
-      ? List.of(folderList)
-      : folderList.where((f) => f.subjectId == subjectId).toList();
+  Future<List<Folder>> folders({String? subjectId}) async {
+    if (!foldersEntered.isCompleted) foldersEntered.complete();
+    if (foldersGate != null) await foldersGate!.future;
+    return subjectId == null
+        ? List.of(folderList)
+        : folderList.where((f) => f.subjectId == subjectId).toList();
+  }
 
   @override
   Future<List<Exam>> exams() async => List.of(examList);
@@ -364,6 +375,23 @@ void main() {
       final before = container.read(organizeProvider).formResetKey;
       notifier.loadForm();
       expect(container.read(organizeProvider).formResetKey, before + 1);
+    });
+
+    test('refresh：中途离开页面（dispose）后不再碰 state，不抛错（F1）', () async {
+      final repo = _threeRepo();
+      repo.foldersGate = Completer<void>();
+      // 不用 _container（它注册了 tearDown dispose）；手动建容器、手动销毁。
+      final container = ProviderContainer.test(
+        overrides: [repositoryProvider.overrideWithValue(repo)],
+      );
+      container.listen(organizeProvider, (_, __) {});
+      final notifier = container.read(organizeProvider.notifier);
+      final future = notifier.refresh();
+      // 等 refresh 停在 loadFolders 的 await 上。
+      await repo.foldersEntered.future;
+      container.dispose(); // 页面离开：Provider 销毁，_disposed = true。
+      repo.foldersGate!.complete();
+      await future; // 不抛 UnmountedRefException 即通过。
     });
   });
 

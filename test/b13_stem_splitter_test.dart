@@ -330,6 +330,55 @@ void main() {
     });
   });
 
+  group('md 图引用行过滤（十四批 M2 #7，模拟核验 FAIL-7-1）', () {
+    test('FAIL-7-1 原样：带插图的题，题干里的图引用行去掉，只留文字', () {
+      const input =
+          '看图求值\n\n![](page=0,bbox=[10, 5, 60, 25])\n\nA. 第一项\nB. 第二项\nC. 第三项\nD. 第四项';
+      final r = splitStem(input);
+      expect(r.status, StemSplitStatus.autoSplit);
+      expect(r.stemText, '看图求值');
+      // cutIndex 仍指原文里的 A（图引用行在题干里，不动切分位置）。
+      expect(r.cutIndex, isNotNull);
+      expect(input.substring(r.cutIndex!), startsWith('A.'));
+    });
+
+    test('无选项时：图引用行也去掉，整段当题干', () {
+      const input = '看图求值\n\n![](page=0,bbox=[10, 5, 60, 25])';
+      final r = splitStem(input);
+      expect(r.status, StemSplitStatus.notSplit);
+      expect(r.stemText, '看图求值');
+    });
+
+    test('多段题干中间的图引用行去掉，两段文字都保留', () {
+      const input = '第一段文字\n\n![](page=0,bbox=[1, 2, 3, 4])\n\n第二段文字';
+      final r = splitStem(input);
+      expect(r.status, StemSplitStatus.notSplit);
+      expect(r.stemText, '第一段文字\n\n\n第二段文字');
+    });
+
+    test('多个图引用行都去掉', () {
+      const input =
+          '看图\n\n![](page=0,bbox=[1, 2, 3, 4])\n\n![](page=0,bbox=[5, 6, 7, 8])\n\nA. 第一项 B. 第二项';
+      final r = splitStem(input);
+      expect(r.status, StemSplitStatus.autoSplit);
+      expect(r.stemText, '看图');
+    });
+
+    test('普通 md 图片不是图块锚点，不删', () {
+      const input = '看图\n\n![](https://example.com/a.png)\n\nA. 第一项 B. 第二项';
+      final r = splitStem(input);
+      expect(r.status, StemSplitStatus.autoSplit);
+      expect(r.stemText, contains('![](https://example.com/a.png)'));
+    });
+
+    test('行内图引用不动（未在 GLM 单题输出里见过，不猜）', () {
+      const input = '看图 ![](page=0,bbox=[10, 5, 60, 25]) 求值';
+      final r = splitStem(input);
+      expect(r.status, StemSplitStatus.notSplit);
+      expect(r.stemText, input);
+    });
+  });
+
   group('结果结构', () {
     test('自动切分时 cutIndex 指向 A 标记，stemText 与原文前缀一致', () {
       const input = '5. 下列正确的是\n\nA. 第一项 B. 第二项';

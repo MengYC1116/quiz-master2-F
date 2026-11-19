@@ -436,6 +436,9 @@ class OrganizeNotifier extends Notifier<OrganizeState> {
       loading: false,
     );
     await loadFolders();
+    // F1：await 期间页面可能已离开——先判 _disposed 再碰 state
+    //（与 submitNewFolder 同款守门；loadForm 里写 state 会抛错）。
+    if (_disposed) return;
     loadForm();
     // 十三批 M5：读当前题的 OCR 任务行与 key 有无（状态推导用）。
     // 不 await：它是装饰性 best-effort 加载，失败/挂起都不能挡
@@ -841,6 +844,8 @@ class OrganizeNotifier extends Notifier<OrganizeState> {
     }
     state = state.copyWith(index: next);
     await loadFolders();
+    // F1：同 refresh，await 期间页面可能已离开，先判 _disposed。
+    if (_disposed) return;
     loadForm();
   }
 
@@ -890,6 +895,8 @@ class OrganizeNotifier extends Notifier<OrganizeState> {
     }
     state = state.copyWith(index: idx);
     await loadFolders();
+    // F1：同 refresh，await 期间页面可能已离开，先判 _disposed。
+    if (_disposed) return;
     loadForm();
   }
 

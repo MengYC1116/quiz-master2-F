@@ -1797,3 +1797,18 @@ unavailable），kill -9 后新进程可取锁——与实现依据一致。
   5. 不牵连孤儿扫描：本收集只供备份完整性检查用；`_directlyReferencedRelativePaths` / `_referencedRelativePaths` 的全部语义不变，孤儿扫描、孤儿删除、恢复复核 `_missingReferencedFiles` 的删除/清理策略不变。恢复侧的越界引用复核不在本轮范围（恢复校验 `isAllowedDataRelativePath` 另有口径），不扩大。
 - D-160 闭合：P1-2 的分支级 warning（D-160）仍在（纵深防御）；入口层问题由本轮 D-162 闭合。fix4 测试文件里 P1-2 一项的旧锁定被取代：该测试在 fix4 时锁定“任务 id `..` 输入下无路径非法警告”，D-162 后同一输入的派生路径记 warning、直接引用仍正常、备份仍成功——测试已按新口径改写（见下），不是测试被悄悄放宽，而是被修复口径取代的旧锁定。
 - 证据：新 `test/b14_m5_fix5_backup_test.dart` 6/6 通过（切片 `../escape.png` 抛错、切片 `slices/../../escape.png` 抛错、收集任务原文件 `../../outside.pdf` 抛错、越界图块 warning + 备份成功、越界派生 warning + 备份成功、合法内部 `..` 归一化正常处理；抛错/警告均断言含归属对象与原始路径；每项断言失败后无暂存区残留、无暂存占用登记）；fix4 文件 9/9（含改写后的 P1-2 一项）；回归 `test/b14_m5_fix3_backup_missing_test.dart`、`test/b14_m2_backup_test.dart`、`test/b14_m5_fix2_backup_test.dart` 15/15 全绿。
+
+## D-170 — 十四批模拟核验修复：splitStem 去掉独占一行的 md 图引用行（2026-11-19，模拟核验修复，Meng 定修 #7 + F1）
+
+（注：D-163～D-169 为十五批决定，记在 PLAN-15-REV3.md，待十五批实施时并入本日志 D-170 之前。）
+
+- 问题（模拟核验 FAIL-7-1，#7 PARTIAL 的原因）：带插图的题识别完成后，详情页题干区在文字下方、图块上方多出一行机器文本 `![](page=0,bbox=[10, 5, 60, 25])`。根因：worker 自动应用与 acceptCandidateStem 经 splitStem(markdown) 存题干时，md 图引用行原样留在 ocr_stem 里；渲染时 parseQuestionContent 把它当普通文本。图块本身渲染与排序都正确。
+- 修法（lib/services/stem_splitter.dart）：splitStem 返回前去掉独占一行的 md 图引用行（与 ocr_figures.dart 的 _mdFigureRefs 同款格式，只认 page=/bbox= 形）；图块锚点仍以 ocr_raw.md_results 为准，不靠题干文本。只删整行都是引用的行；行内引用、普通 md 图片（如 `![](https://…)`）一律不动（D-106 保守策略）。cutIndex 仍指原始输入里的 A 标记位置，不动；切分逻辑一行未改。
+- 证据：新测试 test/b13_stem_splitter_test.dart 6 项（FAIL-7-1 原样、无选项、多段中间、多引用、普通图片不删、行内不动）；模拟核验模块 C 临时副本 tool/b14_sim_c_m2_run_test.dart（跑完已删）8/8 全绿，原 FAIL-7-1 断言通过。
+- 边界：真实 GLM 单题 md 里是否内联图引用，只能 Win11 + 真实 GLM 确认；若真实输出根本不内联引用，本修法无事可做也不改行为。已入库的旧 ocr_stem（含引用行的）不受影响，下次重新识别时按新口径写回。
+
+## D-171 — 十四批模拟核验修复：await loadFolders() 后重查 _disposed（2026-11-19，模拟核验修复，Meng 定修 #7 + F1）
+
+- 问题（模拟核验 F1）：OrganizeNotifier.refresh() 里 await loadFolders() 后直接调 loadForm()，期间用户离开页面、Provider 已销毁时，loadForm() 写 state 抛 UnmountedRefException（Riverpod "Cannot use the Ref … after it has been disposed"）。窗口毫秒级，应用不崩，但属未捕获异常。
+- 修法（lib/state/organize_notifier.dart）：refresh()、goTo()、jumpTo() 三处 await loadFolders() 后都加 `if (_disposed) return;`，与 submitNewFolder 既有守门同款。goTo/jumpTo 与 refresh 是同一处隐患（同一调用、同一修法），一并修掉，不另立项。
+- 证据：新测试 test/organize_notifier_test.dart 1 项（fake repo 的 folders() 挂门：refresh 停在 await 上时 dispose 容器、再放行，await 不抛错；修前复现抛错、修后通过）。

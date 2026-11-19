@@ -32,6 +32,13 @@
 //
 // 类型定义只在一处：[StemSplitStatus] 与 [StemSplitResult] 都在本文件，
 // M3（存储）与 M5（纠错编辑器）直接 import 本文件复用。
+//
+// 十四批 M2 #7 修复：GLM 单题 md 里图引用独占一行
+//（`![](page=0,bbox=[...])`），它是图块锚点——锚点以 ocr_raw.md_results
+// 为准，不靠题干文本。题干文本里留着它，界面会直接显示这行机器文本
+//（模拟核验 FAIL-7-1）。splitStem 在返回前去掉独占一行的图引用行；
+// 行内引用、普通 md 图片一律不动（D-106：宁可保留，不要误删）。
+// cutIndex 仍指原始输入里的 A 标记位置，不动。
 
 /// 切分状态。`manuallyAdjusted`（人工调整）由 M5 的纠错编辑器在用户
 /// 手动改过题干后写入，本切分器永不产出该值。
@@ -70,6 +77,8 @@ class StemSplitResult {
 
   /// 切分后的题干。自动切分时是 A 标记之前的文本（去首尾空白，题号保留）；
   /// 未切分 / 存在歧义时是整段原文（去首尾空白），内容一句不丢。
+  /// 独占一行的 md 图引用行已去掉（十四批 M2 #7；锚点在 ocr_raw 的
+  /// md_results 里，不靠题干文本）；其余内容原样保留。
   final String stemText;
 
   /// 切分状态，见 [StemSplitStatus]。
@@ -124,6 +133,22 @@ class _Marker {
   final String text;
 }
 
+/// GLM md 图引用行：独占一行的 `![](page=<n>,bbox=[x1, y1, x2, y2])`。
+/// 与 ocr_figures.dart 的 `_mdFigureRefs` 同款格式（只认 page=/bbox= 形，
+/// 普通 md 图片如 `![](https://…)` 不认）。
+final _figureRefLinePattern = RegExp(
+  r'^\s*!\[.*?\]\(page=\d+,bbox=\[\d+,\s*\d+,\s*\d+,\s*\d+\]\)\s*$',
+);
+
+/// 去掉独占一行的 md 图引用行（十四批 M2 #7）。
+/// 只删整行都是引用的行；行内引用不动。返回去掉后的文本（不 trim，
+/// 调用方按原有口径 trim）。
+String _stripFigureRefLines(String text) {
+  final lines = text.split('\n');
+  final kept = lines.where((line) => !_figureRefLinePattern.hasMatch(line));
+  return kept.join('\n');
+}
+
 /// 选项标记正则：括号式优先（避免 `(A)` 被拆成 `A)`），再是后缀式。
 /// 只认大写 A–E（含全角 Ａ–Ｅ），小写 a–e 不认（多为句中缩写）。
 final _markerPattern = RegExp(
@@ -150,7 +175,7 @@ StemSplitResult splitStem(String ocrText) {
   final aMarkers = markers.where((m) => m.letter == 'A').toList();
   if (aMarkers.isEmpty) {
     return StemSplitResult(
-      stemText: text.trim(),
+      stemText: _stripFigureRefLines(text).trim(),
       status: StemSplitStatus.notSplit,
       cutIndex: null,
       reason: '未发现选项标记，整段保留为题干',
@@ -171,7 +196,7 @@ StemSplitResult splitStem(String ocrText) {
 
   if (candidates.length > 1) {
     return StemSplitResult(
-      stemText: text.trim(),
+      stemText: _stripFigureRefLines(text).trim(),
       status: StemSplitStatus.ambiguous,
       cutIndex: null,
       reason: '发现 ${candidates.length} 个候选切分点，不自动选择',
@@ -179,7 +204,7 @@ StemSplitResult splitStem(String ocrText) {
   }
   if (candidates.isEmpty) {
     return StemSplitResult(
-      stemText: text.trim(),
+      stemText: _stripFigureRefLines(text).trim(),
       status: StemSplitStatus.notSplit,
       cutIndex: null,
       reason: firstFailure ?? '未发现可信的选项序列，不切分',
@@ -189,7 +214,7 @@ StemSplitResult splitStem(String ocrText) {
   final a = candidates.single;
   final optionTexts = _optionSequenceTexts(text, markers, a);
   return StemSplitResult(
-    stemText: text.substring(0, a.start).trim(),
+    stemText: _stripFigureRefLines(text.substring(0, a.start)).trim(),
     status: StemSplitStatus.autoSplit,
     cutIndex: a.start,
     reason: '选项序列 ${optionTexts.join(' ')} 格式一致，自 A 处切分',
