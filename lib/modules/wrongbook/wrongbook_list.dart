@@ -441,6 +441,32 @@ extension _WrongbookListBuild on _WrongbookViewState {
                     },
                   ),
                 ),
+                // 十四批 M1：题型筛选（全部 + 待确认 + 17 个类型；
+                // 待确认筛 questionType == null，见 notifier 的 '' 口径）。
+                // 放面板末尾：既有测试按序号点下拉（.at(3) 收集时间、
+                // .at(4) 错因状态），插中间会移位，末尾不影响。
+                cell(
+                  '题型',
+                  _styledDropdown<String>(
+                    value: _s.filterQuestionType,
+                    items: [
+                      const DropdownMenuItem<String>(
+                        value: null,
+                        child: Text('全部'),
+                      ),
+                      const DropdownMenuItem<String>(
+                        value: '',
+                        child: Text('待确认'),
+                      ),
+                      for (final v in questionTypeValues)
+                        DropdownMenuItem(
+                          value: v,
+                          child: Text(questionTypeLabels[v]!),
+                        ),
+                    ],
+                    onChanged: (v) => _n.setFilterQuestionType(v),
+                  ),
+                ),
               ];
               for (var i = 0; i < cells.length; i += cols) {
                 rows.add(

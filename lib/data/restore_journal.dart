@@ -31,6 +31,7 @@ import 'dart:io';
 import 'package:crypto/crypto.dart';
 import 'package:path/path.dart' as p;
 
+import 'file_lifecycle_guard.dart';
 import 'journal_ffi.dart';
 
 /// 恢复日志文件名（数据目录下）。
@@ -354,9 +355,8 @@ class RestoreJournalStore {
     // 可保，且启动恢复（locateAndRecover）本应在启动时先处理过残留；
     // 这里不按残留 tmp 安装，避免把未知来源的日志当成本次任务的日志。
     if (tmpFile.existsSync()) {
-      try {
-        await tmpFile.delete();
-      } catch (_) {}
+      // 十四批 M2（P2-2）：日志临时文件删除经统一文件操作锁。
+      await FileLifecycleGuard.instance.deleteFile(tmpFile);
     }
     await _writeTmp(journal);
     // 正式路径无旧文件，同卷 rename 即完成安装（Linux rename(2) /
@@ -422,9 +422,9 @@ class RestoreJournalStore {
     if (formalFile.existsSync()) {
       final journal = await validateFile(formalFile);
       if (tmpFile.existsSync()) {
-        try {
-          await tmpFile.delete();
-        } catch (_) {}
+        // 十四批 M2（P2-2）：日志临时文件删除经统一文件操作锁。
+
+        await FileLifecycleGuard.instance.deleteFile(tmpFile);
       }
       return journal;
     }
@@ -439,9 +439,9 @@ class RestoreJournalStore {
         return await validateFile(formalFile);
       } on JournalCorruptException {
         // 临时损坏：丢弃；有备份则继续从备份恢复，无备份则无有效日志。
-        try {
-          await tmpFile.delete();
-        } catch (_) {}
+        // 十四批 M2（P2-2）：日志临时文件删除经统一文件操作锁。
+
+        await FileLifecycleGuard.instance.deleteFile(tmpFile);
         if (!backupExists) {
           throw JournalCorruptException(
             '正式日志缺失，临时日志损坏且无备份可恢复，'
@@ -522,9 +522,9 @@ class RestoreJournalStore {
         await validateFile(tmpFile);
       } on JournalCorruptException {
         // 临时校验不通过：丢弃临时、保留原日志。
-        try {
-          await tmpFile.delete();
-        } catch (_) {}
+        // 十四批 M2（P2-2）：日志临时文件删除经统一文件操作锁。
+
+        await FileLifecycleGuard.instance.deleteFile(tmpFile);
         throw JournalUpdateException(
           '原子替换失败（错误码 $code），临时新日志校验不通过，'
           '已丢弃临时日志，原日志保留，本次更新中止',
@@ -558,9 +558,9 @@ class RestoreJournalStore {
         await validateFile(tmpFile);
       } on JournalCorruptException {
         // 临时校验不通过：丢弃临时，从备份恢复原日志并校验。
-        try {
-          await tmpFile.delete();
-        } catch (_) {}
+        // 十四批 M2（P2-2）：日志临时文件删除经统一文件操作锁。
+
+        await FileLifecycleGuard.instance.deleteFile(tmpFile);
         if (!backupExists) {
           throw JournalCorruptException(
             '原子替换失败（错误码 $code）后临时日志损坏且无备份可恢复，'

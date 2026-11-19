@@ -221,22 +221,26 @@ Future<void> deleteCollectTaskFromImpl(QuizDatabase db, String id) async {
 
 /// §4.5 文件级联：删库内文件（只删无引用文件）。
 /// - [rel] 必须是 `slices/` 下的相对路径（本函数唯一接受的
-///   前缀；调用方只传题的 `slice_path`）；绝对路径、`..` 越界、
-///   `imports/` 或其它前缀一律拒绝删除——误删是丢数据，宁留孤儿；
+///   前缀；调用方只传题的 `slice_path` 与图块 `crop_path`）；绝对路径、
+///   `..` 越界、`imports/` 或其它前缀一律拒绝删除——误删是丢数据，宁留孤儿；
 /// - 解析失败或仍被任何题/任务引用 → 不删；
 /// - 文件删失败静默跳过（由孤儿清理兜底），不抛错、不回滚数据库。
 /// 解析统一走 [AppDatabase._resolveInsideDir]，不再经 [AppDatabase.resolveDataPath]。
+/// 十四批 M2（P1-B）：删除在统一文件操作锁内执行——锁内重查引用
+/// （数据库实时查询 + 待提交集合 + 备份暂存区占用），三者皆无才删。
 Future<void> _deleteDataFileIfUnreferenced(QuizDatabase db, String? rel) async {
   if (rel == null || rel.isEmpty) return;
   final normalized = rel.replaceAll('\\', '/');
   if (!normalized.startsWith('slices/')) return;
   final abs = _resolveInsideDir(AppDatabase.dataDirectoryPath(), normalized);
   if (abs == null) return;
-  if (await _isFileReferenced(db, rel)) return;
-  try {
-    final f = File(abs);
-    if (f.existsSync()) await f.delete();
-  } catch (_) {}
+  final guard = FileLifecycleGuard.instance;
+  await guard.withLock(() async {
+    if (await _isFileReferenced(db, normalized)) return;
+    if (guard.isPending(normalized) || guard.isStaged(normalized)) return;
+    // 已持锁：走内部删除（不再次取锁，P2 约束 1）。
+    await guard.deleteFileLocked(File(abs));
+  });
 }
 
 Future<bool> _isFileReferenced(QuizDatabase db, String rel) async {
@@ -258,7 +262,23 @@ Future<bool> _isFileReferenced(QuizDatabase db, String rel) async {
             ..where((t) => t.sourcePath.equals(rel))
             ..limit(1))
           .get();
-  return tasks.isNotEmpty;
+  if (tasks.isNotEmpty) return true;
+  // 十三批 M2：ocr_jobs 的 crop_path 也算引用（crop 通常就是
+  // questions.slice_path 同一文件，此时上面已命中；独立 crop 时
+  // 这一路才起作用）。
+  final jobCrop =
+      await (db.select(db.ocrJobs)
+            ..where((t) => t.cropPath.equals(rel))
+            ..limit(1))
+          .getSingleOrNull();
+  if (jobCrop != null) return true;
+  // 十四批 M2：ocr_figures JSON 里的 crop_path 也算引用——
+  // 不加这路，删题/删任务时会把仍被图块引用的裁图删掉。
+  final figureRows = await db.select(db.questions).get();
+  for (final row in figureRows) {
+    if (_figureCropPathsFromJson(row.ocrFigures).contains(rel)) return true;
+  }
+  return false;
 }
 
 /// §4.5：删任务目录（`imports/<taskId>/`）——仅当没有任何题的
@@ -309,10 +329,25 @@ Future<void> _deleteTaskDirIfUnreferenced(
     'imports/$taskId',
   );
   if (abs == null) return;
-  try {
+  // 十四批 M2（P1-B）：目录删除在统一文件操作锁内执行。锁内重查
+  // 待提交集合与备份暂存区占用——该目录下若有正在写/正在备份的
+  // 文件，跳过删除（进孤儿清理下次再删）。数据库引用在锁外已查过；
+  // 任务行在调用方事务里已删，之后不会再有新引用指向该目录，
+  // 故锁内不再重跑 LIKE 查询。
+  final guard = FileLifecycleGuard.instance;
+  await guard.withLock(() async {
+    final pending = guard.pendingSnapshot;
+    final staged = guard.stagingSnapshot;
+    final inFlight = [...pending, ...staged].any(
+      (p) => p.startsWith(prefix),
+    );
+    if (inFlight) return;
     final dir = Directory(abs);
-    if (dir.existsSync()) await dir.delete(recursive: true);
-  } catch (_) {}
+    if (dir.existsSync()) {
+      // 已持锁：走内部删除（不再次取锁，P2 约束 1）。
+      await guard.deleteDirectoryLocked(dir);
+    }
+  });
 }
 
 /// §8.1：写框（可单测版）：直接对传入的库句柄写，不碰单例、不 bump。
@@ -497,15 +532,32 @@ Future<void> replaceQuestionBoxesAndSliceIntoImpl(
     await _replaceBoxesTxn(db, questionId, boxes);
     // B2 集成：题的切片回写走 Drift 类型化 update（原 UPDATE
     // questions SET slice_path/slice_width/slice_height ...）。
+    // 十四批 M2：slice_path 变化 → 同一事务内 content_version +1
+    // （重框是内容版本递增矩阵的一行；旧图块同时按 input_hash 过期，
+    // 展示层不再展示）。slice_path 不变（同路径重写，如切片自愈）
+    // 时版本不动。
+    final oldRow =
+        await (db.select(
+          db.questions,
+        )..where((t) => t.id.equals(questionId))).getSingleOrNull();
+    final sliceChanged = oldRow != null && oldRow.slicePath != slicePath;
     final updated =
         await (db.update(
           db.questions,
         )..where((t) => t.id.equals(questionId))).write(
-          QuestionsCompanion(
-            slicePath: Value(slicePath),
-            sliceWidth: Value(sliceWidth),
-            sliceHeight: Value(sliceHeight),
-          ),
+          sliceChanged
+              ? QuestionsCompanion.custom(
+                  slicePath: Variable<String>(slicePath),
+                  sliceWidth: Variable<int>(sliceWidth),
+                  sliceHeight: Variable<int>(sliceHeight),
+                  contentVersion:
+                      db.questions.contentVersion + const Constant(1),
+                )
+              : QuestionsCompanion(
+                  slicePath: Value(slicePath),
+                  sliceWidth: Value(sliceWidth),
+                  sliceHeight: Value(sliceHeight),
+                ),
         );
     if (updated != 1) {
       throw StateError('题目不存在，无法保存重框切片：$questionId');

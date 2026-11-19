@@ -3,10 +3,90 @@
 
 part of 'database.dart';
 
-/// §4.5：库里引用到的全部文件相对路径（questions 的
-/// source_path / page_image_path / slice_path +
-/// collect_tasks 的 source_path + 十三批 M2：ocr_jobs 的 crop_path），
-/// 外加存续收集任务的派生文件。
+/// 十四批 M2：从 `questions.ocr_figures` JSON 文本里提取全部图块
+/// 的 `crop_path`（相对路径）。非法/空 JSON → 空集（不抛错）。
+/// 同一库内共用：孤儿引用集合与删除引用检查都走这里，图块裁图
+/// 才不会被误判为孤儿删掉。
+Set<String> _figureCropPathsFromJson(String? ocrFiguresJson) {
+  final paths = <String>{};
+  if (ocrFiguresJson == null || ocrFiguresJson.isEmpty) return paths;
+  try {
+    final decoded = jsonDecode(ocrFiguresJson);
+    if (decoded is List) {
+      for (final item in decoded) {
+        if (item is Map<String, dynamic>) {
+          final crop = item['crop_path'];
+          if (crop is String && crop.isNotEmpty) paths.add(crop);
+        }
+      }
+    }
+  } catch (_) {
+    // 非法 JSON 按无图块计（旧数据/手写坏值不阻断清理）。
+  }
+  return paths;
+}
+
+/// 十四批 M2：某题的全部图块裁图相对路径（删题后逐个重查引用再删
+/// 时用；与 [_figureCropPathsFromJson] 同口径）。
+Future<List<String>> _figureCropPathsOf(
+  QuizDatabase db,
+  String questionId,
+) async {
+  final row = await (db.select(
+    db.questions,
+  )..where((t) => t.id.equals(questionId))).getSingleOrNull();
+  if (row == null) return const [];
+  return _figureCropPathsFromJson(row.ocrFigures).toList();
+}
+
+/// 十四批 M5 修复轮 2（B-FIX2-1）：库行直接引用的全部文件相对路径
+/// （questions 的 source_path / page_image_path / slice_path +
+/// ocr_figures JSON 里的全部 crop_path + collect_tasks 的 source_path +
+/// ocr_jobs 的 crop_path）。**唯一口径来源**：孤儿扫描
+/// ([_referencedRelativePaths]) 在此集合之外另加派生保护；备份恢复
+/// 复核 ([_missingReferencedFiles]) 直接复用本函数再逐个查存在性；
+/// 两处不再各写一份列清单，避免口径漂移。
+/// 注意：本函数不含派生保护（任务的 page-normalized.png、pages/ 下
+/// 页图、original.*）——那些是“有行即保护、文件本身未必存在”，
+/// 只用于“能不能删 / 进不进备份”，不能用于“文件缺了没有”的存在性
+/// 复核（见 [_missingReferencedFiles] 的注释）。
+Future<Set<String>> _directlyReferencedRelativePaths(
+  QuizDatabase db,
+  String dataDir,
+) async {
+  final refs = <String>{};
+  void add(Object? v) {
+    if (v is! String || v.isEmpty) return;
+    final rel = _toDataRelative(v, dataDir);
+    if (rel != null) refs.add(rel);
+  }
+
+  // B2 集成：questions 三列读走 Drift 类型化（原 SELECT
+  // source_path, page_image_path, slice_path FROM questions）。
+  // 十四批 M2：ocr_figures JSON 里的全部 crop_path 也算被引用——
+  // 不加这路，图块裁图会被孤儿扫描误判、也不会进 zip 备份。
+  for (final row in await db.select(db.questions).get()) {
+    add(row.sourcePath);
+    add(row.pageImagePath);
+    add(row.slicePath);
+    for (final crop in _figureCropPathsFromJson(row.ocrFigures)) {
+      add(crop);
+    }
+  }
+  // 十三批 M2：ocr_jobs 的 crop_path 也是被引用的切片文件——
+  // 不加这路，crop 指向的切片会被孤儿扫描误删、也不会进 zip 备份
+  //（crop 通常就是 questions.slice_path 同一文件，此时是去重后的同一条）。
+  for (final row in await db.select(db.ocrJobs).get()) {
+    add(row.cropPath);
+  }
+  for (final row in await db.select(db.collectTasks).get()) {
+    add(row.sourcePath);
+  }
+  return refs;
+}
+
+/// §4.5：库里引用到的全部文件相对路径 = 行直接引用
+/// ([_directlyReferencedRelativePaths]) + 存续收集任务的派生文件。
 ///
 /// SR-P0-1：未拆分任务的派生文件没有任何行引用——PDF 任务渲染出的
 /// 页图在 `imports/<taskId>/pages/`、图片任务的 EXIF 归一化副本在
@@ -28,28 +108,14 @@ Future<Set<String>> _referencedRelativePaths(
   QuizDatabase db,
   String dataDir,
 ) async {
-  final refs = <String>{};
+  final refs = await _directlyReferencedRelativePaths(db, dataDir);
   void add(Object? v) {
     if (v is! String || v.isEmpty) return;
     final rel = _toDataRelative(v, dataDir);
     if (rel != null) refs.add(rel);
   }
 
-  // B2 集成：questions 三列读走 Drift 类型化（原 SELECT
-  // source_path, page_image_path, slice_path FROM questions）。
-  for (final row in await db.select(db.questions).get()) {
-    add(row.sourcePath);
-    add(row.pageImagePath);
-    add(row.slicePath);
-  }
-  // 十三批 M2：ocr_jobs 的 crop_path 也是被引用的切片文件——
-  // 不加这路，crop 指向的切片会被孤儿扫描误删、也不会进 zip 备份
-  //（crop 通常就是 questions.slice_path 同一文件，此时是去重后的同一条）。
-  for (final row in await db.select(db.ocrJobs).get()) {
-    add(row.cropPath);
-  }
   for (final row in await db.select(db.collectTasks).get()) {
-    add(row.sourcePath);
     final taskId = row.id;
     // 任务 id 是应用生成的目录名；含分隔符即不合法，跳过派生口径，
     // 防止 p.join 被带出 imports/<taskId>/。
@@ -99,6 +165,9 @@ Future<OrphanScan> scanOrphanFilesFromImpl(
     for (final e in root.listSync(recursive: true)) {
       if (e is! File) continue;
       final rel = p.relative(e.path, from: dir).replaceAll('\\', '/');
+      // 十四批 M2：`.tmp` 临时文件永不由孤儿清理删除——写一半的
+      // 临时文件只由写路径自己在失败/回滚时清理。
+      if (rel.endsWith('.tmp')) continue;
       if (refs.contains(rel)) continue;
       var size = 0;
       try {
@@ -117,75 +186,90 @@ Future<OrphanScan> scanOrphanFilesFromImpl(
 /// 返回实际删掉的文件数、释放字节数与“删除前重算引用后发现仍被
 /// 引用而跳过”的文件数。
 ///
-/// FR-06(a)：不信任调用方传来的旧扫描——删除前用 [db]（传了时）
-/// 重算一次引用（复用 `_referencedRelativePaths`，一次调用只算
-/// 一次），当时仍被引用的文件跳过不删、计入
-/// `skippedReferencedCount`。调用方不传 db 时保持旧行为（p3/b2
-/// 既有测试直调静态方法，不改签名仍能编译）。
+/// FR-06(a)：不信任调用方传来的旧扫描——删除前用 [db] 重算一次引用
+/// （复用 `_referencedRelativePaths`，一次调用只算一次），当时仍被
+/// 引用的文件跳过不删、计入 `skippedReferencedCount`。
+/// 十四批 M5 修复轮 2（B-FIX2-2）：`db` 改为必填——无数据库实时引用
+/// 检查的删除路径已封闭；旧测试需要不带 DB 的行为时，用测试文件内
+/// 的测试专用 helper，不要调生产入口。
 Future<({int deletedCount, int freedBytes, int skippedReferencedCount})>
 deleteOrphanFilesImpl(
   List<String> relativePaths, {
   String? dataDir,
-  QuizDatabase? db,
+  required QuizDatabase db,
 }) async {
   final dir = dataDir ?? AppDatabase.dataDirectoryPath();
-  // 删除前重算一次引用：扫描时无引用、删除时又被引用的文件——
-  // 典型是恢复后旧扫描里的文件——必须跳过。
-  final refs = db == null
-      ? const <String>{}
-      : await _referencedRelativePaths(db, dir);
-  var deleted = 0;
-  var freed = 0;
-  var skipped = 0;
-  final touchedParents = <Directory>[];
-  for (final rel in relativePaths) {
-    if (!rel.startsWith('imports/') && !rel.startsWith('slices/')) {
-      continue;
-    }
-    // FR-06(a)：删除前重算的引用里有它——跳过不删，计入返回。
-    if (refs.contains(rel)) {
-      skipped++;
-      continue;
-    }
-    final abs = _resolveInsideDir(dir, rel);
-    if (abs == null) continue;
-    final f = File(abs);
-    if (!f.existsSync()) continue;
-    try {
+  final guard = FileLifecycleGuard.instance;
+  // 十四批 M2（P1-B）：扫描与删除在同一锁内完成——锁内重算引用集合
+  // （数据库实时查询 + 待提交集合 + 备份暂存区占用），只删三者皆无
+  // 的文件；不得“扫描完放锁再删”。预览扫描（scanOrphanFilesFromImpl）
+  // 只是给用户看的清单，不在锁内；删除时这一次重算才是权威口径。
+  return guard.withLock(() async {
+    // 删除前重算一次引用：扫描时无引用、删除时又被引用的文件——
+    // 典型是恢复后旧扫描里的文件——必须跳过。
+    final refs = await _referencedRelativePaths(db, dir);
+    var deleted = 0;
+    var freed = 0;
+    var skipped = 0;
+    final touchedParents = <Directory>[];
+    for (final rel in relativePaths) {
+      if (!rel.startsWith('imports/') && !rel.startsWith('slices/')) {
+        continue;
+      }
+      // 十四批 M2：`.tmp` 临时文件永不由孤儿清理删除（纵使调用方
+      // 传进来了也跳过）。
+      if (rel.endsWith('.tmp')) {
+        skipped++;
+        continue;
+      }
+      // FR-06(a)：删除前重算的引用里有它——跳过不删，计入返回。
+      // P1-B：待提交集合与备份暂存区占用同样视为“仍被引用”。
+      if (refs.contains(rel) ||
+          guard.isPending(rel) ||
+          guard.isStaged(rel)) {
+        skipped++;
+        continue;
+      }
+      final abs = _resolveInsideDir(dir, rel);
+      if (abs == null) continue;
+      final f = File(abs);
+      if (!f.existsSync()) continue;
       // FR-22：先记大小、删成功后再计入 freed——删失败时汇报数字
       // 不虚高（旧写法在 delete 之前就 +=，catch 为空时照计）。
       final size = f.lengthSync();
-      await f.delete();
+      // 已持锁：走内部删除（不再次取锁，P2 约束 1）。
+      final ok = await guard.deleteFileLocked(f);
+      if (!ok) continue;
       freed += size;
       deleted++;
       touchedParents.add(f.parent);
-    } catch (_) {}
-  }
-  for (final parent in touchedParents) {
-    var d = parent;
-    while (true) {
-      final rel = p.relative(d.path, from: dir).replaceAll('\\', '/');
-      if (rel == 'imports' || rel == 'slices') break;
-      if (!rel.startsWith('imports/') && !rel.startsWith('slices/')) {
-        break;
-      }
-      try {
-        if (d.listSync().isEmpty) {
-          await d.delete();
-        } else {
+    }
+    for (final parent in touchedParents) {
+      var d = parent;
+      while (true) {
+        final rel = p.relative(d.path, from: dir).replaceAll('\\', '/');
+        if (rel == 'imports' || rel == 'slices') break;
+        if (!rel.startsWith('imports/') && !rel.startsWith('slices/')) {
           break;
         }
-      } catch (_) {
-        break;
+        try {
+          if (d.listSync().isEmpty) {
+            await guard.deleteDirectoryLocked(d);
+          } else {
+            break;
+          }
+        } catch (_) {
+          break;
+        }
+        d = d.parent;
       }
-      d = d.parent;
     }
-  }
-  return (
-    deletedCount: deleted,
-    freedBytes: freed,
-    skippedReferencedCount: skipped,
-  );
+    return (
+      deletedCount: deleted,
+      freedBytes: freed,
+      skippedReferencedCount: skipped,
+    );
+  });
 }
 
 extension AppDatabaseOrphans on AppDatabase {

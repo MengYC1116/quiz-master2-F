@@ -121,6 +121,8 @@ class WrongbookState {
     this.search = '',
     this.filterExamId,
     this.filterErrorType,
+    // 十四批 M1：题型筛选。null = 全部；'' = 只看待确认；其余 = 该题型值。
+    this.filterQuestionType,
     this.filterTimeRange = 'all',
     this.filterCauseStatus = 'all',
     this.filterCauseName,
@@ -179,6 +181,9 @@ class WrongbookState {
   final String search;
   final String? filterExamId;
   final String? filterErrorType;
+
+  /// 十四批 M1：题型筛选。null = 全部；'' = 只看待确认；其余 = 该题型值。
+  final String? filterQuestionType;
   final String filterTimeRange; // all / week / month
   final String
   filterCauseStatus; // all / pending / inProgress / solved / recheck
@@ -232,6 +237,7 @@ class WrongbookState {
     String? search,
     Object? filterExamId = _unset,
     Object? filterErrorType = _unset,
+    Object? filterQuestionType = _unset,
     String? filterTimeRange,
     String? filterCauseStatus,
     Object? filterCauseName = _unset,
@@ -291,6 +297,9 @@ class WrongbookState {
       filterErrorType: filterErrorType == _unset
           ? this.filterErrorType
           : filterErrorType as String?,
+      filterQuestionType: filterQuestionType == _unset
+          ? this.filterQuestionType
+          : filterQuestionType as String?,
       filterTimeRange: filterTimeRange ?? this.filterTimeRange,
       filterCauseStatus: filterCauseStatus ?? this.filterCauseStatus,
       filterCauseName: filterCauseName == _unset
@@ -527,6 +536,14 @@ class WrongbookState {
     if (filterErrorType != null) {
       list = list.where((q) => q.allCauses.contains(filterErrorType)).toList();
     }
+    // 十四批 M1：题型筛选（'' = 待确认 → questionType == null）。
+    if (filterQuestionType != null) {
+      if (filterQuestionType!.isEmpty) {
+        list = list.where((q) => q.questionType == null).toList();
+      } else {
+        list = list.where((q) => q.questionType == filterQuestionType).toList();
+      }
+    }
     if (filterCauseName != null) {
       list = list.where((q) => q.allCauses.contains(filterCauseName)).toList();
     }
@@ -623,6 +640,7 @@ class WrongbookState {
     var n = 0;
     if (filterExamId != null) n++;
     if (filterErrorType != null) n++;
+    if (filterQuestionType != null) n++;
     if (filterTimeRange != 'all') n++;
     if (filterCauseStatus != 'all') n++;
     if (filterCauseName != null) n++;
@@ -894,6 +912,7 @@ class WrongbookNotifier extends Notifier<WrongbookState> {
       search: '',
       filterExamId: null,
       filterErrorType: null,
+      filterQuestionType: null,
       filterTimeRange: 'all',
       filterCauseStatus: 'all',
       filterCauseName: null,
@@ -983,6 +1002,12 @@ class WrongbookNotifier extends Notifier<WrongbookState> {
 
   void setFilterErrorType(String? v) {
     state = state.copyWith(filterErrorType: v);
+    applyFilterChange();
+  }
+
+  /// 十四批 M1：题型筛选（null = 全部；'' = 只看待确认）。
+  void setFilterQuestionType(String? v) {
+    state = state.copyWith(filterQuestionType: v);
     applyFilterChange();
   }
 

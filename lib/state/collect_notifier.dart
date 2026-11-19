@@ -47,6 +47,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../data/database.dart';
+import '../data/file_lifecycle_guard.dart';
 import '../data/repository.dart';
 import '../models/models.dart';
 import '../modules/collect/batch_import.dart';
@@ -998,13 +999,14 @@ class CollectNotifier extends Notifier<CollectState> {
 
   /// SR-P2-22：按相对路径清单删文件（本次确认新写的切片/烘焙图）。
   /// 单个删失败不影响其余——清理本身走在失败处理里，静默跳过即可。
+  /// 十四批 M2（P2-2）：经统一文件操作锁（本次新写的文件尚未入库，
+  /// 无数据库引用；取锁防与备份导出/孤儿清理竞态）。
   Future<void> _deleteWrittenFiles(List<String> rels) async {
+    final guard = FileLifecycleGuard.instance;
     for (final rel in rels) {
-      try {
-        final abs = AppDatabase.resolveDataPath(rel);
-        final file = abs == null ? null : File(abs);
-        if (file != null && file.existsSync()) await file.delete();
-      } catch (_) {}
+      final abs = AppDatabase.resolveDataPath(rel);
+      final file = abs == null ? null : File(abs);
+      if (file != null) await guard.deleteFile(file);
     }
   }
 

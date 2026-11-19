@@ -27,6 +27,11 @@ Future<void> deleteSubjectFromImpl(QuizDatabase db, String id) async {
     db.questions,
   )..where((t) => t.subjectId.equals(id))).get();
   final slices = sliceRows.map((r) => r.slicePath).toList();
+  // 十四批 M2：该科题的图块裁图同样在提交后逐个重查引用再删。
+  final figureCrops = <String>[];
+  for (final row in sliceRows) {
+    figureCrops.addAll(_figureCropPathsFromJson(row.ocrFigures));
+  }
   final taskRows = await (db.select(
     db.collectTasks,
   )..where((t) => t.subjectId.equals(id))).get();
@@ -65,6 +70,9 @@ Future<void> deleteSubjectFromImpl(QuizDatabase db, String id) async {
   for (final slice in slices) {
     await _deleteDataFileIfUnreferenced(db, slice);
   }
+  for (final crop in figureCrops) {
+    await _deleteDataFileIfUnreferenced(db, crop);
+  }
   for (final taskId in taskIds) {
     await _deleteTaskDirIfUnreferenced(db, taskId);
   }
@@ -86,6 +94,10 @@ Future<int> deleteFolderFromImpl(QuizDatabase db, Folder f) async {
   for (final row in before) {
     if (!remainingIds.contains(row.id)) {
       await _deleteDataFileIfUnreferenced(db, row.slicePath);
+      // 十四批 M2：被删题的图块裁图同样逐个重查引用再删。
+      for (final crop in _figureCropPathsFromJson(row.ocrFigures)) {
+        await _deleteDataFileIfUnreferenced(db, crop);
+      }
     }
   }
   return deleted;

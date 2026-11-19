@@ -43,6 +43,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../data/data_change_events.dart';
 import '../data/repository.dart';
 import '../models/models.dart';
+import '../modules/ocr/question_classifier.dart';
 import '../modules/ocr/stem_correction.dart';
 import '../services/ocr_queue.dart';
 import 'repository_provider.dart';
@@ -87,6 +88,14 @@ class OrganizeState {
     this.errorTypes = const [],
     this.customTypes = const [],
     this.tags = const [],
+    // 十四批 M1：表单里的题型值（NULL = 待确认；loadForm 时从当前题读）。
+    this.questionType,
+    // 十四批 M3：表单里的选项标签值（loadForm 时从当前题读）。
+    this.optionLabels,
+    this.optionLabelsConfirmed = false,
+    this.correctOption,
+    this.answerReconfirmed = false,
+    this.optionLabelsJustConfirmed = false,
     this.formResetKey = 0,
     // 十三批 M5：当前题的 OCR 任务行与 key 有无（识别题干状态推导用）。
     this.ocrJobs = const [],
@@ -135,6 +144,20 @@ class OrganizeState {
   final List<String> customTypes;
   final List<String> tags;
 
+  /// 十四批 M1：表单里的题型值（NULL = 待确认）。
+  final String? questionType;
+
+  // 十四批 M3：表单里的选项标签值（loadForm 时从当前题读；null = 未确认）。
+  // optionLabelsConfirmed：表单里的确认态；correctOption：表单里的
+  // 正确选项（仅单选/判断用）；answerReconfirmed：本次编辑是否已重确认
+  // 答案（P1-A 信号，保存后清零）；optionLabelsJustConfirmed：本次保存
+  // 就是确认保存（「确认选项」按的，保存后清零）。
+  final List<String>? optionLabels;
+  final bool optionLabelsConfirmed;
+  final String? correctOption;
+  final bool answerReconfirmed;
+  final bool optionLabelsJustConfirmed;
+
   /// 表单重置代次：每次 `_loadForm` 加一，页面按它变化、下一帧把
   /// 控制器文本按当前题重建并收起内联新建框（原 `_loadForm` 里
   /// 设控制器文本 + 收框的部分）。
@@ -179,6 +202,14 @@ class OrganizeState {
     final a = answer.trim();
     final e = explanation.trim();
     final n = notes.trim();
+    // 十四批 M3：correct_option 只用于单选/判断（M3-4）——表单题型
+    // 不是这两者时（多选/不定项/填空/待确认…），正确选项强制为空，
+    // 不把旧单选题的 correct_option 带到新题型下。
+    final effectiveCorrect =
+        (questionType == 'choice_single' ||
+            questionType == 'true_false')
+        ? correctOption
+        : null;
     // SR-P2-27：保存兜底——表单里万一还有与固定枚举同名的自定义项
     //（如别处入口带进来的旧数据），合并进固定项再写库，不丢、不重复。
     final fixedTypes = {
@@ -205,7 +236,26 @@ class OrganizeState {
       clearExplanation: e.isEmpty,
       clearNotes: n.isEmpty,
       isOrganized: organized ? true : q.isOrganized,
+      // 十四批 M3：选项标签表单值（copyWith 里传 null 表示“保持原值”，
+      // 清空要走 clear 标志；多选/不定项的 correctOption 恒为 NULL，
+      // 由页面只在单选/判断时给值——这里只按表单值写，不另做题型校验，
+      // 校验在数据层 _applyOptionLabelChangeRules 与判分入口做）。
+      optionLabels: optionLabels,
+      clearOptionLabels: optionLabels == null && q.optionLabels != null,
+      optionLabelsConfirmed: optionLabelsConfirmed,
+      correctOption: effectiveCorrect,
+      clearCorrectOption:
+          effectiveCorrect == null && q.correctOption != null,
+      answerReconfirmed: answerReconfirmed,
+      optionLabelsJustConfirmed: optionLabelsJustConfirmed,
     );
+  }
+
+  /// 十四批 M1：表单里的题型改动（改后写 source=manual；值不变时
+  /// 不碰来源保护位——切题自动保存不得把自动分类静默锁成人工）。
+  Question formQuestionWithType(Question base) {
+    if (questionType == base.questionType) return base;
+    return withManualQuestionType(base, questionType);
   }
 
   OrganizeState copyWith({
@@ -228,6 +278,12 @@ class OrganizeState {
     List<String>? errorTypes,
     List<String>? customTypes,
     List<String>? tags,
+    Object? questionType = _unset,
+    Object? optionLabels = _unset,
+    bool? optionLabelsConfirmed,
+    Object? correctOption = _unset,
+    bool? answerReconfirmed,
+    bool? optionLabelsJustConfirmed,
     int? formResetKey,
     List<OcrJob>? ocrJobs,
     bool? hasOcrApiKey,
@@ -252,6 +308,20 @@ class OrganizeState {
       errorTypes: errorTypes ?? this.errorTypes,
       customTypes: customTypes ?? this.customTypes,
       tags: tags ?? this.tags,
+      questionType: questionType == _unset
+          ? this.questionType
+          : questionType as String?,
+      optionLabels: optionLabels == _unset
+          ? this.optionLabels
+          : optionLabels as List<String>?,
+      optionLabelsConfirmed:
+          optionLabelsConfirmed ?? this.optionLabelsConfirmed,
+      correctOption: correctOption == _unset
+          ? this.correctOption
+          : correctOption as String?,
+      answerReconfirmed: answerReconfirmed ?? this.answerReconfirmed,
+      optionLabelsJustConfirmed:
+          optionLabelsJustConfirmed ?? this.optionLabelsJustConfirmed,
       formResetKey: formResetKey ?? this.formResetKey,
       ocrJobs: ocrJobs ?? this.ocrJobs,
       hasOcrApiKey: hasOcrApiKey ?? this.hasOcrApiKey,
@@ -496,6 +566,25 @@ class OrganizeNotifier extends Notifier<OrganizeState> {
     }
   }
 
+  /// 删除单个图块（十四批 M2）：只更新数据库引用（ocr_figures 去掉
+  /// 该项），content_version +1（图块变化；版本由 upsert 的版本权威
+  /// 按实际内容变化统一计算，只 +1 一次）；旧文件不立即删，进孤儿清理。
+  /// 无该图块时直接返回 true。返回 false 时页面提示，编辑器里该段保持原样。
+  Future<bool> deleteFigure(String figureId) async {
+    final q = state.current;
+    if (q == null) return false;
+    final repo = _repo;
+    try {
+      final updated = deleteFigureFromQuestion(q, figureId);
+      if (identical(updated, q)) return true;
+      await repo.save(updated);
+      _replaceQueueRow(updated);
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
   /// 手动“重新识别”：为当前题建 OCR 任务（调 M3 入队接口），
   /// 入队后刷新任务行。入队失败（无切片等）返回 false，页面提示；
   /// 入队本身绝不拦整理流程。
@@ -554,6 +643,16 @@ class OrganizeNotifier extends Notifier<OrganizeState> {
           .where((t) => !ErrorTypes.fixed.contains(t))
           .toList(),
       tags: List.of(q.tags),
+      questionType: q.questionType,
+      // 十四批 M3：选项标签表单值从当前题读；重确认信号是单次保存信号，
+      // 切题即清零（不跨题带）。
+      optionLabels: q.optionLabels == null
+          ? null
+          : List.of(q.optionLabels!),
+      optionLabelsConfirmed: q.optionLabelsConfirmed,
+      correctOption: q.correctOption,
+      answerReconfirmed: false,
+      optionLabelsJustConfirmed: false,
       formResetKey: state.formResetKey + 1,
     );
   }
@@ -626,6 +725,58 @@ class OrganizeNotifier extends Notifier<OrganizeState> {
     state = state.copyWith(tags: list);
   }
 
+  /// 十四批 M1：表单里的题型改动（只改表单值，不写库；保存时
+  /// formQuestionWithType 再按“值变了才写 manual”落盘）。
+  void setQuestionType(String? type) {
+    state = state.copyWith(questionType: type);
+  }
+
+  /// 十四批 M3：表单里的选项标签改动（只改表单值，不写库；保存时
+  /// formQuestion 落盘，数据层 _applyOptionLabelChangeRules 再按改标签
+  /// 规则处理确认清零与 P1-A）。标签清空时确认态一并清零。
+  void setOptionLabels(List<String>? labels) {
+    state = state.copyWith(
+      optionLabels: labels,
+      optionLabelsConfirmed:
+          labels == null ? false : state.optionLabelsConfirmed,
+    );
+  }
+
+  /// 十四批 M3：表单里的正确选项改动（只改表单值，不写库）。
+  /// 点选正确选项即重确认（D-133）：单选只改标签顺序后，重新选定
+  /// 同一标签也须带 answerReconfirmed 信号才恢复判分。
+  void setCorrectOption(String? value) {
+    state = state.copyWith(
+      correctOption: value,
+      answerReconfirmed: true,
+    );
+  }
+
+  /// 十四批 M3：P1-A 重确认复选框（多选/不定项改标签后，确认旧答案
+  /// 和解析仍有效；同次保存不确认则数据层置 NULL）。
+  void setAnswerReconfirmed(bool value) {
+    state = state.copyWith(answerReconfirmed: value);
+  }
+
+  /// 十四批 M3：「确认选项」：把表单确认态置 1 并带 justConfirmed
+  /// 信号立即保存（保存成功后信号清零，见 [saveCurrent]）。
+  /// 页面传当前答案/解析/笔记文本框内容（与 _trySaveCurrent 同款）。
+  Future<bool> confirmOptionLabels({
+    required String answer,
+    required String explanation,
+    required String notes,
+  }) async {
+    state = state.copyWith(
+      optionLabelsConfirmed: true,
+      optionLabelsJustConfirmed: true,
+    );
+    return saveCurrent(
+      answer: answer,
+      explanation: explanation,
+      notes: notes,
+    );
+  }
+
   // ---------- 保存 / 切题 / 确认（原 `_saveCurrent` / `_goTo` /
   // `_confirmCurrent` / `_jumpToQuestion` / `_applyQueueSort`） ----------
 
@@ -646,11 +797,13 @@ class OrganizeNotifier extends Notifier<OrganizeState> {
     // D-42：repo 入口处捕获一次（保存 + 同步错因记录跨两次 await）。
     final repo = _repo;
     try {
-      final updated = state.formQuestion(
-        q,
-        answer: answer,
-        explanation: explanation,
-        notes: notes,
+      final updated = state.formQuestionWithType(
+        state.formQuestion(
+          q,
+          answer: answer,
+          explanation: explanation,
+          notes: notes,
+        ),
       );
       // FR-02：save 先发角标事件、syncCauseRecords 后写库时，角标重读
       // 可能抢在同步提交前（错因同步改变复习归属时角标滞后一次）；
@@ -665,6 +818,13 @@ class OrganizeNotifier extends Notifier<OrganizeState> {
         final queue = [...state.queue];
         queue[i] = updated;
         state = state.copyWith(queue: queue);
+      }
+      // 十四批 M3：重确认信号是单次保存信号，成功落盘后清零，不跨保存带。
+      if (state.answerReconfirmed || state.optionLabelsJustConfirmed) {
+        state = state.copyWith(
+          answerReconfirmed: false,
+          optionLabelsJustConfirmed: false,
+        );
       }
       return true;
     } catch (_) {
@@ -695,12 +855,14 @@ class OrganizeNotifier extends Notifier<OrganizeState> {
   }) async {
     final q = state.current;
     if (q == null) return;
-    final updated = state.formQuestion(
-      q,
-      answer: answer,
-      explanation: explanation,
-      notes: notes,
-      organized: true,
+    final updated = state.formQuestionWithType(
+      state.formQuestion(
+        q,
+        answer: answer,
+        explanation: explanation,
+        notes: notes,
+        organized: true,
+      ),
     );
     // D-42：repo 入口处捕获一次（保存 + 同步错因记录 + 记最近任务跨多次 await）。
     // FR-02：与 saveCurrent 同款，save + 同步 + 记最近任务包进一个

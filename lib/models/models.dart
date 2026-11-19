@@ -114,6 +114,10 @@ extension CauseStatusLabel on CauseStatus {
 /// “题 × 错因”解决记录：复习按错因治，一道题的每个错因各一条记录。
 class CauseRecord {
   const CauseRecord({
+    // 十四批 M3：数据库行 id（cause_records.id，自增主键）。内存里新造的
+    // 记录（未入库）为 null；review_history.cause_id 写它（有 id 时），
+    // 无 id 时回退为 '$questionId|$cause'（见 review_engine.causeStableId）。
+    this.id,
     required this.questionId,
     required this.cause,
     required this.subjectId,
@@ -123,8 +127,14 @@ class CauseRecord {
     this.recheckDate,
     this.remedyHistory = const [],
     required this.joinedAt,
+    // 十四批 M1（M3-7 的 24 小时锚点链）：上一次计入治愈次数的成功
+    // 时间（毫秒时间戳）与所在会话；未计入的成功不刷新锚点；
+    // “未解决”重置时两者清空；v4→v5 迁移后旧行均为 NULL。
+    this.lastCountedSuccessAt,
+    this.lastCountedSessionId,
   });
 
+  final int? id;
   final String questionId;
   final String cause;
   final String subjectId;
@@ -134,6 +144,8 @@ class CauseRecord {
   final DateTime? recheckDate;
   final List<String> remedyHistory; // 每次写补救的内容（带日期），新→旧
   final DateTime joinedAt; // 加入复习的时间，列表按它排
+  final int? lastCountedSuccessAt;
+  final String? lastCountedSessionId;
 
   /// 是否到了复查时间：已解决且复查日 ≤ 今天。
   bool get isRecheckDue {
@@ -146,15 +158,20 @@ class CauseRecord {
   }
 
   CauseRecord copyWith({
+    int? id,
     CauseStatus? status,
     int? solvedCount,
     DateTime? lastCheck,
     DateTime? recheckDate,
     List<String>? remedyHistory,
     DateTime? joinedAt,
+    int? lastCountedSuccessAt,
+    String? lastCountedSessionId,
     bool clearRecheckDate = false,
+    bool clearCountedAnchors = false,
   }) {
     return CauseRecord(
+      id: id ?? this.id,
       questionId: questionId,
       cause: cause,
       subjectId: subjectId,
@@ -165,6 +182,12 @@ class CauseRecord {
           clearRecheckDate ? null : (recheckDate ?? this.recheckDate),
       remedyHistory: remedyHistory ?? this.remedyHistory,
       joinedAt: joinedAt ?? this.joinedAt,
+      lastCountedSuccessAt: clearCountedAnchors
+          ? null
+          : (lastCountedSuccessAt ?? this.lastCountedSuccessAt),
+      lastCountedSessionId: clearCountedAnchors
+          ? null
+          : (lastCountedSessionId ?? this.lastCountedSessionId),
     );
   }
 }
@@ -192,16 +215,30 @@ class ReviewQueueItem {
 
 /// 复习会话断点（单行，id = 1）：暂停时存下队列与位置，
 /// 下次进复习页从断的那个错因继续。
+/// 十四批 M3（M3-10 轻量会话持久化）：sessionId/mode/skips/
+/// perQuestionState 与 review_state 表的 v5 扩展列对应；全局同一时间
+/// 只允许一个活动或暂停会话。perQuestionState 以题 id 为键，每题存
+/// question_submission_id + answer_version_at_start +
+/// content_version_at_start + stage + attemptId + 跳过/作答/核对/
+/// verdict 状态（JSON 解码后的 Map，见 review_engine.encodePerQuestionState）。
 class ReviewSessionState {
   const ReviewSessionState({
     required this.queue,
     required this.position,
     required this.updatedAt,
+    this.sessionId,
+    this.mode,
+    this.skips = const {},
+    this.perQuestionState = const {},
   });
   // 队列项按解决顺序排（ReviewQueueItem，不再拼 "qid|cause" 字符串）。
   final List<ReviewQueueItem> queue;
   final int position;
   final DateTime updatedAt;
+  final String? sessionId;
+  final String? mode;
+  final Map<String, int> skips;
+  final Map<String, Map<String, Object?>> perQuestionState;
 }
 
 /// 错误类型：固定枚举 + 自定义（自定义只跟本题，下次可选，不进全局枚举）。
@@ -319,6 +356,40 @@ class Question {
     this.ocrSplitStatus = OcrSplitStatus.unsegmented,
     this.ocrManualEdited = false,
     this.contentVersion = 0,
+    // 十四批 M1：题型两维 + 答案版本。questionType 是主题型（作答形式），
+    // NULL = 待确认；questionTypeSource 取值 auto/manual/unclassified；
+    // questionBackgroundTags 是逗号分隔的背景标签（第一版只自动生成
+    // “材料”“听力”，其余为预留值），questionBackgroundTagsSource
+    // 只保护背景标签，与主题型来源分离；ocrFigures 是图块 JSON（M2 写，
+    // M1 只建列，默认 '[]'）；correctOption 只用于单选/判断，多选/
+    // 不定项恒为 NULL；optionLabels 是 JSON 选项标签数组，NULL = 未确认；
+    // optionLabelsConfirmed 须点“确认选项”才置 1（M3 用）；answerVersion
+    // 是答案版本，改答案/解析/correct_option/option_labels 时 +1。
+    this.questionType,
+    this.questionTypeSource = 'unclassified',
+    this.questionBackgroundTags = '',
+    this.questionBackgroundTagsSource = 'unclassified',
+    this.ocrFigures = '[]',
+    this.correctOption,
+    this.optionLabels,
+    this.optionLabelsConfirmed = false,
+    this.answerVersion = 1,
+    // 十四批 M3（P1-A）：答案待重新核对标记。改标签后未在同一次保存中
+    // 重新确认答案/正确选项时置 1：旧 answer/explanation/correctOption
+    // 不得再作为有效标准答案展示（各处显示“标准答案待重新核对”/
+    // “解析待重新核对”/“正确答案待重新核对”）；核对区按无有效标准答案
+    // 处理。持久化列 answer_pending_recheck（仍属 v5）。
+    this.answerPendingRecheck = false,
+    // 十四批 M3（P1-A 保存时信号，不持久化、不进 Companion）：本次保存
+    // 中用户已在编辑器内明确重新确认答案/正确选项（原样确认或改写后
+    // 保存）。upsert 时消费它，判定是否把改标签后的旧答案置 NULL；
+    // 未带信号的改标签保存一律按“未确认”处理。
+    this.answerReconfirmed = false,
+    // 十四批 M3（标签确认保存时信号，不持久化）：本次保存就是点
+    // “确认选项”的那一次保存（标签与确认状态一起落盘）。upsert 据此
+    // 区分“本次刚确认”与“旧确认状态顺带抄过来”——改标签的保存若
+    // 不带本信号，option_labels_confirmed 一律清零。
+    this.optionLabelsJustConfirmed = false,
   });
 
   final String id;
@@ -357,6 +428,48 @@ class Question {
   final String ocrSplitStatus;
   final bool ocrManualEdited;
   final int contentVersion;
+  // 十四批 M1：题型两维 + 答案版本（列定义见 lib/data/db_schema.dart）。
+  final String? questionType;
+  final String questionTypeSource;
+  final String questionBackgroundTags;
+  final String questionBackgroundTagsSource;
+  final String ocrFigures;
+  final String? correctOption;
+  final List<String>? optionLabels;
+  final bool optionLabelsConfirmed;
+  final int answerVersion;
+  final bool answerPendingRecheck;
+  final bool answerReconfirmed;
+  final bool optionLabelsJustConfirmed;
+
+  /// P1-A 有效答案口径：待重新核对期间旧答案/解析/正确选项一律无效。
+  /// 单选/判断的有效标准答案是 correctOption；多选/不定项与主观题是
+  /// answer 字段。调用方按题型取其中之一，两个 getter 都先过本标记。
+  String? get effectiveCorrectOption =>
+      answerPendingRecheck ? null : correctOption;
+  String? get effectiveAnswer => answerPendingRecheck ? null : answer;
+  String? get effectiveExplanation =>
+      answerPendingRecheck ? null : explanation;
+
+  /// 本题是否有可作核验依据的软件内标准答案（M3-6 表 A/B 分流用）：
+  /// 单选/判断看 correctOption；其余题型看 answer；待重新核对时一律无。
+  bool get hasValidStandardAnswer {
+    if (answerPendingRecheck) return false;
+    if (questionType == 'choice_single' || questionType == 'true_false') {
+      return correctOption != null && correctOption!.isNotEmpty;
+    }
+    return answer != null && answer!.trim().isNotEmpty;
+  }
+
+  /// 背景标签列表（逗号分隔存；空串 = 无标签）。
+  List<String> get backgroundTagList =>
+      questionBackgroundTags.isEmpty
+      ? const []
+      : questionBackgroundTags
+            .split(',')
+            .map((t) => t.trim())
+            .where((t) => t.isNotEmpty)
+            .toList();
 
   /// 全部错因（固定枚举 + 自定义）。
   /// SR2-23：保序去重——旧数据里同名自定义（如固定名“其他”又存了一份
@@ -394,6 +507,19 @@ class Question {
     String? ocrSplitStatus,
     bool? ocrManualEdited,
     int? contentVersion,
+    // 十四批 M1：题型两维 + 答案版本。
+    String? questionType,
+    String? questionTypeSource,
+    String? questionBackgroundTags,
+    String? questionBackgroundTagsSource,
+    String? ocrFigures,
+    String? correctOption,
+    List<String>? optionLabels,
+    bool? optionLabelsConfirmed,
+    int? answerVersion,
+    bool? answerPendingRecheck,
+    bool? answerReconfirmed,
+    bool? optionLabelsJustConfirmed,
     // 传 null 表示“保持原值”；要把字段清空时用这些标志（整理/详情页
     // 把答案、解析、笔记清空后保存必须真正清掉，不能留旧值）。
     bool clearExamId = false,
@@ -405,6 +531,9 @@ class Question {
     bool clearSlicePath = false,
     bool clearOcrRaw = false,
     bool clearOcrStem = false,
+    bool clearQuestionType = false,
+    bool clearOptionLabels = false,
+    bool clearCorrectOption = false,
   }) {
     return Question(
       id: id,
@@ -441,6 +570,25 @@ class Question {
       ocrSplitStatus: ocrSplitStatus ?? this.ocrSplitStatus,
       ocrManualEdited: ocrManualEdited ?? this.ocrManualEdited,
       contentVersion: contentVersion ?? this.contentVersion,
+      questionType:
+          clearQuestionType ? null : (questionType ?? this.questionType),
+      questionTypeSource: questionTypeSource ?? this.questionTypeSource,
+      questionBackgroundTags:
+          questionBackgroundTags ?? this.questionBackgroundTags,
+      questionBackgroundTagsSource:
+          questionBackgroundTagsSource ?? this.questionBackgroundTagsSource,
+      ocrFigures: ocrFigures ?? this.ocrFigures,
+      correctOption:
+          clearCorrectOption ? null : (correctOption ?? this.correctOption),
+      optionLabels:
+          clearOptionLabels ? null : (optionLabels ?? this.optionLabels),
+      optionLabelsConfirmed:
+          optionLabelsConfirmed ?? this.optionLabelsConfirmed,
+      answerVersion: answerVersion ?? this.answerVersion,
+      answerPendingRecheck: answerPendingRecheck ?? this.answerPendingRecheck,
+      answerReconfirmed: answerReconfirmed ?? this.answerReconfirmed,
+      optionLabelsJustConfirmed:
+          optionLabelsJustConfirmed ?? this.optionLabelsJustConfirmed,
     );
   }
 }

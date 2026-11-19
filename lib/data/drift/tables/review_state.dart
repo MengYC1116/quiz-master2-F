@@ -24,4 +24,14 @@ class ReviewState extends Table {
       text().map(const QueueConverter()).withDefault(const Constant(''))();
   IntColumn get position => integer().withDefault(const Constant(0))();
   IntColumn get updatedAt => integer()();
+
+  /// 十四批 M1（M3-10 轻量会话持久化）：session_id（会话）、mode
+  ///（到期复习/专项练习）、skips（JSON，各题跳过次数）、per_question_state
+  ///（JSON，各题作答/核对/verdict 状态 + question_submission_id +
+  /// answer_version_at_start + content_version_at_start）。均可空；
+  /// 全局同一时间只允许一个活动或暂停会话。
+  TextColumn get sessionId => text().nullable()();
+  TextColumn get mode => text().nullable()();
+  TextColumn get skips => text().nullable()();
+  TextColumn get perQuestionState => text().nullable()();
 }

@@ -49,8 +49,10 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../data/database.dart';
 import '../data/data_change_events.dart';
+import '../data/file_lifecycle_guard.dart';
 import '../data/repository.dart';
 import '../models/models.dart';
+import '../modules/ocr/question_classifier.dart';
 import '../modules/ocr/stem_correction.dart';
 import '../services/import_guess.dart';
 import '../services/import_service.dart';
@@ -145,6 +147,14 @@ class DetailState {
     this.editKps = const {},
     this.editExamId,
     this.editBase,
+    // 十四批 M1：编辑表单里的题型值（NULL = 待确认；enterEdit 时从当前题读）。
+    this.editQuestionType,
+    // 十四批 M3：编辑表单里的选项标签值（enterEdit 时从当前题读）。
+    this.editOptionLabels,
+    this.editOptionLabelsConfirmed = false,
+    this.editCorrectOption,
+    this.editAnswerReconfirmed = false,
+    this.editOptionLabelsJustConfirmed = false,
     this.formResetKey = 0,
     // FR-09：复查间隔（设置 3 / 7 / 14 天，默认 7，D-05）；详情页
     // “满 N 天自动回来复查”文案用它拼，不再写死 7 天。`load()` 读库。
@@ -208,6 +218,20 @@ class DetailState {
   final Set<String> editKps;
   final String? editExamId;
 
+  /// 十四批 M1：编辑表单里的题型值（NULL = 待确认）。
+  final String? editQuestionType;
+
+  // 十四批 M3：编辑表单里的选项标签值（enterEdit 时从当前题读）。
+  // editOptionLabelsConfirmed：编辑态确认态；editCorrectOption：
+  // 编辑态正确选项（仅单选/判断用）；editAnswerReconfirmed：本次编辑
+  // 是否已重确认答案（P1-A 信号）；editOptionLabelsJustConfirmed：
+  // 本次编辑点过「确认选项」（保存时带 justConfirmed 信号）。
+  final List<String>? editOptionLabels;
+  final bool editOptionLabelsConfirmed;
+  final String? editCorrectOption;
+  final bool editAnswerReconfirmed;
+  final bool editOptionLabelsJustConfirmed;
+
   /// 进编辑时的题快照（原 `_editBase`；保存时以它为底构造新题，
   /// 学科与图片字段都从它带上，编辑一次不抹图）。
   final Question? editBase;
@@ -241,6 +265,12 @@ class DetailState {
     Set<String>? editKps,
     Object? editExamId = _unset,
     Object? editBase = _unset,
+    Object? editQuestionType = _unset,
+    Object? editOptionLabels = _unset,
+    bool? editOptionLabelsConfirmed,
+    Object? editCorrectOption = _unset,
+    bool? editAnswerReconfirmed,
+    bool? editOptionLabelsJustConfirmed,
     int? formResetKey,
     int? recheckIntervalDays,
     List<OcrJob>? ocrJobs,
@@ -268,6 +298,21 @@ class DetailState {
           ? this.editExamId
           : editExamId as String?,
       editBase: editBase == _unset ? this.editBase : editBase as Question?,
+      editQuestionType: editQuestionType == _unset
+          ? this.editQuestionType
+          : editQuestionType as String?,
+      editOptionLabels: editOptionLabels == _unset
+          ? this.editOptionLabels
+          : editOptionLabels as List<String>?,
+      editOptionLabelsConfirmed:
+          editOptionLabelsConfirmed ?? this.editOptionLabelsConfirmed,
+      editCorrectOption: editCorrectOption == _unset
+          ? this.editCorrectOption
+          : editCorrectOption as String?,
+      editAnswerReconfirmed:
+          editAnswerReconfirmed ?? this.editAnswerReconfirmed,
+      editOptionLabelsJustConfirmed:
+          editOptionLabelsJustConfirmed ?? this.editOptionLabelsJustConfirmed,
       formResetKey: formResetKey ?? this.formResetKey,
       recheckIntervalDays: recheckIntervalDays ?? this.recheckIntervalDays,
       ocrJobs: ocrJobs ?? this.ocrJobs,
@@ -465,41 +510,51 @@ class DetailNotifier extends Notifier<DetailState> {
           'slices/${q.id}.tmp-heal-${DateTime.now().millisecondsSinceEpoch}-${math.Random().nextInt(1 << 32)}.png';
       final tmpAbs = AppDatabase.resolveDataPath(tmpRel);
       if (tmpAbs == null) return;
-      await File(tmpAbs).parent.create(recursive: true);
-      await File(tmpAbs).writeAsBytes(crop.png);
       // 缺失时写回库里记的路径（首写）；存在但尺寸不符时写版本化
       // 新路径，旧文件字节永不动（十三批 P1-1 不可变切片）。
       final targetRel = missingFile
           ? q.slicePath!
           : ImportService.nextSliceRelative(q.id);
       final targetAbs = AppDatabase.resolveDataPath(targetRel);
-      if (targetAbs == null) {
-        try {
-          if (File(tmpAbs).existsSync()) await File(tmpAbs).delete();
-        } catch (_) {}
-        return;
-      }
+      // 十四批 M2（P1-B 写文件协议）：临时文件创建前登记临时路径；
+      // rename 前登记正式目标路径；成功后解除临时登记，正式登记保留
+      // 到 repo.save 提交后——save 前库里还不指向新路径，孤儿清理按
+      // 数据库引用会误判，登记是这段窗口的唯一保护。finally 解除
+      // 两条登记（save 失败时正式文件成孤儿，由孤儿清理接住）。
+      final guard = FileLifecycleGuard.instance;
+      guard.registerPending(tmpRel);
       try {
-        await File(tmpAbs).rename(targetAbs);
-      } catch (_) {
+        if (targetAbs == null) {
+          await guard.deleteFile(File(tmpAbs));
+          return;
+        }
+        await File(tmpAbs).parent.create(recursive: true);
+        await File(tmpAbs).writeAsBytes(crop.png);
+        guard.registerPending(targetRel);
         try {
-          if (File(tmpAbs).existsSync()) await File(tmpAbs).delete();
+          await File(tmpAbs).rename(targetAbs);
+        } catch (_) {
+          await guard.deleteFile(File(tmpAbs));
+          return;
+        }
+        guard.unregisterPending(tmpRel);
+        await evictCachedFileImage(targetAbs);
+        var updated = q.copyWith(
+          slicePath: targetRel,
+          sliceWidth: crop.width,
+          sliceHeight: crop.height,
+        );
+        // 新切片内容变了：旧候选如来自旧切片，标 stale（纯函数，
+        // 无候选或 hash 一致时原样返回，不动版本）。
+        try {
+          final newHash = await sha256HexOfFile(File(targetAbs));
+          updated = markCandidateStale(updated, newHash);
         } catch (_) {}
-        return;
+        await repo.save(updated);
+      } finally {
+        guard.unregisterPending(tmpRel);
+        guard.unregisterPending(targetRel);
       }
-      await evictCachedFileImage(targetAbs);
-      var updated = q.copyWith(
-        slicePath: targetRel,
-        sliceWidth: crop.width,
-        sliceHeight: crop.height,
-      );
-      // 新切片内容变了：旧候选如来自旧切片，标 stale（纯函数，
-      // 无候选或 hash 一致时原样返回，不动版本）。
-      try {
-        final newHash = await sha256HexOfFile(File(targetAbs));
-        updated = markCandidateStale(updated, newHash);
-      } catch (_) {}
-      await repo.save(updated);
       _sliceHealCheckedKey =
           '${q.id}|$targetRel|${crop.width}x${crop.height}';
       if (!_disposed) await load();
@@ -629,6 +684,25 @@ class DetailNotifier extends Notifier<DetailState> {
     }
   }
 
+  /// 删除单个图块（十四批 M2）：只更新数据库引用（ocr_figures 去掉
+  /// 该项），content_version +1（图块变化；版本由 upsert 的版本权威
+  /// 按实际内容变化统一计算，只 +1 一次）；旧文件不立即删，进孤儿清理。
+  /// 无该图块时直接返回 true。返回 false 时页面提示，编辑器里该段保持原样。
+  Future<bool> deleteFigure(String figureId) async {
+    final q = state.question;
+    if (q == null) return false;
+    final repo = _repo;
+    try {
+      final updated = deleteFigureFromQuestion(q, figureId);
+      if (identical(updated, q)) return true;
+      await repo.save(updated);
+      if (!_disposed) state = state.copyWith(question: updated);
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
   /// 手动“重新识别”：为当前题建 OCR 任务（调 M3 入队接口），
   /// 入队后刷新任务行。入队失败（无切片等）返回 false，页面提示。
   /// 十三批 P1-1：入队失败抛错时这里接住返回 false（P1-2 改为向
@@ -672,6 +746,15 @@ class DetailNotifier extends Notifier<DetailState> {
       editTags: q.tags.toSet(),
       editKps: q.knowledgePointIds.toSet(),
       editExamId: q.examId,
+      editQuestionType: q.questionType,
+      // 十四批 M3：选项标签编辑值从当前题读；重确认信号是单次编辑信号，
+      // 进编辑即清零（不跨编辑带）。
+      editOptionLabels:
+          q.optionLabels == null ? null : List.of(q.optionLabels!),
+      editOptionLabelsConfirmed: q.optionLabelsConfirmed,
+      editCorrectOption: q.correctOption,
+      editAnswerReconfirmed: false,
+      editOptionLabelsJustConfirmed: false,
       formResetKey: state.formResetKey + 1,
     );
   }
@@ -696,6 +779,89 @@ class DetailNotifier extends Notifier<DetailState> {
       ids.add(id);
     }
     state = state.copyWith(editKps: ids);
+  }
+
+  /// 十四批 M1：编辑表单里的题型改动（只改表单值，保存时落盘）。
+  void setEditQuestionType(String? type) {
+    state = state.copyWith(editQuestionType: type);
+  }
+
+  /// 十四批 M3：编辑表单里的选项标签改动（只改表单值，保存时落盘；
+  /// 数据层 _applyOptionLabelChangeRules 再按改标签规则处理确认清零
+  /// 与 P1-A）。标签清空时确认态一并清零。
+  void setEditOptionLabels(List<String>? labels) {
+    state = state.copyWith(
+      editOptionLabels: labels,
+      editOptionLabelsConfirmed:
+          labels == null ? false : state.editOptionLabelsConfirmed,
+    );
+  }
+
+  /// 十四批 M3：编辑表单里的正确选项改动（只改表单值，保存时落盘）。
+  /// 点选正确选项即重确认（D-133）。
+  void setEditCorrectOption(String? value) {
+    state = state.copyWith(
+      editCorrectOption: value,
+      editAnswerReconfirmed: true,
+    );
+  }
+
+  /// 十四批 M3：P1-A 重确认复选框（编辑态）。
+  void setEditAnswerReconfirmed(bool value) {
+    state = state.copyWith(editAnswerReconfirmed: value);
+  }
+
+  /// 十四批 M3：编辑态点「确认选项」——把编辑态确认态置 1 并记
+  /// justConfirmed 信号（点「保存」落盘时带上）；只改表单值，不写库。
+  void confirmEditOptionLabels({
+    required List<String>? labels,
+    required String? correctOption,
+    required bool answerReconfirmed,
+  }) {
+    state = state.copyWith(
+      editOptionLabels: labels,
+      editCorrectOption: correctOption,
+      editAnswerReconfirmed: answerReconfirmed,
+      editOptionLabelsConfirmed: true,
+      editOptionLabelsJustConfirmed: true,
+    );
+  }
+
+  /// 十四批 M3：查看态直接改选项标签块（点「确认选项」或正确选项
+  /// 即时保存时调；与题型 chip 的即时保存口径一致）。[confirmLabels]
+  /// 为 true 时把标签置为已确认并带 justConfirmed 信号；为 false 时
+  /// 保持库里原确认状态（正确选项即时保存时用）。保存后重读。
+  Future<void> saveOptionBlock({
+    required List<String>? labels,
+    required String? correctOption,
+    required bool confirmLabels,
+    required bool answerReconfirmed,
+  }) async {
+    final q = state.question;
+    if (q == null) return;
+    final updated = q.copyWith(
+      optionLabels: labels,
+      clearOptionLabels: labels == null && q.optionLabels != null,
+      optionLabelsConfirmed:
+          confirmLabels ? true : q.optionLabelsConfirmed,
+      correctOption: correctOption,
+      clearCorrectOption:
+          correctOption == null && q.correctOption != null,
+      answerReconfirmed: answerReconfirmed,
+      optionLabelsJustConfirmed: confirmLabels,
+    );
+    await _repo.save(updated);
+    await load();
+  }
+
+  /// 十四批 M1：查看态直接改题型（点 chip → 选择器 → 立即保存）。
+  /// 值不变不写库（不把自动分类静默锁成人工）；值变了走
+  /// [withManualQuestionType]（source=manual，题型值变才 +1）。
+  Future<void> setQuestionType(String? newType) async {
+    final q = state.question;
+    if (q == null || newType == q.questionType) return;
+    await _repo.save(withManualQuestionType(q, newType));
+    await load();
   }
 
   void toggleEditErrorType(String t) {
@@ -750,6 +916,13 @@ class DetailNotifier extends Notifier<DetailState> {
         .where((t) => !ErrorTypes.fixed.contains(t))
         .toList();
     final errorTypes = {...state.editErrorTypes, ...fixedFromCustom}.toList();
+    // 十四批 M3：correct_option 只用于单选/判断（M3-4）——编辑后题型
+    // 不是这两者时强制为空，不把旧单选题的 correct_option 带过去。
+    final effectiveCorrect =
+        (state.editQuestionType == 'choice_single' ||
+            state.editQuestionType == 'true_false')
+        ? state.editCorrectOption
+        : null;
     final updated = Question(
       id: base.id,
       title: title.trim().isEmpty ? base.title : title.trim(),
@@ -790,13 +963,36 @@ class DetailNotifier extends Notifier<DetailState> {
       ocrSplitStatus: base.ocrSplitStatus,
       ocrManualEdited: base.ocrManualEdited,
       contentVersion: base.contentVersion,
+      // 十四批 M1：编辑表单不改以下字段——全新构造时必须从 base 带上，
+      // 否则编辑一次就把题型/背景标签/图块/答案版本全抹掉。
+      questionType: base.questionType,
+      questionTypeSource: base.questionTypeSource,
+      questionBackgroundTags: base.questionBackgroundTags,
+      questionBackgroundTagsSource: base.questionBackgroundTagsSource,
+      ocrFigures: base.ocrFigures,
+      // 十四批 M3：选项标签块走编辑表单值（enterEdit 时从题读入）；
+      // answerPendingRecheck 从 base 带上（D-141：不带它时编辑一次
+      // 无关字段就会静默清掉待核对标记；清除时机只由数据层
+      // _applyOptionLabelChangeRules 决定）；重确认信号随保存带上。
+      correctOption: effectiveCorrect,
+      optionLabels: state.editOptionLabels,
+      optionLabelsConfirmed: state.editOptionLabelsConfirmed,
+      answerVersion: base.answerVersion,
+      answerPendingRecheck: base.answerPendingRecheck,
+      answerReconfirmed: state.editAnswerReconfirmed,
+      optionLabelsJustConfirmed: state.editOptionLabelsJustConfirmed,
     );
+    // 十四批 M1：题型值变了才走 manual 口径（source=manual、+1）；
+    // 值不变不碰来源保护位。
+    final typed = state.editQuestionType == base.questionType
+        ? updated
+        : withManualQuestionType(updated, state.editQuestionType);
     // FR-02：save 先发角标事件、syncCauseRecords 后写库时，角标重读
     // 可能抢在同步提交前；与 joinReviewBatch 同款用 scope 包起来，
     // 事件在同步提交后才合并发出一次。
     await DataChangeBus.instance.scope(() async {
-      await repo.save(updated);
-      await repo.syncCauseRecords(updated);
+      await repo.save(typed);
+      await repo.syncCauseRecords(typed);
     });
     await load();
   }
@@ -909,8 +1105,10 @@ class DetailNotifier extends Notifier<DetailState> {
     if (sliceAbs == null) return ReworkOutcome.sliceUnavailable;
     // 临时切片与正式切片同目录，rename 是同文件系统内的原子替换；
     // 随机后缀防两次重框撞名，也防失败残留被误删成他人的文件。
-    // 进程在写临时文件与 rename 之间被杀会留一个孤儿临时文件，
-    // 由 §4.5 孤儿扫描兜底（slices/ 下无引用文件）。
+    // 十四批 M2：进程在写临时文件与 rename 之间被杀会留一个孤儿
+    // 临时文件——`.tmp` 永不由孤儿清理删除（写一半的临时文件只由
+    // 写路径自己在失败/回滚时清理；崩溃残留占小量磁盘，不影响下次
+    // 重框/自愈）。
     // SR3-10：进程在事务提交后、rename 前被杀是另一个崩溃窗口——
     // 库里已是新切片尺寸、磁盘仍是旧图；孤儿扫描扫不到它（旧图仍被
     // slice_path 引用）。自愈在打开详情页时做（见 `_healSliceIfNeeded`）：
@@ -919,10 +1117,17 @@ class DetailNotifier extends Notifier<DetailState> {
         'slices/${q.id}.tmp-${DateTime.now().millisecondsSinceEpoch}-${math.Random().nextInt(1 << 32)}.png';
     final tmpAbs = AppDatabase.resolveDataPath(tmpRel);
     if (tmpAbs == null) return ReworkOutcome.sliceUnavailable;
+    // 十四批 M2（P1-B 写文件协议）：临时文件创建前登记临时路径；
+    // 事务提交后、rename 前登记正式目标路径；rename 成功后解除
+    // 两条登记（库里已指向新路径，删除路径按数据库引用保护）。
+    final guard = FileLifecycleGuard.instance;
+    guard.registerPending(tmpRel);
     try {
       await File(tmpAbs).parent.create(recursive: true);
       await File(tmpAbs).writeAsBytes(crop.png);
     } catch (_) {
+      await guard.deleteFile(File(tmpAbs));
+      guard.unregisterPending(tmpRel);
       return ReworkOutcome.tmpWriteFailed;
     }
     // B3-P01：换框 + 保存切片一个事务（任一步失败一起回滚，
@@ -938,27 +1143,27 @@ class DetailNotifier extends Notifier<DetailState> {
         sliceHeight: crop.height,
       );
     } catch (_) {
-      try {
-        final file = File(tmpAbs);
-        if (file.existsSync()) await file.delete();
-      } catch (_) {}
+      await guard.deleteFile(File(tmpAbs));
+      guard.unregisterPending(tmpRel);
       return ReworkOutcome.saveFailed;
     }
     // 事务成功后再把临时切片 rename 到正式路径（同目录原子替换），
     // 然后清 FileImage 缓存——缓存失效点随 rename 后移到此处
     // （旧写法在事务前清缓存，事务失败后详情页会把仍是旧图的正式
     // 文件当成新图重新解码，虽无数据丢失但缓存语义是错的）。
+    guard.registerPending(sliceRel);
     try {
       await File(tmpAbs).rename(sliceAbs);
     } catch (_) {
-      try {
-        final file = File(tmpAbs);
-        if (file.existsSync()) await file.delete();
-      } catch (_) {}
+      await guard.deleteFile(File(tmpAbs));
+      guard.unregisterPending(tmpRel);
+      guard.unregisterPending(sliceRel);
       // 框与切片字段已提交，正式文件仍是旧切片：只报切片保存失败，
       // 不谎称全失败；重试重框即可恢复一致。
       return ReworkOutcome.renameFailed;
     }
+    guard.unregisterPending(tmpRel);
+    guard.unregisterPending(sliceRel);
     await evictCachedFileImage(sliceAbs);
     // 十三批 P1-2（GPT §5.2）：重框成功后 await 入队，确认任务已持久化；
     // 只有 worker.kick() 可以 fire-and-forget（它在 enqueueOcrForQuestion

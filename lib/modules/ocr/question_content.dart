@@ -47,6 +47,21 @@ class CodeBlock extends QuestionContentBlock {
   final String? language;
 }
 
+/// 配图图块段（十四批 M2）：OCR 识别出的题目插图，按阅读顺序插在
+/// 内容序列里。[cropPath] 是图块裁图相对路径；[unconfirmed] 为 true
+/// 时位置未确认，界面必须明确标注（绝不静默当成已确认顺序展示）。
+class FigureBlock extends QuestionContentBlock {
+  const FigureBlock({
+    required this.figureId,
+    required this.cropPath,
+    this.unconfirmed = false,
+  });
+
+  final String figureId;
+  final String cropPath;
+  final bool unconfirmed;
+}
+
 /// 圈号字符表：只覆盖 GLM 政治卷实际出现的 1–20。超出范围的不转换，
 /// 留给渲染层走原图回退（不可静默编造不存在的圈号字符）。
 const Map<int, String> circledNumbers = {
@@ -249,6 +264,9 @@ String blocksToMarkdown(List<QuestionContentBlock> blocks) {
             : code;
         buf.write('```${language ?? ''}\n$body\n```');
       case ImageFallbackBlock():
+        break;
+      case FigureBlock():
+        // 图块不在题干文本里：拼回题干时跳过（图块只存在 ocr_figures 里）。
         break;
     }
   }

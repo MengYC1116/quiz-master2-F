@@ -10,10 +10,67 @@
 //   信息），一律换成 [ImageFallbackBlock] 的原图占位；不打含 latex 的日志。
 // - 渲染失败自动回退原图，不抛异常、不留空白、不阻断其余段落显示。
 
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_math_fork/flutter_math.dart';
 
+import '../../data/database.dart';
 import 'question_content.dart';
+
+/// 十四批 M2：配图图块的图片展示。按 [cropPath]（数据目录相对路径）
+/// 读裁图；文件不存在或读不到时显示占位，不抛异常。位置未确认时
+/// 在图下方明确标注“位置未确认”。
+class FigureImageView extends StatelessWidget {
+  const FigureImageView({
+    super.key,
+    required this.cropPath,
+    this.unconfirmed = false,
+  });
+
+  final String cropPath;
+  final bool unconfirmed;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final abs = AppDatabase.resolveDataPath(cropPath);
+    final file = abs == null ? null : File(abs);
+    return Container(
+      key: ValueKey('figure-image-$cropPath'),
+      padding: const EdgeInsets.all(8),
+      decoration: BoxDecoration(
+        border: Border.all(color: theme.colorScheme.outline),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (file != null && file.existsSync())
+            Image.file(file, fit: BoxFit.contain)
+          else
+            const Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(Icons.image_outlined, size: 18),
+                SizedBox(width: 6),
+                Text('题目配图（图片缺失）'),
+              ],
+            ),
+          if (unconfirmed)
+            const Padding(
+              padding: EdgeInsets.only(top: 4),
+              child: Text(
+                '位置未确认',
+                style: TextStyle(fontSize: 12, color: Colors.grey),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
 
 /// 公式原图回退占位。M5 接入时用 [fallbackImage] 传入真实裁图
 /// （GLM layout_details 坐标裁出的公式小图，裁不到用整张题切片）；
@@ -210,6 +267,20 @@ class QuestionContentRenderer extends StatelessWidget {
                   code,
                   style: const TextStyle(fontFamily: 'monospace'),
                 ),
+              ),
+            ),
+          );
+        case FigureBlock(:final cropPath, :final unconfirmed):
+          // 十四批 M2：配图图块段。裁图按相对路径从数据目录读；读不到
+          // 时显示占位（不留空白、不阻断其余段落显示）。位置未确认的
+          // 图块必须明确标注，绝不静默当成已确认顺序展示。
+          flushInline();
+          children.add(
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 4),
+              child: FigureImageView(
+                cropPath: cropPath,
+                unconfirmed: unconfirmed,
               ),
             ),
           );

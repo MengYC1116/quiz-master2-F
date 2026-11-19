@@ -248,22 +248,21 @@ Future<void> _deleteStaleMigrationStaging(String targetDir) async {
   } catch (_) {}
 }
 
+/// 十四批 M2（P2-2）：静默删目录也经统一文件操作锁。
 Future<void> _deleteDirQuietly(Directory dir) async {
-  try {
-    if (dir.existsSync()) await dir.delete(recursive: true);
-  } catch (_) {}
+  await FileLifecycleGuard.instance.deleteDirectory(dir);
 }
 
+/// 十四批 M2（P2-2）：静默删路径（文件或目录）也经统一文件操作锁。
 Future<void> _deletePathQuietly(String path) async {
-  try {
-    final f = File(path);
-    if (f.existsSync()) {
-      await f.delete();
-      return;
-    }
-    final d = Directory(path);
-    if (d.existsSync()) await d.delete(recursive: true);
-  } catch (_) {}
+  final guard = FileLifecycleGuard.instance;
+  final f = File(path);
+  if (f.existsSync()) {
+    await guard.deleteFile(f);
+    return;
+  }
+  final d = Directory(path);
+  if (d.existsSync()) await guard.deleteDirectory(d);
 }
 
 extension AppDatabaseStorage on AppDatabase {
@@ -325,9 +324,10 @@ extension AppDatabaseStorage on AppDatabase {
       await AppDatabase.rollbackMigrationFiles(moved, backups);
       if (!targetExisted) {
         // 目标目录是本次新建的、回滚后已空，顺手删掉（非空删不掉，不强求）。
-        try {
-          await Directory(dir).delete();
-        } catch (_) {}
+        // 十四批 M2（P2-2）：经统一文件操作锁（仅删空目录）。
+        await FileLifecycleGuard.instance.deleteEmptyDirectory(
+          Directory(dir),
+        );
       }
       return DbMigrationOutcome.failed;
     }

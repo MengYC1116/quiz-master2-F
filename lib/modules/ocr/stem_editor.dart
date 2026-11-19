@@ -26,7 +26,9 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 
 import '../../models/models.dart';
+import '../../services/glm_ocr_client.dart';
 import 'formula_crop.dart';
+import 'ocr_figures.dart';
 import 'question_content.dart';
 import 'question_content_renderer.dart';
 
@@ -60,6 +62,18 @@ class _DraftFormula extends _DraftBlock {
   Uint8List? restoredImage;
 }
 
+/// 十四批 M2：图块草稿（与 [FigureBlock] 一一对应）。
+/// 删除是即时动作（调 [StemEditor.onDeleteFigure] 落库，不等“保存修改”）；
+/// 删除成功后本段显示整题原图（“删除后回退整题原图”），不直接消失——
+/// 用户仍能在原图里看到该配图内容。
+class _DraftFigure extends _DraftBlock {
+  _DraftFigure(this.figure);
+  final OcrFigure figure;
+
+  /// 已删除：显示整题原图 + 提示，不再显示裁图。
+  bool deleted = false;
+}
+
 /// 题干纠错编辑器（原地展开用）。
 ///
 /// [question] 提供题干（ocr_stem）与原始结果（ocr_raw，裁公式小图用）；
@@ -67,6 +81,9 @@ class _DraftFormula extends _DraftBlock {
 /// 调用方用 [hasPendingOcrCandidate] / [pendingCandidateStem] 取）；
 /// [sliceBytes] 是题切片字节（恢复为原图 / 裁不到时的原图显示用；
 /// 为空时恢复为原图只显示通用占位）。
+/// [figures] 是当前切片的图块（按阅读顺序，调用方按
+/// [currentFiguresForDisplay] 取好）；[mdResults] 是 ocr_raw 里的
+/// md 全文（图块插入位置用）。
 class StemEditor extends StatefulWidget {
   const StemEditor({
     super.key,
@@ -74,16 +91,21 @@ class StemEditor extends StatefulWidget {
     required this.candidateStem,
     this.sliceBytes,
     this.initiallyShowCandidate = false,
+    this.figures = const [],
+    this.mdResults,
     required this.onSave,
     required this.onAcceptCandidate,
     required this.onDismissCandidate,
     required this.onCancel,
+    this.onDeleteFigure,
   });
 
   final Question question;
   final String? candidateStem;
   final Uint8List? sliceBytes;
   final bool initiallyShowCandidate;
+  final List<OcrFigure> figures;
+  final String? mdResults;
 
   /// 保存修改：收拼回的题干；调用方落库后关闭编辑器。
   final Future<void> Function(String newStem) onSave;
@@ -97,6 +119,11 @@ class StemEditor extends StatefulWidget {
   /// 取消：丢弃草稿，调用方关闭编辑器。
   final VoidCallback onCancel;
 
+  /// 删除单个图块（十四批 M2）：调用方调 deleteFigureFromQuestion +
+  /// repo.save 落库；返回 true = 已删除，编辑器把该段换成整题原图；
+  /// false = 删除失败，该段保持原样、调用方已提示。
+  final Future<bool> Function(String figureId)? onDeleteFigure;
+
   @override
   State<StemEditor> createState() => _StemEditorState();
 }
@@ -108,7 +135,11 @@ class _StemEditorState extends State<StemEditor> {
   @override
   void initState() {
     super.initState();
-    _drafts = _buildDrafts(widget.question);
+    _drafts = _buildDrafts(
+      widget.question,
+      figures: widget.figures,
+      mdResults: widget.mdResults,
+    );
     _showCandidate = widget.initiallyShowCandidate;
   }
 
@@ -120,7 +151,11 @@ class _StemEditorState extends State<StemEditor> {
     // 只有换题（question.id 变了）才重建草稿。
     if (widget.question.id != oldWidget.question.id) {
       _disposeDrafts();
-      _drafts = _buildDrafts(widget.question);
+      _drafts = _buildDrafts(
+        widget.question,
+        figures: widget.figures,
+        mdResults: widget.mdResults,
+      );
       _showCandidate = widget.initiallyShowCandidate;
     } else if (widget.candidateStem != oldWidget.candidateStem) {
       // 候选到了/走了：只重绘横幅，草稿不动。
@@ -143,12 +178,25 @@ class _StemEditorState extends State<StemEditor> {
           controller.dispose();
         case _DraftFormula():
           break;
+        case _DraftFigure():
+          break;
       }
     }
   }
 
-  static List<_DraftBlock> _buildDrafts(Question question) {
-    final blocks = parseQuestionContent(question.ocrStem ?? '');
+  static List<_DraftBlock> _buildDrafts(
+    Question question, {
+    required List<OcrFigure> figures,
+    required String? mdResults,
+  }) {
+    // 十四批 M2：草稿按“题干 + 图块”的合并内容序列建（与只读渲染
+    // 同顺序，见 buildContentBlocks）；图块进草稿才能在编辑器里删。
+    final blocks = buildContentBlocks(
+      stemMarkdown: question.ocrStem ?? '',
+      figures: figures,
+      mdResults: mdResults,
+    );
+    final byId = {for (final f in figures) f.id: f};
     return blocks.map((block) {
       return switch (block) {
         TextBlock(:final text) => _DraftText(text),
@@ -157,12 +205,40 @@ class _StemEditorState extends State<StemEditor> {
         FormulaBlock(:final latex, :final displayMode) =>
           _DraftFormula(latex, displayMode: displayMode),
         ImageFallbackBlock() => _DraftText(''),
+        FigureBlock(:final figureId) =>
+          _DraftFigure(byId[figureId] ?? _placeholderFigure(figureId)),
       };
     }).toList();
   }
 
+  /// 图块 id 在 figures 里找不到时的占位（不应发生：调用方传的
+  /// figures 与 buildContentBlocks 用的是同一份；防御性兜底，
+  /// 删它时按 id 删库里引用，界面显示“图片缺失”占位）。
+  static OcrFigure _placeholderFigure(String figureId) => OcrFigure(
+    id: figureId,
+    slicePath: '',
+    inputHash: null,
+    sequenceIndex: 0,
+    anchorSource: 'fallback',
+    anchorRef: '',
+    bbox2d: const [0, 0, 0, 0],
+    spaceWidth: 0,
+    spaceHeight: 0,
+    transform: const OcrRequestTransform(
+      srcW: 0,
+      srcH: 0,
+      reqW: 0,
+      reqH: 0,
+      padX: 0,
+      padY: 0,
+    ),
+    srcRect: const SrcRect(x: 0, y: 0, width: 0, height: 0),
+    cropPath: '',
+  );
+
   /// 草稿按块拼回题干（保存用）。空文字段跳过；恢复为原图的公式
   /// 从题干里拿掉（以原图显示，见文件头）；其余按 [blocksToMarkdown]。
+  /// 图块不拼回题干（只存在 ocr_figures 里，见 question_content.dart）。
   String _draftsToMarkdown() {
     final blocks = <QuestionContentBlock>[];
     for (final draft in _drafts) {
@@ -181,6 +257,8 @@ class _StemEditorState extends State<StemEditor> {
           if (!restoredAsImage) {
             blocks.add(FormulaBlock(latex, displayMode: displayMode));
           }
+        case _DraftFigure():
+          break;
       }
     }
     return blocksToMarkdown(blocks);
@@ -225,7 +303,7 @@ class _StemEditorState extends State<StemEditor> {
           _candidatePanel(candidateStem),
         const SizedBox(height: 8),
         const Text(
-          '普通文字直接改；公式可看、可删、可恢复为原图',
+          '普通文字直接改；公式可看、可删、可恢复为原图；配图可删除',
           style: TextStyle(fontSize: 12, color: Colors.grey),
         ),
         const SizedBox(height: 8),
@@ -356,7 +434,71 @@ class _StemEditorState extends State<StemEditor> {
         );
       case _DraftFormula(:final latex, :final displayMode):
         return _formulaBlockWidget(draft, latex, displayMode);
+      case _DraftFigure(:final figure, :final deleted):
+        return _figureBlockWidget(draft, figure, deleted);
     }
+  }
+
+  /// 十四批 M2：图块段——裁图 + “位置未确认”标注 + 删除按钮。
+  /// 删除是即时落库动作（不等“保存修改”）；删除成功后本段换成
+  /// 整题原图（“删除后回退整题原图”），不直接消失。
+  Widget _figureBlockWidget(
+    _DraftFigure draft,
+    OcrFigure figure,
+    bool deleted,
+  ) {
+    if (deleted) {
+      return Container(
+        padding: const EdgeInsets.all(8),
+        decoration: BoxDecoration(
+          border: Border.all(color: Theme.of(context).colorScheme.outline),
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              '配图已删除，以下为整题原图',
+              style: TextStyle(fontSize: 12, color: Colors.grey),
+            ),
+            const SizedBox(height: 6),
+            if (_sliceImageWidget() != null) _sliceImageWidget()!,
+          ],
+        ),
+      );
+    }
+    return Container(
+      padding: const EdgeInsets.all(8),
+      decoration: BoxDecoration(
+        border: Border.all(color: Theme.of(context).colorScheme.outline),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          FigureImageView(
+            cropPath: figure.cropPath,
+            unconfirmed: figure.unconfirmed,
+          ),
+          const SizedBox(height: 6),
+          Row(
+            children: [
+              OutlinedButton(
+                onPressed: widget.onDeleteFigure == null
+                    ? null
+                    : () async {
+                        final ok = await widget.onDeleteFigure!(figure.id);
+                        if (ok && mounted) {
+                          setState(() => draft.deleted = true);
+                        }
+                      },
+                child: const Text('删除配图'),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
   }
 
   Widget _formulaBlockWidget(

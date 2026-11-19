@@ -40,6 +40,9 @@ import '../../services/glm_ocr_client.dart';
 import '../../services/import_guess.dart';
 import '../../services/ocr_queue.dart';
 import '../../services/stem_splitter.dart';
+import 'figure_files.dart';
+import 'ocr_figures.dart';
+import 'question_classifier.dart';
 
 /// 接受候选被拒绝：[reason] 是机器码（调用方按它给用户明确原因），
 /// [message] 是给用户看的中文原因。
@@ -103,7 +106,14 @@ Future<Question> acceptCandidateStem(
   Question? accepted;
   CandidateRejection? rejection;
   var wrote = false;
-  await d.transaction(() async {
+  // 十四批 M2：接受候选时新图块随候选包一起写回（同一 customUpdate 写
+  // ocr_stem + ocr_split_status + ocr_figures + ocr_raw（accepted）+
+  // content_version+1）。裁图在事务外先做（写文件协议），事务失败
+  // 则删刚写的图块文件；拒绝/回滚时同样清理，不留无效引用。
+  FigureWriteResult? pendingFigureWrite;
+  var figuresCommitted = false;
+  try {
+    await d.transaction(() async {
     final row = await (d.select(
       d.questions,
     )..where((t) => t.id.equals(question.id))).getSingleOrNull();
@@ -170,15 +180,83 @@ Future<Question> acceptCandidateStem(
     final acceptedJson = raw
         .withCandidateStatus(OcrCandidateStatus.accepted)
         .toJsonString();
+    // 十四批 M1：与题干写回同一事务内做题型分类（content_version +1
+    // 已含在本次更新里，不另计）。来源守门与 worker 自动应用同款：
+    // 'manual' 的字段不写，两字段互不影响。
+    final classification = classifyQuestion(raw: raw, split: split);
+    final plan = planClassificationWrite(
+      currentTypeSource: row.questionTypeSource,
+      currentTagsSource: row.questionBackgroundTagsSource,
+      classification: classification,
+    );
+    // 十四批 M2：新图块只随候选包存在——从接受的这份 raw 派生（用 raw
+    // 包里的真实转换元数据；元数据缺失时安全弃用图块，不猜坐标）。
+    // 内容没变时沿用旧图块文件，不重写、不 churn；图块写失败时降级
+    // 为 []（不阻断候选接受，题干仍写回）。
+    final derivedFigures = buildOcrFigures(
+      questionId: question.id,
+      raw: raw,
+      transform: raw.transform,
+      slicePath: row.slicePath ?? '',
+      inputHash: raw.inputHash,
+    );
+    final oldFigures = parseOcrFigures(row.ocrFigures);
+    List<OcrFigure> figuresToStore;
+    if (sameFiguresIgnoringCrop(oldFigures, derivedFigures)) {
+      figuresToStore = oldFigures;
+    } else if (derivedFigures.isEmpty) {
+      figuresToStore = const [];
+    } else {
+      figuresToStore = const [];
+      final sliceAbs = AppDatabase.resolveDataPath(row.slicePath ?? '');
+      if (sliceAbs != null) {
+        try {
+          final sliceBytes = await File(sliceAbs).readAsBytes();
+          final figureWrite = await writeFigureFiles(
+            dataDir: AppDatabase.dataDirectoryPath(),
+            questionId: question.id,
+            sliceBytes: sliceBytes,
+            figures: derivedFigures,
+          );
+          pendingFigureWrite = figureWrite;
+          figuresToStore = figureWrite.figures;
+        } on FigureWriteException {
+          figuresToStore = const [];
+        }
+      }
+    }
+    final setParts = <String>[
+      'ocr_stem = ?',
+      'ocr_split_status = ?',
+      'ocr_raw = ?',
+      'ocr_figures = ?',
+    ];
+    final variables = <Variable<Object>>[
+      Variable<String>(split.stemText),
+      Variable<String>(split.status.label),
+      Variable<String>(acceptedJson),
+      Variable<String>(encodeOcrFigures(figuresToStore)),
+    ];
+    if (plan.writeType) {
+      setParts.add('question_type = ?');
+      variables.add(Variable<String>(plan.questionType));
+      setParts.add('question_type_source = ?');
+      variables.add(Variable<String>(plan.questionTypeSource));
+    }
+    if (plan.writeTags) {
+      setParts.add('question_background_tags = ?');
+      variables.add(Variable<String>(plan.backgroundTags));
+      setParts.add('question_background_tags_source = ?');
+      variables.add(Variable<String>(plan.backgroundTagsSource));
+    }
+    setParts.add('content_version = content_version + 1');
+    variables.addAll([
+      Variable<String>(question.id),
+      Variable<String>(pendingRaw),
+    ]);
     final rows = await d.customUpdate(
-      'UPDATE questions SET ocr_stem = ?, ocr_split_status = ?, ocr_raw = ?, content_version = content_version + 1 WHERE id = ? AND ocr_raw = ?',
-      variables: [
-        Variable<String>(split.stemText),
-        Variable<String>(split.status.label),
-        Variable<String>(acceptedJson),
-        Variable<String>(question.id),
-        Variable<String>(pendingRaw),
-      ],
+      'UPDATE questions SET ${setParts.join(', ')} WHERE id = ? AND ocr_raw = ?',
+      variables: variables,
       updates: {d.questions},
     );
     if (rows != 1) {
@@ -187,21 +265,70 @@ Future<Question> acceptCandidateStem(
       throw StateError('接受候选写入失败：候选已被并发改动');
     }
     wrote = true;
-    accepted = fresh.copyWith(
+    figuresCommitted = pendingFigureWrite != null;
+    var acceptedCopy = fresh.copyWith(
       ocrStem: split.stemText,
       ocrSplitStatus: split.status.label,
       contentVersion: fresh.contentVersion + 1,
       ocrRaw: acceptedJson,
+      ocrFigures: encodeOcrFigures(figuresToStore),
     );
-  });
+    if (plan.writeType) {
+      acceptedCopy = acceptedCopy.copyWith(
+        questionTypeSource: plan.questionTypeSource,
+        clearQuestionType: plan.questionType == null,
+      );
+      if (plan.questionType != null) {
+        acceptedCopy = acceptedCopy.copyWith(
+          questionType: plan.questionType,
+        );
+      }
+    }
+    if (plan.writeTags) {
+      acceptedCopy = acceptedCopy.copyWith(
+        questionBackgroundTags: plan.backgroundTags,
+        questionBackgroundTagsSource: plan.backgroundTagsSource,
+      );
+    }
+    accepted = acceptedCopy;
+    });
+  } catch (_) {
+    // 事务回滚（行数 ≠1 等）：清理刚写的图块文件，再原样外抛，
+    // 数据库不留下无效引用。
+    final pending = pendingFigureWrite;
+    if (pending != null) {
+      await rollbackFigureFiles(
+        pending.registeredPaths,
+        dataDir: AppDatabase.dataDirectoryPath(),
+      );
+    }
+    rethrow;
+  }
   // 拒绝在事务提交后再抛（hash_mismatch 的标 stale 写入已提交，
   // 其余拒绝本来就没有写入）；成功路径的事件也在提交后发。
   if (rejection != null) {
+    final pending = pendingFigureWrite;
+    if (pending != null && !figuresCommitted) {
+      await rollbackFigureFiles(
+        pending.registeredPaths,
+        dataDir: AppDatabase.dataDirectoryPath(),
+      );
+    }
     if (wrote) _emitQuestionChanged(question.id);
     throw rejection!;
   }
   if (accepted == null) {
+    final pending = pendingFigureWrite;
+    if (pending != null) {
+      await rollbackFigureFiles(
+        pending.registeredPaths,
+        dataDir: AppDatabase.dataDirectoryPath(),
+      );
+    }
     throw StateError('接受候选写入失败：未写库');
+  }
+  if (pendingFigureWrite != null) {
+    commitFigureFiles(pendingFigureWrite!.registeredPaths);
   }
   _emitQuestionChanged(question.id);
   return accepted!;
@@ -244,6 +371,16 @@ Question _questionFromRow(DbQuestion r) => Question(
   ocrSplitStatus: r.ocrSplitStatus,
   ocrManualEdited: r.ocrManualEdited == 1,
   contentVersion: r.contentVersion,
+  // 十四批 M1：题型两维 + 答案版本（行里有什么字段就原样带上）。
+  questionType: r.questionType,
+  questionTypeSource: r.questionTypeSource,
+  questionBackgroundTags: r.questionBackgroundTags,
+  questionBackgroundTagsSource: r.questionBackgroundTagsSource,
+  ocrFigures: r.ocrFigures,
+  correctOption: r.correctOption,
+  optionLabels: r.optionLabels,
+  optionLabelsConfirmed: r.optionLabelsConfirmed == 1,
+  answerVersion: r.answerVersion,
 );
 
 /// 写后发一次题目变更事件（与旧流程里 repo.save 发的事件同口径，
@@ -254,6 +391,21 @@ void _emitQuestionChanged(String questionId) {
       kinds: const {DataChangeKind.badges, DataChangeKind.questions},
       questionId: questionId,
     ),
+  );
+}
+
+/// 删除单个图块（十四批 M2，纠错编辑器用）：只更新数据库引用
+/// （`ocr_figures` 去掉该项），content_version +1（图块变化）；
+/// 旧文件不立即删，进入孤儿清理（见图块文件生命周期统一规则第 1 条）。
+/// 图块不存在时原样返回（不动版本）。调用方经 repo.save 落库——
+/// 版本由 upsert 的版本权威按实际内容变化统一计算（只 +1 一次）。
+Question deleteFigureFromQuestion(Question question, String figureId) {
+  final figures = parseOcrFigures(question.ocrFigures);
+  final kept = figures.where((f) => f.id != figureId).toList();
+  if (kept.length == figures.length) return question;
+  return question.copyWith(
+    ocrFigures: encodeOcrFigures(kept),
+    contentVersion: question.contentVersion + 1,
   );
 }
 

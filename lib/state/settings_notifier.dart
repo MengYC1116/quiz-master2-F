@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../data/database.dart';
+import '../data/file_lifecycle_guard.dart';
 import '../data/repository.dart';
 import '../models/exam_event.dart';
 import '../models/models.dart';
@@ -104,6 +105,11 @@ class SettingsNotifier extends AsyncNotifier<AppSettings> {
   /// 选保存位置由页面做（文件选择器是 UI 副作用）。
   Future<List<int>> exportBackupBytes() => _repo.exportBackupZip();
 
+  /// 十四批 M2：带警告的 zip 导出（字节 + 可见警告列表，警告列出
+  /// 缺失/不可读图块的题目）。设置页走这条。
+  Future<({List<int> bytes, List<String> warnings})>
+  exportBackupBytesWithReport() => _repo.exportBackupZipWithReport();
+
   /// 记一次备份失败（写库标志；页面再调 onBackupFailed 通知应用层）。
   Future<void> markBackupFailed() => _repo.setBackupFailed(true);
 
@@ -145,15 +151,17 @@ class SettingsNotifier extends AsyncNotifier<AppSettings> {
   /// 执行恢复（覆盖当前题库）：zip 备份按解析时读到的字节恢复
   /// （GPT-P1：校验过的字节与导入的字节是同一份，不再按路径重读），
   /// 老 JSON 备份按数据对象恢复。失败抛异常，原库不动。
+  /// 十四批 M2：返回恢复警告列表（缺失/不可读的图块已从引用里去掉）。
   /// 恢复后调用方再调 [reloadSettings] 重读设置（恢复可能覆盖设置表）。
-  Future<void> restoreBackup({
+  Future<List<String>> restoreBackup({
     Map<String, dynamic>? jsonData,
     List<int>? zipBytes,
   }) async {
     if (zipBytes != null) {
-      await _repo.importBackupZip(zipBytes);
+      return _repo.importBackupZip(zipBytes);
     } else {
       await _repo.importBackupJson(jsonData!);
+      return const [];
     }
   }
 
@@ -207,16 +215,28 @@ class SettingsNotifier extends AsyncNotifier<AppSettings> {
   CachePreview scanCache() => _scanCacheSync();
 
   /// 删掉预览里列出的全部缓存项，返回实际删掉的项数（单个删不掉跳过）。
+  /// 十四批 M2（P2-2）：经统一文件操作锁（缓存项是临时文件/缩略图/
+  /// 失败导入残留，不在题目引用集合里；取锁只是审计口径统一）。
   Future<int> clearCache(CachePreview preview) async {
     var deleted = 0;
+    final guard = FileLifecycleGuard.instance;
     for (final e in preview.items) {
       try {
+        var ok = false;
         if (e is Directory) {
-          await e.delete(recursive: true);
+          await guard.deleteDirectory(e);
+          ok = !e.existsSync();
+        } else if (e is File) {
+          ok = await guard.deleteFile(e);
         } else {
-          await e.delete();
+          // 链接等其它实体：缓存里基本不出现，同样经统一文件操作锁
+          // 直删（十四批 M5 修复轮 2：原 `await e.delete()` 不经锁，
+          // 按 P2-2“全部物理删除集中接入”补上；clearCache 本身不持锁，
+          // 无重入问题）。
+          await guard.withLock(() async => e.delete());
+          ok = !e.existsSync();
         }
-        deleted++;
+        if (ok) deleted++;
       } catch (_) {
         // 单个删不掉就跳过，不中断。
       }

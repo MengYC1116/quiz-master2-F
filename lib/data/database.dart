@@ -4,6 +4,7 @@ import 'dart:math' as math;
 
 import 'package:drift/drift.dart';
 import 'package:flutter/material.dart';
+import 'package:image/image.dart' as img;
 import 'package:path/path.dart' as p;
 import 'package:sqlite3/sqlite3.dart' as sqlite3;
 
@@ -13,8 +14,10 @@ import '../services/zip_archive.dart';
 import 'data_change_events.dart';
 import 'demo_data.dart';
 import 'drift/quiz_database.dart';
+import 'file_lifecycle_guard.dart';
 import 'journal_ffi.dart';
 import 'restore_journal.dart';
+import 'review_engine.dart';
 // B4：database.dart 拆分——AppDatabase 类与对外接口保留在此文件，
 // 实现按职责拆到以下 part 文件（同一库，共享库私有成员；纯重构，
 // 不改行为、不改签名、不改调用方与测试）。
@@ -121,17 +124,43 @@ class AppDatabase {
   /// §2：备份/恢复与 settings 表共用的 schema 版本号（与
   /// `PRAGMA user_version` 是两回事，别混用——后者是打开时驱动的，
   /// 前者是给备份/恢复与排障看的）。
-  /// 十三批 M2：v4（questions 加 5 个 OCR 列 + 新建 ocr_jobs 表；
-  /// v3 库走 Drift 迁移到 v4，不再删除）。
-  static const int schemaVersion = 4;
+  /// 十四批 M1：v5（questions 加 9 列 + cause_records 加 2 列 +
+  /// review_history 加 8 列 + 新建 attempts 表 + review_state 加 4 列 +
+  /// question_type 索引；v4 库走 Drift 迁移到 v5，不再删除）。
+  static const int schemaVersion = 5;
 
   /// §2.3：备份里的应用版本号（与 pubspec.yaml 的 version 一致）。
   static const String appVersion = '0.1.0+1';
 
   /// B4.2：备份表清单（导出与恢复共用；恢复只插这里的表）。
-  /// v4 共 15 张表：v3 的 14 张 + 十三批的 ocr_jobs。
+  /// v5 库共 16 张表，备份表清单也是 16 张。
+  /// 十四批 M2（P1-6）：attempts 全表纳入备份和恢复；review_state
+  /// 仍在清单里（恢复时清表、但不插备份里的行——备份不含未完成会话，
+  /// 见 importBackupJsonIntoImpl；导出时 review_state 写 `[]`）。
   /// `_meta` 不是表，不在这里；导出时另加，恢复时跳过。
   static const List<String> backupTables = [
+    'subjects',
+    'questions',
+    'question_boxes',
+    'folders',
+    'tags',
+    'exams',
+    'knowledge_points',
+    'cause_records',
+    'collect_tasks',
+    'review_state',
+    'review_history',
+    'recent_tasks',
+    'recently_viewed_questions',
+    'ocr_jobs',
+    'settings',
+    'attempts',
+  ];
+
+  /// 十四批 M2：v4 备份的表清单（v4 只有 15 张表，没有 attempts）。
+  /// v4 备份恢复时按这份清单校验，attempts 缺键视为 empty，
+  /// 不拒绝（见 validateBackupDataImpl）。
+  static const List<String> backupTablesV4 = [
     'subjects',
     'questions',
     'question_boxes',
@@ -474,6 +503,76 @@ class AppDatabase {
     bool joined,
   ) => setReviewJoinedIntoImpl(db, q, joined);
 
+  // -- 十四批 M3：verdict 提交 / attempts / 重新加入复习 --
+  static Future<VerdictSubmitResult> submitCauseVerdictInto(
+    QuizDatabase db, {
+    required String questionId,
+    required CauseRecord record,
+    required String verdict,
+    required String verificationStatus,
+    required String verificationSource,
+    String? attemptId,
+    required String sessionId,
+    required String submissionId,
+    int cureChecks = 2,
+    int recheckIntervalDays = 7,
+    bool isRecheck = false,
+    DateTime? now,
+  }) => submitCauseVerdictIntoImpl(
+    db,
+    questionId: questionId,
+    record: record,
+    verdict: verdict,
+    verificationStatus: verificationStatus,
+    verificationSource: verificationSource,
+    attemptId: attemptId,
+    sessionId: sessionId,
+    submissionId: submissionId,
+    cureChecks: cureChecks,
+    recheckIntervalDays: recheckIntervalDays,
+    isRecheck: isRecheck,
+    now: now,
+  );
+
+  static Future<String> recordAttemptInto(
+    QuizDatabase db, {
+    required AttemptData attempt,
+  }) => recordAttemptIntoImpl(db, attempt: attempt);
+
+  static Future<AttemptData?> loadAttemptInto(
+    QuizDatabase db, {
+    required String sessionId,
+    required String questionId,
+  }) => loadAttemptIntoImpl(db, sessionId: sessionId, questionId: questionId);
+
+  static Future<List<AttemptData>> loadAttemptsForSessionInto(
+    QuizDatabase db, {
+    required String sessionId,
+  }) => loadAttemptsForSessionIntoImpl(db, sessionId: sessionId);
+
+  /// 十四批 M3（M3-10 断点恢复重建用）：本会话里该错因是否已有 verdict 事件。
+  static Future<bool> hasSessionVerdictInto(
+    QuizDatabase db, {
+    required String causeStableId,
+    required String sessionId,
+  }) => hasSessionVerdictIntoImpl(
+    db,
+    causeStableId: causeStableId,
+    sessionId: sessionId,
+  );
+
+  static Future<void> rejoinCauseInto(
+    QuizDatabase db, {
+    required String questionId,
+    required String cause,
+    required String subjectId,
+  }) => rejoinCauseIntoImpl(
+    db,
+    questionId: questionId,
+    cause: cause,
+    subjectId: subjectId,
+  );
+
   static Future<void> syncCauseRecordsInto(QuizDatabase db, Question q) =>
       syncCauseRecordsIntoImpl(db, q);
   // -- db_catalog.dart --
@@ -582,8 +681,9 @@ class AppDatabase {
   deleteOrphanFiles(
     List<String> relativePaths, {
     String? dataDir,
-    // FR-06(a)：传了就删除前重算引用，仍被引用的跳过；不传保持旧行为。
-    QuizDatabase? db,
+    // 十四批 M5 修复轮 2（B-FIX2-2）：db 必填——删除前必须重算
+    // 数据库实时引用；无 DB 检查的删除路径已封闭。
+    required QuizDatabase db,
   }) => deleteOrphanFilesImpl(relativePaths, dataDir: dataDir, db: db);
   // -- db_collect.dart --
 
@@ -810,10 +910,33 @@ class AppDatabase {
     String? dataDir,
   }) => exportBackupZipFromImpl(db, dataDir: dataDir);
 
+  /// 十四批 M2：带警告的 zip 导出（字节 + 可见警告列表；警告只列
+  /// 派生文件缺失/不可读与图块损坏）。十四批 M5 修复轮 3（D-155）：
+  /// 库行直接引用的资产缺失/不可读时备份直接失败（抛
+  /// BackupRestoreException，指明题目/任务 ID 与相对路径），
+  /// 不再静默生成不完整备份。设置页走这条；旧的 exportBackupZipFrom
+  /// 保留给不需要警告的调用方（警告丢弃）。
+  /// [onStagedForTest] 仅测试用：透传给 Impl 的故障注入钩子（见
+  /// exportBackupZipFromWithReportImpl 的参数注释），生产调用不传。
+  static Future<({List<int> bytes, List<String> warnings})>
+  exportBackupZipFromWithReport(
+    QuizDatabase db, {
+    String? dataDir,
+    void Function(Directory stagingDir, List<String> stagedRels)?
+    onStagedForTest,
+  }) => exportBackupZipFromWithReportImpl(
+    db,
+    dataDir: dataDir,
+    onStagedForTest: onStagedForTest,
+  );
+
   static Map<String, dynamic> readBackupJsonFromZip(List<int> bytes) =>
       readBackupJsonFromZipImpl(bytes);
 
-  static Future<void> importBackupZipInto(
+  /// 十四批 M2：返回恢复警告列表（缺失/不可读的图块已从 JSON 引用里
+  /// 去掉、不展示）。`Future<void>` 改为 `Future<List<String>>`，
+  /// 只 await 的调用方源码兼容。
+  static Future<List<String>> importBackupZipInto(
     QuizDatabase db,
     List<int> bytes, {
     String? dataDir,

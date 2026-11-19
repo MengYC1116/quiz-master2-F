@@ -25,6 +25,11 @@ class CauseRecords extends Table {
       text().map(const StringListConverter()).withDefault(const Constant(''))();
   IntColumn get joinedAt => integer()();
 
+  /// 十四批 M1（M3-7 的 24 小时锚点链）：上一次计入治愈次数的成功
+  /// 时间（毫秒时间戳，可空）与所在会话（可空）；“未解决”重置时两者清空。
+  IntColumn get lastCountedSuccessAt => integer().nullable()();
+  TextColumn get lastCountedSessionId => text().nullable()();
+
   @override
   List<String> get customConstraints => ['UNIQUE ("question_id", "cause")'];
 }

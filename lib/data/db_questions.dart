@@ -97,6 +97,10 @@ Future<void> syncCauseRecordsIntoImpl(QuizDatabase db, Question q) async {
 /// 返回实际写库的记录（调用方用它刷新界面，不再用快照推导值）。
 /// `review_count` 的 +1 用 Companion.custom 的列自增表达式（与旧
 /// `SET review_count = review_count + 1` 同语义），不在 Dart 侧读改写。
+///
+/// 十四批 M3：本函数保留给旧调用方（兼容旧口径：不确定不写库、
+/// 已解决按旧计数）。新会话走 [submitCauseVerdictIntoImpl]（M3-7
+/// 治愈规则 + M3-8 核验字段 + M3-10 幂等），旧口径不再扩大使用。
 Future<CauseRecord> recordSelfCheckIntoImpl(
   QuizDatabase db, {
   required CauseRecord updated,
@@ -182,6 +186,491 @@ Future<CauseRecord> recordSelfCheckIntoImpl(
   return written;
 }
 
+// ---------------------------------------------------------------------------
+// 十四批 M3：verdict 提交 / attempts / 会话持久化
+// ---------------------------------------------------------------------------
+
+/// 单条错因 verdict 提交失败：错因记录已不存在（题已删/错因已改）。
+/// 调用方按“该错因已失效”跳过该错因、不阻断其他错因提交。
+class CauseRecordMissingException implements Exception {
+  CauseRecordMissingException(this.questionId, this.cause);
+
+  final String questionId;
+  final String cause;
+
+  @override
+  String toString() => 'CauseRecordMissingException($questionId, $cause)';
+}
+
+/// 单条错因 verdict 的提交结果（M3-7/M3-8/M3-10/M3-14）。
+class VerdictSubmitResult {
+  const VerdictSubmitResult({
+    required this.record,
+    required this.counted,
+    required this.alreadySubmitted,
+    required this.historyId,
+    required this.cured,
+    required this.isRecheckPassed,
+    required this.isRecheckFailed,
+  });
+
+  /// 写库后的错因记录（“不确定”中性事件不改记录时为原记录；
+  /// 原提交重试时为库内当前记录）。
+  final CauseRecord record;
+
+  /// 本次是否计入治愈次数（(d)+⑥ 判定后）。
+  final bool counted;
+
+  /// 子级 submission_id 已存在：原提交的重试/恢复重放，返回已有结果，
+  /// 不算第二次真实操作，不写新事件、不重复计数。
+  final bool alreadySubmitted;
+
+  /// 本次（或重试命中的已有）review_history 行 id。
+  final int historyId;
+
+  /// 本次提交后该错因是否刚治愈（状态从非 solved 变为 solved）。
+  final bool cured;
+
+  /// 复查通过 / 复查失败（小结汇总用；非复查项均为 false）。
+  final bool isRecheckPassed;
+  final bool isRecheckFailed;
+}
+
+/// M3-7/M3-8/M3-10：单条错因 verdict 提交（每错因一次独立事务）。
+/// 调用方（repository.submitCauseVerdict）按题循环调用，跨错因部分
+/// 失败时已写错因保留、只补未写成的。
+///
+/// 事务内顺序：
+/// 1. 校验核验字段组合（M3-8 DDL CHECK 同口径）：已核验时来源 ∈
+///    {软件标准答案，客观判分，外部资料核对}；未核验时来源 = 未核验；
+///    客观判分时 attemptId 必填。非法组合抛 ArgumentError，整条
+///    verdict 提交失败，不静默改写。
+/// 2. 按子级 submission_id 查重：已存在 → 返回已有结果（不写新事件）。
+/// 3. 读库内当前错因行：不存在 → 抛 CauseRecordMissingException。
+/// 4. (d) 同会话重复检查：该 cause_id 在当前 session_id 下是否已存在
+///    verdict='已解决' 的历史事件（含第一次未核验的“已解决”）。
+/// 5. 按 verdict 分流：
+///    - 不确定：只写一条中性 review_history 事件，不改 cause_records、
+///      不改 review_count、不刷新 24 小时锚点（取代旧“不确定不写库”）。
+///    - 未解决：按现有治疗规则重置（solved_count 清零、锚点清空、
+///      状态回解决中、复查日清掉），记 history，review_count +1。
+///    - 已解决：已核验时按锚点链 + 同会话检查判定是否计入（M3-7）；
+///      未核验时只记 history、不计数、不刷新锚点；复查通过不增加
+///      初次治愈次数、只顺延复查日。
+/// 6. review_count +1（每错因事件一次；沿用旧口径，不确定中性事件除外）。
+Future<VerdictSubmitResult> submitCauseVerdictIntoImpl(
+  QuizDatabase db, {
+  required String questionId,
+  required CauseRecord record,
+  required String verdict,
+  required String verificationStatus,
+  required String verificationSource,
+  String? attemptId,
+  required String sessionId,
+  required String submissionId,
+  int cureChecks = 2,
+  int recheckIntervalDays = 7,
+  bool isRecheck = false,
+  DateTime? now,
+}) async {
+  // 1. 核验字段组合校验（非法即整条提交失败，不静默改写）。
+  final validPair =
+      (verificationStatus == Verification.verified &&
+          (verificationSource == Verification.softwareAnswer ||
+              verificationSource == Verification.objectiveGrading ||
+              verificationSource == Verification.external)) ||
+      (verificationStatus == Verification.unverified &&
+          verificationSource == Verification.unverified);
+  if (!validPair) {
+    throw ArgumentError(
+      '非法核验组合：$verificationStatus / $verificationSource',
+    );
+  }
+  if (verificationSource == Verification.objectiveGrading &&
+      attemptId == null) {
+    throw ArgumentError('客观判分的核验必须带 attempt_id');
+  }
+  if (verdict != ReviewVerdict.solved &&
+      verdict != ReviewVerdict.unsolved &&
+      verdict != ReviewVerdict.unsure) {
+    throw ArgumentError('非法 verdict：$verdict');
+  }
+  final nowValue = now ?? DateTime.now();
+  final nowMs = nowValue.millisecondsSinceEpoch;
+  final resultCode = switch (verdict) {
+    ReviewVerdict.solved => 'solved',
+    ReviewVerdict.unsolved => 'unsolved',
+    _ => 'unsure',
+  };
+  late VerdictSubmitResult out;
+  await db.transaction(() async {
+    // 2. 子级 submission_id 查重：原提交重试 → 返回已有结果。
+    final existing = await (db.select(
+      db.reviewHistory,
+    )..where((t) => t.submissionId.equals(submissionId))).getSingleOrNull();
+    Future<DbCauseRecord?> readCurrent() =>
+        (db.select(db.causeRecords)..where(
+              (t) =>
+                  t.questionId.equals(record.questionId) &
+                  t.cause.equals(record.cause),
+            ))
+            .getSingleOrNull();
+    if (existing != null) {
+      final row = await readCurrent();
+      final current = row == null ? record : _causeRecordFromDb(row);
+      out = VerdictSubmitResult(
+        record: current,
+        counted: false,
+        alreadySubmitted: true,
+        historyId: existing.id,
+        cured: false,
+        isRecheckPassed: false,
+        isRecheckFailed: false,
+      );
+      return;
+    }
+    // 3. 读库内当前行。
+    final row = await readCurrent();
+    if (row == null) {
+      throw CauseRecordMissingException(record.questionId, record.cause);
+    }
+    final current = _causeRecordFromDb(row);
+    final stableId = causeStableId(current);
+    final wasSolved = current.status == CauseStatus.solved;
+    if (verdict == ReviewVerdict.unsure) {
+      // 5a. 不确定：中性事件写库，不改 cause_records、不改 review_count。
+      final historyId = await db
+          .into(db.reviewHistory)
+          .insert(
+            ReviewHistoryCompanion.insert(
+              questionId: questionId,
+              result: resultCode,
+              reviewedAt: nowMs,
+              causeId: Value(stableId),
+              sessionId: Value(sessionId),
+              reviewMode: const Value(ReviewMode.due),
+              verdict: const Value(ReviewVerdict.unsure),
+              verificationStatus: const Value(Verification.unverified),
+              verificationSource: const Value(Verification.unverified),
+              submissionId: Value(submissionId),
+            ),
+          );
+      out = VerdictSubmitResult(
+        record: current,
+        counted: false,
+        alreadySubmitted: false,
+        historyId: historyId,
+        cured: false,
+        isRecheckPassed: false,
+        isRecheckFailed: false,
+      );
+      return;
+    }
+    late CauseRecord written;
+    var counted = false;
+    if (verdict == ReviewVerdict.unsolved) {
+      // 5b. 未解决：重置治愈进度及时间锚点。
+      written = unsolvedReset(current, nowValue);
+    } else {
+      // 5c. 已解决。
+      if (verificationStatus == Verification.verified) {
+        // 4. (d) 同会话重复检查：含第一次未核验的“已解决”。
+        final sameSessionSolved =
+            await (db.select(db.reviewHistory)..where(
+                  (t) =>
+                      t.causeId.equals(stableId) &
+                      t.sessionId.equals(sessionId) &
+                      t.verdict.equals(ReviewVerdict.solved),
+                ))
+                .get();
+        final evaluation = evaluateCure(
+          record: current,
+          sessionId: sessionId,
+          nowMs: nowMs,
+          cureChecks: cureChecks,
+          recheckIntervalDays: recheckIntervalDays,
+          isRecheck: isRecheck,
+          alreadySolvedInSession: sameSessionSolved.isNotEmpty,
+        );
+        counted = evaluation.counted;
+        if (isRecheck) {
+          written = current.copyWith(
+            status: CauseStatus.solved,
+            lastCheck: nowValue,
+            recheckDate: evaluation.newRecheckDate,
+          );
+        } else if (evaluation.newStatus == CauseStatus.solved) {
+          written = current.copyWith(
+            status: CauseStatus.solved,
+            solvedCount: evaluation.newSolvedCount,
+            lastCheck: nowValue,
+            recheckDate: evaluation.newRecheckDate,
+            lastCountedSuccessAt: evaluation.newLastCountedSuccessAt,
+            lastCountedSessionId: evaluation.newLastCountedSessionId,
+          );
+        } else if (counted) {
+          written = current.copyWith(
+            status: CauseStatus.inProgress,
+            solvedCount: evaluation.newSolvedCount,
+            lastCheck: nowValue,
+            clearRecheckDate: true,
+            lastCountedSuccessAt: evaluation.newLastCountedSuccessAt,
+            lastCountedSessionId: evaluation.newLastCountedSessionId,
+          );
+        } else {
+          // 未计入（同会话重复或不足 24 小时）：只更新上次自查时间，
+          // 不计数、不刷新锚点。
+          written = current.copyWith(lastCheck: nowValue);
+        }
+      } else {
+        // 未核验的自我判断：不推进治愈。非复查时状态进“解决中”
+        // （solvedCount 不变）；复查时不延长复查日、不算复查通过。
+        written = isRecheck
+            ? current.copyWith(lastCheck: nowValue)
+            : current.copyWith(
+                status: current.status == CauseStatus.solved
+                    ? CauseStatus.solved
+                    : CauseStatus.inProgress,
+                lastCheck: nowValue,
+                clearRecheckDate:
+                    current.status != CauseStatus.solved,
+              );
+      }
+    }
+    await db
+        .into(db.causeRecords)
+        .insert(_causeRecordCompanion(written), mode: InsertMode.insertOrReplace);
+    final historyId = await db.into(db.reviewHistory).insert(
+      ReviewHistoryCompanion.insert(
+        questionId: questionId,
+        result: resultCode,
+        reviewedAt: nowMs,
+        causeId: Value(stableId),
+        sessionId: Value(sessionId),
+        reviewMode: const Value(ReviewMode.due),
+        verdict: Value(verdict),
+        verificationStatus: Value(verificationStatus),
+        verificationSource: Value(verificationSource),
+        attemptId: Value(attemptId),
+        submissionId: Value(submissionId),
+      ),
+    );
+    await (db.update(
+      db.questions,
+    )..where((t) => t.id.equals(questionId))).write(
+      QuestionsCompanion.custom(
+        reviewCount: db.questions.reviewCount + const Constant(1),
+      ),
+    );
+    out = VerdictSubmitResult(
+      record: written,
+      counted: counted,
+      alreadySubmitted: false,
+      historyId: historyId,
+      cured: !wasSolved && written.status == CauseStatus.solved,
+      // 复查通过 = 已核验的已解决（未核验的自评不延长复查日、不算通过，
+      // 该错因仍是到期状态）；复查失败 = 未解决打回解决中。
+      isRecheckPassed:
+          isRecheck &&
+          verdict == ReviewVerdict.solved &&
+          verificationStatus == Verification.verified,
+      isRecheckFailed:
+          isRecheck && verdict == ReviewVerdict.unsolved,
+    );
+  });
+  return out;
+}
+
+/// M3-10/M3-14：attempt 写入（一次会话每题一条）。按
+/// UNIQUE(session_id, question_id) 查：已有 → 更新作答字段
+/// （保留 id / submission_id / created_at，不重新提交、不新建）；
+/// 无 → 新建一行。返回 attempt id。
+/// 跳过后重遇、恢复重放都走同一条记录，不产生多条“看起来像独立作答”
+/// 的记录。
+Future<String> recordAttemptIntoImpl(
+  QuizDatabase db, {
+  required AttemptData attempt,
+}) async {
+  late String id;
+  await db.transaction(() async {
+    final existing =
+        await (db.select(db.attempts)..where(
+              (t) =>
+                  t.sessionId.equals(attempt.sessionId) &
+                  t.questionId.equals(attempt.questionId),
+            ))
+            .getSingleOrNull();
+    if (existing != null) {
+      id = existing.id;
+      await (db.update(
+        db.attempts,
+      )..where((t) => t.id.equals(existing.id))).write(
+        AttemptsCompanion(
+          selected: Value(
+            attempt.selected == null
+                ? null
+                : jsonEncode(attempt.selected),
+          ),
+          correct: Value(attempt.correct),
+          confidence: Value(attempt.confidence),
+          answerVersion: Value(attempt.answerVersion),
+          contentVersion: Value(attempt.contentVersion),
+          status: Value(attempt.status),
+          causeIds: Value(jsonEncode(attempt.causeIds)),
+          durationMs: Value(attempt.durationMs),
+        ),
+      );
+    } else {
+      id = attempt.id;
+      await db
+          .into(db.attempts)
+          .insert(
+            AttemptsCompanion.insert(
+              id: attempt.id,
+              questionId: attempt.questionId,
+              sessionId: attempt.sessionId,
+              mode: attempt.mode,
+              selected: Value(
+                attempt.selected == null
+                    ? null
+                    : jsonEncode(attempt.selected),
+              ),
+              correct: Value(attempt.correct),
+              confidence: Value(attempt.confidence),
+              answerVersion: Value(attempt.answerVersion),
+              contentVersion: Value(attempt.contentVersion),
+              status: attempt.status,
+              causeIds: Value(jsonEncode(attempt.causeIds)),
+              durationMs: Value(attempt.durationMs),
+              submissionId: attempt.submissionId,
+              createdAt: attempt.createdAt,
+            ),
+          );
+    }
+  });
+  return id;
+}
+
+/// M3-10：读一条 attempt（会话恢复时按原题状态恢复用）。
+Future<AttemptData?> loadAttemptIntoImpl(
+  QuizDatabase db, {
+  required String sessionId,
+  required String questionId,
+}) async {
+  final row =
+      await (db.select(db.attempts)..where(
+            (t) =>
+                t.sessionId.equals(sessionId) &
+                t.questionId.equals(questionId),
+          ))
+          .getSingleOrNull();
+  if (row == null) return null;
+  return _attemptFromDb(row);
+}
+
+/// M3-10/M3-15：读某会话的全部 attempts（小结汇总用）。
+Future<List<AttemptData>> loadAttemptsForSessionIntoImpl(
+  QuizDatabase db, {
+  required String sessionId,
+}) async {
+  final rows =
+      await (db.select(db.attempts)..where(
+            (t) => t.sessionId.equals(sessionId),
+          ))
+          .get();
+  return rows.map(_attemptFromDb).toList();
+}
+
+/// 十四批 M3（M3-10 断点恢复重建用）：本会话里该错因是否已有任何
+/// verdict 事件（不限 verdict——submittedCauses 是“已提交过”，
+/// 不限“已解决”）。供恢复时以 review_history 实际写入为准重建
+/// per_question_state：崩溃窗口（数据库已写、review_state 未更新）
+/// 下，恢复后不再把已提交的错因当成未提交；重复计数仍由数据层
+/// (d) 规则挡，这里只补展示态。
+Future<bool> hasSessionVerdictIntoImpl(
+  QuizDatabase db, {
+  required String causeStableId,
+  required String sessionId,
+}) async {
+  final rows =
+      await (db.select(db.reviewHistory)..where(
+            (t) =>
+                t.causeId.equals(causeStableId) &
+                t.sessionId.equals(sessionId),
+          ))
+          .get();
+  return rows.isNotEmpty;
+}
+
+AttemptData _attemptFromDb(DbAttempt r) => AttemptData(
+  id: r.id,
+  questionId: r.questionId,
+  sessionId: r.sessionId,
+  mode: r.mode,
+  selected: r.selected == null
+      ? null
+      : (jsonDecode(r.selected!) as List).map((e) => e.toString()).toList(),
+  correct: r.correct,
+  confidence: r.confidence,
+  answerVersion: r.answerVersion,
+  contentVersion: r.contentVersion,
+  status: r.status,
+  causeIds: (jsonDecode(r.causeIds) as List)
+      .map((e) => e.toString())
+      .toList(),
+  durationMs: r.durationMs,
+  submissionId: r.submissionId,
+  createdAt: r.createdAt,
+);
+
+/// M3-2 专项练习“将此错因重新加入复习”（用户主动操作）：只影响后续
+/// 会话，不改变本次练习记录，不自动触发治疗状态变化。已治愈的错因
+/// 回到解决中（solvedCount 清零、锚点清空、复查日清掉）；未治愈的
+/// 保持原样；无记录时新建一条待解决记录；题行 review_joined 置 1。
+Future<void> rejoinCauseIntoImpl(
+  QuizDatabase db, {
+  required String questionId,
+  required String cause,
+  required String subjectId,
+}) async {
+  await db.transaction(() async {
+    await (db.update(
+      db.questions,
+    )..where((t) => t.id.equals(questionId))).write(
+      const QuestionsCompanion(reviewJoined: Value(1)),
+    );
+    final row =
+        await (db.select(db.causeRecords)..where(
+              (t) =>
+                  t.questionId.equals(questionId) & t.cause.equals(cause),
+            ))
+            .getSingleOrNull();
+    if (row == null) {
+      await db
+          .into(db.causeRecords)
+          .insert(
+            CauseRecordsCompanion.insert(
+              questionId: questionId,
+              cause: cause,
+              subjectId: subjectId,
+              remedyHistory: const Value([]),
+              joinedAt: DateTime.now().millisecondsSinceEpoch,
+            ),
+          );
+    } else if (row.status == 'solved') {
+      final current = _causeRecordFromDb(row);
+      await db
+          .into(db.causeRecords)
+          .insert(
+            _causeRecordCompanion(
+              unsolvedReset(current, DateTime.now()),
+            ),
+            mode: InsertMode.insertOrReplace,
+          );
+    }
+  });
+}
+
 /// §8.1：写题（可单测版）：直接对传入的库句柄写，不碰单例、不 bump。
 /// SR2-14：UPDATE-first，且 UPDATE 的列里不含 `review_count`——
 /// 它只应由 [recordSelfCheckIntoImpl] 里的 SQL `+1` 改。旧写法是
@@ -190,26 +679,97 @@ Future<CauseRecord> recordSelfCheckIntoImpl(
 /// 已存在的行只 UPDATE 其它列（标题、文件夹、标签、收藏/归档等编辑
 /// 内容照常写回）；不存在时才整行 INSERT（快照值即新题初始值）。
 Future<void> upsertQuestionIntoImpl(QuizDatabase db, Question q) async {
+  // 十四批 M2：版本权威——全部 UI 保存路径汇合于此，content_version /
+  // answer_version 在这里按“实际内容是否变化”统一计算一次（同一逻辑
+  // 保存事务无论改几个相关字段只递增一次；实际内容无变化时不因重新
+  // 保存而递增）。调用方纯函数里预置的 +1（如 applyManualStemEdit、
+  // withManualQuestionType、deleteFigureFromQuestion）在这里被
+  // 归一化为恰好一次，不会双计；新行（库里没有旧行）按模型值原样入库。
+  // 显式抬高版本时以调用方为准（max(库内旧值, 模型值)）：b13 既有契约
+  // 允许调用方只改版本整行写回（_RacingRecognizer 的并发守门模拟、
+  // b13_migration 的 copyWith(contentVersion: 4)），那是调用方明确
+  // 移动版本号时钟，不是“重新保存”；仅当模型版本未抬高时才按可见
+  // 内容变化递增。版本永不回退。
+  // 比对口径（P2-2）：用户可见内容字段集合 + 来源身份——题干文本、
+  // 切分状态、图块列表与顺序、来源切片身份（slice_path/宽高）、题型、
+  // 候选状态（pending/accepted/ignored/stale 是用户可见状态，横幅
+  // 显隐随它变，不是技术元数据）；不比较 ocr_raw 的技术元数据
+  // （请求记录、时间戳、token 用量、layout 原始 JSON 非内容字段）。
+  // question_type 是归类字段之外的例外（P2-1）：其变化 → content_version
+  // +1；文件夹/标签/学科/考试等归类字段修改 → 两个版本都不碰。
+  // 答案侧（answer/explanation/correct_option/option_labels）修改 →
+  // answer_version +1，不碰 content_version。
+  final old = await (db.select(
+    db.questions,
+  )..where((t) => t.id.equals(q.id))).getSingleOrNull();
   // B11-10 今日小结计数：先读旧行，判断是不是未整理→已整理的跃迁
   // （读在写之前；写成功后才 +1，写失败不计）。只在旧行存在且未整理
   // 时才计：新行直接以已整理入库（种子/恢复路径）不是一次整理动作，
   // 不计；已整理题的重复保存也不计（旧行已是已整理）。
   var countOrganizedToday = false;
   if (q.isOrganized) {
-    final old = await (db.select(
-      db.questions,
-    )..where((t) => t.id.equals(q.id))).getSingleOrNull();
     countOrganizedToday = old != null && old.isOrganized != 1;
+  }
+  var effective = q;
+  if (old != null) {
+    // 十四批 M3（P1-A）：改标签保存先过集中规则（确认清零、旧答案失效/
+    // 待重新核对），再算版本；后续比较一律用调整后的 effective。
+    effective = _applyOptionLabelChangeRules(old, effective);
+    final visibleChanged =
+        old.ocrStem != effective.ocrStem ||
+        old.ocrSplitStatus != effective.ocrSplitStatus ||
+        old.ocrFigures != effective.ocrFigures ||
+        old.slicePath != effective.slicePath ||
+        old.sliceWidth != effective.sliceWidth ||
+        old.sliceHeight != effective.sliceHeight ||
+        old.questionType != effective.questionType ||
+        _candidateStatusOf(old.ocrRaw) != _candidateStatusOf(effective.ocrRaw);
+    final answerChanged =
+        old.answer != effective.answer ||
+        old.explanation != effective.explanation ||
+        old.correctOption != effective.correctOption ||
+        !_optionLabelsEqual(old.optionLabels, effective.optionLabels) ||
+        old.answerPendingRecheck !=
+            (effective.answerPendingRecheck ? 1 : 0);
+    if (visibleChanged || answerChanged) {
+      // 内容变了：模型版本已抬高时以模型为准（不双计）；未抬高时 +1。
+      effective = effective.copyWith(
+        contentVersion:
+            math.max(old.contentVersion, effective.contentVersion) +
+            (visibleChanged && effective.contentVersion <= old.contentVersion
+                ? 1
+                : 0),
+        answerVersion:
+            math.max(old.answerVersion, effective.answerVersion) +
+            (answerChanged && effective.answerVersion <= old.answerVersion
+                ? 1
+                : 0),
+      );
+    } else {
+      // 内容无变化：调用方显式抬高的版本予以保留（max），否则按库内
+      // 旧值写回，不因重新保存而递增。
+      effective = effective.copyWith(
+        contentVersion: math.max(old.contentVersion, effective.contentVersion),
+        answerVersion: math.max(old.answerVersion, effective.answerVersion),
+      );
+    }
   }
   final updated =
       await (db.update(db.questions)..where((t) => t.id.equals(q.id))).write(
         // UPDATE 的列里不含 review_count（见函数头注释）与 id（WHERE 已定）。
-        _questionCompanion(q, includeId: false, includeReviewCount: false),
+        _questionCompanion(
+          effective,
+          includeId: false,
+          includeReviewCount: false,
+        ),
       );
   if (updated == 0) {
     await db
         .into(db.questions)
-        .insert(_questionCompanion(q), mode: InsertMode.insertOrReplace);
+        .insert(
+          _questionCompanion(effective),
+          mode: InsertMode.insertOrReplace,
+        );
   }
   // B9-1：题变为已整理时，同句柄把指向它的收集任务置 done。
   // 这是全部整理路径的汇合点（整理确认、批量整理都走 repo.save →
@@ -237,13 +797,139 @@ Future<void> upsertQuestionIntoImpl(QuizDatabase db, Question q) async {
   }
 }
 
+/// 十四批 M2（版本权威的比对口径）：从 ocr_raw JSON 里只取候选状态
+/// （`candidate_status`；缺键/非法时按 'none' 计，与 GlmOcrRawData
+/// 的缺省一致）。只比较候选状态，不比较请求记录、时间戳、token 用量
+/// 等技术元数据——那些变了不递增 content_version。
+String _candidateStatusOf(String? ocrRaw) {
+  if (ocrRaw == null || ocrRaw.isEmpty) return 'none';
+  try {
+    final decoded = jsonDecode(ocrRaw);
+    if (decoded is Map<String, dynamic>) {
+      final status = decoded['candidate_status'];
+      if (status is String && status.isNotEmpty) return status;
+    }
+  } catch (_) {
+    // 非法 JSON 按无候选计。
+  }
+  return 'none';
+}
+
+/// 十四批 M2（版本权威的比对口径）：option_labels 在库里是 JSON 数组
+/// （Drift 类型转换器，行对象里是 `List<String>?`），比较时按列表
+/// 内容比较（顺序敏感；写入时由 _questionCompanion 统一编码）。
+/// NULL 与 [] 不同义（D-119）：NULL = 未确认，[] = 已确认无选项。
+/// 必须做 null-aware 列表比较——旧实现把两者都编码成 ''（join 后
+/// null 与 [] 同值），NULL↔[] 变化会漏触发 _applyOptionLabelChangeRules，
+/// 导致 option_labels_confirmed 不清零、答案失效处理不执行
+/// （M5 修复轮 2，GPT fix1 窄审 §3.3 P1）。
+bool _optionLabelsEqual(List<String>? a, List<String>? b) {
+  if (identical(a, b)) return true;
+  if (a == null || b == null) return false;
+  if (a.length != b.length) return false;
+  for (var i = 0; i < a.length; i++) {
+    if (a[i] != b[i]) return false;
+  }
+  return true;
+}
+
+/// 十四批 M3（P1-A + 标签确认清零）：改标签保存的集中处理，在
+/// [upsertQuestionIntoImpl] 的版本计算之前跑，返回调整后的模型。
+/// 只在旧行存在且标签有序列表确实变化时触发（首次设标签、旧标签为
+/// NULL 时无旧答案可失效，不触发；仅改标签显示样式不经过本函数，
+/// 调用方不把样式变化写成标签列表变化）。
+///
+/// - 标签变化且本次不是“确认选项”保存 → option_labels_confirmed 清零，
+///   须重新确认才能判分。
+/// - 多选/不定项：旧 answer/explanation 非空时，未带 answerReconfirmed
+///   信号 → 两者置 NULL、answerPendingRecheck 置 1（同一次保存只 +1
+///   answer_version，由调用方版本逻辑按 answerChanged 计）；带信号
+///   （原样确认或改写后保存）→ 保留答案、标记清除。
+/// - 单选：集合变化且 correct_option 不在新集合 → 置 NULL、标记置 1；
+///   只调换顺序、集合不变、correct_option 与旧值相同且未带信号 →
+///   同样置 NULL、标记置 1（其指向的选项含义已改变）；带信号重选后保留。
+/// - 判断题标签固定，不受本条影响。
+/// - 标签未变但旧行待重新核对：本次带 answerReconfirmed 信号、或答案/
+///   正确选项文本确实改了 → 视为重新填写，标记清除；否则标记保留。
+Question _applyOptionLabelChangeRules(DbQuestion old, Question q) {
+  final oldLabels = old.optionLabels;
+  final newLabels = q.optionLabels;
+  final labelsChanged = !_optionLabelsEqual(oldLabels, newLabels);
+  var out = q;
+  final hadOldAnswer =
+      (old.answer != null && old.answer!.trim().isNotEmpty) ||
+      (old.explanation != null && old.explanation!.trim().isNotEmpty);
+  if (labelsChanged) {
+    // 改标签/数量 → 确认清零（除非本次就是确认保存）。
+    if (!q.optionLabelsJustConfirmed) {
+      out = out.copyWith(optionLabelsConfirmed: false);
+    }
+    final type = q.questionType;
+    if (type == 'choice_multi' || type == 'choice_variable') {
+      if (hadOldAnswer) {
+        if (q.answerReconfirmed) {
+          out = out.copyWith(answerPendingRecheck: false);
+        } else {
+          out = out.copyWith(
+            clearAnswer: true,
+            clearExplanation: true,
+            answerPendingRecheck: true,
+          );
+        }
+      }
+    } else if (type == 'choice_single') {
+      final oldCorrect = old.correctOption;
+      final newCorrect = out.correctOption;
+      final oldSet = (oldLabels ?? const []).toSet();
+      final newSet = (newLabels ?? const []).toSet();
+      final setChanged =
+          oldSet.length != newSet.length || !oldSet.containsAll(newSet);
+      if (oldCorrect != null && oldCorrect.isNotEmpty) {
+        if (newCorrect == null || !newSet.contains(newCorrect)) {
+          // 集合变化致正确答案失效，或本次未重选（correct 已空）。
+          out = out.copyWith(
+            clearCorrectOption: true,
+            answerPendingRecheck: true,
+          );
+        } else if (!setChanged &&
+            newCorrect == oldCorrect &&
+            !q.answerReconfirmed) {
+          // 只调换标签顺序、集合不变：正确选项含义已变，未重选即失效。
+          out = out.copyWith(
+            clearCorrectOption: true,
+            answerPendingRecheck: true,
+          );
+        } else if (q.answerReconfirmed) {
+          out = out.copyWith(answerPendingRecheck: false);
+        }
+      } else if (q.answerReconfirmed) {
+        out = out.copyWith(answerPendingRecheck: false);
+      }
+    }
+  } else if (old.answerPendingRecheck == 1) {
+    // 标签未变：带重确认信号、或答案/正确选项文本确实改了 → 清除标记。
+    if (q.answerReconfirmed ||
+        q.answer != old.answer ||
+        q.correctOption != old.correctOption) {
+      out = out.copyWith(answerPendingRecheck: false);
+    }
+  }
+  return out;
+}
+
 /// §4.5：删题（可单测版）：一次事务，不 bump。事务提交后删该题
 /// 独占的切片文件（页图不删，同页多题共享；文件删失败不回滚，
-/// 由孤儿清理兜底）。
+/// 由孤儿清理兜底）。十四批 M2：图块裁图同样在提交后逐个重查
+/// 引用再删（删前已收好该题的 crop_path 列表；删后若仍被其它题
+/// 引用，`_deleteDataFileIfUnreferenced` 的锁内重查会跳过）。
 Future<void> deleteQuestionFromImpl(QuizDatabase db, String id) async {
   final slice = await _slicePathOf(db, id);
+  final figureCrops = await _figureCropPathsOf(db, id);
   await db.transaction(() => _deleteQuestionTxn(db, id));
   await _deleteDataFileIfUnreferenced(db, slice);
+  for (final crop in figureCrops) {
+    await _deleteDataFileIfUnreferenced(db, crop);
+  }
 }
 
 Future<String?> _slicePathOf(QuizDatabase db, String id) async {
@@ -264,8 +950,10 @@ Future<void> deleteQuestionsBatchFromImpl(
   List<String> ids,
 ) async {
   final slices = <String?>[];
+  final figureCrops = <String>[];
   for (final id in ids) {
     slices.add(await _slicePathOf(db, id));
+    figureCrops.addAll(await _figureCropPathsOf(db, id));
   }
   await db.transaction(() async {
     for (final id in ids) {
@@ -274,6 +962,9 @@ Future<void> deleteQuestionsBatchFromImpl(
   });
   for (final slice in slices) {
     await _deleteDataFileIfUnreferenced(db, slice);
+  }
+  for (final crop in figureCrops) {
+    await _deleteDataFileIfUnreferenced(db, crop);
   }
 }
 
@@ -296,19 +987,25 @@ Future<void> _removeFromReviewQueueTxn(
 }
 
 /// §4.2/§4.5：删题的全部写操作（事务内，不 bump、不开新事务）：
-/// 解决记录 → 自查历史 → 收集任务的指向置空（任务本身保留）→
+/// 自查历史 → 作答记录 → 解决记录 → 收集任务的指向置空（任务本身保留）→
 /// 复习队列里的项 → §1.2(c) 该题的框（含第 1 层框及其子框，
 /// parent_box_id 指向该题整题框的行）→ 题目行。
+/// 十四批 M1 P1-3：删除顺序写死为 review_history → attempts →
+/// cause_records → question_boxes → questions（同事务）；review_history
+/// 的 cause_id 与 attempts 的 question_id 不建外键，删除顺序由事务代码
+/// 保证，不依赖级联；DDL 中写明本顺序为约定，改顺序须同步改方案。
 /// 注意：页图不删（同页多题共享）；切片文件在事务提交后由调用方
 /// 处理（P2 落盘后，见 §4.5）。顺序约束（plan 协议）：先删数据库行，
 /// 再删切片文件——顺序不变，文件删除在 [deleteQuestionFromImpl] 里
-/// 事务提交后才做。
+/// 事务提交后才做（文件删除本身走 M2 的统一文件生命周期协调机制，
+/// M1 不动 `_deleteDataFileIfUnreferenced` 与孤儿清理）。
 Future<void> _deleteQuestionTxn(QuizDatabase db, String id) async {
   await (db.delete(
-    db.causeRecords,
-  )..where((t) => t.questionId.equals(id))).go();
-  await (db.delete(
     db.reviewHistory,
+  )..where((t) => t.questionId.equals(id))).go();
+  await (db.delete(db.attempts)..where((t) => t.questionId.equals(id))).go();
+  await (db.delete(
+    db.causeRecords,
   )..where((t) => t.questionId.equals(id))).go();
   await (db.update(db.collectTasks)..where((t) => t.questionId.equals(id)))
       .write(const CollectTasksCompanion(questionId: Value(null)));
@@ -485,9 +1182,120 @@ extension AppDatabaseQuestions on AppDatabase {
     return written;
   }
 
+  /// 十四批 M3（M3-10 轻量会话持久化）：除队列与位置外，一并保存
+  /// session_id、模式、每题跳过次数、各题作答/核对/verdict 状态
+  /// （含 question_submission_id 与两版本快照）。旧调用方只传
+  /// queue/position 时其余列写 NULL（老行为兼容）。
+  /// 十四批 M3：单条错因 verdict 提交（见 submitCauseVerdictIntoImpl）。
+  /// 成功写库后发 badges + reviewRecords 事件（“不确定”中性事件也发，
+  /// 复习记录变了；旧 recordSelfCheckTxn 的“不确定不发事件”口径
+  /// 随旧行为废止，新会话一律走本方法）。
+  Future<VerdictSubmitResult> submitCauseVerdictTxn({
+    required String questionId,
+    required CauseRecord record,
+    required String verdict,
+    required String verificationStatus,
+    required String verificationSource,
+    String? attemptId,
+    required String sessionId,
+    required String submissionId,
+    int cureChecks = 2,
+    int recheckIntervalDays = 7,
+    bool isRecheck = false,
+    DateTime? now,
+  }) async {
+    final d = await db;
+    final result = await AppDatabase.submitCauseVerdictInto(
+      d,
+      questionId: questionId,
+      record: record,
+      verdict: verdict,
+      verificationStatus: verificationStatus,
+      verificationSource: verificationSource,
+      attemptId: attemptId,
+      sessionId: sessionId,
+      submissionId: submissionId,
+      cureChecks: cureChecks,
+      recheckIntervalDays: recheckIntervalDays,
+      isRecheck: isRecheck,
+      now: now,
+    );
+    DataChangeBus.instance.emit(
+      DataChangeEvent(
+        kinds: const {DataChangeKind.badges, DataChangeKind.reviewRecords},
+        questionId: questionId,
+      ),
+    );
+    return result;
+  }
+
+  /// 十四批 M3：attempt 写入（见 recordAttemptIntoImpl）。
+  Future<String> recordAttemptTxn({required AttemptData attempt}) async {
+    final d = await db;
+    return AppDatabase.recordAttemptInto(d, attempt: attempt);
+  }
+
+  /// 十四批 M3：读一条 attempt / 某会话全部 attempts。
+  Future<AttemptData?> loadAttempt({
+    required String sessionId,
+    required String questionId,
+  }) async {
+    final d = await db;
+    return AppDatabase.loadAttemptInto(
+      d,
+      sessionId: sessionId,
+      questionId: questionId,
+    );
+  }
+
+  Future<List<AttemptData>> loadAttemptsForSession({
+    required String sessionId,
+  }) async {
+    final d = await db;
+    return AppDatabase.loadAttemptsForSessionInto(d, sessionId: sessionId);
+  }
+
+  /// 十四批 M3（M3-10 断点恢复重建用）：本会话里该错因是否已有 verdict 事件。
+  Future<bool> hasSessionVerdict({
+    required String causeStableId,
+    required String sessionId,
+  }) async {
+    final d = await db;
+    return AppDatabase.hasSessionVerdictInto(
+      d,
+      causeStableId: causeStableId,
+      sessionId: sessionId,
+    );
+  }
+
+  /// 十四批 M3：专项练习“将此错因重新加入复习”。
+  Future<void> rejoinCauseTxn({
+    required String questionId,
+    required String cause,
+    required String subjectId,
+  }) async {
+    final d = await db;
+    await AppDatabase.rejoinCauseInto(
+      d,
+      questionId: questionId,
+      cause: cause,
+      subjectId: subjectId,
+    );
+    DataChangeBus.instance.emit(
+      DataChangeEvent(
+        kinds: const {DataChangeKind.badges, DataChangeKind.reviewRecords},
+        questionId: questionId,
+      ),
+    );
+  }
+
   Future<void> saveReviewState({
     required List<ReviewQueueItem> queue,
     required int position,
+    String? sessionId,
+    String? mode,
+    Map<String, int>? skips,
+    Map<String, Map<String, Object?>>? perQuestionState,
   }) async {
     final d = await db;
     await d
@@ -498,6 +1306,16 @@ extension AppDatabaseQuestions on AppDatabase {
             queue: Value(queue),
             position: Value(position),
             updatedAt: DateTime.now().millisecondsSinceEpoch,
+            sessionId: Value(sessionId),
+            mode: Value(mode),
+            skips: Value(
+              skips == null ? null : encodeSkips(skips),
+            ),
+            perQuestionState: Value(
+              perQuestionState == null
+                  ? null
+                  : encodePerQuestionState(perQuestionState),
+            ),
           ),
           mode: InsertMode.insertOrReplace,
         );
@@ -515,6 +1333,10 @@ extension AppDatabaseQuestions on AppDatabase {
       queue: queue,
       position: row.position,
       updatedAt: DateTime.fromMillisecondsSinceEpoch(row.updatedAt),
+      sessionId: row.sessionId,
+      mode: row.mode,
+      skips: decodeSkips(row.skips),
+      perQuestionState: decodePerQuestionState(row.perQuestionState),
     );
   }
 
@@ -611,6 +1433,18 @@ Question _questionFromDb(DbQuestion r) => Question(
   ocrSplitStatus: r.ocrSplitStatus,
   ocrManualEdited: r.ocrManualEdited == 1,
   contentVersion: r.contentVersion,
+  // 十四批 M1：题型两维 + 答案版本（缺了这段，整行写回会把库里的题型抹掉）。
+  questionType: r.questionType,
+  questionTypeSource: r.questionTypeSource,
+  questionBackgroundTags: r.questionBackgroundTags,
+  questionBackgroundTagsSource: r.questionBackgroundTagsSource,
+  ocrFigures: r.ocrFigures,
+  correctOption: r.correctOption,
+  optionLabels: r.optionLabels,
+  optionLabelsConfirmed: r.optionLabelsConfirmed == 1,
+  answerVersion: r.answerVersion,
+  // 十四批 M3（P1-A）：答案待重新核对标记。
+  answerPendingRecheck: r.answerPendingRecheck == 1,
 );
 
 QuestionsCompanion _questionCompanion(
@@ -654,9 +1488,25 @@ QuestionsCompanion _questionCompanion(
   ocrSplitStatus: Value(q.ocrSplitStatus),
   ocrManualEdited: Value(q.ocrManualEdited ? 1 : 0),
   contentVersion: Value(q.contentVersion),
+  // 十四批 M1：题型两维 + 答案版本全列写回（同款口径：缺了这段，
+  // upsert 会把库里的题型抹回默认值）。
+  questionType: Value(q.questionType),
+  questionTypeSource: Value(q.questionTypeSource),
+  questionBackgroundTags: Value(q.questionBackgroundTags),
+  questionBackgroundTagsSource: Value(q.questionBackgroundTagsSource),
+  ocrFigures: Value(q.ocrFigures),
+  correctOption: Value(q.correctOption),
+  optionLabels: Value(q.optionLabels),
+  optionLabelsConfirmed: Value(q.optionLabelsConfirmed ? 1 : 0),
+  answerVersion: Value(q.answerVersion),
+  // 十四批 M3（P1-A）：答案待重新核对标记（answerReconfirmed 是保存时
+  // 信号，不持久化、不进 Companion）。
+  answerPendingRecheck: Value(q.answerPendingRecheck ? 1 : 0),
 );
 
 CauseRecord _causeRecordFromDb(DbCauseRecord r) => CauseRecord(
+  // 十四批 M3：行 id 进模型（review_history.cause_id 用它）。
+  id: r.id,
   questionId: r.questionId,
   cause: r.cause,
   subjectId: r.subjectId,
@@ -674,10 +1524,16 @@ CauseRecord _causeRecordFromDb(DbCauseRecord r) => CauseRecord(
       : DateTime.fromMillisecondsSinceEpoch(r.recheckDate!),
   remedyHistory: r.remedyHistory,
   joinedAt: DateTime.fromMillisecondsSinceEpoch(r.joinedAt),
+  // 十四批 M1：24 小时锚点（毫秒时间戳原样带上）。
+  lastCountedSuccessAt: r.lastCountedSuccessAt,
+  lastCountedSessionId: r.lastCountedSessionId,
 );
 
 CauseRecordsCompanion _causeRecordCompanion(CauseRecord r) =>
     CauseRecordsCompanion(
+      // 十四批 M3：有 id 时带上（insertOrReplace 按主键更新同一行）；
+      // 无 id（内存新造）时缺席，靠 UNIQUE(question_id, cause) 去重。
+      id: r.id == null ? const Value.absent() : Value(r.id!),
       questionId: Value(r.questionId),
       cause: Value(r.cause),
       subjectId: Value(r.subjectId),
@@ -687,6 +1543,8 @@ CauseRecordsCompanion _causeRecordCompanion(CauseRecord r) =>
       recheckDate: Value(r.recheckDate?.millisecondsSinceEpoch),
       remedyHistory: Value(r.remedyHistory),
       joinedAt: Value(r.joinedAt.millisecondsSinceEpoch),
+      lastCountedSuccessAt: Value(r.lastCountedSuccessAt),
+      lastCountedSessionId: Value(r.lastCountedSessionId),
     );
 
 /// 错因记录播种（类型化版）：每个错因一条待解决记录（已存在的不动），

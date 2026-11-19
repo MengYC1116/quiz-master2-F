@@ -56,6 +56,8 @@ dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^5.0.0
+  # 十四批 M2：测试直接用 archive 读/改 ZIP（原为传递依赖，现显式声明）。
+  archive: ^4.7.1
   # ARCH-PLAN-B 第 1 阶段：Drift 代码生成。
   drift_dev: ^2.35.3
   build_runner: ^2.7.1

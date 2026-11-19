@@ -11,6 +11,11 @@ import '../../data/data_change_events.dart';
 import '../../data/repository.dart';
 import '../../models/models.dart';
 import '../../modules/ocr/ocr_stem_section.dart';
+import '../../modules/ocr/option_labels_editor.dart';
+import '../../modules/ocr/question_classifier.dart';
+import '../../modules/ocr/question_type_picker.dart';
+import '../../services/glm_ocr_client.dart';
+import '../../services/stem_splitter.dart';
 import '../../state/organize_notifier.dart';
 import '../../state/subject_sort.dart';
 import '../../state/wrongbook_notifier.dart';
@@ -241,6 +246,14 @@ class _OrganizeViewState extends ConsumerState<_OrganizeView> {
     final ok = await _notifier.dismissOcrCandidate();
     if (!mounted) return;
     if (!ok) _snack('保存失败，请重试');
+  }
+
+  /// 十四批 M2：删除单个图块（编辑器里“删除配图”）。
+  Future<bool> _deleteFigure(String figureId) async {
+    final ok = await _notifier.deleteFigure(figureId);
+    if (!mounted) return ok;
+    _snack(ok ? '配图已删除' : '删除失败，请重试');
+    return ok;
   }
 
   Future<void> _rerecognizeStem() async {
@@ -812,6 +825,7 @@ class _OrganizeViewState extends ConsumerState<_OrganizeView> {
           onAcceptCandidate: _acceptOcrCandidate,
           onDismissCandidate: _dismissOcrCandidate,
           onRerecognize: _rerecognizeStem,
+          onDeleteFigure: _deleteFigure,
           onEditingChanged: (open) {
             setState(() {
               _stemEditorOpen = open;
@@ -962,6 +976,47 @@ class _OrganizeViewState extends ConsumerState<_OrganizeView> {
       children: [
         _missingLine(st),
         SizedBox(height: DesignTokens.organizeSectionGap * scale),
+        _typeRow(q, st),
+        SizedBox(height: DesignTokens.organizeSectionGap * scale),
+        // 十四批 M3：选项标签确认编辑器（题型区；只在选择/判断题型渲染）。
+        OptionLabelsEditor(
+          key: ValueKey(q.id),
+          questionId: q.id,
+          questionType: st.questionType,
+          optionLabels: st.optionLabels,
+          storedOptionLabels: q.optionLabels,
+          optionLabelsConfirmed: st.optionLabelsConfirmed,
+          correctOption: st.correctOption,
+          storedCorrectOption: q.correctOption,
+          answerPendingRecheck: q.answerPendingRecheck,
+          hadOldAnswer:
+              (q.answer ?? '').trim().isNotEmpty ||
+              (q.explanation ?? '').trim().isNotEmpty,
+          answerReconfirmed: st.answerReconfirmed,
+          onLabelsChanged: (labels) => _notifier.setOptionLabels(labels),
+          onCorrectOptionChanged: (value) =>
+              _notifier.setCorrectOption(value),
+          onAnswerReconfirmedChanged: (v) =>
+              _notifier.setAnswerReconfirmed(v),
+          onConfirm: ({
+            required List<String>? labels,
+            required String? correctOption,
+            required bool answerReconfirmed,
+            required bool confirmLabels,
+          }) async {
+            // 表单值已由 onLabelsChanged/onCorrectOptionChanged 同步进
+            // notifier state；这里只触发确认保存（忽略草稿参数）。
+            final ok = await _notifier.confirmOptionLabels(
+              answer: _answerCtrl.text,
+              explanation: _explanationCtrl.text,
+              notes: _notesCtrl.text,
+            );
+            if (mounted) {
+              _snack(ok ? '选项已确认，可客观判分' : '保存失败，请重试');
+            }
+          },
+        ),
+        SizedBox(height: DesignTokens.organizeSectionGap * scale),
         QmFoldSection(
           key: _folderSectionKey,
           title: '文件夹（归类）',
@@ -995,7 +1050,7 @@ class _OrganizeViewState extends ConsumerState<_OrganizeView> {
           expanded: _answerOpen,
           onToggle: () => _toggleRightSection(_RightSection.answer),
           variant: QmFoldVariant.form,
-          child: _answerSection(),
+          child: _answerSection(q),
         ),
         _workActs(st),
         _confirmBar(),
@@ -1064,6 +1119,40 @@ class _OrganizeViewState extends ConsumerState<_OrganizeView> {
               ),
             ),
     );
+  }
+
+  /// 十四批 M1：题型行——chip 显示当前题型（待确认时未选中态），
+  /// 点开选择器改；改后写 source=manual（保存时落盘）。
+  /// 题型为待确认且分类器提示多小问结构时，显示拆框提示。
+  Widget _typeRow(Question q, OrganizeState st) {
+    final hint = st.questionType == null ? _splitHint(q) : null;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _fieldLabel('题型', hint: '点芯片可改 · 改后不再自动分类'),
+        questionTypeChip(
+          type: st.questionType,
+          onTap: _pickQuestionType,
+        ),
+        if (hint != null) _helperText(hint),
+      ],
+    );
+  }
+
+  /// 多小问提示：按当前 OCR 原文重算分类（纯函数），只有分类器
+  /// 提示拆框时才显示；不持久化、不进 UI 之外的任何地方。
+  String? _splitHint(Question q) {
+    final raw = GlmOcrRawData.tryParse(q.ocrRaw);
+    if (raw == null) return null;
+    final c = classifyQuestion(raw: raw, split: splitStem(raw.mdResults));
+    return c.suggestSplit ? '本题含多种作答形式，请拆框或人工指定' : null;
+  }
+
+  Future<void> _pickQuestionType() async {
+    final current = ref.read(organizeProvider).questionType;
+    final picked = await showQuestionTypePicker(context, current);
+    if (picked == null) return; // 取消未选
+    _notifier.setQuestionType(picked.isEmpty ? null : picked);
   }
 
   Widget _fieldLabel(String label, {bool required = false, String? hint}) {
@@ -1651,10 +1740,19 @@ class _OrganizeViewState extends ConsumerState<_OrganizeView> {
     );
   }
 
-  Widget _answerSection() {
+  Widget _answerSection(Question q) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
+        // 十四批 M3：待重新核对时答案区不再把旧文本当有效答案展示
+        //（旧答案若还在文本框里，那是 P1-A 的待核对草稿，见题型区提示）。
+        if (q.answerPendingRecheck)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 8),
+            child: _helperText(
+              '标准答案/解析待重新核对：改过选项标签后需重新确认——多选请在答案框重新填写（改标签后未确认就保存会清空旧答案）；单选请在上方题型区重新选定正确答案并点「确认选项」。',
+            ),
+          ),
         _fieldLabel('答案', hint: '可选 · 与解析分开 · 固定在上'),
         TextField(
           controller: _answerCtrl,

@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../data/repository.dart';
 import '../../models/models.dart';
+import '../../modules/ocr/question_classifier.dart';
 import '../../state/repository_provider.dart';
 import '../../state/wrongbook_notifier.dart';
 import '../../theme/app_theme.dart'; // 转出 design_tokens，本文件不再单引它。

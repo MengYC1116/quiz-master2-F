@@ -18,6 +18,7 @@ import 'package:quiz_master2/models/models.dart'; // 生成文件里 QueueConver
 // 用到 ReviewQueueItem（part 文件只认本文件的 import，不认 converters.dart 的）。
 import 'converters.dart'; // 生成文件里用到 StringListConverter 等转换器，同上。
 
+import 'tables/attempts.dart';
 import 'tables/cause_records.dart';
 import 'tables/collect_tasks.dart';
 import 'tables/exams.dart';
@@ -53,6 +54,7 @@ part 'quiz_database.g.dart';
     QuestionBoxes,
     Questions,
     OcrJobs,
+    Attempts,
   ],
 )
 class QuizDatabase extends _$QuizDatabase {
@@ -75,7 +77,7 @@ class QuizDatabase extends _$QuizDatabase {
   final Future<void> Function(QuizDatabase db)? onBeforeOpen;
 
   @override
-  int get schemaVersion => 4;
+  int get schemaVersion => 5;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -88,17 +90,29 @@ class QuizDatabase extends _$QuizDatabase {
     // recently_viewed_questions 表 + collect_tasks 加 source_hash 列，
     // 数据全保留。十三批 M2：v3 → v4——questions 加 5 个 OCR 列 +
     // 新建 ocr_jobs 表，数据全保留；v2 → v4 走 2→3 再 3→4 两步链式。
-    // 其它 from/to 一律抛错：v1 及更老由打开前的
+    // 十四批 M1：v4 → v5——questions 加 10 列（题型两维 + 图块 +
+    // correct_option / option_labels / answer_version /
+    // answer_pending_recheck；content_version
+    // 不新增，v4 已有）+ cause_records 加 2 个锚点列 + review_history
+    // 加 8 列 + 新建 attempts 表 + review_state 加 4 列 +
+    // question_type 索引；旧 solved_count 按保守方案迁移（见
+    // _upgrade4To5）。其它 from/to 一律抛错：v1 及更老由打开前的
     // deleteLegacyDatabaseIfPresent 预检删掉；from > to（新版库用旧版
     // 打开）请用新版打开。
     onUpgrade: (m, from, to) async {
-      if (from == 2 && to == 4) {
+      if (from == 2 && to == 5) {
         await _upgrade2To3(m);
         await _upgrade3To4(m);
+        await _upgrade4To5(m);
         return;
       }
-      if (from == 3 && to == 4) {
+      if (from == 3 && to == 5) {
         await _upgrade3To4(m);
+        await _upgrade4To5(m);
+        return;
+      }
+      if (from == 4 && to == 5) {
+        await _upgrade4To5(m);
         return;
       }
       if (from > to) {
@@ -191,6 +205,129 @@ Future<void> _upgrade3To4(Migrator m) async {
   final db = m.database as QuizDatabase;
   await db.into(db.settings).insert(
     SettingsCompanion.insert(key: 'schemaVersion', value: '4'),
+    mode: InsertMode.insertOrReplace,
+  );
+}
+
+/// 十四批 M1 的 v4 → v5 迁移步：questions 加 10 列（题型两维 + 图块 +
+/// correct_option / option_labels / answer_version / answer_pending_recheck；content_version 不新增，
+/// v4 已有，迁移只验证其值原样保留）+ cause_records 加 2 个锚点列 +
+/// review_history 加 8 列（含 review_mode 与 verification_status 的
+/// CHECK 约束、submission_id 唯一索引）+ 新建 attempts 表 +
+/// review_state 加 4 列 + questions.question_type 索引。
+/// 迁移 DDL 必须与 createTablesImpl 的手写字面量一字不差（十二批
+/// D-91 的教训：迁移后库与全新 v5 库 sqlite_master 逐字一致——
+/// ALTER TABLE ADD COLUMN 的列定义文本与建表字面量的列定义逐词相同，
+/// SQLite 会把它们拼进同一份 CREATE TABLE 文本；CREATE TABLE
+/// attempts 与三个索引用同一份字面量，不走 m.createTable）。
+/// 注意：SQLite 禁止 ALTER TABLE ADD COLUMN 带 UNIQUE 约束，
+/// review_history.submission_id 的唯一性由独立唯一索引保证；
+/// verification_status 的 CHECK 引用 verification_source 列，
+/// 须先加 verification_source 列再加 verification_status 列。
+/// 旧 solved_count 保守迁移（M3-7 P1-4）：已 solved 的旧错因保留状态与
+/// 复查日期、锚点 NULL；未治愈且旧 solved_count > 0 的错因治愈进度重置
+/// 为 0、锚点 NULL；solved_count = 0 的保持原值。
+Future<void> _upgrade4To5(Migrator m) async {
+  await m.database.customStatement(
+    'ALTER TABLE questions ADD COLUMN question_type TEXT',
+  );
+  await m.database.customStatement(
+    "ALTER TABLE questions ADD COLUMN question_type_source TEXT NOT NULL DEFAULT 'unclassified'",
+  );
+  await m.database.customStatement(
+    "ALTER TABLE questions ADD COLUMN question_background_tags TEXT NOT NULL DEFAULT ''",
+  );
+  await m.database.customStatement(
+    "ALTER TABLE questions ADD COLUMN question_background_tags_source TEXT NOT NULL DEFAULT 'unclassified'",
+  );
+  await m.database.customStatement(
+    "ALTER TABLE questions ADD COLUMN ocr_figures TEXT NOT NULL DEFAULT '[]'",
+  );
+  await m.database.customStatement(
+    'ALTER TABLE questions ADD COLUMN correct_option TEXT',
+  );
+  await m.database.customStatement(
+    'ALTER TABLE questions ADD COLUMN option_labels TEXT',
+  );
+  await m.database.customStatement(
+    'ALTER TABLE questions ADD COLUMN option_labels_confirmed INTEGER NOT NULL DEFAULT 0',
+  );
+  await m.database.customStatement(
+    'ALTER TABLE questions ADD COLUMN answer_version INTEGER NOT NULL DEFAULT 1',
+  );
+  await m.database.customStatement(
+    'ALTER TABLE questions ADD COLUMN answer_pending_recheck INTEGER NOT NULL DEFAULT 0',
+  );
+  await m.database.customStatement(
+    'ALTER TABLE cause_records ADD COLUMN last_counted_success_at INTEGER',
+  );
+  await m.database.customStatement(
+    'ALTER TABLE cause_records ADD COLUMN last_counted_session_id TEXT',
+  );
+  // 未治愈且旧 solved_count > 0：未完成的旧治愈进度重置为 0
+  //（已 solved 的保留状态与复查日期；solved_count = 0 的保持原值）。
+  await m.database.customStatement(
+    "UPDATE cause_records SET solved_count = 0 WHERE status != 'solved' AND solved_count > 0",
+  );
+  await m.database.customStatement(
+    'ALTER TABLE review_history ADD COLUMN cause_id TEXT',
+  );
+  await m.database.customStatement(
+    'ALTER TABLE review_history ADD COLUMN session_id TEXT',
+  );
+  await m.database.customStatement(
+    "ALTER TABLE review_history ADD COLUMN review_mode TEXT CHECK (review_mode IN ('到期复习'))",
+  );
+  await m.database.customStatement(
+    'ALTER TABLE review_history ADD COLUMN verdict TEXT',
+  );
+  await m.database.customStatement(
+    'ALTER TABLE review_history ADD COLUMN verification_source TEXT',
+  );
+  await m.database.customStatement(
+    "ALTER TABLE review_history ADD COLUMN verification_status TEXT CHECK ((verification_status IS NULL AND verification_source IS NULL) OR (verification_status = '已核验' AND verification_source IN ('软件标准答案', '客观判分', '外部资料核对')) OR (verification_status = '未核验' AND verification_source = '未核验'))",
+  );
+  await m.database.customStatement(
+    'ALTER TABLE review_history ADD COLUMN attempt_id TEXT',
+  );
+  await m.database.customStatement(
+    'ALTER TABLE review_history ADD COLUMN submission_id TEXT',
+  );
+  await m.database.customStatement(
+    'CREATE UNIQUE INDEX idx_review_history_submission ON review_history(submission_id)',
+  );
+  await m.database.customStatement('''
+    CREATE TABLE attempts(
+      id TEXT PRIMARY KEY, question_id TEXT NOT NULL,
+      session_id TEXT NOT NULL, mode TEXT NOT NULL,
+      selected TEXT, correct INTEGER, confidence TEXT,
+      answer_version INTEGER NOT NULL DEFAULT 1,
+      content_version INTEGER NOT NULL DEFAULT 0,
+      status TEXT NOT NULL, cause_ids TEXT NOT NULL DEFAULT '[]',
+      duration_ms INTEGER, submission_id TEXT UNIQUE,
+      created_at INTEGER NOT NULL,
+      UNIQUE(session_id, question_id))''');
+  await m.database.customStatement(
+    'ALTER TABLE review_state ADD COLUMN session_id TEXT',
+  );
+  await m.database.customStatement(
+    'ALTER TABLE review_state ADD COLUMN mode TEXT',
+  );
+  await m.database.customStatement(
+    'ALTER TABLE review_state ADD COLUMN skips TEXT',
+  );
+  await m.database.customStatement(
+    'ALTER TABLE review_state ADD COLUMN per_question_state TEXT',
+  );
+  await m.database.customStatement(
+    'CREATE INDEX idx_questions_question_type ON questions(question_type)',
+  );
+  // settings 里的 schemaVersion 写回 5，与 user_version 一致
+  // （真实 v4 库的 settings 本来就有这行；手造夹具库若缺这行，
+  // insertOrReplace 会补一行）。
+  final db = m.database as QuizDatabase;
+  await db.into(db.settings).insert(
+    SettingsCompanion.insert(key: 'schemaVersion', value: '5'),
     mode: InsertMode.insertOrReplace,
   );
 }

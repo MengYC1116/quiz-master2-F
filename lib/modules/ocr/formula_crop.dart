@@ -11,15 +11,22 @@
 // 本函数无需改接口就能裁出小图。
 //
 // 坐标系：bbox_2d 是 GLM 坐标空间里的 [x1, y1, x2, y2]；同一块的
-// width / height 是该坐标空间的尺寸（实测如 1975×232）。按
-// 切片像素尺寸 / 坐标空间尺寸缩放后裁；任一步不合法（无块、坐标
-// 越界、裁出空图、图片解不出）都返回 null，不抛异常。
+// width / height 是该坐标空间的尺寸（实测如 1975×232）。十四批 M2
+// 附带修复：换算用平移公式（x_src = x_api − padX，y_src = y_api − padY，
+// padX/padY 取本次 OCR 请求保存的真实转换元数据，不再假定 0.30；
+// 未加白边时 padX=padY=0），再 clip 到图内；元数据缺失或块尺寸与
+// 请求尺寸对不上（允差 ±2px）时安全返回 null，不猜。旧实现只用缩放
+// （x · W / W′）不用平移，对加白边图是错的（仅中心点巧合正确，
+// 边缘偏差可达 0.1875W）——该函数目前因 GLM 单题不返回 formula 块
+// 而恒返回 null、从未实际裁过图，是潜伏问题不是现行 bug；本次按
+// M2 坐标契约改用平移公式并加单测锁定。
 
 import 'dart:typed_data';
 
 import 'package:image/image.dart' as img;
 
 import '../../services/glm_ocr_client.dart';
+import 'ocr_figures.dart';
 
 /// layout_details 里一个带公式 bbox 的块（内部结构，不外露）。
 class _FormulaBox {
@@ -96,30 +103,45 @@ Uint8List? cropFormulaImageBytes({
   final box = boxes[formulaIndex];
   final src = img.decodeImage(sliceBytes);
   if (src == null) return null;
-  final spaceWidth = box.spaceWidth;
-  final spaceHeight = box.spaceHeight;
-  final scaleX =
-      spaceWidth != null && spaceWidth > 0 ? src.width / spaceWidth : 1.0;
-  final scaleY =
-      spaceHeight != null && spaceHeight > 0 ? src.height / spaceHeight : 1.0;
-  var x = (box.x1 * scaleX).round();
-  var y = (box.y1 * scaleY).round();
-  var w = ((box.x2 - box.x1) * scaleX).round();
-  var h = ((box.y2 - box.y1) * scaleY).round();
-  // 夹到图内：左上角不越界，宽高至少 2px，否则裁不到。
-  if (x < 0) {
-    w += x;
-    x = 0;
-  }
-  if (y < 0) {
-    h += y;
-    y = 0;
-  }
-  if (x + w > src.width) w = src.width - x;
-  if (y + h > src.height) h = src.height - y;
-  if (w < 2 || h < 2) return null;
+  // 十四批 M2：平移公式 + 本次请求的真实转换元数据（raw 包的
+  // transform 键）。旧包没有 transform 时：只有块空间尺寸与切片
+  // 尺寸一致才按“未加白边”（padX=padY=0）处理；尺寸不一致说明
+  // 请求很可能加过白边但元数据缺失——安全返回 null，不猜。
+  final raw = GlmOcrRawData.tryParse(ocrRaw);
+  final transform = raw?.transform;
+  final effectiveTransform = transform ??
+      ((box.spaceWidth?.toInt() == src.width &&
+              box.spaceHeight?.toInt() == src.height)
+          ? OcrRequestTransform(
+              srcW: src.width,
+              srcH: src.height,
+              reqW: src.width,
+              reqH: src.height,
+              padX: 0,
+              padY: 0,
+            )
+          : null);
+  if (effectiveTransform == null) return null;
+  final rect = convertApiBboxToSrc(
+    bbox: [
+      box.x1.toInt(),
+      box.y1.toInt(),
+      box.x2.toInt(),
+      box.y2.toInt(),
+    ],
+    spaceWidth: box.spaceWidth?.toInt(),
+    spaceHeight: box.spaceHeight?.toInt(),
+    transform: effectiveTransform,
+  );
+  if (rect == null) return null;
   try {
-    final cropped = img.copyCrop(src, x: x, y: y, width: w, height: h);
+    final cropped = img.copyCrop(
+      src,
+      x: rect.x,
+      y: rect.y,
+      width: rect.width,
+      height: rect.height,
+    );
     return img.encodePng(cropped);
   } catch (_) {
     return null;

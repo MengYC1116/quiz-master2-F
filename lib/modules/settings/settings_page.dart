@@ -341,7 +341,12 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
     try {
       // P3 §2.3：备份改为 zip（JSON + imports/ + slices/），扩展名
       // 仍是 .qm2backup，内容改为 zip；恢复即完整（含题目图片）。
-      final bytes = await _controller.exportBackupBytes();
+      // 十四批 M2：带警告的导出——派生文件缺失/不可读与图块损坏
+      // 只警告、不阻断；十四批 M5 修复轮 3（D-155）：库行直接引用
+      // 的资产缺失/不可读时备份直接失败（BackupRestoreException，
+      // 文案里指明题目/任务 ID 与相对路径）。
+      final report = await _controller.exportBackupBytesWithReport();
+      final bytes = report.bytes;
       final path = await FilePicker.platform.saveFile(
         dialogTitle: '备份题库',
         // §2.3：v2 备份扩展名 .qm2backup（v1 选择器只允许 .json，
@@ -360,13 +365,23 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
         try {
           await _controller.clearBackupFailedFlag();
         } catch (_) {}
-        _snack('备份已保存（含题目图片，此备份仅新版可恢复）');
+        _snack(
+          report.warnings.isEmpty
+              ? '备份已保存（含题目图片，此备份仅新版可恢复）'
+              : '备份已保存（${report.warnings.join('；')}）',
+        );
       } catch (_) {
         // 待定3：写文件失败 = 本次备份失败，记标志（首页出红横幅）；
         // 本页原有的即时提示保留。
         await _markBackupFailed();
         _snack('备份没存上，换个位置再试一次');
       }
+    } on BackupRestoreException catch (e) {
+      // 导出失败且原因明确（如直接引用的资产缺失，D-155）：把原因
+      // 原文提示给用户（里面含题目/任务 ID 与相对路径），同时记一次
+      // 备份失败。
+      await _markBackupFailed();
+      _snack(e.message);
     } catch (_) {
       // 导出备份或选路径本身失败（以前这里无 catch、异常直接外抛，
       // 既无提示也不留标志）：同样记一次备份失败。
@@ -391,7 +406,11 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
       _restoreZipBytes = null;
     });
     try {
-      await _controller.restoreBackup(jsonData: data, zipBytes: zipBytes);
+      // 十四批 M2：恢复返回警告列表（缺失/不可读的图块已从引用里去掉）。
+      final warnings = await _controller.restoreBackup(
+        jsonData: data,
+        zipBytes: zipBytes,
+      );
       // 恢复成功已发一个含全部五种 kind 的变更事件（见
       // AppDatabase.importBackupJson/Zip），角标由 badgeCountsProvider
       // 刷新，本页不再手动 bump。
@@ -405,7 +424,13 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
       // 清理时被误删（(a) 的删除前重算是第二道防线）。
       if (mounted) setState(() => _orphanScan = null);
       await _scanStorageAndOrphans();
-      _snack('已恢复备份');
+      // 十四批 M2（P1-6）：恢复完成文案写死——备份不包含未完成会话，
+      // 恢复后已清除当前会话状态；有图块警告时追加。
+      _snack(
+        warnings.isEmpty
+            ? '备份不包含未完成会话，恢复后已清除当前会话状态'
+            : '备份不包含未完成会话，恢复后已清除当前会话状态；${warnings.join('；')}',
+      );
     } on BackupRestoreException catch (e) {
       // §2.3：校验不过拒绝恢复、原库不动；报具体原因（不是笼统的
       // “恢复失败”），恢复失败要向用户报错（以前是静默的 finally）。

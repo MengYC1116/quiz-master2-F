@@ -58,4 +58,31 @@ class Questions extends Table {
       text().withDefault(const Constant('未切分'))();
   IntColumn get ocrManualEdited => integer().withDefault(const Constant(0))();
   IntColumn get contentVersion => integer().withDefault(const Constant(0))();
+
+  /// 十四批 M1：题型两维 + 答案版本（与 db_schema.dart 的 DDL 逐字对应）。
+  /// questionType 是主题型（NULL = 待确认）；questionTypeSource 取值
+  /// auto/manual/unclassified；questionBackgroundTags 是逗号分隔的背景
+  /// 标签（第一版只自动生成“材料”“听力”）；questionBackgroundTagsSource
+  /// 只保护背景标签；ocrFigures 是图块 JSON（M2 写，M1 只建列）；
+  /// correctOption 只用于单选/判断；optionLabels 是 JSON 选项标签数组
+  ///（NULL = 未确认）；optionLabelsConfirmed 须点“确认选项”才置 1；
+  /// answerVersion 是答案版本（默认 1）。
+  TextColumn get questionType => text().nullable()();
+  TextColumn get questionTypeSource =>
+      text().withDefault(const Constant('unclassified'))();
+  TextColumn get questionBackgroundTags =>
+      text().withDefault(const Constant(''))();
+  TextColumn get questionBackgroundTagsSource =>
+      text().withDefault(const Constant('unclassified'))();
+  TextColumn get ocrFigures => text().withDefault(const Constant('[]'))();
+  TextColumn get correctOption => text().nullable()();
+  TextColumn get optionLabels =>
+      text().nullable().map(const NullableStringListConverter())();
+  IntColumn get optionLabelsConfirmed =>
+      integer().withDefault(const Constant(0))();
+  IntColumn get answerVersion => integer().withDefault(const Constant(1))();
+
+  /// 十四批 M3（P1-A）：答案待重新核对标记（改标签后未重新确认时置 1）。
+  IntColumn get answerPendingRecheck =>
+      integer().withDefault(const Constant(0))();
 }

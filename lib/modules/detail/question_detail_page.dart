@@ -31,6 +31,8 @@ import '../../data/data_change_events.dart';
 import '../../data/repository.dart';
 import '../../models/models.dart';
 import '../../modules/ocr/ocr_stem_section.dart';
+import '../../modules/ocr/option_labels_editor.dart';
+import '../../modules/ocr/question_type_picker.dart';
 import '../../services/question_export_service.dart';
 import '../../services/yolo_onnx_service.dart';
 import '../../state/detail_notifier.dart';
@@ -278,6 +280,14 @@ class _DetailViewState extends ConsumerState<_DetailView> {
     if (!ok) _snack('保存失败，请重试');
   }
 
+  /// 十四批 M2：删除单个图块（编辑器里“删除配图”）。
+  Future<bool> _deleteFigure(String figureId) async {
+    final ok = await _notifier.deleteFigure(figureId);
+    if (!mounted) return ok;
+    _snack(ok ? '配图已删除' : '删除失败，请重试');
+    return ok;
+  }
+
   Future<void> _rerecognizeStem() async {
     final ok = await _notifier.rerecognizeCurrent();
     if (!mounted) return;
@@ -382,11 +392,62 @@ class _DetailViewState extends ConsumerState<_DetailView> {
     // 本页不再回调外壳手动刷角标（onChanged 已删）。
   }
 
+  /// 十四批 M3：查看态直接改选项标签块（「确认选项」或正确选项即时保存
+  /// 时调；与题型 chip 的即时保存口径一致）。
+  Future<void> _saveViewOptionBlock({
+    required List<String>? labels,
+    required String? correctOption,
+    required bool answerReconfirmed,
+    required bool confirmLabels,
+  }) async {
+    try {
+      await _notifier.saveOptionBlock(
+        labels: labels,
+        correctOption: correctOption,
+        confirmLabels: confirmLabels,
+        answerReconfirmed: answerReconfirmed,
+      );
+      if (mounted) {
+        _snack(confirmLabels ? '选项已确认，可客观判分' : '已保存');
+      }
+    } catch (_) {
+      if (mounted) _snack('保存失败，请重试');
+    }
+  }
+
+  /// 十四批 M3：待重新核对 pill（点进编辑补确认；与 _supplement 同款交互）。
+  Widget _pendingPill(String field, String label) {
+    return GestureDetector(
+      onTap: () => _enterEdit(focusField: field),
+      child: QmStatusPill.tone(label: label, tone: QmTone.warn),
+    );
+  }
+
   /// §1.5.1 重新框选：加载同页全部 1 层框——目标题的框可编辑，
   /// 同页其他题的框只读（重叠校验对所有框生效）；取消丢弃本次修改。
   /// 页图缺失时不开编辑器（§6 第 6 条）。编辑器弹窗在页面开，
   /// 确认后的重裁 / 事务 / rename 在 Notifier 里（见
   /// `DetailNotifier.applyReworkBoxes`）。
+  /// 十四批 M1：查看态直接改题型（点 chip → 选择器 → 立即保存）。
+  Future<void> _pickQuestionType() async {
+    final q = _st.question;
+    if (q == null) return;
+    final picked = await showQuestionTypePicker(context, q.questionType);
+    if (picked == null) return; // 取消未选
+    await _notifier.setQuestionType(picked.isEmpty ? null : picked);
+  }
+
+  /// 十四批 M1：编辑态改题型（只改表单值，点「保存」才落盘）。
+  Future<void> _pickEditQuestionType() async {
+    final picked = await showQuestionTypePicker(
+      context,
+      _st.editQuestionType,
+    );
+    if (picked == null) return; // 取消未选
+    _notifier.setEditQuestionType(picked.isEmpty ? null : picked);
+    _markDirty();
+  }
+
   Future<void> _reworkBoxes() async {
     final q = _st.question;
     if (q == null) return;
@@ -956,6 +1017,7 @@ class _DetailViewState extends ConsumerState<_DetailView> {
                     onAcceptCandidate: _acceptOcrCandidate,
                     onDismissCandidate: _dismissOcrCandidate,
                     onRerecognize: _rerecognizeStem,
+                    onDeleteFigure: _deleteFigure,
                     onEditingChanged: (open) {
                       setState(() {
                         _stemEditorOpen = open;
@@ -1540,21 +1602,30 @@ class _DetailViewState extends ConsumerState<_DetailView> {
         ],
       );
     }
-    final hasAnswer = (q.answer ?? '').trim().isNotEmpty;
-    final hasExplanation = (q.explanation ?? '').trim().isNotEmpty;
+    // 十四批 M3：答案与解析分别展示、分别标状态——待重新核对时显示
+    // “标准答案待重新核对”/“解析待重新核对”，不显示旧文本为有效答案
+    //（effective* 在待核对时一律返回 null）。
+    final hasAnswer = (q.effectiveAnswer ?? '').trim().isNotEmpty;
+    final hasExplanation = (q.effectiveExplanation ?? '').trim().isNotEmpty;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         _formGrid([
           _Field(
             '答案',
-            hasAnswer ? _valueText(q.answer!) : _supplement('answer'),
+            q.answerPendingRecheck
+                ? _pendingPill('answer', '标准答案待重新核对 · 点这里确认')
+                : (hasAnswer
+                    ? _valueText(q.effectiveAnswer!)
+                    : _supplement('answer')),
           ),
           _Field(
             '解析',
-            hasExplanation
-                ? _valueText(q.explanation!)
-                : _supplement('explanation'),
+            q.answerPendingRecheck
+                ? _pendingPill('explanation', '解析待重新核对 · 点这里确认')
+                : (hasExplanation
+                    ? _valueText(q.effectiveExplanation!)
+                    : _supplement('explanation')),
           ),
         ]),
         SizedBox(height: 8 * scale),
@@ -1583,13 +1654,19 @@ class _DetailViewState extends ConsumerState<_DetailView> {
         .where((k) => q.knowledgePointIds.contains(k.id))
         .toList();
     final subject = _st.subjectOf(q.subjectId);
-    return _formGrid([
+    final grid = _formGrid([
       _Field('学科（不能改）', _valueText(subject.name), hint: '导入时选定，详情和整理台都不能改'),
       _Field(
         '文件夹（归类）',
         folders.isEmpty
             ? _supplement('folders')
             : _valueText(folders.map((f) => f.name).join('、')),
+      ),
+      // 十四批 M1：题型 chip（查看态点开直接改，立即保存）。
+      _Field(
+        '题型',
+        questionTypeChip(type: q.questionType, onTap: _pickQuestionType),
+        hint: '点芯片可改 · 改后不再自动分类',
       ),
       _Field(
         '知识点',
@@ -1652,6 +1729,48 @@ class _DetailViewState extends ConsumerState<_DetailView> {
           hint: '框错了可以重框：同页其他题的框只读，取消不改动',
         ),
     ]);
+    // 十四批 M3：选项标签确认编辑器（查看态，题型区；正确选项点选
+    // 立即保存，标签改动点「确认选项」保存——与题型 chip 的即时保存
+    // 口径一致；复习页“补全标签”跳转落在这里）。
+    final scale = qmScaleOf(context);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        grid,
+        SizedBox(height: 12 * scale),
+        OptionLabelsEditor(
+          key: ValueKey(q.id),
+          questionId: q.id,
+          questionType: q.questionType,
+          optionLabels: q.optionLabels,
+          storedOptionLabels: q.optionLabels,
+          optionLabelsConfirmed: q.optionLabelsConfirmed,
+          correctOption: q.correctOption,
+          storedCorrectOption: q.correctOption,
+          answerPendingRecheck: q.answerPendingRecheck,
+          hadOldAnswer:
+              (q.answer ?? '').trim().isNotEmpty ||
+              (q.explanation ?? '').trim().isNotEmpty,
+          answerReconfirmed: false,
+          onLabelsChanged: (_) {},
+          onCorrectOptionChanged: (_) {},
+          onAnswerReconfirmedChanged: (_) {},
+          onConfirm: ({
+            required List<String>? labels,
+            required String? correctOption,
+            required bool answerReconfirmed,
+            required bool confirmLabels,
+          }) =>
+              _saveViewOptionBlock(
+            labels: labels,
+            correctOption: correctOption,
+            answerReconfirmed: answerReconfirmed,
+            confirmLabels: confirmLabels,
+          ),
+          correctOptionSavesImmediately: true,
+        ),
+      ],
+    );
   }
 
   Widget _buildInfoEdit(Question q) {
@@ -1718,6 +1837,15 @@ class _DetailViewState extends ConsumerState<_DetailView> {
                 ),
               ],
             ),
+          ),
+          // 十四批 M1：题型 chip（编辑态改表单值，点「保存」才落盘）。
+          _Field(
+            '题型',
+            questionTypeChip(
+              type: _st.editQuestionType,
+              onTap: _pickEditQuestionType,
+            ),
+            hint: '点芯片可改 · 改后不再自动分类',
           ),
           _Field(
             '文件夹（归类 · 可多选，题只存一份 · 只列本题科目自己的文件夹）',
@@ -1901,6 +2029,49 @@ class _DetailViewState extends ConsumerState<_DetailView> {
             full: true,
           ),
         ]),
+        // 十四批 M3：选项标签确认编辑器（编辑态；随「保存」落盘——
+        // 「确认选项」只改编辑态确认值，不单独写库）。
+        SizedBox(height: 12 * scale),
+        OptionLabelsEditor(
+          key: ValueKey('edit-${q.id}'),
+          questionId: q.id,
+          questionType: _st.editQuestionType,
+          optionLabels: _st.editOptionLabels,
+          storedOptionLabels: q.optionLabels,
+          optionLabelsConfirmed: _st.editOptionLabelsConfirmed,
+          correctOption: _st.editCorrectOption,
+          storedCorrectOption: q.correctOption,
+          answerPendingRecheck: q.answerPendingRecheck,
+          hadOldAnswer:
+              (q.answer ?? '').trim().isNotEmpty ||
+              (q.explanation ?? '').trim().isNotEmpty,
+          answerReconfirmed: _st.editAnswerReconfirmed,
+          onLabelsChanged: (labels) {
+            _notifier.setEditOptionLabels(labels);
+            _markDirty();
+          },
+          onCorrectOptionChanged: (value) {
+            _notifier.setEditCorrectOption(value);
+            _markDirty();
+          },
+          onAnswerReconfirmedChanged: (v) {
+            _notifier.setEditAnswerReconfirmed(v);
+            _markDirty();
+          },
+          onConfirm: ({
+            required List<String>? labels,
+            required String? correctOption,
+            required bool answerReconfirmed,
+            required bool confirmLabels,
+          }) {
+            _notifier.confirmEditOptionLabels(
+              labels: labels,
+              correctOption: correctOption,
+              answerReconfirmed: answerReconfirmed,
+            );
+            _markDirty();
+          },
+        ),
         if (_cancelAsk) ...[
           SizedBox(height: 10 * scale),
           _buildConfirmBox(q, '有还没保存的改动，要保存吗？', '', [

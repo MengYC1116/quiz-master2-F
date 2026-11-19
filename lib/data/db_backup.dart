@@ -25,6 +25,13 @@ Future<String> exportBackupJsonFromImpl(QuizDatabase db) async {
     },
   };
   for (final t in AppDatabase.backupTables) {
+    // 十四批 M2（P1-6）：备份不含未完成会话——review_state 导出为 `[]`，
+    // 恢复时也不插备份里的行（见 importBackupJsonIntoImpl），恢复事务
+    // 中明确清空目标库现有的 review_state。
+    if (t == 'review_state') {
+      out[t] = const <dynamic>[];
+      continue;
+    }
     out[t] = (await db.customSelect('SELECT * FROM $t').get())
         .map((r) => r.data)
         .toList();
@@ -36,11 +43,14 @@ Future<String> exportBackupJsonFromImpl(QuizDatabase db) async {
 /// 反馈，importBackupJsonInto 里再调一次，双保险）。
 /// 校验顺序：① `_meta.schemaVersion` 存在且为整数（缺失 → 按 v1
 /// 备份处理，拒绝：v1 从未发布、老库已删，不存在合法的 v1 备份）；
-/// ② v2、v3 与 v4 放行（v2 备份恢复时迁移进 v4：新表缺键视为 empty，
-/// collect_tasks 行缺 source_hash 视为 NULL；v3 备份恢复时迁移进 v4：
-/// ocr_jobs 缺键视为 empty，questions 行缺 5 个 OCR 列走 DDL 默认值），
-/// `> 4` 拒绝（备份来自更新的版本），`< 2` 也拒绝；③ 按版本取表清单
-///（v2 13 张、v3 14 张、v4 15 张），键齐全且为数组；④ 每行是对象、主键
+/// ② v2、v3、v4 与 v5 放行（v2 备份恢复时迁移进 v5：新表缺键视为 empty，
+/// collect_tasks 行缺 source_hash 视为 NULL；v3 备份恢复时迁移进 v5：
+/// ocr_jobs 缺键视为 empty，questions 行缺 5 个 OCR 列走 DDL 默认值；
+/// v4 备份恢复时迁移进 v5：attempts 缺键视为 empty，questions 行缺
+/// 9 个 M1 列、cause_records 行缺 2 个锚点列、review_history 行缺
+/// 8 个新字段、review_state 行缺 4 个会话列走 DDL 默认值），`> 5`
+/// 拒绝（备份来自更新的版本），`< 2` 也拒绝；③ 按版本取表清单（v2 13 张、
+/// v3 14 张、v4 15 张、v5 16 张），键齐全且为数组；④ 每行是对象、主键
 /// 非空、必填列齐全且类型正确；⑤ 文件路径合法（见
 /// [_validateBackupRowPaths]）；
 /// ⑥ 9 个 JSON 列是字符串且能解析为对应形状（见
@@ -80,11 +90,14 @@ void validateBackupDataImpl(Map<String, dynamic> data) {
   // 十二批 D-91：v2 备份仍可恢复（迁移进 v3）：新表缺键视为 empty，
   // collect_tasks 行缺 source_hash 列视为 NULL（无指纹基线）。
   // v2 的表清单只有 13 张，按版本取。
-  // 十三批 M2：v3 备份仍可恢复（迁移进 v4）：ocr_jobs 缺键视为 empty，
+  // 十三批 M2：v3 备份仍可恢复（迁移进 v5）：ocr_jobs 缺键视为 empty，
   // questions 行缺 5 个 OCR 列走 DDL 默认值；v3 的表清单是 14 张。
+  // 十四批 M2：v4 备份仍可恢复（迁移进 v5）：attempts 缺键视为 empty；
+  // v4 的表清单是 15 张（backupTablesV4），v5 是 16 张。
   final requiredTables = switch (sv) {
     2 => AppDatabase.backupTablesV2,
     3 => AppDatabase.backupTablesV3,
+    4 => AppDatabase.backupTablesV4,
     _ => AppDatabase.backupTables,
   };
   for (final t in requiredTables) {
@@ -161,6 +174,10 @@ const Map<String, Map<String, Type>> _requiredBackupColumns = {
   // 列，插库时 _ri 会拦缺失/类型错，这里只列业务必填列，与 questions
   // 只列 id/title/subject_id 的口径一致）。
   'ocr_jobs': {'id': String, 'question_id': String},
+  // 十四批 M2：attempts（主键 id；question_id 是业务必填列；
+  // session_id / mode / status / created_at 是 NOT NULL 列，
+  // 插库时 _rs/_ri 会拦缺失/类型错，值域见 _validateBackupRowDomains）。
+  'attempts': {'id': String, 'question_id': String},
   'settings': {'key': String, 'value': String},
 };
 
@@ -232,6 +249,9 @@ void _validateBackupRow(String table, Map row) {
 /// （FR-21 是批二的项）；非字符串值与非法 JSON 一律拒绝。
 void _validateBackupRowJsonColumns(String table, Map row) {
   // 字符串列表列：questions 的 5 个多值字段 + cause_records.remedy_history。
+  // 十四批 M1：option_labels 也是字符串列表列（NULL = 未确认，放行）。
+  // 十四批 M2：attempts.cause_ids 也是字符串列表列（本次作答关联的
+  // 本轮错因 id 列表；NULL 按 D-51 放行，插库时走 DDL 默认值 '[]'）。
   const stringListColumns = {
     'questions': [
       'folder_ids',
@@ -239,8 +259,10 @@ void _validateBackupRowJsonColumns(String table, Map row) {
       'error_types',
       'custom_error_types',
       'tags',
+      'option_labels',
     ],
     'cause_records': ['remedy_history'],
+    'attempts': ['cause_ids'],
   };
   final id = row['id'] ?? row['key'] ?? '?';
   void reject(String col, String expected, Object? value) {
@@ -376,6 +398,84 @@ void _validateBackupRowDomains(String table, Map row) {
         );
       }
     }
+    // 十四批 M1：题型列的值域（D-119）。键缺失放行（走 DDL 默认值）；
+    // 键在但值为 null（question_type 允许 null = 待确认）或域外值 →
+    // 拒绝整个恢复。17 个值与 question_classifier.questionTypeValues
+    // 同步，改枚举时两处一起改。
+    if (row.containsKey('question_type')) {
+      const types = {
+        'choice_single',
+        'choice_multi',
+        'choice_variable',
+        'true_false',
+        'fill_blank',
+        'calculation',
+        'proof',
+        'short_answer',
+        'essay',
+        'matching',
+        'ordering',
+        'diagram_label',
+        'programming',
+        'experiment_analysis',
+        'translation',
+        'writing',
+        'other',
+      };
+      final value = row['question_type'];
+      if (value != null && (value is! String || !types.contains(value))) {
+        throw BackupRestoreException(
+          '这份备份文件已损坏：questions 表 $id 行的 question_type 不是合法的'
+          '题型（应为 17 个题型值之一或 null）：$value',
+        );
+      }
+    }
+    if (row.containsKey('option_labels_confirmed')) {
+      final value = row['option_labels_confirmed'];
+      if (value is! int || (value != 0 && value != 1)) {
+        throw BackupRestoreException(
+          '这份备份文件已损坏：questions 表 $id 行的 option_labels_confirmed 不是合法的'
+          '布尔值（应为 0 或 1）：$value',
+        );
+      }
+    }
+  }
+  // 十四批 M1：review_history 新增字段的值域（D-119）。各列都可空：
+  // null 放行（旧行本来就是 NULL）；非 null 时须在域内。跨字段一致性
+  // （已核验/未核验与来源的搭配）由 DDL CHECK 在插库时 enforced，
+  // 插库异常统一包成 BackupRestoreException。
+  if (table == 'review_history') {
+    if (row.containsKey('review_mode')) {
+      final value = row['review_mode'];
+      if (value != null && value != '到期复习') {
+        throw BackupRestoreException(
+          '这份备份文件已损坏：review_history 表 $id 行的 review_mode 不是合法的'
+          '复习模式（应为 到期复习 或 null）：$value',
+        );
+      }
+    }
+    if (row.containsKey('verification_status')) {
+      final value = row['verification_status'];
+      if (value != null && value != '已核验' && value != '未核验') {
+        throw BackupRestoreException(
+          '这份备份文件已损坏：review_history 表 $id 行的 verification_status 不是合法的'
+          '核验状态（应为 已核验 / 未核验 或 null）：$value',
+        );
+      }
+    }
+    if (row.containsKey('verification_source')) {
+      final value = row['verification_source'];
+      if (value != null &&
+          value != '软件标准答案' &&
+          value != '客观判分' &&
+          value != '外部资料核对' &&
+          value != '未核验') {
+        throw BackupRestoreException(
+          '这份备份文件已损坏：review_history 表 $id 行的 verification_source 不是合法的'
+          '核验来源（应为 软件标准答案 / 客观判分 / 外部资料核对 / 未核验 或 null）：$value',
+        );
+      }
+    }
   }
   // 十三批 M2：ocr_jobs.status ∈ {pending, running, completed, failed}。
   if (table == 'ocr_jobs' && row.containsKey('status')) {
@@ -389,6 +489,64 @@ void _validateBackupRowDomains(String table, Map row) {
         '这份备份文件已损坏：ocr_jobs 表 $id 行的 status 不是合法的'
         '任务状态（应为 pending / running / completed / failed）：$value',
       );
+    }
+  }
+  // 十四批 M2：attempts 各列的值域（PLAN-14-REV4.3 M3 口径；M3 若
+  // 改枚举，两处一起改）。键缺失放行（走 DDL 默认值）；键在但值为
+  // null（可空列）或域外值 → 拒绝整个恢复。
+  // mode ∈ {到期复习, 专项练习}；status ∈ {已提交, 已完成作答, 跳过}；
+  // confidence ∈ {确定, 不太确定, 猜的} 或 null；
+  // correct ∈ {0, 1} 或 null；answer_version / content_version 为 ≥0 整数。
+  if (table == 'attempts') {
+    if (row.containsKey('mode')) {
+      final value = row['mode'];
+      if (value is! String || (value != '到期复习' && value != '专项练习')) {
+        throw BackupRestoreException(
+          '这份备份文件已损坏：attempts 表 $id 行的 mode 不是合法的'
+          '作答模式（应为 到期复习 / 专项练习）：$value',
+        );
+      }
+    }
+    if (row.containsKey('status')) {
+      final value = row['status'];
+      if (value is! String ||
+          (value != '已提交' && value != '已完成作答' && value != '跳过')) {
+        throw BackupRestoreException(
+          '这份备份文件已损坏：attempts 表 $id 行的 status 不是合法的'
+          '作答状态（应为 已提交 / 已完成作答 / 跳过）：$value',
+        );
+      }
+    }
+    if (row.containsKey('confidence')) {
+      final value = row['confidence'];
+      if (value != null &&
+          (value is! String ||
+              (value != '确定' && value != '不太确定' && value != '猜的'))) {
+        throw BackupRestoreException(
+          '这份备份文件已损坏：attempts 表 $id 行的 confidence 不是合法的'
+          '作答前置信度（应为 确定 / 不太确定 / 猜的 或 null）：$value',
+        );
+      }
+    }
+    if (row.containsKey('correct')) {
+      final value = row['correct'];
+      if (value != null && (value is! int || (value != 0 && value != 1))) {
+        throw BackupRestoreException(
+          '这份备份文件已损坏：attempts 表 $id 行的 correct 不是合法的'
+          '判分结果（应为 0 / 1 或 null）：$value',
+        );
+      }
+    }
+    for (final col in ['answer_version', 'content_version']) {
+      if (row.containsKey(col)) {
+        final value = row[col];
+        if (value is! int || value < 0) {
+          throw BackupRestoreException(
+            '这份备份文件已损坏：attempts 表 $id 行的 $col 不是合法的'
+            '版本号（应为 ≥0 的整数）：$value',
+          );
+        }
+      }
     }
   }
 }
@@ -484,6 +642,21 @@ Future<void> _backupInsertRowTyped(
       'ocr_split_status',
       'ocr_manual_edited',
       'content_version',
+      // 十四批 M1：题型列。D-119：PLAN 假设导出是显式列白名单
+      // （E10），实际导出是 SELECT *，新列已进备份文件；导入白名单
+      // 若不跟进，v5 备份往返全断、既有测试全红。只做“接受并原样
+      // 恢复”这一最小修复；attempts 入备份、图块 ZIP 归档仍是 M2。
+      'question_type',
+      'question_type_source',
+      'question_background_tags',
+      'question_background_tags_source',
+      'ocr_figures',
+      'correct_option',
+      'option_labels',
+      'option_labels_confirmed',
+      'answer_version',
+      // 十四批 M3（P1-A）：答案待重新核对标记。
+      'answer_pending_recheck',
     },
     'question_boxes': {
       'id',
@@ -516,6 +689,9 @@ Future<void> _backupInsertRowTyped(
       'recheck_date',
       'remedy_history',
       'joined_at',
+      // 十四批 M1：治愈锚点列（D-119 同款最小修复）。
+      'last_counted_success_at',
+      'last_counted_session_id',
     },
     'collect_tasks': {
       'id',
@@ -533,8 +709,32 @@ Future<void> _backupInsertRowTyped(
       'page_rotations',
       'source_hash',
     },
-    'review_state': {'id', 'queue', 'position', 'updated_at'},
-    'review_history': {'id', 'question_id', 'result', 'reviewed_at'},
+    // 十四批 M1：review_state 新增列与 review_history 新增字段
+    //（D-119 同款最小修复：接受并原样恢复；attempts 入备份仍是 M2）。
+    'review_state': {
+      'id',
+      'queue',
+      'position',
+      'updated_at',
+      'session_id',
+      'mode',
+      'skips',
+      'per_question_state',
+    },
+    'review_history': {
+      'id',
+      'question_id',
+      'result',
+      'reviewed_at',
+      'cause_id',
+      'session_id',
+      'review_mode',
+      'verdict',
+      'verification_status',
+      'verification_source',
+      'attempt_id',
+      'submission_id',
+    },
     'recent_tasks': {'id', 'kind', 'subject_id', 'title', 'updated_at'},
     'recently_viewed_questions': {'question_id', 'viewed_at'},
     // 十三批 M2：ocr_jobs（GPT 评审 §2.2 字段表，15 列全列出；
@@ -555,6 +755,24 @@ Future<void> _backupInsertRowTyped(
       'created_at',
       'updated_at',
       'completed_at',
+    },
+    // 十四批 M2：attempts 全表（P1-6）。cause_ids 是原始 JSON 字符串
+    // 列（无 TypeConverter），插库时原样写回，不经 decode。
+    'attempts': {
+      'id',
+      'question_id',
+      'session_id',
+      'mode',
+      'selected',
+      'correct',
+      'confidence',
+      'answer_version',
+      'content_version',
+      'status',
+      'cause_ids',
+      'duration_ms',
+      'submission_id',
+      'created_at',
     },
     'settings': {'key', 'value'},
   };
@@ -625,6 +843,33 @@ Future<void> _backupInsertRowTyped(
               ocrSplitStatus: _vStrDef(row, 'ocr_split_status'),
               ocrManualEdited: _vIntDef(row, 'ocr_manual_edited'),
               contentVersion: _vIntDef(row, 'content_version'),
+              // 十四批 M1：题型列（D-119）。缺键走 Value.absent() 落 DDL
+              // 默认值（v4/更早备份同口径）；NOT NULL 列键在但值为 null
+              // 时 _vStrDef/_vIntDef 抛错，不静默默认值。option_labels
+              // 是可空 JSON 列表列：NULL = 未确认，与 '[]' 不同义，
+              // 键在且值为 null 时写 NULL，不解成 []。
+              questionType: Value(_rsN(row, 'question_type')),
+              questionTypeSource: _vStrDef(row, 'question_type_source'),
+              questionBackgroundTags: _vStrDef(row, 'question_background_tags'),
+              questionBackgroundTagsSource: _vStrDef(
+                row,
+                'question_background_tags_source',
+              ),
+              ocrFigures: _vStrDef(row, 'ocr_figures'),
+              correctOption: Value(_rsN(row, 'correct_option')),
+              optionLabels: row.containsKey('option_labels')
+                  ? Value(
+                      row['option_labels'] == null
+                          ? null
+                          : AppDatabase.decodeStringList(
+                              row['option_labels'],
+                            ),
+                    )
+                  : const Value.absent(),
+              optionLabelsConfirmed: _vIntDef(row, 'option_labels_confirmed'),
+              answerVersion: _vIntDef(row, 'answer_version'),
+              // 十四批 M3（P1-A）：缺键走 DDL 默认值 0（v4/旧 v5 备份同口径）。
+              answerPendingRecheck: _vIntDef(row, 'answer_pending_recheck'),
             ),
             mode: InsertMode.insertOrReplace,
           );
@@ -713,6 +958,13 @@ Future<void> _backupInsertRowTyped(
               recheckDate: Value(_riN(row, 'recheck_date')),
               remedyHistory: _vStringListDef(row, 'remedy_history'),
               joinedAt: Value(_ri(row, 'joined_at')),
+              // 十四批 M1：治愈锚点列（D-119）。缺键/NULL 都写 NULL。
+              lastCountedSuccessAt: Value(
+                _riN(row, 'last_counted_success_at'),
+              ),
+              lastCountedSessionId: Value(
+                _rsN(row, 'last_counted_session_id'),
+              ),
             ),
             mode: InsertMode.insertOrReplace,
           );
@@ -751,6 +1003,12 @@ Future<void> _backupInsertRowTyped(
               queue: _vQueueDef(row, 'queue'),
               position: _vIntDef(row, 'position'),
               updatedAt: Value(_ri(row, 'updated_at')),
+              // 十四批 M1：会话快照列（D-119）。缺键/NULL 都写 NULL。
+              // M2 P1-8 的恢复后会话消失规则另行处理，这里只保值。
+              sessionId: Value(_rsN(row, 'session_id')),
+              mode: Value(_rsN(row, 'mode')),
+              skips: Value(_rsN(row, 'skips')),
+              perQuestionState: Value(_rsN(row, 'per_question_state')),
             ),
             mode: InsertMode.insertOrReplace,
           );
@@ -765,6 +1023,16 @@ Future<void> _backupInsertRowTyped(
               questionId: Value(_rs(row, 'question_id')),
               result: Value(_rs(row, 'result')),
               reviewedAt: Value(_ri(row, 'reviewed_at')),
+              // 十四批 M1：新增字段（D-119）。缺键/NULL 都写 NULL；
+              // 跨字段一致性由 DDL CHECK 在插库时 enforced。
+              causeId: Value(_rsN(row, 'cause_id')),
+              sessionId: Value(_rsN(row, 'session_id')),
+              reviewMode: Value(_rsN(row, 'review_mode')),
+              verdict: Value(_rsN(row, 'verdict')),
+              verificationStatus: Value(_rsN(row, 'verification_status')),
+              verificationSource: Value(_rsN(row, 'verification_source')),
+              attemptId: Value(_rsN(row, 'attempt_id')),
+              submissionId: Value(_rsN(row, 'submission_id')),
             ),
             mode: InsertMode.insertOrReplace,
           );
@@ -830,6 +1098,37 @@ Future<void> _backupInsertRowTyped(
             ),
             mode: InsertMode.insertOrReplace,
           );
+    case 'attempts':
+      // 十四批 M2：attempts 行插库（P1-6）。answer_version /
+      // content_version 原样保留（恢复后历史 attempts 不按新答案
+      // 重新判分，版本号不重置）；cause_ids 是原始 JSON 字符串，
+      // 缺键/null 走 Value.absent() 落 DDL 默认值 '[]'。
+      await db
+          .into(db.attempts)
+          .insert(
+            AttemptsCompanion(
+              id: Value(_rs(row, 'id')),
+              questionId: Value(_rs(row, 'question_id')),
+              sessionId: Value(_rs(row, 'session_id')),
+              mode: Value(_rs(row, 'mode')),
+              selected: Value(_rsN(row, 'selected')),
+              correct: Value(_riN(row, 'correct')),
+              confidence: Value(_rsN(row, 'confidence')),
+              answerVersion: _vIntDef(row, 'answer_version'),
+              contentVersion: _vIntDef(row, 'content_version'),
+              status: Value(_rs(row, 'status')),
+              causeIds: row.containsKey('cause_ids') &&
+                      row['cause_ids'] != null
+                  ? Value(_rs(row, 'cause_ids'))
+                  : const Value.absent(),
+              durationMs: Value(_riN(row, 'duration_ms')),
+              // submission_id 在 Drift 表定义里是非空列（TEXT UNIQUE，
+              // 无 nullable），缺失/null 直接抛错，不静默默认值。
+              submissionId: Value(_rs(row, 'submission_id')),
+              createdAt: Value(_ri(row, 'created_at')),
+            ),
+            mode: InsertMode.insertOrReplace,
+          );
     default:
       throw BackupRestoreException('这份备份数据有问题：未知表 $table');
   }
@@ -867,6 +1166,8 @@ Future<void> _clearBackupTable(QuizDatabase db, String table) async {
       await db.delete(db.recentlyViewedQuestions).go();
     case 'ocr_jobs':
       await db.delete(db.ocrJobs).go();
+    case 'attempts':
+      await db.delete(db.attempts).go();
     case 'settings':
       await db.delete(db.settings).go();
     default:
@@ -977,6 +1278,10 @@ Future<void> importBackupJsonIntoImpl(
         await _clearBackupTable(db, t);
       }
       for (final t in AppDatabase.backupTables) {
+        // 十四批 M2（P1-6）：备份不含未完成会话——review_state 已在
+        // 上面清掉，备份里的行（v4 及更早备份可能带会话快照；v5 备份
+        // 导出为 []）一律不插；恢复完成后不创建任何活动会话。
+        if (t == 'review_state') continue;
         final rows = data[t];
         if (rows is! List) continue;
         for (final row in rows) {
@@ -1005,31 +1310,492 @@ Future<void> importBackupJsonIntoImpl(
 
 /// §2.3/P3：zip 文件级备份（`backup.json` + `imports/` + `slices/`）。
 /// 只打包库里引用到的文件（questions 的 source_path /
-/// page_image_path / slice_path + collect_tasks 的 source_path）；
-/// 无引用的孤儿文件不进备份。缺文件（路径在库里、文件不在盘上）
-/// 不进包，恢复后该题走“图片缺失”，不静默造假文件。
+/// page_image_path / slice_path + ocr_figures 里的 crop_path（十四批 M2）
+/// + collect_tasks 的 source_path）；无引用的孤儿文件不进备份。
+/// 缺文件（路径在库里、文件不在盘上）不进包，恢复后该题走“图片缺失”，
+/// 不静默造假文件。旧入口：警告丢弃（设置页走带报告的新入口）。
 Future<List<int>> exportBackupZipFromImpl(
   QuizDatabase db, {
   String? dataDir,
 }) async {
-  final dir = dataDir ?? AppDatabase.dataDirectoryPath();
-  final json = await AppDatabase.exportBackupJsonFrom(db);
-  final entries = <ZipEntryData>[
-    ZipEntryData('backup.json', utf8.encode(json)),
-  ];
-  final refs = await _referencedRelativePaths(db, dir);
-  final sorted = refs.toList()..sort();
-  for (final rel in sorted) {
-    if (!rel.startsWith('imports/') && !rel.startsWith('slices/')) {
-      continue;
-    }
-    final abs = _resolveInsideDir(dir, rel);
-    if (abs == null) continue;
-    final f = File(abs);
-    if (!f.existsSync()) continue;
-    entries.add(ZipEntryData(rel, await f.readAsBytes()));
+  final report = await exportBackupZipFromWithReportImpl(
+    db,
+    dataDir: dataDir,
+  );
+  return report.bytes;
+}
+
+/// 图块裁图字节是否可解码（PNG；写盘时由 cropFigurePng 编码）。
+/// 解不出/截断/损坏 → false。只用于备份导出与恢复校验，
+/// 不抛错（不可读按“坏图”处理，不阻断整库备份/恢复）。
+bool _decodableFigureBytes(List<int> bytes) {
+  try {
+    return img.decodeImage(Uint8List.fromList(bytes)) != null;
+  } catch (_) {
+    return false;
   }
-  return buildZip(entries);
+}
+
+/// 十四批 M2（P1-6 + P1-B）：带警告的 zip 备份。
+/// - 导出器从每题 ocr_figures JSON 提取每个有效 crop_path 显式加入
+///   ZIP 清单（`_referencedRelativePaths` 已含图块裁图；目录白名单只
+///   决定“允许进入 ZIP”，不等于自动归档——这里按清单逐个加入）。
+/// - 备份只读暂存区副本，绝不直接读原文件：锁内快照文件清单 → 复制
+///   到数据目录下独立暂存区 `.backup-staging-<时间戳>` → 登记暂存占用
+///   → 释锁 → 从暂存区读文件建 ZIP → 成功/失败后都删暂存区并解除占用。
+///   锁只在快照复制期间持有；ZIP 构建在释锁后进行。
+/// - 十四批 M5 修复轮 2（B-FIX2-1）：同一逻辑时点快照——JSON 导出、
+///   文件引用集合读取与图块→题目映射在**同一个数据库事务**
+///   （Drift 事务为 BEGIN IMMEDIATE，同一连接上串行化）内完成，
+///   且整个事务 + 暂存区复制都在**同一文件锁**内。只把导出移进锁
+///   是不够的：删题的数据库提交本就不取文件锁，若 JSON 与引用集合
+///   不在同一 DB 快照里，删题提交仍可插在两者之间。本协议下，删题
+///   提交若发生在快照事务之前，题与文件都不进备份；若发生在快照
+///   事务之后、暂存复制完成之前，题进 JSON，但删题的物理删文件
+///   必须取文件锁（见 `_deleteDataFileIfUnreferenced` 与孤儿清理），
+///   而备份此时仍持锁，删文件排队等待，文件在复制完成前不会消失；
+///   复制完成后登记暂存占用，删文件路径见占用即跳过。
+///   文件复制不放进 DB 事务：IO 复制持 BEGIN IMMEDIATE 写锁会长
+///   时间阻塞写事务；文件锁已足以挡住物理删除，DB 事务只覆盖
+///   “读快照”这一小段。
+/// - 导出前逐个验证引用文件存在、可读：库行直接引用的资产（题目
+///   的 source_path / page_image_path / slice_path / 图块裁图、
+///   收集任务的 source_path、识别任务的 crop_path）缺失或无法读取
+///   时备份直接失败（BackupRestoreException，指明题目/任务 ID 与
+///   相对路径），不生成看似成功实际不完整的备份；只在派生保护里
+///   （任务的 page-normalized.png、pages/ 下页图、original.* 枚举，
+///   未渲染过的任务本来就没有）的文件缺失/不可读时逐项警告、不阻断
+///   备份。图块损坏（读得出但解不出图）仍只警告、不阻断。
+///   十四批 M5 修复轮 3（D-155）：旧口径“非图块文件缺失静默不进包”
+///   已废止——它与备份不变量（JSON 引用的文件都应在 ZIP 中）冲突。
+///   十四批 M5 修复轮 4（D-159/D-160）：释锁后 ZIP 组装阶段暂存区
+///   文件缺失/读取失败也按同一分类处理（图块警告、直接引用失败、
+///   派生警告）；派生文件路径非法时记 warning，不再静默跳过。
+///   十四批 M5 修复轮 5（D-162）：引用集入口 fail-closed——
+///   `_toDataRelative` 无法归一化的库内存引用（越出数据目录/
+///   数据目录外绝对路径）不再直接丢弃，备份专用的非法引用收集
+///   （见 [_BackupIllegalRef]）在锁内快照时保留原始路径、归属与
+///   类别；关键直接引用非法即抛错终止备份，图块/派生非法只记
+///   warning；归一化后仍在数据目录内的 `..`（如
+///   `slices/../slices/q1.png`）是合法的，按原规则正常处理。
+///   孤儿扫描与恢复复核仍走 `_directlyReferencedRelativePaths` /
+///   `_referencedRelativePaths` 原语义，本收集只供备份用。
+///   finally 里暂存占用注销放进内层 finally（D-161）。
+/// 返回 ZIP 字节与警告列表（空即无警告）。
+
+/// 十四批 M5 修复轮 5（D-162）：备份完整性检查用的非法引用记录。
+/// 只供备份导出用；孤儿扫描与恢复复核不走这里，不改变
+/// [_directlyReferencedRelativePaths] / [_referencedRelativePaths]
+/// 的语义（GPT fix4 修法第 4 条）。
+/// - [raw]：库里存的原始引用路径（未归一化，警告/异常里原样列出）；
+/// - [owner]：归属文案（题目「id」/收集任务「id」）；
+/// - [kind]：引用类别——direct（题目切片等关键直接引用）、
+///   figure（图块裁图）、derived（任务派生文件）；
+/// - [figureTitle]：图块所属题目的标题（仅 kind == figure 时用，
+///   警告文案沿用既有图块口径列出题目）；
+/// - [reason]：非法原因（越出数据目录 / 数据目录外绝对路径 /
+///   归一化后不在 imports/ 或 slices/ 下）。
+enum _BackupIllegalRefKind { direct, figure, derived }
+
+typedef _BackupIllegalRef = ({
+  String raw,
+  String owner,
+  _BackupIllegalRefKind kind,
+  String? figureTitle,
+  String reason,
+});
+
+Future<({List<int> bytes, List<String> warnings})>
+exportBackupZipFromWithReportImpl(
+  QuizDatabase db, {
+  String? dataDir,
+  /// 仅测试用：释锁后、ZIP 组装循环前调用一次的故障注入钩子，
+  /// 用于删/换暂存区里的文件以验证 P1-1 分类（D-159）。生产调用
+  /// 不传。钩子只应改动 stagingDir 内的文件，不得改 stagedRels
+  /// 清单本身；钩子抛异常按导出失败处理（finally 仍清理暂存区）。
+  void Function(Directory stagingDir, List<String> stagedRels)?
+  onStagedForTest,
+}) async {
+  final dir = dataDir ?? AppDatabase.dataDirectoryPath();
+  final guard = FileLifecycleGuard.instance;
+  final warnings = <String>[];
+  final stagedRels = <String>[];
+  var stagingDir = Directory('');
+  // 同一逻辑时点的快照结果（JSON + 引用集合 + 图块→题目映射），
+  // 在锁内由单一 DB 事务产出；ZIP 构建在释锁后用它建。
+  var json = '';
+  // 十四批 M5 修复轮 4（D-159）：锁内快照产出的分类集合也提升到
+  // withLock 闭包外的作用域（与 json 的提升写法一致），使释锁后
+  // 的 ZIP 组装循环能按同一分类处理暂存区缺失/读取失败。
+  var directRefs = <String>{};
+  var figureQuestions = <String, String>{};
+  var assetOwners = <String, String>{};
+  // 十四批 M5 修复轮 5（D-162）：锁内快照产出的非法引用收集也提升
+  // 到 withLock 闭包外（与 directRefs 等一致），使释锁前的完整性
+  // 检查能用同一快照的分类。
+  var illegalRefs = <_BackupIllegalRef>[];
+  try {
+    await guard.withLock(() async {
+      // 同一 DB 事务内完成 JSON 导出、引用集合读取与图块映射——
+      // 三者来自同一个数据库快照，中间插不进并发删题提交。
+      final snapshot = await db.transaction(() async {
+        final snapshotJson = await exportBackupJsonFromImpl(db);
+        final refs = await _referencedRelativePaths(db, dir);
+        // 十四批 M5 修复轮 3（D-155）：库行直接引用的资产集合——与
+        // 派生保护（任务的 page-normalized.png、pages/ 下页图、
+        // original.* 枚举）区分开：直接引用缺失/不可读即备份失败，
+        // 派生文件缺失/不可读只逐项警告（未渲染过的任务本来就没有
+        // 派生文件，失败会误伤正常备份）。
+        final directRefs = await _directlyReferencedRelativePaths(db, dir);
+        // 图块裁图 → 题目（警告文案列出题目）。
+        final figureQuestions = <String, String>{};
+        // 直接引用资产 → 归属文案（失败信息里指明题目/任务 ID 与相对路径）。
+        final assetOwners = <String, String>{};
+        // 十四批 M5 修复轮 5（D-162，GPT fix4 §7 P1）：备份专用的
+        // 非法引用收集——与 _directlyReferencedRelativePaths /
+        // _referencedRelativePaths 并行走同一批库行，但保留
+        // _toDataRelative 返回 null 的引用（原始路径、归属、类别、
+        // 原因），不让它们在引用集入口被静默丢弃。孤儿扫描与恢复
+        // 复核仍用原函数原语义，本收集只供备份完整性检查用。
+        // 合法性判定与 _toDataRelative 同口径：归一化后仍在数据
+        // 目录内即合法（含内部 `..`，如 `slices/../slices/q1.png`
+        // → `slices/q1.png`，按原规则正常处理，不记非法）；只有
+        // 越出数据目录、或数据目录外的绝对路径才算非法。
+        final illegalRefs = <_BackupIllegalRef>[];
+        void checkStored(
+          String? stored,
+          String owner,
+          _BackupIllegalRefKind kind, {
+          String? figureTitle,
+        }) {
+          if (stored == null || stored.isEmpty) return;
+          if (_toDataRelative(stored, dir) != null) return;
+          illegalRefs.add((
+            raw: stored,
+            owner: owner,
+            kind: kind,
+            figureTitle: figureTitle,
+            reason: p.isAbsolute(stored)
+                ? '绝对路径不在数据目录内'
+                : '路径越出数据目录',
+          ));
+        }
+
+        // 派生非法：任务 id 本身含 `..` 等穿越段时，构造出的派生
+        // 路径归一化后会落在任务目录之外（任务 id `..` 时
+        // `imports/../page-normalized.png` → 数据目录根的
+        // `page-normalized.png`）。构造派生路径不可能越出数据
+        // 目录本身（_toDataRelative 不会返回 null），故派生非法
+        // 的判定是“归一化后不在 imports/ 或 slices/ 白名单内”。
+        // 与 _referencedRelativePaths 的派生枚举同口径：构造的
+        // page-normalized、pages/ 下现存文件、original.* 现存文件。
+        // 同一原始路径只记一次。
+        final seenDerivedRaw = <String>{};
+        void checkDerived(String raw, String taskLabel) {
+          if (!seenDerivedRaw.add(raw)) return;
+          final rel = _toDataRelative(raw, dir);
+          if (rel != null &&
+              (rel.startsWith('imports/') || rel.startsWith('slices/'))) {
+            return;
+          }
+          illegalRefs.add((
+            raw: raw,
+            owner: taskLabel,
+            kind: _BackupIllegalRefKind.derived,
+            figureTitle: null,
+            reason: rel == null
+                ? '路径越出数据目录'
+                : '路径归一化后不在 imports/ 或 slices/ 下',
+          ));
+        }
+
+        void own(String? stored, String label) {
+          if (stored == null || stored.isEmpty) return;
+          final rel = _toDataRelative(stored, dir);
+          if (rel != null) assetOwners.putIfAbsent(rel, () => label);
+        }
+
+        for (final row in await db.select(db.questions).get()) {
+          for (final crop in _figureCropPathsFromJson(row.ocrFigures)) {
+            figureQuestions.putIfAbsent(crop, () => row.title);
+            assetOwners.putIfAbsent(crop, () => '题目「${row.id}」');
+            checkStored(
+              crop,
+              '题目「${row.id}」',
+              _BackupIllegalRefKind.figure,
+              figureTitle: row.title,
+            );
+          }
+          own(row.sourcePath, '题目「${row.id}」');
+          checkStored(
+            row.sourcePath,
+            '题目「${row.id}」',
+            _BackupIllegalRefKind.direct,
+          );
+          own(row.pageImagePath, '题目「${row.id}」');
+          checkStored(
+            row.pageImagePath,
+            '题目「${row.id}」',
+            _BackupIllegalRefKind.direct,
+          );
+          own(row.slicePath, '题目「${row.id}」');
+          checkStored(
+            row.slicePath,
+            '题目「${row.id}」',
+            _BackupIllegalRefKind.direct,
+          );
+        }
+        for (final row in await db.select(db.collectTasks).get()) {
+          own(row.sourcePath, '收集任务「${row.id}」');
+          checkStored(
+            row.sourcePath,
+            '收集任务「${row.id}」',
+            _BackupIllegalRefKind.direct,
+          );
+          // 派生非法检查：任务 id 含分隔符时 _referencedRelativePaths
+          // 本来就跳过派生口径，这里同口径跳过（防止 p.join 被带出
+          // imports/<taskId>/）；`..` 不含分隔符，会走到这里。
+          final taskId = row.id;
+          final taskLabel = '收集任务「$taskId」';
+          if (taskId.isNotEmpty &&
+              !taskId.contains('/') &&
+              !taskId.contains('\\')) {
+            checkDerived('imports/$taskId/page-normalized.png', taskLabel);
+            final pagesDir = Directory(
+              p.join(dir, 'imports', taskId, 'pages'),
+            );
+            if (pagesDir.existsSync()) {
+              for (final e in pagesDir.listSync()) {
+                if (e is! File) continue;
+                checkDerived(
+                  'imports/$taskId/pages/${p.basename(e.path)}',
+                  taskLabel,
+                );
+              }
+            }
+            final taskDir = Directory(p.join(dir, 'imports', taskId));
+            if (taskDir.existsSync()) {
+              for (final e in taskDir.listSync()) {
+                if (e is! File) continue;
+                final name = p.basename(e.path);
+                if (name == 'original' || name.startsWith('original.')) {
+                  checkDerived('imports/$taskId/$name', taskLabel);
+                }
+              }
+            }
+          }
+        }
+        for (final row in await db.select(db.ocrJobs).get()) {
+          own(row.cropPath, '题目「${row.questionId}」');
+          checkStored(
+            row.cropPath,
+            '题目「${row.questionId}」',
+            _BackupIllegalRefKind.direct,
+          );
+        }
+        return (
+          json: snapshotJson,
+          refs: refs,
+          directRefs: directRefs,
+          figureQuestions: figureQuestions,
+          assetOwners: assetOwners,
+          illegalRefs: illegalRefs,
+        );
+      });
+      json = snapshot.json;
+      final refs = snapshot.refs;
+      directRefs = snapshot.directRefs;
+      figureQuestions = snapshot.figureQuestions;
+      assetOwners = snapshot.assetOwners;
+      illegalRefs = snapshot.illegalRefs;
+      // 十四批 M5 修复轮 5（D-162）：非法引用完整性检查——在复制
+      // 循环前、锁内执行，失败发生在建暂存区之前，不产生待复制文件，
+      // finally 只需清空登记（暂存区尚未创建）。
+      // 分类处理（与锁内复制阶段、ZIP 组装阶段同一优先级，图块优先）：
+      // 关键直接引用非法 → 抛 BackupRestoreException 终止备份
+      // （D-155 fail-closed；失败信息含归属与原始路径）；
+      // 图块裁图非法 → warning（列出题目与原始路径，D-158）；
+      // 派生文件非法 → warning（列出归属任务与原始路径）。
+      // 同一原始路径既是图块裁图又是题目切片时按切片角色处理：
+      // 切片不可再生，图块可从切片 + bbox 再生，故直接引用抛错优先。
+      final illegalDirect = illegalRefs
+          .where((r) => r.kind == _BackupIllegalRefKind.direct)
+          .toList();
+      if (illegalDirect.isNotEmpty) {
+        final bad = illegalDirect.first;
+        throw BackupRestoreException(
+          '备份失败：${bad.owner} 的文件路径非法（${bad.raw}），备份未生成',
+        );
+      }
+      for (final bad in illegalRefs.where(
+        (r) => r.kind == _BackupIllegalRefKind.figure,
+      )) {
+        warnings.add(
+          '题目「${bad.figureTitle ?? bad.owner}」的配图路径非法（${bad.raw}），未包含在备份中',
+        );
+      }
+      for (final bad in illegalRefs.where(
+        (r) => r.kind == _BackupIllegalRefKind.derived,
+      )) {
+        warnings.add('${bad.owner}的派生文件 ${bad.raw} 路径非法，未包含在备份中');
+      }
+      final sorted = refs.toList()..sort();
+      // 暂存区名取毫秒时间戳；同毫秒已存在时 +1（仍是纯数字，
+      // 符合启动清理的严格匹配规则；建目录在锁内，无竞态）。
+      var ts = DateTime.now().millisecondsSinceEpoch;
+      while (Directory(
+        p.join(dir, FileLifecycleGuard.backupStagingDirName(ts)),
+      ).existsSync()) {
+        ts++;
+      }
+      stagingDir = Directory(
+        p.join(dir, FileLifecycleGuard.backupStagingDirName(ts)),
+      );
+      await stagingDir.create(recursive: true);
+      for (final rel in sorted) {
+        if (!rel.startsWith('imports/') && !rel.startsWith('slices/')) {
+          continue;
+        }
+        final abs = _resolveInsideDir(dir, rel);
+        // 十四批 M5 修复轮 3（D-155，GPT fix2 P1-2；D-158 修正）：
+        // 所有直接引用的资产统一处理缺失与读取失败，不只对图块告警。
+        // 关键资产（库行直接引用，尤其 slice_path）缺失/不可读即备份
+        // 失败，失败信息指明归属与相对路径；只在派生保护里的文件缺失/
+        // 不可读时逐项警告、不阻断备份。例外：图块裁图缺失/不可读/
+        // 路径非法时只警告、不阻断（D-158：图块可从切片 + bbox 再生，
+        // M2 P1-6 既定口径“单个图块失败不阻断备份”；警告须列出题目）。
+        final isDirect = directRefs.contains(rel);
+        final owner = assetOwners[rel] ?? rel;
+        final isFigure = figureQuestions.containsKey(rel);
+        if (abs == null) {
+          if (isFigure) {
+            warnings.add('题目「${figureQuestions[rel]}」的配图路径非法，未包含在备份中');
+            continue;
+          }
+          if (isDirect) {
+            throw BackupRestoreException(
+              '备份失败：$owner 的文件路径非法（$rel），备份未生成',
+            );
+          }
+          // 十四批 M5 修复轮 4（D-160，GPT fix3 P1-2）：派生文件路径
+          // 无法解析也不再静默跳过，记 warning、继续导出（文案与
+          // “派生文件 $rel 缺失/无法读取，未包含在备份中”体系统一）。
+          warnings.add('派生文件 $rel 路径非法，未包含在备份中');
+          continue;
+        }
+        final f = File(abs);
+        if (!f.existsSync()) {
+          if (isFigure) {
+            warnings.add('题目「${figureQuestions[rel]}」的配图缺失，未包含在备份中');
+            continue;
+          }
+          if (isDirect) {
+            throw BackupRestoreException(
+              '备份失败：$owner 的文件缺失（$rel），备份未生成',
+            );
+          }
+          warnings.add('派生文件 $rel 缺失，未包含在备份中');
+          continue;
+        }
+        List<int> bytes;
+        try {
+          bytes = await f.readAsBytes();
+        } catch (_) {
+          if (isFigure) {
+            warnings.add('题目「${figureQuestions[rel]}」的配图无法读取，未包含在备份中');
+            continue;
+          }
+          if (isDirect) {
+            throw BackupRestoreException(
+              '备份失败：$owner 的文件无法读取（$rel），备份未生成',
+            );
+          }
+          warnings.add('派生文件 $rel 无法读取，未包含在备份中');
+          continue;
+        }
+        if (isFigure && !_decodableFigureBytes(bytes)) {
+          warnings.add('题目「${figureQuestions[rel]}」的配图已损坏，未包含在备份中');
+          continue;
+        }
+        final dest = File(p.join(stagingDir.path, rel));
+        await dest.parent.create(recursive: true);
+        await dest.writeAsBytes(bytes);
+        stagedRels.add(rel);
+      }
+      // 登记暂存区占用：快照复制期间与释锁后读暂存区期间，
+      // 其它删除路径不得删这些原文件（删题/孤儿清理在锁内见占用即跳过）。
+      guard.registerStaging(stagedRels);
+    });
+    // 释锁后从暂存区读文件建 ZIP——绝不直接读原文件。
+    // 十四批 M5 修复轮 4（D-159，GPT fix3 P1-1）：暂存区文件缺失或
+    // 读取失败不再无条件跳过，按与锁内复制阶段一致的分类处理——
+    // 先判图块（只警告）、再判直接引用（抛错）、最后派生（警告）。
+    // 图块即使同时在 directRefs 里也只警告不阻断（D-158）。
+    // 仅测试用的故障注入钩子在循环前调用一次（见 onStagedForTest）。
+    onStagedForTest?.call(stagingDir, stagedRels);
+    final entries = <ZipEntryData>[
+      ZipEntryData('backup.json', utf8.encode(json)),
+    ];
+    for (final rel in stagedRels) {
+      final staged = File(p.join(stagingDir.path, rel));
+      final isFigure = figureQuestions.containsKey(rel);
+      final isDirect = directRefs.contains(rel);
+      final owner = assetOwners[rel] ?? rel;
+      if (!staged.existsSync()) {
+        if (isFigure) {
+          warnings.add('题目「${figureQuestions[rel]}」的配图暂存区文件缺失，未包含在备份中');
+          continue;
+        }
+        if (isDirect) {
+          throw BackupRestoreException(
+            '备份失败：$owner 的暂存区文件缺失（$rel），备份未生成',
+          );
+        }
+        warnings.add('派生文件 $rel 暂存区文件缺失，未包含在备份中');
+        continue;
+      }
+      List<int> bytes;
+      try {
+        bytes = await staged.readAsBytes();
+      } catch (_) {
+        if (isFigure) {
+          warnings.add('题目「${figureQuestions[rel]}」的配图暂存区文件无法读取，未包含在备份中');
+          continue;
+        }
+        if (isDirect) {
+          throw BackupRestoreException(
+            '备份失败：$owner 的暂存区文件无法读取（$rel），备份未生成',
+          );
+        }
+        warnings.add('派生文件 $rel 暂存区文件无法读取，未包含在备份中');
+        continue;
+      }
+      entries.add(ZipEntryData(rel, bytes));
+    }
+    return (bytes: buildZip(entries), warnings: warnings);
+  } finally {
+    // 成功/失败后都删暂存区并解除占用（崩溃残留由启动清理处理）。
+    // 十四批 M2（P2-2）：暂存区删除也经统一文件操作锁。
+    // 十四批 M5 修复轮 4（D-161，GPT fix3 非阻断观察）：注销放进
+    // 内层 finally——删目录失败也不跳过注销；删目录失败按
+    // best-effort 吞掉，不掩盖主流程的成功/失败。残留目录由启动时
+    // cleanupStaleBackupStagingDirs 清理（严格匹配
+    // `.backup-staging-<纯数字>`）。注意现实现里 deleteDirectory
+    // 经 deleteDirectoryLocked，内部已吞掉删除异常，删目录抛错
+    // 目前只在 withLock 本身失败时才可能发生；这里是纵深防御，
+    // 不依赖该现状。
+    try {
+      if (stagingDir.path.isNotEmpty) {
+        try {
+          await FileLifecycleGuard.instance.deleteDirectory(stagingDir);
+        } catch (_) {
+          // best-effort：暂存区删不掉只留磁盘残留，不掩盖主流程结果。
+        }
+      }
+    } finally {
+      guard.unregisterStaging(stagedRels);
+    }
+  }
 }
 
 List<ZipEntryData> _readZipOrThrow(List<int> bytes, {int? maxTotalBytes}) {
@@ -1168,7 +1934,10 @@ bool _isRestoreStagingDir(String name) {
 /// 故障保证范围（B-NEW-16）：只覆盖进程强制终止，不承诺断电恢复。
 /// 老 JSON 备份（`.qm2backup` 但内容是 JSON）不走这里，走
 /// [AppDatabase.importBackupJsonInto]（见设置页的魔数识别）。
-Future<void> importBackupZipIntoImpl(
+/// 十四批 M2：返回恢复警告列表（缺失/不可读的图块已从 JSON 引用里去掉、
+/// 不展示，不阻断整库恢复）。`Future<void>` 改为 `Future<List<String>>`，
+/// 只 await 的调用方源码兼容。
+Future<List<String>> importBackupZipIntoImpl(
   QuizDatabase db,
   List<int> bytes, {
   String? dataDir,
@@ -1255,6 +2024,8 @@ Future<void> importBackupZipIntoImpl(
   AppDatabase._restoreMaintenance = true;
   RestoreJournal? journal;
   var dbCommitted = false;
+  // 十四批 M2：恢复警告（图块引用校验产出；恢复失败时不返回，直接抛错）。
+  var restoreWarnings = <String>[];
   try {
     // 第 1 步（准备）：日志先于一切文件改动落盘。PREPARING 写完之前，
     // 正式文件与数据库一律不动；staging 目录此时还没建。
@@ -1276,10 +2047,11 @@ Future<void> importBackupZipIntoImpl(
     // 上次崩溃残留的旧式 staging（本次不是它）顺带清掉。
     // SR-P2-6：只清严格匹配 `.restore-staging-<纯数字时间戳>`
     // 的目录（见 [_isRestoreStagingDir]），同名用户目录不动。
+    // 十四批 M2（P2-2）：经统一文件操作锁。
     try {
       for (final e in Directory(dir).listSync()) {
         if (e is Directory && _isRestoreStagingDir(p.basename(e.path))) {
-          await e.delete(recursive: true);
+          await FileLifecycleGuard.instance.deleteDirectory(e);
         }
       }
     } catch (_) {}
@@ -1352,6 +2124,16 @@ Future<void> importBackupZipIntoImpl(
     );
     await AppDatabase.importBackupJsonInto(db, data);
     dbCommitted = true;
+    // 十四批 M2（P1-6）：先还原图块文件（第 4 步已进位），再校验 JSON
+    // 引用——缺失/不可读的图块不展示：从 ocr_figures 里去掉、记一条
+    // 恢复警告，不阻断整库恢复，不写无效引用。版本号原样保留（恢复不
+    // 是内容编辑，content_version / answer_version 不动）。
+    // 校验本身尽力而为：校验失败只记警告，不让恢复失败。
+    try {
+      restoreWarnings = await _pruneInvalidFigureRefs(db, dir);
+    } catch (_) {
+      restoreWarnings = ['图块引用校验失败，部分配图可能无法显示'];
+    }
     // 提交：先写 COMMITTED，再清理。COMMITTED 写失败时直接删日志
     // （DB 与文件已是新的且一致，删日志等于“已完成”；删不掉才报失败，
     // 下次启动按 DATABASE_RESTORING 回滚到旧状态，与失败口径一致）。
@@ -1438,6 +2220,68 @@ Future<void> importBackupZipIntoImpl(
   await _deleteDirQuietly(stagingDir);
   await _deleteJournalFiles(store);
   await _deleteEmptyRestoreParents(dir);
+  return restoreWarnings;
+}
+
+/// 十四批 M2（P1-6）：恢复后校验每题 ocr_figures 里的 crop_path——
+/// 文件缺失或不可解码的图块从 JSON 里去掉（该图块不展示），每题记一条
+/// 恢复警告。版本号不动（恢复原样保留）。非法 JSON 的行按原样保留
+/// （渲染层按无图块处理，不在这里猜修）。
+Future<List<String>> _pruneInvalidFigureRefs(
+  QuizDatabase db,
+  String dir,
+) async {
+  final warnings = <String>[];
+  final rows = await db.select(db.questions).get();
+  for (final row in rows) {
+    if (row.ocrFigures.isEmpty) continue;
+    List<dynamic> decoded;
+    try {
+      final parsed = jsonDecode(row.ocrFigures);
+      if (parsed is! List) continue;
+      decoded = parsed;
+    } catch (_) {
+      continue;
+    }
+    var badCount = 0;
+    final kept = <Map<String, dynamic>>[];
+    for (final item in decoded) {
+      if (item is! Map<String, dynamic>) continue;
+      final crop = item['crop_path'];
+      if (crop is! String || crop.isEmpty) {
+        kept.add(item);
+        continue;
+      }
+      var ok = false;
+      final abs = _resolveInsideDir(dir, crop);
+      if (abs != null) {
+        final f = File(abs);
+        if (f.existsSync()) {
+          try {
+            ok = _decodableFigureBytes(await f.readAsBytes());
+          } catch (_) {
+            ok = false;
+          }
+        }
+      }
+      if (ok) {
+        kept.add(item);
+      } else {
+        badCount++;
+      }
+    }
+    if (badCount > 0) {
+      await (db.update(
+        db.questions,
+      )..where((t) => t.id.equals(row.id))).write(
+        QuestionsCompanion(ocrFigures: Value(jsonEncode(kept))),
+      );
+      warnings.add(
+        '题目「${row.title}」有 $badCount 张配图缺失或已损坏，已从备份恢复中移除',
+      );
+    }
+  }
+  return warnings;
 }
 
 // ---------------------------------------------------------------------------
@@ -1460,37 +2304,22 @@ String _nextRestoreTaskId() {
 }
 
 /// FR-28：进程内补偿后“库行引用文件存在性”复核（plan v9 §四第 5 条）。
-/// 只核对库行直接引用的 5 列（questions 的 source_path /
-/// page_image_path / slice_path + collect_tasks 的 source_path +
+/// 只核对库行直接引用的文件（见 [_directlyReferencedRelativePaths]：
+/// questions 的 source_path / page_image_path / slice_path +
+/// ocr_figures 里的 crop_path（十四批 M2）+ collect_tasks 的 source_path +
 /// 十三批 M2：ocr_jobs 的 crop_path）。
 /// 与孤儿扫描口径 [_referencedRelativePaths] 的列相同，但不用它本身：
 /// 它另有两类派生保护（任务的 page-normalized.png 与 pages/ 下页图，
 /// “有行即保护”、文件本身未必存在），直接做存在性检查会把未渲染过的
-/// 任务也判为缺失，让每次失败恢复都报复核未通过。返回缺失的相对路径
-/// （空即通过）。
+/// 任务也判为缺失，让每次失败恢复都报复核未通过。
+/// 十四批 M5 修复轮 2（B-FIX2-1）：行直接引用集合不再这里手写一份，
+/// 改为复用 [_directlyReferencedRelativePaths]，与孤儿扫描、备份导出
+/// 共用同一口径来源。返回缺失的相对路径（空即通过）。
 Future<List<String>> _missingReferencedFiles(
   QuizDatabase db,
   String dir,
 ) async {
-  final refs = <String>{};
-  void add(Object? v) {
-    if (v is! String || v.isEmpty) return;
-    final rel = _toDataRelative(v, dir);
-    if (rel != null) refs.add(rel);
-  }
-
-  for (final row in await db.select(db.questions).get()) {
-    add(row.sourcePath);
-    add(row.pageImagePath);
-    add(row.slicePath);
-  }
-  for (final row in await db.select(db.collectTasks).get()) {
-    add(row.sourcePath);
-  }
-  // 十三批 M2：ocr_jobs 的 crop_path 也是库行直接引用的文件。
-  for (final row in await db.select(db.ocrJobs).get()) {
-    add(row.cropPath);
-  }
+  final refs = await _directlyReferencedRelativePaths(db, dir);
   final missing = <String>[];
   for (final rel in refs) {
     final abs = _resolveInsideDir(dir, rel);
@@ -1787,11 +2616,12 @@ Future<void> _deleteRestoreSnapshotFiles(File snapshotFile) async {
 /// 恢复工作目录的父目录（restore-staging / imports-rollback）在子目录
 /// 删完后若已空，顺手删掉（只删空目录：非空时 Directory.delete 抛错，
 /// 静默跳过，不动别人的任务目录）。
+/// 十四批 M2（P2-2）：经统一文件操作锁（仅删空目录）。
 Future<void> _deleteEmptyRestoreParents(String dir) async {
   for (final name in ['restore-staging', 'imports-rollback']) {
-    try {
-      await Directory(p.join(dir, name)).delete();
-    } catch (_) {}
+    await FileLifecycleGuard.instance.deleteEmptyDirectory(
+      Directory(p.join(dir, name)),
+    );
   }
 }
 
@@ -1901,6 +2731,11 @@ Future<void> rollbackInterruptedRestore({
 /// 拒绝开库、不滑入 fallback、不静默继续。
 Future<void> performStartupRestoreIfNeeded(String dbPath) async {
   final dir = p.dirname(dbPath);
+  // 十四批 M2（P1-B）：崩溃残留的 `.backup-staging-<时间戳>` 在应用
+  // 启动时按严格匹配规则清理（名字必须是 `.backup-staging-<纯数字
+  // 时间戳>`，其他同名目录一概不动）。启动时不可能有进行中的导出，
+  // 清理是安全的。
+  await FileLifecycleGuard.instance.cleanupStaleBackupStagingDirs(dir);
   final store = RestoreJournalStore(dataDir: Directory(dir));
   late final RestoreJournal? journal;
   try {
@@ -1955,13 +2790,21 @@ extension AppDatabaseBackup on AppDatabase {
   Future<List<int>> exportBackupZip() async =>
       AppDatabase.exportBackupZipFrom(await db);
 
+  /// 十四批 M2：带警告的 zip 备份（实例版）——字节 + 可见警告列表
+  /// （缺失/不可读图块的题目）。设置页走这条。
+  Future<({List<int> bytes, List<String> warnings})>
+  exportBackupZipWithReport() async =>
+      AppDatabase.exportBackupZipFromWithReport(await db);
+
   /// zip 备份恢复（实例版，按已读到的字节恢复）。成功后只发一个含
   /// 全部六种 kind 的事件（方案 §四；D-94：同上，历史也在内）。
   /// GPT-P1：只接受字节，不再提供按文件路径重读的入口——校验过的
   /// 字节与导入的字节必须是同一份，消除校验与使用之间的 TOCTOU
   /// 窗口（旧 `importBackupZipFile` 已删除）。
-  Future<void> importBackupZip(List<int> bytes) async {
-    await AppDatabase.importBackupZipInto(await db, bytes);
+  /// 十四批 M2：返回恢复警告列表（缺失/不可读的图块已从 JSON 引用里
+  /// 去掉、不展示）。
+  Future<List<String>> importBackupZip(List<int> bytes) async {
+    final warnings = await AppDatabase.importBackupZipInto(await db, bytes);
     DataChangeBus.instance.emit(
       const DataChangeEvent(
         kinds: {
@@ -1974,5 +2817,6 @@ extension AppDatabaseBackup on AppDatabase {
         },
       ),
     );
+    return warnings;
   }
 }

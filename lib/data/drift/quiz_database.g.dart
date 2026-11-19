@@ -2313,8 +2313,109 @@ class $ReviewHistoryTable extends ReviewHistory
     type: DriftSqlType.int,
     requiredDuringInsert: true,
   );
+  static const VerificationMeta _causeIdMeta = const VerificationMeta(
+    'causeId',
+  );
   @override
-  List<GeneratedColumn> get $columns => [id, questionId, result, reviewedAt];
+  late final GeneratedColumn<String> causeId = GeneratedColumn<String>(
+    'cause_id',
+    aliasedName,
+    true,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+  );
+  static const VerificationMeta _sessionIdMeta = const VerificationMeta(
+    'sessionId',
+  );
+  @override
+  late final GeneratedColumn<String> sessionId = GeneratedColumn<String>(
+    'session_id',
+    aliasedName,
+    true,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+  );
+  static const VerificationMeta _reviewModeMeta = const VerificationMeta(
+    'reviewMode',
+  );
+  @override
+  late final GeneratedColumn<String> reviewMode = GeneratedColumn<String>(
+    'review_mode',
+    aliasedName,
+    true,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+  );
+  static const VerificationMeta _verdictMeta = const VerificationMeta(
+    'verdict',
+  );
+  @override
+  late final GeneratedColumn<String> verdict = GeneratedColumn<String>(
+    'verdict',
+    aliasedName,
+    true,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+  );
+  static const VerificationMeta _verificationStatusMeta =
+      const VerificationMeta('verificationStatus');
+  @override
+  late final GeneratedColumn<String> verificationStatus =
+      GeneratedColumn<String>(
+        'verification_status',
+        aliasedName,
+        true,
+        type: DriftSqlType.string,
+        requiredDuringInsert: false,
+      );
+  static const VerificationMeta _verificationSourceMeta =
+      const VerificationMeta('verificationSource');
+  @override
+  late final GeneratedColumn<String> verificationSource =
+      GeneratedColumn<String>(
+        'verification_source',
+        aliasedName,
+        true,
+        type: DriftSqlType.string,
+        requiredDuringInsert: false,
+      );
+  static const VerificationMeta _attemptIdMeta = const VerificationMeta(
+    'attemptId',
+  );
+  @override
+  late final GeneratedColumn<String> attemptId = GeneratedColumn<String>(
+    'attempt_id',
+    aliasedName,
+    true,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+  );
+  static const VerificationMeta _submissionIdMeta = const VerificationMeta(
+    'submissionId',
+  );
+  @override
+  late final GeneratedColumn<String> submissionId = GeneratedColumn<String>(
+    'submission_id',
+    aliasedName,
+    true,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+  );
+  @override
+  List<GeneratedColumn> get $columns => [
+    id,
+    questionId,
+    result,
+    reviewedAt,
+    causeId,
+    sessionId,
+    reviewMode,
+    verdict,
+    verificationStatus,
+    verificationSource,
+    attemptId,
+    submissionId,
+  ];
   @override
   String get aliasedName => _alias ?? actualTableName;
   @override
@@ -2354,6 +2455,63 @@ class $ReviewHistoryTable extends ReviewHistory
     } else if (isInserting) {
       context.missing(_reviewedAtMeta);
     }
+    if (data.containsKey('cause_id')) {
+      context.handle(
+        _causeIdMeta,
+        causeId.isAcceptableOrUnknown(data['cause_id']!, _causeIdMeta),
+      );
+    }
+    if (data.containsKey('session_id')) {
+      context.handle(
+        _sessionIdMeta,
+        sessionId.isAcceptableOrUnknown(data['session_id']!, _sessionIdMeta),
+      );
+    }
+    if (data.containsKey('review_mode')) {
+      context.handle(
+        _reviewModeMeta,
+        reviewMode.isAcceptableOrUnknown(data['review_mode']!, _reviewModeMeta),
+      );
+    }
+    if (data.containsKey('verdict')) {
+      context.handle(
+        _verdictMeta,
+        verdict.isAcceptableOrUnknown(data['verdict']!, _verdictMeta),
+      );
+    }
+    if (data.containsKey('verification_status')) {
+      context.handle(
+        _verificationStatusMeta,
+        verificationStatus.isAcceptableOrUnknown(
+          data['verification_status']!,
+          _verificationStatusMeta,
+        ),
+      );
+    }
+    if (data.containsKey('verification_source')) {
+      context.handle(
+        _verificationSourceMeta,
+        verificationSource.isAcceptableOrUnknown(
+          data['verification_source']!,
+          _verificationSourceMeta,
+        ),
+      );
+    }
+    if (data.containsKey('attempt_id')) {
+      context.handle(
+        _attemptIdMeta,
+        attemptId.isAcceptableOrUnknown(data['attempt_id']!, _attemptIdMeta),
+      );
+    }
+    if (data.containsKey('submission_id')) {
+      context.handle(
+        _submissionIdMeta,
+        submissionId.isAcceptableOrUnknown(
+          data['submission_id']!,
+          _submissionIdMeta,
+        ),
+      );
+    }
     return context;
   }
 
@@ -2379,6 +2537,38 @@ class $ReviewHistoryTable extends ReviewHistory
         DriftSqlType.int,
         data['${effectivePrefix}reviewed_at'],
       )!,
+      causeId: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}cause_id'],
+      ),
+      sessionId: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}session_id'],
+      ),
+      reviewMode: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}review_mode'],
+      ),
+      verdict: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}verdict'],
+      ),
+      verificationStatus: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}verification_status'],
+      ),
+      verificationSource: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}verification_source'],
+      ),
+      attemptId: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}attempt_id'],
+      ),
+      submissionId: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}submission_id'],
+      ),
     );
   }
 
@@ -2393,11 +2583,27 @@ class DbReviewHistory extends DataClass implements Insertable<DbReviewHistory> {
   final String questionId;
   final String result;
   final int reviewedAt;
+  final String? causeId;
+  final String? sessionId;
+  final String? reviewMode;
+  final String? verdict;
+  final String? verificationStatus;
+  final String? verificationSource;
+  final String? attemptId;
+  final String? submissionId;
   const DbReviewHistory({
     required this.id,
     required this.questionId,
     required this.result,
     required this.reviewedAt,
+    this.causeId,
+    this.sessionId,
+    this.reviewMode,
+    this.verdict,
+    this.verificationStatus,
+    this.verificationSource,
+    this.attemptId,
+    this.submissionId,
   });
   @override
   Map<String, Expression> toColumns(bool nullToAbsent) {
@@ -2406,6 +2612,30 @@ class DbReviewHistory extends DataClass implements Insertable<DbReviewHistory> {
     map['question_id'] = Variable<String>(questionId);
     map['result'] = Variable<String>(result);
     map['reviewed_at'] = Variable<int>(reviewedAt);
+    if (!nullToAbsent || causeId != null) {
+      map['cause_id'] = Variable<String>(causeId);
+    }
+    if (!nullToAbsent || sessionId != null) {
+      map['session_id'] = Variable<String>(sessionId);
+    }
+    if (!nullToAbsent || reviewMode != null) {
+      map['review_mode'] = Variable<String>(reviewMode);
+    }
+    if (!nullToAbsent || verdict != null) {
+      map['verdict'] = Variable<String>(verdict);
+    }
+    if (!nullToAbsent || verificationStatus != null) {
+      map['verification_status'] = Variable<String>(verificationStatus);
+    }
+    if (!nullToAbsent || verificationSource != null) {
+      map['verification_source'] = Variable<String>(verificationSource);
+    }
+    if (!nullToAbsent || attemptId != null) {
+      map['attempt_id'] = Variable<String>(attemptId);
+    }
+    if (!nullToAbsent || submissionId != null) {
+      map['submission_id'] = Variable<String>(submissionId);
+    }
     return map;
   }
 
@@ -2415,6 +2645,30 @@ class DbReviewHistory extends DataClass implements Insertable<DbReviewHistory> {
       questionId: Value(questionId),
       result: Value(result),
       reviewedAt: Value(reviewedAt),
+      causeId: causeId == null && nullToAbsent
+          ? const Value.absent()
+          : Value(causeId),
+      sessionId: sessionId == null && nullToAbsent
+          ? const Value.absent()
+          : Value(sessionId),
+      reviewMode: reviewMode == null && nullToAbsent
+          ? const Value.absent()
+          : Value(reviewMode),
+      verdict: verdict == null && nullToAbsent
+          ? const Value.absent()
+          : Value(verdict),
+      verificationStatus: verificationStatus == null && nullToAbsent
+          ? const Value.absent()
+          : Value(verificationStatus),
+      verificationSource: verificationSource == null && nullToAbsent
+          ? const Value.absent()
+          : Value(verificationSource),
+      attemptId: attemptId == null && nullToAbsent
+          ? const Value.absent()
+          : Value(attemptId),
+      submissionId: submissionId == null && nullToAbsent
+          ? const Value.absent()
+          : Value(submissionId),
     );
   }
 
@@ -2428,6 +2682,18 @@ class DbReviewHistory extends DataClass implements Insertable<DbReviewHistory> {
       questionId: serializer.fromJson<String>(json['questionId']),
       result: serializer.fromJson<String>(json['result']),
       reviewedAt: serializer.fromJson<int>(json['reviewedAt']),
+      causeId: serializer.fromJson<String?>(json['causeId']),
+      sessionId: serializer.fromJson<String?>(json['sessionId']),
+      reviewMode: serializer.fromJson<String?>(json['reviewMode']),
+      verdict: serializer.fromJson<String?>(json['verdict']),
+      verificationStatus: serializer.fromJson<String?>(
+        json['verificationStatus'],
+      ),
+      verificationSource: serializer.fromJson<String?>(
+        json['verificationSource'],
+      ),
+      attemptId: serializer.fromJson<String?>(json['attemptId']),
+      submissionId: serializer.fromJson<String?>(json['submissionId']),
     );
   }
   @override
@@ -2438,6 +2704,14 @@ class DbReviewHistory extends DataClass implements Insertable<DbReviewHistory> {
       'questionId': serializer.toJson<String>(questionId),
       'result': serializer.toJson<String>(result),
       'reviewedAt': serializer.toJson<int>(reviewedAt),
+      'causeId': serializer.toJson<String?>(causeId),
+      'sessionId': serializer.toJson<String?>(sessionId),
+      'reviewMode': serializer.toJson<String?>(reviewMode),
+      'verdict': serializer.toJson<String?>(verdict),
+      'verificationStatus': serializer.toJson<String?>(verificationStatus),
+      'verificationSource': serializer.toJson<String?>(verificationSource),
+      'attemptId': serializer.toJson<String?>(attemptId),
+      'submissionId': serializer.toJson<String?>(submissionId),
     };
   }
 
@@ -2446,11 +2720,31 @@ class DbReviewHistory extends DataClass implements Insertable<DbReviewHistory> {
     String? questionId,
     String? result,
     int? reviewedAt,
+    Value<String?> causeId = const Value.absent(),
+    Value<String?> sessionId = const Value.absent(),
+    Value<String?> reviewMode = const Value.absent(),
+    Value<String?> verdict = const Value.absent(),
+    Value<String?> verificationStatus = const Value.absent(),
+    Value<String?> verificationSource = const Value.absent(),
+    Value<String?> attemptId = const Value.absent(),
+    Value<String?> submissionId = const Value.absent(),
   }) => DbReviewHistory(
     id: id ?? this.id,
     questionId: questionId ?? this.questionId,
     result: result ?? this.result,
     reviewedAt: reviewedAt ?? this.reviewedAt,
+    causeId: causeId.present ? causeId.value : this.causeId,
+    sessionId: sessionId.present ? sessionId.value : this.sessionId,
+    reviewMode: reviewMode.present ? reviewMode.value : this.reviewMode,
+    verdict: verdict.present ? verdict.value : this.verdict,
+    verificationStatus: verificationStatus.present
+        ? verificationStatus.value
+        : this.verificationStatus,
+    verificationSource: verificationSource.present
+        ? verificationSource.value
+        : this.verificationSource,
+    attemptId: attemptId.present ? attemptId.value : this.attemptId,
+    submissionId: submissionId.present ? submissionId.value : this.submissionId,
   );
   DbReviewHistory copyWithCompanion(ReviewHistoryCompanion data) {
     return DbReviewHistory(
@@ -2462,6 +2756,22 @@ class DbReviewHistory extends DataClass implements Insertable<DbReviewHistory> {
       reviewedAt: data.reviewedAt.present
           ? data.reviewedAt.value
           : this.reviewedAt,
+      causeId: data.causeId.present ? data.causeId.value : this.causeId,
+      sessionId: data.sessionId.present ? data.sessionId.value : this.sessionId,
+      reviewMode: data.reviewMode.present
+          ? data.reviewMode.value
+          : this.reviewMode,
+      verdict: data.verdict.present ? data.verdict.value : this.verdict,
+      verificationStatus: data.verificationStatus.present
+          ? data.verificationStatus.value
+          : this.verificationStatus,
+      verificationSource: data.verificationSource.present
+          ? data.verificationSource.value
+          : this.verificationSource,
+      attemptId: data.attemptId.present ? data.attemptId.value : this.attemptId,
+      submissionId: data.submissionId.present
+          ? data.submissionId.value
+          : this.submissionId,
     );
   }
 
@@ -2471,13 +2781,34 @@ class DbReviewHistory extends DataClass implements Insertable<DbReviewHistory> {
           ..write('id: $id, ')
           ..write('questionId: $questionId, ')
           ..write('result: $result, ')
-          ..write('reviewedAt: $reviewedAt')
+          ..write('reviewedAt: $reviewedAt, ')
+          ..write('causeId: $causeId, ')
+          ..write('sessionId: $sessionId, ')
+          ..write('reviewMode: $reviewMode, ')
+          ..write('verdict: $verdict, ')
+          ..write('verificationStatus: $verificationStatus, ')
+          ..write('verificationSource: $verificationSource, ')
+          ..write('attemptId: $attemptId, ')
+          ..write('submissionId: $submissionId')
           ..write(')'))
         .toString();
   }
 
   @override
-  int get hashCode => Object.hash(id, questionId, result, reviewedAt);
+  int get hashCode => Object.hash(
+    id,
+    questionId,
+    result,
+    reviewedAt,
+    causeId,
+    sessionId,
+    reviewMode,
+    verdict,
+    verificationStatus,
+    verificationSource,
+    attemptId,
+    submissionId,
+  );
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
@@ -2485,7 +2816,15 @@ class DbReviewHistory extends DataClass implements Insertable<DbReviewHistory> {
           other.id == this.id &&
           other.questionId == this.questionId &&
           other.result == this.result &&
-          other.reviewedAt == this.reviewedAt);
+          other.reviewedAt == this.reviewedAt &&
+          other.causeId == this.causeId &&
+          other.sessionId == this.sessionId &&
+          other.reviewMode == this.reviewMode &&
+          other.verdict == this.verdict &&
+          other.verificationStatus == this.verificationStatus &&
+          other.verificationSource == this.verificationSource &&
+          other.attemptId == this.attemptId &&
+          other.submissionId == this.submissionId);
 }
 
 class ReviewHistoryCompanion extends UpdateCompanion<DbReviewHistory> {
@@ -2493,17 +2832,41 @@ class ReviewHistoryCompanion extends UpdateCompanion<DbReviewHistory> {
   final Value<String> questionId;
   final Value<String> result;
   final Value<int> reviewedAt;
+  final Value<String?> causeId;
+  final Value<String?> sessionId;
+  final Value<String?> reviewMode;
+  final Value<String?> verdict;
+  final Value<String?> verificationStatus;
+  final Value<String?> verificationSource;
+  final Value<String?> attemptId;
+  final Value<String?> submissionId;
   const ReviewHistoryCompanion({
     this.id = const Value.absent(),
     this.questionId = const Value.absent(),
     this.result = const Value.absent(),
     this.reviewedAt = const Value.absent(),
+    this.causeId = const Value.absent(),
+    this.sessionId = const Value.absent(),
+    this.reviewMode = const Value.absent(),
+    this.verdict = const Value.absent(),
+    this.verificationStatus = const Value.absent(),
+    this.verificationSource = const Value.absent(),
+    this.attemptId = const Value.absent(),
+    this.submissionId = const Value.absent(),
   });
   ReviewHistoryCompanion.insert({
     this.id = const Value.absent(),
     required String questionId,
     required String result,
     required int reviewedAt,
+    this.causeId = const Value.absent(),
+    this.sessionId = const Value.absent(),
+    this.reviewMode = const Value.absent(),
+    this.verdict = const Value.absent(),
+    this.verificationStatus = const Value.absent(),
+    this.verificationSource = const Value.absent(),
+    this.attemptId = const Value.absent(),
+    this.submissionId = const Value.absent(),
   }) : questionId = Value(questionId),
        result = Value(result),
        reviewedAt = Value(reviewedAt);
@@ -2512,12 +2875,28 @@ class ReviewHistoryCompanion extends UpdateCompanion<DbReviewHistory> {
     Expression<String>? questionId,
     Expression<String>? result,
     Expression<int>? reviewedAt,
+    Expression<String>? causeId,
+    Expression<String>? sessionId,
+    Expression<String>? reviewMode,
+    Expression<String>? verdict,
+    Expression<String>? verificationStatus,
+    Expression<String>? verificationSource,
+    Expression<String>? attemptId,
+    Expression<String>? submissionId,
   }) {
     return RawValuesInsertable({
       if (id != null) 'id': id,
       if (questionId != null) 'question_id': questionId,
       if (result != null) 'result': result,
       if (reviewedAt != null) 'reviewed_at': reviewedAt,
+      if (causeId != null) 'cause_id': causeId,
+      if (sessionId != null) 'session_id': sessionId,
+      if (reviewMode != null) 'review_mode': reviewMode,
+      if (verdict != null) 'verdict': verdict,
+      if (verificationStatus != null) 'verification_status': verificationStatus,
+      if (verificationSource != null) 'verification_source': verificationSource,
+      if (attemptId != null) 'attempt_id': attemptId,
+      if (submissionId != null) 'submission_id': submissionId,
     });
   }
 
@@ -2526,12 +2905,28 @@ class ReviewHistoryCompanion extends UpdateCompanion<DbReviewHistory> {
     Value<String>? questionId,
     Value<String>? result,
     Value<int>? reviewedAt,
+    Value<String?>? causeId,
+    Value<String?>? sessionId,
+    Value<String?>? reviewMode,
+    Value<String?>? verdict,
+    Value<String?>? verificationStatus,
+    Value<String?>? verificationSource,
+    Value<String?>? attemptId,
+    Value<String?>? submissionId,
   }) {
     return ReviewHistoryCompanion(
       id: id ?? this.id,
       questionId: questionId ?? this.questionId,
       result: result ?? this.result,
       reviewedAt: reviewedAt ?? this.reviewedAt,
+      causeId: causeId ?? this.causeId,
+      sessionId: sessionId ?? this.sessionId,
+      reviewMode: reviewMode ?? this.reviewMode,
+      verdict: verdict ?? this.verdict,
+      verificationStatus: verificationStatus ?? this.verificationStatus,
+      verificationSource: verificationSource ?? this.verificationSource,
+      attemptId: attemptId ?? this.attemptId,
+      submissionId: submissionId ?? this.submissionId,
     );
   }
 
@@ -2550,6 +2945,30 @@ class ReviewHistoryCompanion extends UpdateCompanion<DbReviewHistory> {
     if (reviewedAt.present) {
       map['reviewed_at'] = Variable<int>(reviewedAt.value);
     }
+    if (causeId.present) {
+      map['cause_id'] = Variable<String>(causeId.value);
+    }
+    if (sessionId.present) {
+      map['session_id'] = Variable<String>(sessionId.value);
+    }
+    if (reviewMode.present) {
+      map['review_mode'] = Variable<String>(reviewMode.value);
+    }
+    if (verdict.present) {
+      map['verdict'] = Variable<String>(verdict.value);
+    }
+    if (verificationStatus.present) {
+      map['verification_status'] = Variable<String>(verificationStatus.value);
+    }
+    if (verificationSource.present) {
+      map['verification_source'] = Variable<String>(verificationSource.value);
+    }
+    if (attemptId.present) {
+      map['attempt_id'] = Variable<String>(attemptId.value);
+    }
+    if (submissionId.present) {
+      map['submission_id'] = Variable<String>(submissionId.value);
+    }
     return map;
   }
 
@@ -2559,7 +2978,15 @@ class ReviewHistoryCompanion extends UpdateCompanion<DbReviewHistory> {
           ..write('id: $id, ')
           ..write('questionId: $questionId, ')
           ..write('result: $result, ')
-          ..write('reviewedAt: $reviewedAt')
+          ..write('reviewedAt: $reviewedAt, ')
+          ..write('causeId: $causeId, ')
+          ..write('sessionId: $sessionId, ')
+          ..write('reviewMode: $reviewMode, ')
+          ..write('verdict: $verdict, ')
+          ..write('verificationStatus: $verificationStatus, ')
+          ..write('verificationSource: $verificationSource, ')
+          ..write('attemptId: $attemptId, ')
+          ..write('submissionId: $submissionId')
           ..write(')'))
         .toString();
   }
@@ -2678,6 +3105,27 @@ class $CauseRecordsTable extends CauseRecords
     type: DriftSqlType.int,
     requiredDuringInsert: true,
   );
+  static const VerificationMeta _lastCountedSuccessAtMeta =
+      const VerificationMeta('lastCountedSuccessAt');
+  @override
+  late final GeneratedColumn<int> lastCountedSuccessAt = GeneratedColumn<int>(
+    'last_counted_success_at',
+    aliasedName,
+    true,
+    type: DriftSqlType.int,
+    requiredDuringInsert: false,
+  );
+  static const VerificationMeta _lastCountedSessionIdMeta =
+      const VerificationMeta('lastCountedSessionId');
+  @override
+  late final GeneratedColumn<String> lastCountedSessionId =
+      GeneratedColumn<String>(
+        'last_counted_session_id',
+        aliasedName,
+        true,
+        type: DriftSqlType.string,
+        requiredDuringInsert: false,
+      );
   @override
   List<GeneratedColumn> get $columns => [
     id,
@@ -2690,6 +3138,8 @@ class $CauseRecordsTable extends CauseRecords
     recheckDate,
     remedyHistory,
     joinedAt,
+    lastCountedSuccessAt,
+    lastCountedSessionId,
   ];
   @override
   String get aliasedName => _alias ?? actualTableName;
@@ -2768,6 +3218,24 @@ class $CauseRecordsTable extends CauseRecords
     } else if (isInserting) {
       context.missing(_joinedAtMeta);
     }
+    if (data.containsKey('last_counted_success_at')) {
+      context.handle(
+        _lastCountedSuccessAtMeta,
+        lastCountedSuccessAt.isAcceptableOrUnknown(
+          data['last_counted_success_at']!,
+          _lastCountedSuccessAtMeta,
+        ),
+      );
+    }
+    if (data.containsKey('last_counted_session_id')) {
+      context.handle(
+        _lastCountedSessionIdMeta,
+        lastCountedSessionId.isAcceptableOrUnknown(
+          data['last_counted_session_id']!,
+          _lastCountedSessionIdMeta,
+        ),
+      );
+    }
     return context;
   }
 
@@ -2819,6 +3287,14 @@ class $CauseRecordsTable extends CauseRecords
         DriftSqlType.int,
         data['${effectivePrefix}joined_at'],
       )!,
+      lastCountedSuccessAt: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}last_counted_success_at'],
+      ),
+      lastCountedSessionId: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}last_counted_session_id'],
+      ),
     );
   }
 
@@ -2842,6 +3318,11 @@ class DbCauseRecord extends DataClass implements Insertable<DbCauseRecord> {
   final int? recheckDate;
   final List<String> remedyHistory;
   final int joinedAt;
+
+  /// 十四批 M1（M3-7 的 24 小时锚点链）：上一次计入治愈次数的成功
+  /// 时间（毫秒时间戳，可空）与所在会话（可空）；“未解决”重置时两者清空。
+  final int? lastCountedSuccessAt;
+  final String? lastCountedSessionId;
   const DbCauseRecord({
     required this.id,
     required this.questionId,
@@ -2853,6 +3334,8 @@ class DbCauseRecord extends DataClass implements Insertable<DbCauseRecord> {
     this.recheckDate,
     required this.remedyHistory,
     required this.joinedAt,
+    this.lastCountedSuccessAt,
+    this.lastCountedSessionId,
   });
   @override
   Map<String, Expression> toColumns(bool nullToAbsent) {
@@ -2875,6 +3358,12 @@ class DbCauseRecord extends DataClass implements Insertable<DbCauseRecord> {
       );
     }
     map['joined_at'] = Variable<int>(joinedAt);
+    if (!nullToAbsent || lastCountedSuccessAt != null) {
+      map['last_counted_success_at'] = Variable<int>(lastCountedSuccessAt);
+    }
+    if (!nullToAbsent || lastCountedSessionId != null) {
+      map['last_counted_session_id'] = Variable<String>(lastCountedSessionId);
+    }
     return map;
   }
 
@@ -2894,6 +3383,12 @@ class DbCauseRecord extends DataClass implements Insertable<DbCauseRecord> {
           : Value(recheckDate),
       remedyHistory: Value(remedyHistory),
       joinedAt: Value(joinedAt),
+      lastCountedSuccessAt: lastCountedSuccessAt == null && nullToAbsent
+          ? const Value.absent()
+          : Value(lastCountedSuccessAt),
+      lastCountedSessionId: lastCountedSessionId == null && nullToAbsent
+          ? const Value.absent()
+          : Value(lastCountedSessionId),
     );
   }
 
@@ -2913,6 +3408,12 @@ class DbCauseRecord extends DataClass implements Insertable<DbCauseRecord> {
       recheckDate: serializer.fromJson<int?>(json['recheckDate']),
       remedyHistory: serializer.fromJson<List<String>>(json['remedyHistory']),
       joinedAt: serializer.fromJson<int>(json['joinedAt']),
+      lastCountedSuccessAt: serializer.fromJson<int?>(
+        json['lastCountedSuccessAt'],
+      ),
+      lastCountedSessionId: serializer.fromJson<String?>(
+        json['lastCountedSessionId'],
+      ),
     );
   }
   @override
@@ -2929,6 +3430,8 @@ class DbCauseRecord extends DataClass implements Insertable<DbCauseRecord> {
       'recheckDate': serializer.toJson<int?>(recheckDate),
       'remedyHistory': serializer.toJson<List<String>>(remedyHistory),
       'joinedAt': serializer.toJson<int>(joinedAt),
+      'lastCountedSuccessAt': serializer.toJson<int?>(lastCountedSuccessAt),
+      'lastCountedSessionId': serializer.toJson<String?>(lastCountedSessionId),
     };
   }
 
@@ -2943,6 +3446,8 @@ class DbCauseRecord extends DataClass implements Insertable<DbCauseRecord> {
     Value<int?> recheckDate = const Value.absent(),
     List<String>? remedyHistory,
     int? joinedAt,
+    Value<int?> lastCountedSuccessAt = const Value.absent(),
+    Value<String?> lastCountedSessionId = const Value.absent(),
   }) => DbCauseRecord(
     id: id ?? this.id,
     questionId: questionId ?? this.questionId,
@@ -2954,6 +3459,12 @@ class DbCauseRecord extends DataClass implements Insertable<DbCauseRecord> {
     recheckDate: recheckDate.present ? recheckDate.value : this.recheckDate,
     remedyHistory: remedyHistory ?? this.remedyHistory,
     joinedAt: joinedAt ?? this.joinedAt,
+    lastCountedSuccessAt: lastCountedSuccessAt.present
+        ? lastCountedSuccessAt.value
+        : this.lastCountedSuccessAt,
+    lastCountedSessionId: lastCountedSessionId.present
+        ? lastCountedSessionId.value
+        : this.lastCountedSessionId,
   );
   DbCauseRecord copyWithCompanion(CauseRecordsCompanion data) {
     return DbCauseRecord(
@@ -2975,6 +3486,12 @@ class DbCauseRecord extends DataClass implements Insertable<DbCauseRecord> {
           ? data.remedyHistory.value
           : this.remedyHistory,
       joinedAt: data.joinedAt.present ? data.joinedAt.value : this.joinedAt,
+      lastCountedSuccessAt: data.lastCountedSuccessAt.present
+          ? data.lastCountedSuccessAt.value
+          : this.lastCountedSuccessAt,
+      lastCountedSessionId: data.lastCountedSessionId.present
+          ? data.lastCountedSessionId.value
+          : this.lastCountedSessionId,
     );
   }
 
@@ -2990,7 +3507,9 @@ class DbCauseRecord extends DataClass implements Insertable<DbCauseRecord> {
           ..write('lastCheck: $lastCheck, ')
           ..write('recheckDate: $recheckDate, ')
           ..write('remedyHistory: $remedyHistory, ')
-          ..write('joinedAt: $joinedAt')
+          ..write('joinedAt: $joinedAt, ')
+          ..write('lastCountedSuccessAt: $lastCountedSuccessAt, ')
+          ..write('lastCountedSessionId: $lastCountedSessionId')
           ..write(')'))
         .toString();
   }
@@ -3007,6 +3526,8 @@ class DbCauseRecord extends DataClass implements Insertable<DbCauseRecord> {
     recheckDate,
     remedyHistory,
     joinedAt,
+    lastCountedSuccessAt,
+    lastCountedSessionId,
   );
   @override
   bool operator ==(Object other) =>
@@ -3021,7 +3542,9 @@ class DbCauseRecord extends DataClass implements Insertable<DbCauseRecord> {
           other.lastCheck == this.lastCheck &&
           other.recheckDate == this.recheckDate &&
           other.remedyHistory == this.remedyHistory &&
-          other.joinedAt == this.joinedAt);
+          other.joinedAt == this.joinedAt &&
+          other.lastCountedSuccessAt == this.lastCountedSuccessAt &&
+          other.lastCountedSessionId == this.lastCountedSessionId);
 }
 
 class CauseRecordsCompanion extends UpdateCompanion<DbCauseRecord> {
@@ -3035,6 +3558,8 @@ class CauseRecordsCompanion extends UpdateCompanion<DbCauseRecord> {
   final Value<int?> recheckDate;
   final Value<List<String>> remedyHistory;
   final Value<int> joinedAt;
+  final Value<int?> lastCountedSuccessAt;
+  final Value<String?> lastCountedSessionId;
   const CauseRecordsCompanion({
     this.id = const Value.absent(),
     this.questionId = const Value.absent(),
@@ -3046,6 +3571,8 @@ class CauseRecordsCompanion extends UpdateCompanion<DbCauseRecord> {
     this.recheckDate = const Value.absent(),
     this.remedyHistory = const Value.absent(),
     this.joinedAt = const Value.absent(),
+    this.lastCountedSuccessAt = const Value.absent(),
+    this.lastCountedSessionId = const Value.absent(),
   });
   CauseRecordsCompanion.insert({
     this.id = const Value.absent(),
@@ -3058,6 +3585,8 @@ class CauseRecordsCompanion extends UpdateCompanion<DbCauseRecord> {
     this.recheckDate = const Value.absent(),
     this.remedyHistory = const Value.absent(),
     required int joinedAt,
+    this.lastCountedSuccessAt = const Value.absent(),
+    this.lastCountedSessionId = const Value.absent(),
   }) : questionId = Value(questionId),
        cause = Value(cause),
        subjectId = Value(subjectId),
@@ -3073,6 +3602,8 @@ class CauseRecordsCompanion extends UpdateCompanion<DbCauseRecord> {
     Expression<int>? recheckDate,
     Expression<String>? remedyHistory,
     Expression<int>? joinedAt,
+    Expression<int>? lastCountedSuccessAt,
+    Expression<String>? lastCountedSessionId,
   }) {
     return RawValuesInsertable({
       if (id != null) 'id': id,
@@ -3085,6 +3616,10 @@ class CauseRecordsCompanion extends UpdateCompanion<DbCauseRecord> {
       if (recheckDate != null) 'recheck_date': recheckDate,
       if (remedyHistory != null) 'remedy_history': remedyHistory,
       if (joinedAt != null) 'joined_at': joinedAt,
+      if (lastCountedSuccessAt != null)
+        'last_counted_success_at': lastCountedSuccessAt,
+      if (lastCountedSessionId != null)
+        'last_counted_session_id': lastCountedSessionId,
     });
   }
 
@@ -3099,6 +3634,8 @@ class CauseRecordsCompanion extends UpdateCompanion<DbCauseRecord> {
     Value<int?>? recheckDate,
     Value<List<String>>? remedyHistory,
     Value<int>? joinedAt,
+    Value<int?>? lastCountedSuccessAt,
+    Value<String?>? lastCountedSessionId,
   }) {
     return CauseRecordsCompanion(
       id: id ?? this.id,
@@ -3111,6 +3648,8 @@ class CauseRecordsCompanion extends UpdateCompanion<DbCauseRecord> {
       recheckDate: recheckDate ?? this.recheckDate,
       remedyHistory: remedyHistory ?? this.remedyHistory,
       joinedAt: joinedAt ?? this.joinedAt,
+      lastCountedSuccessAt: lastCountedSuccessAt ?? this.lastCountedSuccessAt,
+      lastCountedSessionId: lastCountedSessionId ?? this.lastCountedSessionId,
     );
   }
 
@@ -3149,6 +3688,16 @@ class CauseRecordsCompanion extends UpdateCompanion<DbCauseRecord> {
     if (joinedAt.present) {
       map['joined_at'] = Variable<int>(joinedAt.value);
     }
+    if (lastCountedSuccessAt.present) {
+      map['last_counted_success_at'] = Variable<int>(
+        lastCountedSuccessAt.value,
+      );
+    }
+    if (lastCountedSessionId.present) {
+      map['last_counted_session_id'] = Variable<String>(
+        lastCountedSessionId.value,
+      );
+    }
     return map;
   }
 
@@ -3164,7 +3713,9 @@ class CauseRecordsCompanion extends UpdateCompanion<DbCauseRecord> {
           ..write('lastCheck: $lastCheck, ')
           ..write('recheckDate: $recheckDate, ')
           ..write('remedyHistory: $remedyHistory, ')
-          ..write('joinedAt: $joinedAt')
+          ..write('joinedAt: $joinedAt, ')
+          ..write('lastCountedSuccessAt: $lastCountedSuccessAt, ')
+          ..write('lastCountedSessionId: $lastCountedSessionId')
           ..write(')'))
         .toString();
   }
@@ -3219,8 +3770,57 @@ class $ReviewStateTable extends ReviewState
     type: DriftSqlType.int,
     requiredDuringInsert: true,
   );
+  static const VerificationMeta _sessionIdMeta = const VerificationMeta(
+    'sessionId',
+  );
   @override
-  List<GeneratedColumn> get $columns => [id, queue, position, updatedAt];
+  late final GeneratedColumn<String> sessionId = GeneratedColumn<String>(
+    'session_id',
+    aliasedName,
+    true,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+  );
+  static const VerificationMeta _modeMeta = const VerificationMeta('mode');
+  @override
+  late final GeneratedColumn<String> mode = GeneratedColumn<String>(
+    'mode',
+    aliasedName,
+    true,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+  );
+  static const VerificationMeta _skipsMeta = const VerificationMeta('skips');
+  @override
+  late final GeneratedColumn<String> skips = GeneratedColumn<String>(
+    'skips',
+    aliasedName,
+    true,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+  );
+  static const VerificationMeta _perQuestionStateMeta = const VerificationMeta(
+    'perQuestionState',
+  );
+  @override
+  late final GeneratedColumn<String> perQuestionState = GeneratedColumn<String>(
+    'per_question_state',
+    aliasedName,
+    true,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+  );
+  @override
+  List<GeneratedColumn> get $columns => [
+    id,
+    queue,
+    position,
+    updatedAt,
+    sessionId,
+    mode,
+    skips,
+    perQuestionState,
+  ];
   @override
   String get aliasedName => _alias ?? actualTableName;
   @override
@@ -3250,6 +3850,33 @@ class $ReviewStateTable extends ReviewState
     } else if (isInserting) {
       context.missing(_updatedAtMeta);
     }
+    if (data.containsKey('session_id')) {
+      context.handle(
+        _sessionIdMeta,
+        sessionId.isAcceptableOrUnknown(data['session_id']!, _sessionIdMeta),
+      );
+    }
+    if (data.containsKey('mode')) {
+      context.handle(
+        _modeMeta,
+        mode.isAcceptableOrUnknown(data['mode']!, _modeMeta),
+      );
+    }
+    if (data.containsKey('skips')) {
+      context.handle(
+        _skipsMeta,
+        skips.isAcceptableOrUnknown(data['skips']!, _skipsMeta),
+      );
+    }
+    if (data.containsKey('per_question_state')) {
+      context.handle(
+        _perQuestionStateMeta,
+        perQuestionState.isAcceptableOrUnknown(
+          data['per_question_state']!,
+          _perQuestionStateMeta,
+        ),
+      );
+    }
     return context;
   }
 
@@ -3277,6 +3904,22 @@ class $ReviewStateTable extends ReviewState
         DriftSqlType.int,
         data['${effectivePrefix}updated_at'],
       )!,
+      sessionId: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}session_id'],
+      ),
+      mode: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}mode'],
+      ),
+      skips: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}skips'],
+      ),
+      perQuestionState: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}per_question_state'],
+      ),
     );
   }
 
@@ -3294,11 +3937,25 @@ class DbReviewState extends DataClass implements Insertable<DbReviewState> {
   final List<ReviewQueueItem> queue;
   final int position;
   final int updatedAt;
+
+  /// 十四批 M1（M3-10 轻量会话持久化）：session_id（会话）、mode
+  ///（到期复习/专项练习）、skips（JSON，各题跳过次数）、per_question_state
+  ///（JSON，各题作答/核对/verdict 状态 + question_submission_id +
+  /// answer_version_at_start + content_version_at_start）。均可空；
+  /// 全局同一时间只允许一个活动或暂停会话。
+  final String? sessionId;
+  final String? mode;
+  final String? skips;
+  final String? perQuestionState;
   const DbReviewState({
     required this.id,
     required this.queue,
     required this.position,
     required this.updatedAt,
+    this.sessionId,
+    this.mode,
+    this.skips,
+    this.perQuestionState,
   });
   @override
   Map<String, Expression> toColumns(bool nullToAbsent) {
@@ -3311,6 +3968,18 @@ class DbReviewState extends DataClass implements Insertable<DbReviewState> {
     }
     map['position'] = Variable<int>(position);
     map['updated_at'] = Variable<int>(updatedAt);
+    if (!nullToAbsent || sessionId != null) {
+      map['session_id'] = Variable<String>(sessionId);
+    }
+    if (!nullToAbsent || mode != null) {
+      map['mode'] = Variable<String>(mode);
+    }
+    if (!nullToAbsent || skips != null) {
+      map['skips'] = Variable<String>(skips);
+    }
+    if (!nullToAbsent || perQuestionState != null) {
+      map['per_question_state'] = Variable<String>(perQuestionState);
+    }
     return map;
   }
 
@@ -3320,6 +3989,16 @@ class DbReviewState extends DataClass implements Insertable<DbReviewState> {
       queue: Value(queue),
       position: Value(position),
       updatedAt: Value(updatedAt),
+      sessionId: sessionId == null && nullToAbsent
+          ? const Value.absent()
+          : Value(sessionId),
+      mode: mode == null && nullToAbsent ? const Value.absent() : Value(mode),
+      skips: skips == null && nullToAbsent
+          ? const Value.absent()
+          : Value(skips),
+      perQuestionState: perQuestionState == null && nullToAbsent
+          ? const Value.absent()
+          : Value(perQuestionState),
     );
   }
 
@@ -3333,6 +4012,10 @@ class DbReviewState extends DataClass implements Insertable<DbReviewState> {
       queue: serializer.fromJson<List<ReviewQueueItem>>(json['queue']),
       position: serializer.fromJson<int>(json['position']),
       updatedAt: serializer.fromJson<int>(json['updatedAt']),
+      sessionId: serializer.fromJson<String?>(json['sessionId']),
+      mode: serializer.fromJson<String?>(json['mode']),
+      skips: serializer.fromJson<String?>(json['skips']),
+      perQuestionState: serializer.fromJson<String?>(json['perQuestionState']),
     );
   }
   @override
@@ -3343,6 +4026,10 @@ class DbReviewState extends DataClass implements Insertable<DbReviewState> {
       'queue': serializer.toJson<List<ReviewQueueItem>>(queue),
       'position': serializer.toJson<int>(position),
       'updatedAt': serializer.toJson<int>(updatedAt),
+      'sessionId': serializer.toJson<String?>(sessionId),
+      'mode': serializer.toJson<String?>(mode),
+      'skips': serializer.toJson<String?>(skips),
+      'perQuestionState': serializer.toJson<String?>(perQuestionState),
     };
   }
 
@@ -3351,11 +4038,21 @@ class DbReviewState extends DataClass implements Insertable<DbReviewState> {
     List<ReviewQueueItem>? queue,
     int? position,
     int? updatedAt,
+    Value<String?> sessionId = const Value.absent(),
+    Value<String?> mode = const Value.absent(),
+    Value<String?> skips = const Value.absent(),
+    Value<String?> perQuestionState = const Value.absent(),
   }) => DbReviewState(
     id: id ?? this.id,
     queue: queue ?? this.queue,
     position: position ?? this.position,
     updatedAt: updatedAt ?? this.updatedAt,
+    sessionId: sessionId.present ? sessionId.value : this.sessionId,
+    mode: mode.present ? mode.value : this.mode,
+    skips: skips.present ? skips.value : this.skips,
+    perQuestionState: perQuestionState.present
+        ? perQuestionState.value
+        : this.perQuestionState,
   );
   DbReviewState copyWithCompanion(ReviewStateCompanion data) {
     return DbReviewState(
@@ -3363,6 +4060,12 @@ class DbReviewState extends DataClass implements Insertable<DbReviewState> {
       queue: data.queue.present ? data.queue.value : this.queue,
       position: data.position.present ? data.position.value : this.position,
       updatedAt: data.updatedAt.present ? data.updatedAt.value : this.updatedAt,
+      sessionId: data.sessionId.present ? data.sessionId.value : this.sessionId,
+      mode: data.mode.present ? data.mode.value : this.mode,
+      skips: data.skips.present ? data.skips.value : this.skips,
+      perQuestionState: data.perQuestionState.present
+          ? data.perQuestionState.value
+          : this.perQuestionState,
     );
   }
 
@@ -3372,13 +4075,26 @@ class DbReviewState extends DataClass implements Insertable<DbReviewState> {
           ..write('id: $id, ')
           ..write('queue: $queue, ')
           ..write('position: $position, ')
-          ..write('updatedAt: $updatedAt')
+          ..write('updatedAt: $updatedAt, ')
+          ..write('sessionId: $sessionId, ')
+          ..write('mode: $mode, ')
+          ..write('skips: $skips, ')
+          ..write('perQuestionState: $perQuestionState')
           ..write(')'))
         .toString();
   }
 
   @override
-  int get hashCode => Object.hash(id, queue, position, updatedAt);
+  int get hashCode => Object.hash(
+    id,
+    queue,
+    position,
+    updatedAt,
+    sessionId,
+    mode,
+    skips,
+    perQuestionState,
+  );
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
@@ -3386,7 +4102,11 @@ class DbReviewState extends DataClass implements Insertable<DbReviewState> {
           other.id == this.id &&
           other.queue == this.queue &&
           other.position == this.position &&
-          other.updatedAt == this.updatedAt);
+          other.updatedAt == this.updatedAt &&
+          other.sessionId == this.sessionId &&
+          other.mode == this.mode &&
+          other.skips == this.skips &&
+          other.perQuestionState == this.perQuestionState);
 }
 
 class ReviewStateCompanion extends UpdateCompanion<DbReviewState> {
@@ -3394,29 +4114,49 @@ class ReviewStateCompanion extends UpdateCompanion<DbReviewState> {
   final Value<List<ReviewQueueItem>> queue;
   final Value<int> position;
   final Value<int> updatedAt;
+  final Value<String?> sessionId;
+  final Value<String?> mode;
+  final Value<String?> skips;
+  final Value<String?> perQuestionState;
   const ReviewStateCompanion({
     this.id = const Value.absent(),
     this.queue = const Value.absent(),
     this.position = const Value.absent(),
     this.updatedAt = const Value.absent(),
+    this.sessionId = const Value.absent(),
+    this.mode = const Value.absent(),
+    this.skips = const Value.absent(),
+    this.perQuestionState = const Value.absent(),
   });
   ReviewStateCompanion.insert({
     this.id = const Value.absent(),
     this.queue = const Value.absent(),
     this.position = const Value.absent(),
     required int updatedAt,
+    this.sessionId = const Value.absent(),
+    this.mode = const Value.absent(),
+    this.skips = const Value.absent(),
+    this.perQuestionState = const Value.absent(),
   }) : updatedAt = Value(updatedAt);
   static Insertable<DbReviewState> custom({
     Expression<int>? id,
     Expression<String>? queue,
     Expression<int>? position,
     Expression<int>? updatedAt,
+    Expression<String>? sessionId,
+    Expression<String>? mode,
+    Expression<String>? skips,
+    Expression<String>? perQuestionState,
   }) {
     return RawValuesInsertable({
       if (id != null) 'id': id,
       if (queue != null) 'queue': queue,
       if (position != null) 'position': position,
       if (updatedAt != null) 'updated_at': updatedAt,
+      if (sessionId != null) 'session_id': sessionId,
+      if (mode != null) 'mode': mode,
+      if (skips != null) 'skips': skips,
+      if (perQuestionState != null) 'per_question_state': perQuestionState,
     });
   }
 
@@ -3425,12 +4165,20 @@ class ReviewStateCompanion extends UpdateCompanion<DbReviewState> {
     Value<List<ReviewQueueItem>>? queue,
     Value<int>? position,
     Value<int>? updatedAt,
+    Value<String?>? sessionId,
+    Value<String?>? mode,
+    Value<String?>? skips,
+    Value<String?>? perQuestionState,
   }) {
     return ReviewStateCompanion(
       id: id ?? this.id,
       queue: queue ?? this.queue,
       position: position ?? this.position,
       updatedAt: updatedAt ?? this.updatedAt,
+      sessionId: sessionId ?? this.sessionId,
+      mode: mode ?? this.mode,
+      skips: skips ?? this.skips,
+      perQuestionState: perQuestionState ?? this.perQuestionState,
     );
   }
 
@@ -3451,6 +4199,18 @@ class ReviewStateCompanion extends UpdateCompanion<DbReviewState> {
     if (updatedAt.present) {
       map['updated_at'] = Variable<int>(updatedAt.value);
     }
+    if (sessionId.present) {
+      map['session_id'] = Variable<String>(sessionId.value);
+    }
+    if (mode.present) {
+      map['mode'] = Variable<String>(mode.value);
+    }
+    if (skips.present) {
+      map['skips'] = Variable<String>(skips.value);
+    }
+    if (perQuestionState.present) {
+      map['per_question_state'] = Variable<String>(perQuestionState.value);
+    }
     return map;
   }
 
@@ -3460,7 +4220,11 @@ class ReviewStateCompanion extends UpdateCompanion<DbReviewState> {
           ..write('id: $id, ')
           ..write('queue: $queue, ')
           ..write('position: $position, ')
-          ..write('updatedAt: $updatedAt')
+          ..write('updatedAt: $updatedAt, ')
+          ..write('sessionId: $sessionId, ')
+          ..write('mode: $mode, ')
+          ..write('skips: $skips, ')
+          ..write('perQuestionState: $perQuestionState')
           ..write(')'))
         .toString();
   }
@@ -5426,6 +6190,119 @@ class $QuestionsTable extends Questions
     requiredDuringInsert: false,
     defaultValue: const Constant(0),
   );
+  static const VerificationMeta _questionTypeMeta = const VerificationMeta(
+    'questionType',
+  );
+  @override
+  late final GeneratedColumn<String> questionType = GeneratedColumn<String>(
+    'question_type',
+    aliasedName,
+    true,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+  );
+  static const VerificationMeta _questionTypeSourceMeta =
+      const VerificationMeta('questionTypeSource');
+  @override
+  late final GeneratedColumn<String> questionTypeSource =
+      GeneratedColumn<String>(
+        'question_type_source',
+        aliasedName,
+        false,
+        type: DriftSqlType.string,
+        requiredDuringInsert: false,
+        defaultValue: const Constant('unclassified'),
+      );
+  static const VerificationMeta _questionBackgroundTagsMeta =
+      const VerificationMeta('questionBackgroundTags');
+  @override
+  late final GeneratedColumn<String> questionBackgroundTags =
+      GeneratedColumn<String>(
+        'question_background_tags',
+        aliasedName,
+        false,
+        type: DriftSqlType.string,
+        requiredDuringInsert: false,
+        defaultValue: const Constant(''),
+      );
+  static const VerificationMeta _questionBackgroundTagsSourceMeta =
+      const VerificationMeta('questionBackgroundTagsSource');
+  @override
+  late final GeneratedColumn<String> questionBackgroundTagsSource =
+      GeneratedColumn<String>(
+        'question_background_tags_source',
+        aliasedName,
+        false,
+        type: DriftSqlType.string,
+        requiredDuringInsert: false,
+        defaultValue: const Constant('unclassified'),
+      );
+  static const VerificationMeta _ocrFiguresMeta = const VerificationMeta(
+    'ocrFigures',
+  );
+  @override
+  late final GeneratedColumn<String> ocrFigures = GeneratedColumn<String>(
+    'ocr_figures',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+    defaultValue: const Constant('[]'),
+  );
+  static const VerificationMeta _correctOptionMeta = const VerificationMeta(
+    'correctOption',
+  );
+  @override
+  late final GeneratedColumn<String> correctOption = GeneratedColumn<String>(
+    'correct_option',
+    aliasedName,
+    true,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+  );
+  @override
+  late final GeneratedColumnWithTypeConverter<List<String>?, String>
+  optionLabels = GeneratedColumn<String>(
+    'option_labels',
+    aliasedName,
+    true,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+  ).withConverter<List<String>?>($QuestionsTable.$converteroptionLabels);
+  static const VerificationMeta _optionLabelsConfirmedMeta =
+      const VerificationMeta('optionLabelsConfirmed');
+  @override
+  late final GeneratedColumn<int> optionLabelsConfirmed = GeneratedColumn<int>(
+    'option_labels_confirmed',
+    aliasedName,
+    false,
+    type: DriftSqlType.int,
+    requiredDuringInsert: false,
+    defaultValue: const Constant(0),
+  );
+  static const VerificationMeta _answerVersionMeta = const VerificationMeta(
+    'answerVersion',
+  );
+  @override
+  late final GeneratedColumn<int> answerVersion = GeneratedColumn<int>(
+    'answer_version',
+    aliasedName,
+    false,
+    type: DriftSqlType.int,
+    requiredDuringInsert: false,
+    defaultValue: const Constant(1),
+  );
+  static const VerificationMeta _answerPendingRecheckMeta =
+      const VerificationMeta('answerPendingRecheck');
+  @override
+  late final GeneratedColumn<int> answerPendingRecheck = GeneratedColumn<int>(
+    'answer_pending_recheck',
+    aliasedName,
+    false,
+    type: DriftSqlType.int,
+    requiredDuringInsert: false,
+    defaultValue: const Constant(0),
+  );
   @override
   List<GeneratedColumn> get $columns => [
     id,
@@ -5461,6 +6338,16 @@ class $QuestionsTable extends Questions
     ocrSplitStatus,
     ocrManualEdited,
     contentVersion,
+    questionType,
+    questionTypeSource,
+    questionBackgroundTags,
+    questionBackgroundTagsSource,
+    ocrFigures,
+    correctOption,
+    optionLabels,
+    optionLabelsConfirmed,
+    answerVersion,
+    answerPendingRecheck,
   ];
   @override
   String get aliasedName => _alias ?? actualTableName;
@@ -5674,6 +6561,84 @@ class $QuestionsTable extends Questions
         ),
       );
     }
+    if (data.containsKey('question_type')) {
+      context.handle(
+        _questionTypeMeta,
+        questionType.isAcceptableOrUnknown(
+          data['question_type']!,
+          _questionTypeMeta,
+        ),
+      );
+    }
+    if (data.containsKey('question_type_source')) {
+      context.handle(
+        _questionTypeSourceMeta,
+        questionTypeSource.isAcceptableOrUnknown(
+          data['question_type_source']!,
+          _questionTypeSourceMeta,
+        ),
+      );
+    }
+    if (data.containsKey('question_background_tags')) {
+      context.handle(
+        _questionBackgroundTagsMeta,
+        questionBackgroundTags.isAcceptableOrUnknown(
+          data['question_background_tags']!,
+          _questionBackgroundTagsMeta,
+        ),
+      );
+    }
+    if (data.containsKey('question_background_tags_source')) {
+      context.handle(
+        _questionBackgroundTagsSourceMeta,
+        questionBackgroundTagsSource.isAcceptableOrUnknown(
+          data['question_background_tags_source']!,
+          _questionBackgroundTagsSourceMeta,
+        ),
+      );
+    }
+    if (data.containsKey('ocr_figures')) {
+      context.handle(
+        _ocrFiguresMeta,
+        ocrFigures.isAcceptableOrUnknown(data['ocr_figures']!, _ocrFiguresMeta),
+      );
+    }
+    if (data.containsKey('correct_option')) {
+      context.handle(
+        _correctOptionMeta,
+        correctOption.isAcceptableOrUnknown(
+          data['correct_option']!,
+          _correctOptionMeta,
+        ),
+      );
+    }
+    if (data.containsKey('option_labels_confirmed')) {
+      context.handle(
+        _optionLabelsConfirmedMeta,
+        optionLabelsConfirmed.isAcceptableOrUnknown(
+          data['option_labels_confirmed']!,
+          _optionLabelsConfirmedMeta,
+        ),
+      );
+    }
+    if (data.containsKey('answer_version')) {
+      context.handle(
+        _answerVersionMeta,
+        answerVersion.isAcceptableOrUnknown(
+          data['answer_version']!,
+          _answerVersionMeta,
+        ),
+      );
+    }
+    if (data.containsKey('answer_pending_recheck')) {
+      context.handle(
+        _answerPendingRecheckMeta,
+        answerPendingRecheck.isAcceptableOrUnknown(
+          data['answer_pending_recheck']!,
+          _answerPendingRecheckMeta,
+        ),
+      );
+    }
     return context;
   }
 
@@ -5825,6 +6790,48 @@ class $QuestionsTable extends Questions
         DriftSqlType.int,
         data['${effectivePrefix}content_version'],
       )!,
+      questionType: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}question_type'],
+      ),
+      questionTypeSource: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}question_type_source'],
+      )!,
+      questionBackgroundTags: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}question_background_tags'],
+      )!,
+      questionBackgroundTagsSource: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}question_background_tags_source'],
+      )!,
+      ocrFigures: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}ocr_figures'],
+      )!,
+      correctOption: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}correct_option'],
+      ),
+      optionLabels: $QuestionsTable.$converteroptionLabels.fromSql(
+        attachedDatabase.typeMapping.read(
+          DriftSqlType.string,
+          data['${effectivePrefix}option_labels'],
+        ),
+      ),
+      optionLabelsConfirmed: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}option_labels_confirmed'],
+      )!,
+      answerVersion: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}answer_version'],
+      )!,
+      answerPendingRecheck: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}answer_pending_recheck'],
+      )!,
     );
   }
 
@@ -5843,6 +6850,8 @@ class $QuestionsTable extends Questions
       const StringListConverter();
   static TypeConverter<List<String>, String> $convertertags =
       const StringListConverter();
+  static TypeConverter<List<String>?, String?> $converteroptionLabels =
+      const NullableStringListConverter();
 }
 
 class DbQuestion extends DataClass implements Insertable<DbQuestion> {
@@ -5885,6 +6894,27 @@ class DbQuestion extends DataClass implements Insertable<DbQuestion> {
   final String ocrSplitStatus;
   final int ocrManualEdited;
   final int contentVersion;
+
+  /// 十四批 M1：题型两维 + 答案版本（与 db_schema.dart 的 DDL 逐字对应）。
+  /// questionType 是主题型（NULL = 待确认）；questionTypeSource 取值
+  /// auto/manual/unclassified；questionBackgroundTags 是逗号分隔的背景
+  /// 标签（第一版只自动生成“材料”“听力”）；questionBackgroundTagsSource
+  /// 只保护背景标签；ocrFigures 是图块 JSON（M2 写，M1 只建列）；
+  /// correctOption 只用于单选/判断；optionLabels 是 JSON 选项标签数组
+  ///（NULL = 未确认）；optionLabelsConfirmed 须点“确认选项”才置 1；
+  /// answerVersion 是答案版本（默认 1）。
+  final String? questionType;
+  final String questionTypeSource;
+  final String questionBackgroundTags;
+  final String questionBackgroundTagsSource;
+  final String ocrFigures;
+  final String? correctOption;
+  final List<String>? optionLabels;
+  final int optionLabelsConfirmed;
+  final int answerVersion;
+
+  /// 十四批 M3（P1-A）：答案待重新核对标记（改标签后未重新确认时置 1）。
+  final int answerPendingRecheck;
   const DbQuestion({
     required this.id,
     required this.title,
@@ -5919,6 +6949,16 @@ class DbQuestion extends DataClass implements Insertable<DbQuestion> {
     required this.ocrSplitStatus,
     required this.ocrManualEdited,
     required this.contentVersion,
+    this.questionType,
+    required this.questionTypeSource,
+    required this.questionBackgroundTags,
+    required this.questionBackgroundTagsSource,
+    required this.ocrFigures,
+    this.correctOption,
+    this.optionLabels,
+    required this.optionLabelsConfirmed,
+    required this.answerVersion,
+    required this.answerPendingRecheck,
   });
   @override
   Map<String, Expression> toColumns(bool nullToAbsent) {
@@ -6002,6 +7042,26 @@ class DbQuestion extends DataClass implements Insertable<DbQuestion> {
     map['ocr_split_status'] = Variable<String>(ocrSplitStatus);
     map['ocr_manual_edited'] = Variable<int>(ocrManualEdited);
     map['content_version'] = Variable<int>(contentVersion);
+    if (!nullToAbsent || questionType != null) {
+      map['question_type'] = Variable<String>(questionType);
+    }
+    map['question_type_source'] = Variable<String>(questionTypeSource);
+    map['question_background_tags'] = Variable<String>(questionBackgroundTags);
+    map['question_background_tags_source'] = Variable<String>(
+      questionBackgroundTagsSource,
+    );
+    map['ocr_figures'] = Variable<String>(ocrFigures);
+    if (!nullToAbsent || correctOption != null) {
+      map['correct_option'] = Variable<String>(correctOption);
+    }
+    if (!nullToAbsent || optionLabels != null) {
+      map['option_labels'] = Variable<String>(
+        $QuestionsTable.$converteroptionLabels.toSql(optionLabels),
+      );
+    }
+    map['option_labels_confirmed'] = Variable<int>(optionLabelsConfirmed);
+    map['answer_version'] = Variable<int>(answerVersion);
+    map['answer_pending_recheck'] = Variable<int>(answerPendingRecheck);
     return map;
   }
 
@@ -6066,6 +7126,22 @@ class DbQuestion extends DataClass implements Insertable<DbQuestion> {
       ocrSplitStatus: Value(ocrSplitStatus),
       ocrManualEdited: Value(ocrManualEdited),
       contentVersion: Value(contentVersion),
+      questionType: questionType == null && nullToAbsent
+          ? const Value.absent()
+          : Value(questionType),
+      questionTypeSource: Value(questionTypeSource),
+      questionBackgroundTags: Value(questionBackgroundTags),
+      questionBackgroundTagsSource: Value(questionBackgroundTagsSource),
+      ocrFigures: Value(ocrFigures),
+      correctOption: correctOption == null && nullToAbsent
+          ? const Value.absent()
+          : Value(correctOption),
+      optionLabels: optionLabels == null && nullToAbsent
+          ? const Value.absent()
+          : Value(optionLabels),
+      optionLabelsConfirmed: Value(optionLabelsConfirmed),
+      answerVersion: Value(answerVersion),
+      answerPendingRecheck: Value(answerPendingRecheck),
     );
   }
 
@@ -6110,6 +7186,26 @@ class DbQuestion extends DataClass implements Insertable<DbQuestion> {
       ocrSplitStatus: serializer.fromJson<String>(json['ocrSplitStatus']),
       ocrManualEdited: serializer.fromJson<int>(json['ocrManualEdited']),
       contentVersion: serializer.fromJson<int>(json['contentVersion']),
+      questionType: serializer.fromJson<String?>(json['questionType']),
+      questionTypeSource: serializer.fromJson<String>(
+        json['questionTypeSource'],
+      ),
+      questionBackgroundTags: serializer.fromJson<String>(
+        json['questionBackgroundTags'],
+      ),
+      questionBackgroundTagsSource: serializer.fromJson<String>(
+        json['questionBackgroundTagsSource'],
+      ),
+      ocrFigures: serializer.fromJson<String>(json['ocrFigures']),
+      correctOption: serializer.fromJson<String?>(json['correctOption']),
+      optionLabels: serializer.fromJson<List<String>?>(json['optionLabels']),
+      optionLabelsConfirmed: serializer.fromJson<int>(
+        json['optionLabelsConfirmed'],
+      ),
+      answerVersion: serializer.fromJson<int>(json['answerVersion']),
+      answerPendingRecheck: serializer.fromJson<int>(
+        json['answerPendingRecheck'],
+      ),
     );
   }
   @override
@@ -6149,6 +7245,20 @@ class DbQuestion extends DataClass implements Insertable<DbQuestion> {
       'ocrSplitStatus': serializer.toJson<String>(ocrSplitStatus),
       'ocrManualEdited': serializer.toJson<int>(ocrManualEdited),
       'contentVersion': serializer.toJson<int>(contentVersion),
+      'questionType': serializer.toJson<String?>(questionType),
+      'questionTypeSource': serializer.toJson<String>(questionTypeSource),
+      'questionBackgroundTags': serializer.toJson<String>(
+        questionBackgroundTags,
+      ),
+      'questionBackgroundTagsSource': serializer.toJson<String>(
+        questionBackgroundTagsSource,
+      ),
+      'ocrFigures': serializer.toJson<String>(ocrFigures),
+      'correctOption': serializer.toJson<String?>(correctOption),
+      'optionLabels': serializer.toJson<List<String>?>(optionLabels),
+      'optionLabelsConfirmed': serializer.toJson<int>(optionLabelsConfirmed),
+      'answerVersion': serializer.toJson<int>(answerVersion),
+      'answerPendingRecheck': serializer.toJson<int>(answerPendingRecheck),
     };
   }
 
@@ -6186,6 +7296,16 @@ class DbQuestion extends DataClass implements Insertable<DbQuestion> {
     String? ocrSplitStatus,
     int? ocrManualEdited,
     int? contentVersion,
+    Value<String?> questionType = const Value.absent(),
+    String? questionTypeSource,
+    String? questionBackgroundTags,
+    String? questionBackgroundTagsSource,
+    String? ocrFigures,
+    Value<String?> correctOption = const Value.absent(),
+    Value<List<String>?> optionLabels = const Value.absent(),
+    int? optionLabelsConfirmed,
+    int? answerVersion,
+    int? answerPendingRecheck,
   }) => DbQuestion(
     id: id ?? this.id,
     title: title ?? this.title,
@@ -6222,6 +7342,20 @@ class DbQuestion extends DataClass implements Insertable<DbQuestion> {
     ocrSplitStatus: ocrSplitStatus ?? this.ocrSplitStatus,
     ocrManualEdited: ocrManualEdited ?? this.ocrManualEdited,
     contentVersion: contentVersion ?? this.contentVersion,
+    questionType: questionType.present ? questionType.value : this.questionType,
+    questionTypeSource: questionTypeSource ?? this.questionTypeSource,
+    questionBackgroundTags:
+        questionBackgroundTags ?? this.questionBackgroundTags,
+    questionBackgroundTagsSource:
+        questionBackgroundTagsSource ?? this.questionBackgroundTagsSource,
+    ocrFigures: ocrFigures ?? this.ocrFigures,
+    correctOption: correctOption.present
+        ? correctOption.value
+        : this.correctOption,
+    optionLabels: optionLabels.present ? optionLabels.value : this.optionLabels,
+    optionLabelsConfirmed: optionLabelsConfirmed ?? this.optionLabelsConfirmed,
+    answerVersion: answerVersion ?? this.answerVersion,
+    answerPendingRecheck: answerPendingRecheck ?? this.answerPendingRecheck,
   );
   DbQuestion copyWithCompanion(QuestionsCompanion data) {
     return DbQuestion(
@@ -6294,6 +7428,36 @@ class DbQuestion extends DataClass implements Insertable<DbQuestion> {
       contentVersion: data.contentVersion.present
           ? data.contentVersion.value
           : this.contentVersion,
+      questionType: data.questionType.present
+          ? data.questionType.value
+          : this.questionType,
+      questionTypeSource: data.questionTypeSource.present
+          ? data.questionTypeSource.value
+          : this.questionTypeSource,
+      questionBackgroundTags: data.questionBackgroundTags.present
+          ? data.questionBackgroundTags.value
+          : this.questionBackgroundTags,
+      questionBackgroundTagsSource: data.questionBackgroundTagsSource.present
+          ? data.questionBackgroundTagsSource.value
+          : this.questionBackgroundTagsSource,
+      ocrFigures: data.ocrFigures.present
+          ? data.ocrFigures.value
+          : this.ocrFigures,
+      correctOption: data.correctOption.present
+          ? data.correctOption.value
+          : this.correctOption,
+      optionLabels: data.optionLabels.present
+          ? data.optionLabels.value
+          : this.optionLabels,
+      optionLabelsConfirmed: data.optionLabelsConfirmed.present
+          ? data.optionLabelsConfirmed.value
+          : this.optionLabelsConfirmed,
+      answerVersion: data.answerVersion.present
+          ? data.answerVersion.value
+          : this.answerVersion,
+      answerPendingRecheck: data.answerPendingRecheck.present
+          ? data.answerPendingRecheck.value
+          : this.answerPendingRecheck,
     );
   }
 
@@ -6332,7 +7496,19 @@ class DbQuestion extends DataClass implements Insertable<DbQuestion> {
           ..write('ocrStem: $ocrStem, ')
           ..write('ocrSplitStatus: $ocrSplitStatus, ')
           ..write('ocrManualEdited: $ocrManualEdited, ')
-          ..write('contentVersion: $contentVersion')
+          ..write('contentVersion: $contentVersion, ')
+          ..write('questionType: $questionType, ')
+          ..write('questionTypeSource: $questionTypeSource, ')
+          ..write('questionBackgroundTags: $questionBackgroundTags, ')
+          ..write(
+            'questionBackgroundTagsSource: $questionBackgroundTagsSource, ',
+          )
+          ..write('ocrFigures: $ocrFigures, ')
+          ..write('correctOption: $correctOption, ')
+          ..write('optionLabels: $optionLabels, ')
+          ..write('optionLabelsConfirmed: $optionLabelsConfirmed, ')
+          ..write('answerVersion: $answerVersion, ')
+          ..write('answerPendingRecheck: $answerPendingRecheck')
           ..write(')'))
         .toString();
   }
@@ -6372,6 +7548,16 @@ class DbQuestion extends DataClass implements Insertable<DbQuestion> {
     ocrSplitStatus,
     ocrManualEdited,
     contentVersion,
+    questionType,
+    questionTypeSource,
+    questionBackgroundTags,
+    questionBackgroundTagsSource,
+    ocrFigures,
+    correctOption,
+    optionLabels,
+    optionLabelsConfirmed,
+    answerVersion,
+    answerPendingRecheck,
   ]);
   @override
   bool operator ==(Object other) =>
@@ -6409,7 +7595,18 @@ class DbQuestion extends DataClass implements Insertable<DbQuestion> {
           other.ocrStem == this.ocrStem &&
           other.ocrSplitStatus == this.ocrSplitStatus &&
           other.ocrManualEdited == this.ocrManualEdited &&
-          other.contentVersion == this.contentVersion);
+          other.contentVersion == this.contentVersion &&
+          other.questionType == this.questionType &&
+          other.questionTypeSource == this.questionTypeSource &&
+          other.questionBackgroundTags == this.questionBackgroundTags &&
+          other.questionBackgroundTagsSource ==
+              this.questionBackgroundTagsSource &&
+          other.ocrFigures == this.ocrFigures &&
+          other.correctOption == this.correctOption &&
+          other.optionLabels == this.optionLabels &&
+          other.optionLabelsConfirmed == this.optionLabelsConfirmed &&
+          other.answerVersion == this.answerVersion &&
+          other.answerPendingRecheck == this.answerPendingRecheck);
 }
 
 class QuestionsCompanion extends UpdateCompanion<DbQuestion> {
@@ -6446,6 +7643,16 @@ class QuestionsCompanion extends UpdateCompanion<DbQuestion> {
   final Value<String> ocrSplitStatus;
   final Value<int> ocrManualEdited;
   final Value<int> contentVersion;
+  final Value<String?> questionType;
+  final Value<String> questionTypeSource;
+  final Value<String> questionBackgroundTags;
+  final Value<String> questionBackgroundTagsSource;
+  final Value<String> ocrFigures;
+  final Value<String?> correctOption;
+  final Value<List<String>?> optionLabels;
+  final Value<int> optionLabelsConfirmed;
+  final Value<int> answerVersion;
+  final Value<int> answerPendingRecheck;
   final Value<int> rowid;
   const QuestionsCompanion({
     this.id = const Value.absent(),
@@ -6481,6 +7688,16 @@ class QuestionsCompanion extends UpdateCompanion<DbQuestion> {
     this.ocrSplitStatus = const Value.absent(),
     this.ocrManualEdited = const Value.absent(),
     this.contentVersion = const Value.absent(),
+    this.questionType = const Value.absent(),
+    this.questionTypeSource = const Value.absent(),
+    this.questionBackgroundTags = const Value.absent(),
+    this.questionBackgroundTagsSource = const Value.absent(),
+    this.ocrFigures = const Value.absent(),
+    this.correctOption = const Value.absent(),
+    this.optionLabels = const Value.absent(),
+    this.optionLabelsConfirmed = const Value.absent(),
+    this.answerVersion = const Value.absent(),
+    this.answerPendingRecheck = const Value.absent(),
     this.rowid = const Value.absent(),
   });
   QuestionsCompanion.insert({
@@ -6517,6 +7734,16 @@ class QuestionsCompanion extends UpdateCompanion<DbQuestion> {
     this.ocrSplitStatus = const Value.absent(),
     this.ocrManualEdited = const Value.absent(),
     this.contentVersion = const Value.absent(),
+    this.questionType = const Value.absent(),
+    this.questionTypeSource = const Value.absent(),
+    this.questionBackgroundTags = const Value.absent(),
+    this.questionBackgroundTagsSource = const Value.absent(),
+    this.ocrFigures = const Value.absent(),
+    this.correctOption = const Value.absent(),
+    this.optionLabels = const Value.absent(),
+    this.optionLabelsConfirmed = const Value.absent(),
+    this.answerVersion = const Value.absent(),
+    this.answerPendingRecheck = const Value.absent(),
     this.rowid = const Value.absent(),
   }) : id = Value(id),
        title = Value(title),
@@ -6556,6 +7783,16 @@ class QuestionsCompanion extends UpdateCompanion<DbQuestion> {
     Expression<String>? ocrSplitStatus,
     Expression<int>? ocrManualEdited,
     Expression<int>? contentVersion,
+    Expression<String>? questionType,
+    Expression<String>? questionTypeSource,
+    Expression<String>? questionBackgroundTags,
+    Expression<String>? questionBackgroundTagsSource,
+    Expression<String>? ocrFigures,
+    Expression<String>? correctOption,
+    Expression<String>? optionLabels,
+    Expression<int>? optionLabelsConfirmed,
+    Expression<int>? answerVersion,
+    Expression<int>? answerPendingRecheck,
     Expression<int>? rowid,
   }) {
     return RawValuesInsertable({
@@ -6592,6 +7829,21 @@ class QuestionsCompanion extends UpdateCompanion<DbQuestion> {
       if (ocrSplitStatus != null) 'ocr_split_status': ocrSplitStatus,
       if (ocrManualEdited != null) 'ocr_manual_edited': ocrManualEdited,
       if (contentVersion != null) 'content_version': contentVersion,
+      if (questionType != null) 'question_type': questionType,
+      if (questionTypeSource != null)
+        'question_type_source': questionTypeSource,
+      if (questionBackgroundTags != null)
+        'question_background_tags': questionBackgroundTags,
+      if (questionBackgroundTagsSource != null)
+        'question_background_tags_source': questionBackgroundTagsSource,
+      if (ocrFigures != null) 'ocr_figures': ocrFigures,
+      if (correctOption != null) 'correct_option': correctOption,
+      if (optionLabels != null) 'option_labels': optionLabels,
+      if (optionLabelsConfirmed != null)
+        'option_labels_confirmed': optionLabelsConfirmed,
+      if (answerVersion != null) 'answer_version': answerVersion,
+      if (answerPendingRecheck != null)
+        'answer_pending_recheck': answerPendingRecheck,
       if (rowid != null) 'rowid': rowid,
     });
   }
@@ -6630,6 +7882,16 @@ class QuestionsCompanion extends UpdateCompanion<DbQuestion> {
     Value<String>? ocrSplitStatus,
     Value<int>? ocrManualEdited,
     Value<int>? contentVersion,
+    Value<String?>? questionType,
+    Value<String>? questionTypeSource,
+    Value<String>? questionBackgroundTags,
+    Value<String>? questionBackgroundTagsSource,
+    Value<String>? ocrFigures,
+    Value<String?>? correctOption,
+    Value<List<String>?>? optionLabels,
+    Value<int>? optionLabelsConfirmed,
+    Value<int>? answerVersion,
+    Value<int>? answerPendingRecheck,
     Value<int>? rowid,
   }) {
     return QuestionsCompanion(
@@ -6666,6 +7928,19 @@ class QuestionsCompanion extends UpdateCompanion<DbQuestion> {
       ocrSplitStatus: ocrSplitStatus ?? this.ocrSplitStatus,
       ocrManualEdited: ocrManualEdited ?? this.ocrManualEdited,
       contentVersion: contentVersion ?? this.contentVersion,
+      questionType: questionType ?? this.questionType,
+      questionTypeSource: questionTypeSource ?? this.questionTypeSource,
+      questionBackgroundTags:
+          questionBackgroundTags ?? this.questionBackgroundTags,
+      questionBackgroundTagsSource:
+          questionBackgroundTagsSource ?? this.questionBackgroundTagsSource,
+      ocrFigures: ocrFigures ?? this.ocrFigures,
+      correctOption: correctOption ?? this.correctOption,
+      optionLabels: optionLabels ?? this.optionLabels,
+      optionLabelsConfirmed:
+          optionLabelsConfirmed ?? this.optionLabelsConfirmed,
+      answerVersion: answerVersion ?? this.answerVersion,
+      answerPendingRecheck: answerPendingRecheck ?? this.answerPendingRecheck,
       rowid: rowid ?? this.rowid,
     );
   }
@@ -6784,6 +8059,44 @@ class QuestionsCompanion extends UpdateCompanion<DbQuestion> {
     if (contentVersion.present) {
       map['content_version'] = Variable<int>(contentVersion.value);
     }
+    if (questionType.present) {
+      map['question_type'] = Variable<String>(questionType.value);
+    }
+    if (questionTypeSource.present) {
+      map['question_type_source'] = Variable<String>(questionTypeSource.value);
+    }
+    if (questionBackgroundTags.present) {
+      map['question_background_tags'] = Variable<String>(
+        questionBackgroundTags.value,
+      );
+    }
+    if (questionBackgroundTagsSource.present) {
+      map['question_background_tags_source'] = Variable<String>(
+        questionBackgroundTagsSource.value,
+      );
+    }
+    if (ocrFigures.present) {
+      map['ocr_figures'] = Variable<String>(ocrFigures.value);
+    }
+    if (correctOption.present) {
+      map['correct_option'] = Variable<String>(correctOption.value);
+    }
+    if (optionLabels.present) {
+      map['option_labels'] = Variable<String>(
+        $QuestionsTable.$converteroptionLabels.toSql(optionLabels.value),
+      );
+    }
+    if (optionLabelsConfirmed.present) {
+      map['option_labels_confirmed'] = Variable<int>(
+        optionLabelsConfirmed.value,
+      );
+    }
+    if (answerVersion.present) {
+      map['answer_version'] = Variable<int>(answerVersion.value);
+    }
+    if (answerPendingRecheck.present) {
+      map['answer_pending_recheck'] = Variable<int>(answerPendingRecheck.value);
+    }
     if (rowid.present) {
       map['rowid'] = Variable<int>(rowid.value);
     }
@@ -6826,6 +8139,18 @@ class QuestionsCompanion extends UpdateCompanion<DbQuestion> {
           ..write('ocrSplitStatus: $ocrSplitStatus, ')
           ..write('ocrManualEdited: $ocrManualEdited, ')
           ..write('contentVersion: $contentVersion, ')
+          ..write('questionType: $questionType, ')
+          ..write('questionTypeSource: $questionTypeSource, ')
+          ..write('questionBackgroundTags: $questionBackgroundTags, ')
+          ..write(
+            'questionBackgroundTagsSource: $questionBackgroundTagsSource, ',
+          )
+          ..write('ocrFigures: $ocrFigures, ')
+          ..write('correctOption: $correctOption, ')
+          ..write('optionLabels: $optionLabels, ')
+          ..write('optionLabelsConfirmed: $optionLabelsConfirmed, ')
+          ..write('answerVersion: $answerVersion, ')
+          ..write('answerPendingRecheck: $answerPendingRecheck, ')
           ..write('rowid: $rowid')
           ..write(')'))
         .toString();
@@ -7718,6 +9043,823 @@ class OcrJobsCompanion extends UpdateCompanion<DbOcrJob> {
   }
 }
 
+class $AttemptsTable extends Attempts
+    with TableInfo<$AttemptsTable, DbAttempt> {
+  @override
+  final GeneratedDatabase attachedDatabase;
+  final String? _alias;
+  $AttemptsTable(this.attachedDatabase, [this._alias]);
+  static const VerificationMeta _idMeta = const VerificationMeta('id');
+  @override
+  late final GeneratedColumn<String> id = GeneratedColumn<String>(
+    'id',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: true,
+    $customConstraints: 'PRIMARY KEY',
+  );
+  static const VerificationMeta _questionIdMeta = const VerificationMeta(
+    'questionId',
+  );
+  @override
+  late final GeneratedColumn<String> questionId = GeneratedColumn<String>(
+    'question_id',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _sessionIdMeta = const VerificationMeta(
+    'sessionId',
+  );
+  @override
+  late final GeneratedColumn<String> sessionId = GeneratedColumn<String>(
+    'session_id',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _modeMeta = const VerificationMeta('mode');
+  @override
+  late final GeneratedColumn<String> mode = GeneratedColumn<String>(
+    'mode',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _selectedMeta = const VerificationMeta(
+    'selected',
+  );
+  @override
+  late final GeneratedColumn<String> selected = GeneratedColumn<String>(
+    'selected',
+    aliasedName,
+    true,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+  );
+  static const VerificationMeta _correctMeta = const VerificationMeta(
+    'correct',
+  );
+  @override
+  late final GeneratedColumn<int> correct = GeneratedColumn<int>(
+    'correct',
+    aliasedName,
+    true,
+    type: DriftSqlType.int,
+    requiredDuringInsert: false,
+  );
+  static const VerificationMeta _confidenceMeta = const VerificationMeta(
+    'confidence',
+  );
+  @override
+  late final GeneratedColumn<String> confidence = GeneratedColumn<String>(
+    'confidence',
+    aliasedName,
+    true,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+  );
+  static const VerificationMeta _answerVersionMeta = const VerificationMeta(
+    'answerVersion',
+  );
+  @override
+  late final GeneratedColumn<int> answerVersion = GeneratedColumn<int>(
+    'answer_version',
+    aliasedName,
+    false,
+    type: DriftSqlType.int,
+    requiredDuringInsert: false,
+    defaultValue: const Constant(1),
+  );
+  static const VerificationMeta _contentVersionMeta = const VerificationMeta(
+    'contentVersion',
+  );
+  @override
+  late final GeneratedColumn<int> contentVersion = GeneratedColumn<int>(
+    'content_version',
+    aliasedName,
+    false,
+    type: DriftSqlType.int,
+    requiredDuringInsert: false,
+    defaultValue: const Constant(0),
+  );
+  static const VerificationMeta _statusMeta = const VerificationMeta('status');
+  @override
+  late final GeneratedColumn<String> status = GeneratedColumn<String>(
+    'status',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _causeIdsMeta = const VerificationMeta(
+    'causeIds',
+  );
+  @override
+  late final GeneratedColumn<String> causeIds = GeneratedColumn<String>(
+    'cause_ids',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+    defaultValue: const Constant('[]'),
+  );
+  static const VerificationMeta _durationMsMeta = const VerificationMeta(
+    'durationMs',
+  );
+  @override
+  late final GeneratedColumn<int> durationMs = GeneratedColumn<int>(
+    'duration_ms',
+    aliasedName,
+    true,
+    type: DriftSqlType.int,
+    requiredDuringInsert: false,
+  );
+  static const VerificationMeta _submissionIdMeta = const VerificationMeta(
+    'submissionId',
+  );
+  @override
+  late final GeneratedColumn<String> submissionId = GeneratedColumn<String>(
+    'submission_id',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: true,
+    $customConstraints: 'UNIQUE',
+  );
+  static const VerificationMeta _createdAtMeta = const VerificationMeta(
+    'createdAt',
+  );
+  @override
+  late final GeneratedColumn<int> createdAt = GeneratedColumn<int>(
+    'created_at',
+    aliasedName,
+    false,
+    type: DriftSqlType.int,
+    requiredDuringInsert: true,
+  );
+  @override
+  List<GeneratedColumn> get $columns => [
+    id,
+    questionId,
+    sessionId,
+    mode,
+    selected,
+    correct,
+    confidence,
+    answerVersion,
+    contentVersion,
+    status,
+    causeIds,
+    durationMs,
+    submissionId,
+    createdAt,
+  ];
+  @override
+  String get aliasedName => _alias ?? actualTableName;
+  @override
+  String get actualTableName => $name;
+  static const String $name = 'attempts';
+  @override
+  VerificationContext validateIntegrity(
+    Insertable<DbAttempt> instance, {
+    bool isInserting = false,
+  }) {
+    final context = VerificationContext();
+    final data = instance.toColumns(true);
+    if (data.containsKey('id')) {
+      context.handle(_idMeta, id.isAcceptableOrUnknown(data['id']!, _idMeta));
+    } else if (isInserting) {
+      context.missing(_idMeta);
+    }
+    if (data.containsKey('question_id')) {
+      context.handle(
+        _questionIdMeta,
+        questionId.isAcceptableOrUnknown(data['question_id']!, _questionIdMeta),
+      );
+    } else if (isInserting) {
+      context.missing(_questionIdMeta);
+    }
+    if (data.containsKey('session_id')) {
+      context.handle(
+        _sessionIdMeta,
+        sessionId.isAcceptableOrUnknown(data['session_id']!, _sessionIdMeta),
+      );
+    } else if (isInserting) {
+      context.missing(_sessionIdMeta);
+    }
+    if (data.containsKey('mode')) {
+      context.handle(
+        _modeMeta,
+        mode.isAcceptableOrUnknown(data['mode']!, _modeMeta),
+      );
+    } else if (isInserting) {
+      context.missing(_modeMeta);
+    }
+    if (data.containsKey('selected')) {
+      context.handle(
+        _selectedMeta,
+        selected.isAcceptableOrUnknown(data['selected']!, _selectedMeta),
+      );
+    }
+    if (data.containsKey('correct')) {
+      context.handle(
+        _correctMeta,
+        correct.isAcceptableOrUnknown(data['correct']!, _correctMeta),
+      );
+    }
+    if (data.containsKey('confidence')) {
+      context.handle(
+        _confidenceMeta,
+        confidence.isAcceptableOrUnknown(data['confidence']!, _confidenceMeta),
+      );
+    }
+    if (data.containsKey('answer_version')) {
+      context.handle(
+        _answerVersionMeta,
+        answerVersion.isAcceptableOrUnknown(
+          data['answer_version']!,
+          _answerVersionMeta,
+        ),
+      );
+    }
+    if (data.containsKey('content_version')) {
+      context.handle(
+        _contentVersionMeta,
+        contentVersion.isAcceptableOrUnknown(
+          data['content_version']!,
+          _contentVersionMeta,
+        ),
+      );
+    }
+    if (data.containsKey('status')) {
+      context.handle(
+        _statusMeta,
+        status.isAcceptableOrUnknown(data['status']!, _statusMeta),
+      );
+    } else if (isInserting) {
+      context.missing(_statusMeta);
+    }
+    if (data.containsKey('cause_ids')) {
+      context.handle(
+        _causeIdsMeta,
+        causeIds.isAcceptableOrUnknown(data['cause_ids']!, _causeIdsMeta),
+      );
+    }
+    if (data.containsKey('duration_ms')) {
+      context.handle(
+        _durationMsMeta,
+        durationMs.isAcceptableOrUnknown(data['duration_ms']!, _durationMsMeta),
+      );
+    }
+    if (data.containsKey('submission_id')) {
+      context.handle(
+        _submissionIdMeta,
+        submissionId.isAcceptableOrUnknown(
+          data['submission_id']!,
+          _submissionIdMeta,
+        ),
+      );
+    } else if (isInserting) {
+      context.missing(_submissionIdMeta);
+    }
+    if (data.containsKey('created_at')) {
+      context.handle(
+        _createdAtMeta,
+        createdAt.isAcceptableOrUnknown(data['created_at']!, _createdAtMeta),
+      );
+    } else if (isInserting) {
+      context.missing(_createdAtMeta);
+    }
+    return context;
+  }
+
+  @override
+  Set<GeneratedColumn> get $primaryKey => {id};
+  @override
+  DbAttempt map(Map<String, dynamic> data, {String? tablePrefix}) {
+    final effectivePrefix = tablePrefix != null ? '$tablePrefix.' : '';
+    return DbAttempt(
+      id: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}id'],
+      )!,
+      questionId: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}question_id'],
+      )!,
+      sessionId: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}session_id'],
+      )!,
+      mode: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}mode'],
+      )!,
+      selected: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}selected'],
+      ),
+      correct: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}correct'],
+      ),
+      confidence: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}confidence'],
+      ),
+      answerVersion: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}answer_version'],
+      )!,
+      contentVersion: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}content_version'],
+      )!,
+      status: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}status'],
+      )!,
+      causeIds: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}cause_ids'],
+      )!,
+      durationMs: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}duration_ms'],
+      ),
+      submissionId: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}submission_id'],
+      )!,
+      createdAt: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}created_at'],
+      )!,
+    );
+  }
+
+  @override
+  $AttemptsTable createAlias(String alias) {
+    return $AttemptsTable(attachedDatabase, alias);
+  }
+}
+
+class DbAttempt extends DataClass implements Insertable<DbAttempt> {
+  final String id;
+  final String questionId;
+  final String sessionId;
+  final String mode;
+  final String? selected;
+  final int? correct;
+  final String? confidence;
+  final int answerVersion;
+  final int contentVersion;
+  final String status;
+  final String causeIds;
+  final int? durationMs;
+  final String submissionId;
+  final int createdAt;
+  const DbAttempt({
+    required this.id,
+    required this.questionId,
+    required this.sessionId,
+    required this.mode,
+    this.selected,
+    this.correct,
+    this.confidence,
+    required this.answerVersion,
+    required this.contentVersion,
+    required this.status,
+    required this.causeIds,
+    this.durationMs,
+    required this.submissionId,
+    required this.createdAt,
+  });
+  @override
+  Map<String, Expression> toColumns(bool nullToAbsent) {
+    final map = <String, Expression>{};
+    map['id'] = Variable<String>(id);
+    map['question_id'] = Variable<String>(questionId);
+    map['session_id'] = Variable<String>(sessionId);
+    map['mode'] = Variable<String>(mode);
+    if (!nullToAbsent || selected != null) {
+      map['selected'] = Variable<String>(selected);
+    }
+    if (!nullToAbsent || correct != null) {
+      map['correct'] = Variable<int>(correct);
+    }
+    if (!nullToAbsent || confidence != null) {
+      map['confidence'] = Variable<String>(confidence);
+    }
+    map['answer_version'] = Variable<int>(answerVersion);
+    map['content_version'] = Variable<int>(contentVersion);
+    map['status'] = Variable<String>(status);
+    map['cause_ids'] = Variable<String>(causeIds);
+    if (!nullToAbsent || durationMs != null) {
+      map['duration_ms'] = Variable<int>(durationMs);
+    }
+    map['submission_id'] = Variable<String>(submissionId);
+    map['created_at'] = Variable<int>(createdAt);
+    return map;
+  }
+
+  AttemptsCompanion toCompanion(bool nullToAbsent) {
+    return AttemptsCompanion(
+      id: Value(id),
+      questionId: Value(questionId),
+      sessionId: Value(sessionId),
+      mode: Value(mode),
+      selected: selected == null && nullToAbsent
+          ? const Value.absent()
+          : Value(selected),
+      correct: correct == null && nullToAbsent
+          ? const Value.absent()
+          : Value(correct),
+      confidence: confidence == null && nullToAbsent
+          ? const Value.absent()
+          : Value(confidence),
+      answerVersion: Value(answerVersion),
+      contentVersion: Value(contentVersion),
+      status: Value(status),
+      causeIds: Value(causeIds),
+      durationMs: durationMs == null && nullToAbsent
+          ? const Value.absent()
+          : Value(durationMs),
+      submissionId: Value(submissionId),
+      createdAt: Value(createdAt),
+    );
+  }
+
+  factory DbAttempt.fromJson(
+    Map<String, dynamic> json, {
+    ValueSerializer? serializer,
+  }) {
+    serializer ??= driftRuntimeOptions.defaultSerializer;
+    return DbAttempt(
+      id: serializer.fromJson<String>(json['id']),
+      questionId: serializer.fromJson<String>(json['questionId']),
+      sessionId: serializer.fromJson<String>(json['sessionId']),
+      mode: serializer.fromJson<String>(json['mode']),
+      selected: serializer.fromJson<String?>(json['selected']),
+      correct: serializer.fromJson<int?>(json['correct']),
+      confidence: serializer.fromJson<String?>(json['confidence']),
+      answerVersion: serializer.fromJson<int>(json['answerVersion']),
+      contentVersion: serializer.fromJson<int>(json['contentVersion']),
+      status: serializer.fromJson<String>(json['status']),
+      causeIds: serializer.fromJson<String>(json['causeIds']),
+      durationMs: serializer.fromJson<int?>(json['durationMs']),
+      submissionId: serializer.fromJson<String>(json['submissionId']),
+      createdAt: serializer.fromJson<int>(json['createdAt']),
+    );
+  }
+  @override
+  Map<String, dynamic> toJson({ValueSerializer? serializer}) {
+    serializer ??= driftRuntimeOptions.defaultSerializer;
+    return <String, dynamic>{
+      'id': serializer.toJson<String>(id),
+      'questionId': serializer.toJson<String>(questionId),
+      'sessionId': serializer.toJson<String>(sessionId),
+      'mode': serializer.toJson<String>(mode),
+      'selected': serializer.toJson<String?>(selected),
+      'correct': serializer.toJson<int?>(correct),
+      'confidence': serializer.toJson<String?>(confidence),
+      'answerVersion': serializer.toJson<int>(answerVersion),
+      'contentVersion': serializer.toJson<int>(contentVersion),
+      'status': serializer.toJson<String>(status),
+      'causeIds': serializer.toJson<String>(causeIds),
+      'durationMs': serializer.toJson<int?>(durationMs),
+      'submissionId': serializer.toJson<String>(submissionId),
+      'createdAt': serializer.toJson<int>(createdAt),
+    };
+  }
+
+  DbAttempt copyWith({
+    String? id,
+    String? questionId,
+    String? sessionId,
+    String? mode,
+    Value<String?> selected = const Value.absent(),
+    Value<int?> correct = const Value.absent(),
+    Value<String?> confidence = const Value.absent(),
+    int? answerVersion,
+    int? contentVersion,
+    String? status,
+    String? causeIds,
+    Value<int?> durationMs = const Value.absent(),
+    String? submissionId,
+    int? createdAt,
+  }) => DbAttempt(
+    id: id ?? this.id,
+    questionId: questionId ?? this.questionId,
+    sessionId: sessionId ?? this.sessionId,
+    mode: mode ?? this.mode,
+    selected: selected.present ? selected.value : this.selected,
+    correct: correct.present ? correct.value : this.correct,
+    confidence: confidence.present ? confidence.value : this.confidence,
+    answerVersion: answerVersion ?? this.answerVersion,
+    contentVersion: contentVersion ?? this.contentVersion,
+    status: status ?? this.status,
+    causeIds: causeIds ?? this.causeIds,
+    durationMs: durationMs.present ? durationMs.value : this.durationMs,
+    submissionId: submissionId ?? this.submissionId,
+    createdAt: createdAt ?? this.createdAt,
+  );
+  DbAttempt copyWithCompanion(AttemptsCompanion data) {
+    return DbAttempt(
+      id: data.id.present ? data.id.value : this.id,
+      questionId: data.questionId.present
+          ? data.questionId.value
+          : this.questionId,
+      sessionId: data.sessionId.present ? data.sessionId.value : this.sessionId,
+      mode: data.mode.present ? data.mode.value : this.mode,
+      selected: data.selected.present ? data.selected.value : this.selected,
+      correct: data.correct.present ? data.correct.value : this.correct,
+      confidence: data.confidence.present
+          ? data.confidence.value
+          : this.confidence,
+      answerVersion: data.answerVersion.present
+          ? data.answerVersion.value
+          : this.answerVersion,
+      contentVersion: data.contentVersion.present
+          ? data.contentVersion.value
+          : this.contentVersion,
+      status: data.status.present ? data.status.value : this.status,
+      causeIds: data.causeIds.present ? data.causeIds.value : this.causeIds,
+      durationMs: data.durationMs.present
+          ? data.durationMs.value
+          : this.durationMs,
+      submissionId: data.submissionId.present
+          ? data.submissionId.value
+          : this.submissionId,
+      createdAt: data.createdAt.present ? data.createdAt.value : this.createdAt,
+    );
+  }
+
+  @override
+  String toString() {
+    return (StringBuffer('DbAttempt(')
+          ..write('id: $id, ')
+          ..write('questionId: $questionId, ')
+          ..write('sessionId: $sessionId, ')
+          ..write('mode: $mode, ')
+          ..write('selected: $selected, ')
+          ..write('correct: $correct, ')
+          ..write('confidence: $confidence, ')
+          ..write('answerVersion: $answerVersion, ')
+          ..write('contentVersion: $contentVersion, ')
+          ..write('status: $status, ')
+          ..write('causeIds: $causeIds, ')
+          ..write('durationMs: $durationMs, ')
+          ..write('submissionId: $submissionId, ')
+          ..write('createdAt: $createdAt')
+          ..write(')'))
+        .toString();
+  }
+
+  @override
+  int get hashCode => Object.hash(
+    id,
+    questionId,
+    sessionId,
+    mode,
+    selected,
+    correct,
+    confidence,
+    answerVersion,
+    contentVersion,
+    status,
+    causeIds,
+    durationMs,
+    submissionId,
+    createdAt,
+  );
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      (other is DbAttempt &&
+          other.id == this.id &&
+          other.questionId == this.questionId &&
+          other.sessionId == this.sessionId &&
+          other.mode == this.mode &&
+          other.selected == this.selected &&
+          other.correct == this.correct &&
+          other.confidence == this.confidence &&
+          other.answerVersion == this.answerVersion &&
+          other.contentVersion == this.contentVersion &&
+          other.status == this.status &&
+          other.causeIds == this.causeIds &&
+          other.durationMs == this.durationMs &&
+          other.submissionId == this.submissionId &&
+          other.createdAt == this.createdAt);
+}
+
+class AttemptsCompanion extends UpdateCompanion<DbAttempt> {
+  final Value<String> id;
+  final Value<String> questionId;
+  final Value<String> sessionId;
+  final Value<String> mode;
+  final Value<String?> selected;
+  final Value<int?> correct;
+  final Value<String?> confidence;
+  final Value<int> answerVersion;
+  final Value<int> contentVersion;
+  final Value<String> status;
+  final Value<String> causeIds;
+  final Value<int?> durationMs;
+  final Value<String> submissionId;
+  final Value<int> createdAt;
+  final Value<int> rowid;
+  const AttemptsCompanion({
+    this.id = const Value.absent(),
+    this.questionId = const Value.absent(),
+    this.sessionId = const Value.absent(),
+    this.mode = const Value.absent(),
+    this.selected = const Value.absent(),
+    this.correct = const Value.absent(),
+    this.confidence = const Value.absent(),
+    this.answerVersion = const Value.absent(),
+    this.contentVersion = const Value.absent(),
+    this.status = const Value.absent(),
+    this.causeIds = const Value.absent(),
+    this.durationMs = const Value.absent(),
+    this.submissionId = const Value.absent(),
+    this.createdAt = const Value.absent(),
+    this.rowid = const Value.absent(),
+  });
+  AttemptsCompanion.insert({
+    required String id,
+    required String questionId,
+    required String sessionId,
+    required String mode,
+    this.selected = const Value.absent(),
+    this.correct = const Value.absent(),
+    this.confidence = const Value.absent(),
+    this.answerVersion = const Value.absent(),
+    this.contentVersion = const Value.absent(),
+    required String status,
+    this.causeIds = const Value.absent(),
+    this.durationMs = const Value.absent(),
+    required String submissionId,
+    required int createdAt,
+    this.rowid = const Value.absent(),
+  }) : id = Value(id),
+       questionId = Value(questionId),
+       sessionId = Value(sessionId),
+       mode = Value(mode),
+       status = Value(status),
+       submissionId = Value(submissionId),
+       createdAt = Value(createdAt);
+  static Insertable<DbAttempt> custom({
+    Expression<String>? id,
+    Expression<String>? questionId,
+    Expression<String>? sessionId,
+    Expression<String>? mode,
+    Expression<String>? selected,
+    Expression<int>? correct,
+    Expression<String>? confidence,
+    Expression<int>? answerVersion,
+    Expression<int>? contentVersion,
+    Expression<String>? status,
+    Expression<String>? causeIds,
+    Expression<int>? durationMs,
+    Expression<String>? submissionId,
+    Expression<int>? createdAt,
+    Expression<int>? rowid,
+  }) {
+    return RawValuesInsertable({
+      if (id != null) 'id': id,
+      if (questionId != null) 'question_id': questionId,
+      if (sessionId != null) 'session_id': sessionId,
+      if (mode != null) 'mode': mode,
+      if (selected != null) 'selected': selected,
+      if (correct != null) 'correct': correct,
+      if (confidence != null) 'confidence': confidence,
+      if (answerVersion != null) 'answer_version': answerVersion,
+      if (contentVersion != null) 'content_version': contentVersion,
+      if (status != null) 'status': status,
+      if (causeIds != null) 'cause_ids': causeIds,
+      if (durationMs != null) 'duration_ms': durationMs,
+      if (submissionId != null) 'submission_id': submissionId,
+      if (createdAt != null) 'created_at': createdAt,
+      if (rowid != null) 'rowid': rowid,
+    });
+  }
+
+  AttemptsCompanion copyWith({
+    Value<String>? id,
+    Value<String>? questionId,
+    Value<String>? sessionId,
+    Value<String>? mode,
+    Value<String?>? selected,
+    Value<int?>? correct,
+    Value<String?>? confidence,
+    Value<int>? answerVersion,
+    Value<int>? contentVersion,
+    Value<String>? status,
+    Value<String>? causeIds,
+    Value<int?>? durationMs,
+    Value<String>? submissionId,
+    Value<int>? createdAt,
+    Value<int>? rowid,
+  }) {
+    return AttemptsCompanion(
+      id: id ?? this.id,
+      questionId: questionId ?? this.questionId,
+      sessionId: sessionId ?? this.sessionId,
+      mode: mode ?? this.mode,
+      selected: selected ?? this.selected,
+      correct: correct ?? this.correct,
+      confidence: confidence ?? this.confidence,
+      answerVersion: answerVersion ?? this.answerVersion,
+      contentVersion: contentVersion ?? this.contentVersion,
+      status: status ?? this.status,
+      causeIds: causeIds ?? this.causeIds,
+      durationMs: durationMs ?? this.durationMs,
+      submissionId: submissionId ?? this.submissionId,
+      createdAt: createdAt ?? this.createdAt,
+      rowid: rowid ?? this.rowid,
+    );
+  }
+
+  @override
+  Map<String, Expression> toColumns(bool nullToAbsent) {
+    final map = <String, Expression>{};
+    if (id.present) {
+      map['id'] = Variable<String>(id.value);
+    }
+    if (questionId.present) {
+      map['question_id'] = Variable<String>(questionId.value);
+    }
+    if (sessionId.present) {
+      map['session_id'] = Variable<String>(sessionId.value);
+    }
+    if (mode.present) {
+      map['mode'] = Variable<String>(mode.value);
+    }
+    if (selected.present) {
+      map['selected'] = Variable<String>(selected.value);
+    }
+    if (correct.present) {
+      map['correct'] = Variable<int>(correct.value);
+    }
+    if (confidence.present) {
+      map['confidence'] = Variable<String>(confidence.value);
+    }
+    if (answerVersion.present) {
+      map['answer_version'] = Variable<int>(answerVersion.value);
+    }
+    if (contentVersion.present) {
+      map['content_version'] = Variable<int>(contentVersion.value);
+    }
+    if (status.present) {
+      map['status'] = Variable<String>(status.value);
+    }
+    if (causeIds.present) {
+      map['cause_ids'] = Variable<String>(causeIds.value);
+    }
+    if (durationMs.present) {
+      map['duration_ms'] = Variable<int>(durationMs.value);
+    }
+    if (submissionId.present) {
+      map['submission_id'] = Variable<String>(submissionId.value);
+    }
+    if (createdAt.present) {
+      map['created_at'] = Variable<int>(createdAt.value);
+    }
+    if (rowid.present) {
+      map['rowid'] = Variable<int>(rowid.value);
+    }
+    return map;
+  }
+
+  @override
+  String toString() {
+    return (StringBuffer('AttemptsCompanion(')
+          ..write('id: $id, ')
+          ..write('questionId: $questionId, ')
+          ..write('sessionId: $sessionId, ')
+          ..write('mode: $mode, ')
+          ..write('selected: $selected, ')
+          ..write('correct: $correct, ')
+          ..write('confidence: $confidence, ')
+          ..write('answerVersion: $answerVersion, ')
+          ..write('contentVersion: $contentVersion, ')
+          ..write('status: $status, ')
+          ..write('causeIds: $causeIds, ')
+          ..write('durationMs: $durationMs, ')
+          ..write('submissionId: $submissionId, ')
+          ..write('createdAt: $createdAt, ')
+          ..write('rowid: $rowid')
+          ..write(')'))
+        .toString();
+  }
+}
+
 abstract class _$QuizDatabase extends GeneratedDatabase {
   _$QuizDatabase(QueryExecutor e) : super(e);
   $QuizDatabaseManager get managers => $QuizDatabaseManager(this);
@@ -7739,6 +9881,7 @@ abstract class _$QuizDatabase extends GeneratedDatabase {
   late final $QuestionBoxesTable questionBoxes = $QuestionBoxesTable(this);
   late final $QuestionsTable questions = $QuestionsTable(this);
   late final $OcrJobsTable ocrJobs = $OcrJobsTable(this);
+  late final $AttemptsTable attempts = $AttemptsTable(this);
   late final Index idxBoxesTaskPage = Index(
     'idx_boxes_task_page',
     'CREATE INDEX idx_boxes_task_page ON question_boxes (collect_task_id, page)',
@@ -7775,6 +9918,7 @@ abstract class _$QuizDatabase extends GeneratedDatabase {
     questionBoxes,
     questions,
     ocrJobs,
+    attempts,
     idxBoxesTaskPage,
     idxBoxesQuestion,
     idxBoxesParent,
@@ -9197,6 +11341,14 @@ typedef $$ReviewHistoryTableCreateCompanionBuilder =
       required String questionId,
       required String result,
       required int reviewedAt,
+      Value<String?> causeId,
+      Value<String?> sessionId,
+      Value<String?> reviewMode,
+      Value<String?> verdict,
+      Value<String?> verificationStatus,
+      Value<String?> verificationSource,
+      Value<String?> attemptId,
+      Value<String?> submissionId,
     });
 typedef $$ReviewHistoryTableUpdateCompanionBuilder =
     ReviewHistoryCompanion Function({
@@ -9204,6 +11356,14 @@ typedef $$ReviewHistoryTableUpdateCompanionBuilder =
       Value<String> questionId,
       Value<String> result,
       Value<int> reviewedAt,
+      Value<String?> causeId,
+      Value<String?> sessionId,
+      Value<String?> reviewMode,
+      Value<String?> verdict,
+      Value<String?> verificationStatus,
+      Value<String?> verificationSource,
+      Value<String?> attemptId,
+      Value<String?> submissionId,
     });
 
 class $$ReviewHistoryTableFilterComposer
@@ -9232,6 +11392,46 @@ class $$ReviewHistoryTableFilterComposer
 
   ColumnFilters<int> get reviewedAt => $composableBuilder(
     column: $table.reviewedAt,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get causeId => $composableBuilder(
+    column: $table.causeId,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get sessionId => $composableBuilder(
+    column: $table.sessionId,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get reviewMode => $composableBuilder(
+    column: $table.reviewMode,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get verdict => $composableBuilder(
+    column: $table.verdict,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get verificationStatus => $composableBuilder(
+    column: $table.verificationStatus,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get verificationSource => $composableBuilder(
+    column: $table.verificationSource,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get attemptId => $composableBuilder(
+    column: $table.attemptId,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get submissionId => $composableBuilder(
+    column: $table.submissionId,
     builder: (column) => ColumnFilters(column),
   );
 }
@@ -9264,6 +11464,46 @@ class $$ReviewHistoryTableOrderingComposer
     column: $table.reviewedAt,
     builder: (column) => ColumnOrderings(column),
   );
+
+  ColumnOrderings<String> get causeId => $composableBuilder(
+    column: $table.causeId,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get sessionId => $composableBuilder(
+    column: $table.sessionId,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get reviewMode => $composableBuilder(
+    column: $table.reviewMode,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get verdict => $composableBuilder(
+    column: $table.verdict,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get verificationStatus => $composableBuilder(
+    column: $table.verificationStatus,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get verificationSource => $composableBuilder(
+    column: $table.verificationSource,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get attemptId => $composableBuilder(
+    column: $table.attemptId,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get submissionId => $composableBuilder(
+    column: $table.submissionId,
+    builder: (column) => ColumnOrderings(column),
+  );
 }
 
 class $$ReviewHistoryTableAnnotationComposer
@@ -9288,6 +11528,38 @@ class $$ReviewHistoryTableAnnotationComposer
 
   GeneratedColumn<int> get reviewedAt => $composableBuilder(
     column: $table.reviewedAt,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<String> get causeId =>
+      $composableBuilder(column: $table.causeId, builder: (column) => column);
+
+  GeneratedColumn<String> get sessionId =>
+      $composableBuilder(column: $table.sessionId, builder: (column) => column);
+
+  GeneratedColumn<String> get reviewMode => $composableBuilder(
+    column: $table.reviewMode,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<String> get verdict =>
+      $composableBuilder(column: $table.verdict, builder: (column) => column);
+
+  GeneratedColumn<String> get verificationStatus => $composableBuilder(
+    column: $table.verificationStatus,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<String> get verificationSource => $composableBuilder(
+    column: $table.verificationSource,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<String> get attemptId =>
+      $composableBuilder(column: $table.attemptId, builder: (column) => column);
+
+  GeneratedColumn<String> get submissionId => $composableBuilder(
+    column: $table.submissionId,
     builder: (column) => column,
   );
 }
@@ -9331,11 +11603,27 @@ class $$ReviewHistoryTableTableManager
                 Value<String> questionId = const Value.absent(),
                 Value<String> result = const Value.absent(),
                 Value<int> reviewedAt = const Value.absent(),
+                Value<String?> causeId = const Value.absent(),
+                Value<String?> sessionId = const Value.absent(),
+                Value<String?> reviewMode = const Value.absent(),
+                Value<String?> verdict = const Value.absent(),
+                Value<String?> verificationStatus = const Value.absent(),
+                Value<String?> verificationSource = const Value.absent(),
+                Value<String?> attemptId = const Value.absent(),
+                Value<String?> submissionId = const Value.absent(),
               }) => ReviewHistoryCompanion(
                 id: id,
                 questionId: questionId,
                 result: result,
                 reviewedAt: reviewedAt,
+                causeId: causeId,
+                sessionId: sessionId,
+                reviewMode: reviewMode,
+                verdict: verdict,
+                verificationStatus: verificationStatus,
+                verificationSource: verificationSource,
+                attemptId: attemptId,
+                submissionId: submissionId,
               ),
           createCompanionCallback:
               ({
@@ -9343,11 +11631,27 @@ class $$ReviewHistoryTableTableManager
                 required String questionId,
                 required String result,
                 required int reviewedAt,
+                Value<String?> causeId = const Value.absent(),
+                Value<String?> sessionId = const Value.absent(),
+                Value<String?> reviewMode = const Value.absent(),
+                Value<String?> verdict = const Value.absent(),
+                Value<String?> verificationStatus = const Value.absent(),
+                Value<String?> verificationSource = const Value.absent(),
+                Value<String?> attemptId = const Value.absent(),
+                Value<String?> submissionId = const Value.absent(),
               }) => ReviewHistoryCompanion.insert(
                 id: id,
                 questionId: questionId,
                 result: result,
                 reviewedAt: reviewedAt,
+                causeId: causeId,
+                sessionId: sessionId,
+                reviewMode: reviewMode,
+                verdict: verdict,
+                verificationStatus: verificationStatus,
+                verificationSource: verificationSource,
+                attemptId: attemptId,
+                submissionId: submissionId,
               ),
           withReferenceMapper: (p0) => p0
               .map(
@@ -9395,6 +11699,8 @@ typedef $$CauseRecordsTableCreateCompanionBuilder =
       Value<int?> recheckDate,
       Value<List<String>> remedyHistory,
       required int joinedAt,
+      Value<int?> lastCountedSuccessAt,
+      Value<String?> lastCountedSessionId,
     });
 typedef $$CauseRecordsTableUpdateCompanionBuilder =
     CauseRecordsCompanion Function({
@@ -9408,6 +11714,8 @@ typedef $$CauseRecordsTableUpdateCompanionBuilder =
       Value<int?> recheckDate,
       Value<List<String>> remedyHistory,
       Value<int> joinedAt,
+      Value<int?> lastCountedSuccessAt,
+      Value<String?> lastCountedSessionId,
     });
 
 class $$CauseRecordsTableFilterComposer
@@ -9467,6 +11775,16 @@ class $$CauseRecordsTableFilterComposer
 
   ColumnFilters<int> get joinedAt => $composableBuilder(
     column: $table.joinedAt,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<int> get lastCountedSuccessAt => $composableBuilder(
+    column: $table.lastCountedSuccessAt,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get lastCountedSessionId => $composableBuilder(
+    column: $table.lastCountedSessionId,
     builder: (column) => ColumnFilters(column),
   );
 }
@@ -9529,6 +11847,16 @@ class $$CauseRecordsTableOrderingComposer
     column: $table.joinedAt,
     builder: (column) => ColumnOrderings(column),
   );
+
+  ColumnOrderings<int> get lastCountedSuccessAt => $composableBuilder(
+    column: $table.lastCountedSuccessAt,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get lastCountedSessionId => $composableBuilder(
+    column: $table.lastCountedSessionId,
+    builder: (column) => ColumnOrderings(column),
+  );
 }
 
 class $$CauseRecordsTableAnnotationComposer
@@ -9578,6 +11906,16 @@ class $$CauseRecordsTableAnnotationComposer
 
   GeneratedColumn<int> get joinedAt =>
       $composableBuilder(column: $table.joinedAt, builder: (column) => column);
+
+  GeneratedColumn<int> get lastCountedSuccessAt => $composableBuilder(
+    column: $table.lastCountedSuccessAt,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<String> get lastCountedSessionId => $composableBuilder(
+    column: $table.lastCountedSessionId,
+    builder: (column) => column,
+  );
 }
 
 class $$CauseRecordsTableTableManager
@@ -9621,6 +11959,8 @@ class $$CauseRecordsTableTableManager
                 Value<int?> recheckDate = const Value.absent(),
                 Value<List<String>> remedyHistory = const Value.absent(),
                 Value<int> joinedAt = const Value.absent(),
+                Value<int?> lastCountedSuccessAt = const Value.absent(),
+                Value<String?> lastCountedSessionId = const Value.absent(),
               }) => CauseRecordsCompanion(
                 id: id,
                 questionId: questionId,
@@ -9632,6 +11972,8 @@ class $$CauseRecordsTableTableManager
                 recheckDate: recheckDate,
                 remedyHistory: remedyHistory,
                 joinedAt: joinedAt,
+                lastCountedSuccessAt: lastCountedSuccessAt,
+                lastCountedSessionId: lastCountedSessionId,
               ),
           createCompanionCallback:
               ({
@@ -9645,6 +11987,8 @@ class $$CauseRecordsTableTableManager
                 Value<int?> recheckDate = const Value.absent(),
                 Value<List<String>> remedyHistory = const Value.absent(),
                 required int joinedAt,
+                Value<int?> lastCountedSuccessAt = const Value.absent(),
+                Value<String?> lastCountedSessionId = const Value.absent(),
               }) => CauseRecordsCompanion.insert(
                 id: id,
                 questionId: questionId,
@@ -9656,6 +12000,8 @@ class $$CauseRecordsTableTableManager
                 recheckDate: recheckDate,
                 remedyHistory: remedyHistory,
                 joinedAt: joinedAt,
+                lastCountedSuccessAt: lastCountedSuccessAt,
+                lastCountedSessionId: lastCountedSessionId,
               ),
           withReferenceMapper: (p0) => p0
               .map(
@@ -9697,6 +12043,10 @@ typedef $$ReviewStateTableCreateCompanionBuilder =
       Value<List<ReviewQueueItem>> queue,
       Value<int> position,
       required int updatedAt,
+      Value<String?> sessionId,
+      Value<String?> mode,
+      Value<String?> skips,
+      Value<String?> perQuestionState,
     });
 typedef $$ReviewStateTableUpdateCompanionBuilder =
     ReviewStateCompanion Function({
@@ -9704,6 +12054,10 @@ typedef $$ReviewStateTableUpdateCompanionBuilder =
       Value<List<ReviewQueueItem>> queue,
       Value<int> position,
       Value<int> updatedAt,
+      Value<String?> sessionId,
+      Value<String?> mode,
+      Value<String?> skips,
+      Value<String?> perQuestionState,
     });
 
 class $$ReviewStateTableFilterComposer
@@ -9739,6 +12093,26 @@ class $$ReviewStateTableFilterComposer
     column: $table.updatedAt,
     builder: (column) => ColumnFilters(column),
   );
+
+  ColumnFilters<String> get sessionId => $composableBuilder(
+    column: $table.sessionId,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get mode => $composableBuilder(
+    column: $table.mode,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get skips => $composableBuilder(
+    column: $table.skips,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get perQuestionState => $composableBuilder(
+    column: $table.perQuestionState,
+    builder: (column) => ColumnFilters(column),
+  );
 }
 
 class $$ReviewStateTableOrderingComposer
@@ -9769,6 +12143,26 @@ class $$ReviewStateTableOrderingComposer
     column: $table.updatedAt,
     builder: (column) => ColumnOrderings(column),
   );
+
+  ColumnOrderings<String> get sessionId => $composableBuilder(
+    column: $table.sessionId,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get mode => $composableBuilder(
+    column: $table.mode,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get skips => $composableBuilder(
+    column: $table.skips,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get perQuestionState => $composableBuilder(
+    column: $table.perQuestionState,
+    builder: (column) => ColumnOrderings(column),
+  );
 }
 
 class $$ReviewStateTableAnnotationComposer
@@ -9791,6 +12185,20 @@ class $$ReviewStateTableAnnotationComposer
 
   GeneratedColumn<int> get updatedAt =>
       $composableBuilder(column: $table.updatedAt, builder: (column) => column);
+
+  GeneratedColumn<String> get sessionId =>
+      $composableBuilder(column: $table.sessionId, builder: (column) => column);
+
+  GeneratedColumn<String> get mode =>
+      $composableBuilder(column: $table.mode, builder: (column) => column);
+
+  GeneratedColumn<String> get skips =>
+      $composableBuilder(column: $table.skips, builder: (column) => column);
+
+  GeneratedColumn<String> get perQuestionState => $composableBuilder(
+    column: $table.perQuestionState,
+    builder: (column) => column,
+  );
 }
 
 class $$ReviewStateTableTableManager
@@ -9828,11 +12236,19 @@ class $$ReviewStateTableTableManager
                 Value<List<ReviewQueueItem>> queue = const Value.absent(),
                 Value<int> position = const Value.absent(),
                 Value<int> updatedAt = const Value.absent(),
+                Value<String?> sessionId = const Value.absent(),
+                Value<String?> mode = const Value.absent(),
+                Value<String?> skips = const Value.absent(),
+                Value<String?> perQuestionState = const Value.absent(),
               }) => ReviewStateCompanion(
                 id: id,
                 queue: queue,
                 position: position,
                 updatedAt: updatedAt,
+                sessionId: sessionId,
+                mode: mode,
+                skips: skips,
+                perQuestionState: perQuestionState,
               ),
           createCompanionCallback:
               ({
@@ -9840,11 +12256,19 @@ class $$ReviewStateTableTableManager
                 Value<List<ReviewQueueItem>> queue = const Value.absent(),
                 Value<int> position = const Value.absent(),
                 required int updatedAt,
+                Value<String?> sessionId = const Value.absent(),
+                Value<String?> mode = const Value.absent(),
+                Value<String?> skips = const Value.absent(),
+                Value<String?> perQuestionState = const Value.absent(),
               }) => ReviewStateCompanion.insert(
                 id: id,
                 queue: queue,
                 position: position,
                 updatedAt: updatedAt,
+                sessionId: sessionId,
+                mode: mode,
+                skips: skips,
+                perQuestionState: perQuestionState,
               ),
           withReferenceMapper: (p0) => p0
               .map(
@@ -10692,6 +13116,16 @@ typedef $$QuestionsTableCreateCompanionBuilder = QuestionsCompanion Function({
   Value<String> ocrSplitStatus,
   Value<int> ocrManualEdited,
   Value<int> contentVersion,
+  Value<String?> questionType,
+  Value<String> questionTypeSource,
+  Value<String> questionBackgroundTags,
+  Value<String> questionBackgroundTagsSource,
+  Value<String> ocrFigures,
+  Value<String?> correctOption,
+  Value<List<String>?> optionLabels,
+  Value<int> optionLabelsConfirmed,
+  Value<int> answerVersion,
+  Value<int> answerPendingRecheck,
   Value<int> rowid,
 });
 typedef $$QuestionsTableUpdateCompanionBuilder = QuestionsCompanion Function({
@@ -10728,6 +13162,16 @@ typedef $$QuestionsTableUpdateCompanionBuilder = QuestionsCompanion Function({
   Value<String> ocrSplitStatus,
   Value<int> ocrManualEdited,
   Value<int> contentVersion,
+  Value<String?> questionType,
+  Value<String> questionTypeSource,
+  Value<String> questionBackgroundTags,
+  Value<String> questionBackgroundTagsSource,
+  Value<String> ocrFigures,
+  Value<String?> correctOption,
+  Value<List<String>?> optionLabels,
+  Value<int> optionLabelsConfirmed,
+  Value<int> answerVersion,
+  Value<int> answerPendingRecheck,
   Value<int> rowid,
 });
 
@@ -10909,6 +13353,57 @@ class $$QuestionsTableFilterComposer
     column: $table.contentVersion,
     builder: (column) => ColumnFilters(column),
   );
+
+  ColumnFilters<String> get questionType => $composableBuilder(
+    column: $table.questionType,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get questionTypeSource => $composableBuilder(
+    column: $table.questionTypeSource,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get questionBackgroundTags => $composableBuilder(
+    column: $table.questionBackgroundTags,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get questionBackgroundTagsSource => $composableBuilder(
+    column: $table.questionBackgroundTagsSource,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get ocrFigures => $composableBuilder(
+    column: $table.ocrFigures,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get correctOption => $composableBuilder(
+    column: $table.correctOption,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnWithTypeConverterFilters<List<String>?, List<String>, String>
+  get optionLabels => $composableBuilder(
+    column: $table.optionLabels,
+    builder: (column) => ColumnWithTypeConverterFilters(column),
+  );
+
+  ColumnFilters<int> get optionLabelsConfirmed => $composableBuilder(
+    column: $table.optionLabelsConfirmed,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<int> get answerVersion => $composableBuilder(
+    column: $table.answerVersion,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<int> get answerPendingRecheck => $composableBuilder(
+    column: $table.answerPendingRecheck,
+    builder: (column) => ColumnFilters(column),
+  );
 }
 
 class $$QuestionsTableOrderingComposer
@@ -11084,6 +13579,57 @@ class $$QuestionsTableOrderingComposer
     column: $table.contentVersion,
     builder: (column) => ColumnOrderings(column),
   );
+
+  ColumnOrderings<String> get questionType => $composableBuilder(
+    column: $table.questionType,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get questionTypeSource => $composableBuilder(
+    column: $table.questionTypeSource,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get questionBackgroundTags => $composableBuilder(
+    column: $table.questionBackgroundTags,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get questionBackgroundTagsSource =>
+      $composableBuilder(
+        column: $table.questionBackgroundTagsSource,
+        builder: (column) => ColumnOrderings(column),
+      );
+
+  ColumnOrderings<String> get ocrFigures => $composableBuilder(
+    column: $table.ocrFigures,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get correctOption => $composableBuilder(
+    column: $table.correctOption,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get optionLabels => $composableBuilder(
+    column: $table.optionLabels,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<int> get optionLabelsConfirmed => $composableBuilder(
+    column: $table.optionLabelsConfirmed,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<int> get answerVersion => $composableBuilder(
+    column: $table.answerVersion,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<int> get answerPendingRecheck => $composableBuilder(
+    column: $table.answerPendingRecheck,
+    builder: (column) => ColumnOrderings(column),
+  );
 }
 
 class $$QuestionsTableAnnotationComposer
@@ -11232,6 +13778,58 @@ class $$QuestionsTableAnnotationComposer
     column: $table.contentVersion,
     builder: (column) => column,
   );
+
+  GeneratedColumn<String> get questionType => $composableBuilder(
+    column: $table.questionType,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<String> get questionTypeSource => $composableBuilder(
+    column: $table.questionTypeSource,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<String> get questionBackgroundTags => $composableBuilder(
+    column: $table.questionBackgroundTags,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<String> get questionBackgroundTagsSource =>
+      $composableBuilder(
+        column: $table.questionBackgroundTagsSource,
+        builder: (column) => column,
+      );
+
+  GeneratedColumn<String> get ocrFigures => $composableBuilder(
+    column: $table.ocrFigures,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<String> get correctOption => $composableBuilder(
+    column: $table.correctOption,
+    builder: (column) => column,
+  );
+
+  GeneratedColumnWithTypeConverter<List<String>?, String> get optionLabels =>
+      $composableBuilder(
+        column: $table.optionLabels,
+        builder: (column) => column,
+      );
+
+  GeneratedColumn<int> get optionLabelsConfirmed => $composableBuilder(
+    column: $table.optionLabelsConfirmed,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<int> get answerVersion => $composableBuilder(
+    column: $table.answerVersion,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<int> get answerPendingRecheck => $composableBuilder(
+    column: $table.answerPendingRecheck,
+    builder: (column) => column,
+  );
 }
 
 class $$QuestionsTableTableManager
@@ -11298,6 +13896,17 @@ class $$QuestionsTableTableManager
                 Value<String> ocrSplitStatus = const Value.absent(),
                 Value<int> ocrManualEdited = const Value.absent(),
                 Value<int> contentVersion = const Value.absent(),
+                Value<String?> questionType = const Value.absent(),
+                Value<String> questionTypeSource = const Value.absent(),
+                Value<String> questionBackgroundTags = const Value.absent(),
+                Value<String> questionBackgroundTagsSource =
+                    const Value.absent(),
+                Value<String> ocrFigures = const Value.absent(),
+                Value<String?> correctOption = const Value.absent(),
+                Value<List<String>?> optionLabels = const Value.absent(),
+                Value<int> optionLabelsConfirmed = const Value.absent(),
+                Value<int> answerVersion = const Value.absent(),
+                Value<int> answerPendingRecheck = const Value.absent(),
                 Value<int> rowid = const Value.absent(),
               }) => QuestionsCompanion(
                 id: id,
@@ -11333,6 +13942,16 @@ class $$QuestionsTableTableManager
                 ocrSplitStatus: ocrSplitStatus,
                 ocrManualEdited: ocrManualEdited,
                 contentVersion: contentVersion,
+                questionType: questionType,
+                questionTypeSource: questionTypeSource,
+                questionBackgroundTags: questionBackgroundTags,
+                questionBackgroundTagsSource: questionBackgroundTagsSource,
+                ocrFigures: ocrFigures,
+                correctOption: correctOption,
+                optionLabels: optionLabels,
+                optionLabelsConfirmed: optionLabelsConfirmed,
+                answerVersion: answerVersion,
+                answerPendingRecheck: answerPendingRecheck,
                 rowid: rowid,
               ),
           createCompanionCallback:
@@ -11370,6 +13989,17 @@ class $$QuestionsTableTableManager
                 Value<String> ocrSplitStatus = const Value.absent(),
                 Value<int> ocrManualEdited = const Value.absent(),
                 Value<int> contentVersion = const Value.absent(),
+                Value<String?> questionType = const Value.absent(),
+                Value<String> questionTypeSource = const Value.absent(),
+                Value<String> questionBackgroundTags = const Value.absent(),
+                Value<String> questionBackgroundTagsSource =
+                    const Value.absent(),
+                Value<String> ocrFigures = const Value.absent(),
+                Value<String?> correctOption = const Value.absent(),
+                Value<List<String>?> optionLabels = const Value.absent(),
+                Value<int> optionLabelsConfirmed = const Value.absent(),
+                Value<int> answerVersion = const Value.absent(),
+                Value<int> answerPendingRecheck = const Value.absent(),
                 Value<int> rowid = const Value.absent(),
               }) => QuestionsCompanion.insert(
                 id: id,
@@ -11405,6 +14035,16 @@ class $$QuestionsTableTableManager
                 ocrSplitStatus: ocrSplitStatus,
                 ocrManualEdited: ocrManualEdited,
                 contentVersion: contentVersion,
+                questionType: questionType,
+                questionTypeSource: questionTypeSource,
+                questionBackgroundTags: questionBackgroundTags,
+                questionBackgroundTagsSource: questionBackgroundTagsSource,
+                ocrFigures: ocrFigures,
+                correctOption: correctOption,
+                optionLabels: optionLabels,
+                optionLabelsConfirmed: optionLabelsConfirmed,
+                answerVersion: answerVersion,
+                answerPendingRecheck: answerPendingRecheck,
                 rowid: rowid,
               ),
           withReferenceMapper: (p0) => p0
@@ -11845,6 +14485,393 @@ typedef $$OcrJobsTableProcessedTableManager =
       DbOcrJob,
       PrefetchHooks Function()
     >;
+typedef $$AttemptsTableCreateCompanionBuilder = AttemptsCompanion Function({
+  required String id,
+  required String questionId,
+  required String sessionId,
+  required String mode,
+  Value<String?> selected,
+  Value<int?> correct,
+  Value<String?> confidence,
+  Value<int> answerVersion,
+  Value<int> contentVersion,
+  required String status,
+  Value<String> causeIds,
+  Value<int?> durationMs,
+  required String submissionId,
+  required int createdAt,
+  Value<int> rowid,
+});
+typedef $$AttemptsTableUpdateCompanionBuilder = AttemptsCompanion Function({
+  Value<String> id,
+  Value<String> questionId,
+  Value<String> sessionId,
+  Value<String> mode,
+  Value<String?> selected,
+  Value<int?> correct,
+  Value<String?> confidence,
+  Value<int> answerVersion,
+  Value<int> contentVersion,
+  Value<String> status,
+  Value<String> causeIds,
+  Value<int?> durationMs,
+  Value<String> submissionId,
+  Value<int> createdAt,
+  Value<int> rowid,
+});
+
+class $$AttemptsTableFilterComposer
+    extends Composer<_$QuizDatabase, $AttemptsTable> {
+  $$AttemptsTableFilterComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  ColumnFilters<String> get id => $composableBuilder(
+    column: $table.id,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get questionId => $composableBuilder(
+    column: $table.questionId,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get sessionId => $composableBuilder(
+    column: $table.sessionId,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get mode => $composableBuilder(
+    column: $table.mode,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get selected => $composableBuilder(
+    column: $table.selected,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<int> get correct => $composableBuilder(
+    column: $table.correct,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get confidence => $composableBuilder(
+    column: $table.confidence,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<int> get answerVersion => $composableBuilder(
+    column: $table.answerVersion,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<int> get contentVersion => $composableBuilder(
+    column: $table.contentVersion,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get status => $composableBuilder(
+    column: $table.status,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get causeIds => $composableBuilder(
+    column: $table.causeIds,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<int> get durationMs => $composableBuilder(
+    column: $table.durationMs,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get submissionId => $composableBuilder(
+    column: $table.submissionId,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<int> get createdAt => $composableBuilder(
+    column: $table.createdAt,
+    builder: (column) => ColumnFilters(column),
+  );
+}
+
+class $$AttemptsTableOrderingComposer
+    extends Composer<_$QuizDatabase, $AttemptsTable> {
+  $$AttemptsTableOrderingComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  ColumnOrderings<String> get id => $composableBuilder(
+    column: $table.id,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get questionId => $composableBuilder(
+    column: $table.questionId,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get sessionId => $composableBuilder(
+    column: $table.sessionId,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get mode => $composableBuilder(
+    column: $table.mode,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get selected => $composableBuilder(
+    column: $table.selected,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<int> get correct => $composableBuilder(
+    column: $table.correct,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get confidence => $composableBuilder(
+    column: $table.confidence,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<int> get answerVersion => $composableBuilder(
+    column: $table.answerVersion,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<int> get contentVersion => $composableBuilder(
+    column: $table.contentVersion,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get status => $composableBuilder(
+    column: $table.status,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get causeIds => $composableBuilder(
+    column: $table.causeIds,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<int> get durationMs => $composableBuilder(
+    column: $table.durationMs,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get submissionId => $composableBuilder(
+    column: $table.submissionId,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<int> get createdAt => $composableBuilder(
+    column: $table.createdAt,
+    builder: (column) => ColumnOrderings(column),
+  );
+}
+
+class $$AttemptsTableAnnotationComposer
+    extends Composer<_$QuizDatabase, $AttemptsTable> {
+  $$AttemptsTableAnnotationComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  GeneratedColumn<String> get id =>
+      $composableBuilder(column: $table.id, builder: (column) => column);
+
+  GeneratedColumn<String> get questionId => $composableBuilder(
+    column: $table.questionId,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<String> get sessionId =>
+      $composableBuilder(column: $table.sessionId, builder: (column) => column);
+
+  GeneratedColumn<String> get mode =>
+      $composableBuilder(column: $table.mode, builder: (column) => column);
+
+  GeneratedColumn<String> get selected =>
+      $composableBuilder(column: $table.selected, builder: (column) => column);
+
+  GeneratedColumn<int> get correct =>
+      $composableBuilder(column: $table.correct, builder: (column) => column);
+
+  GeneratedColumn<String> get confidence => $composableBuilder(
+    column: $table.confidence,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<int> get answerVersion => $composableBuilder(
+    column: $table.answerVersion,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<int> get contentVersion => $composableBuilder(
+    column: $table.contentVersion,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<String> get status =>
+      $composableBuilder(column: $table.status, builder: (column) => column);
+
+  GeneratedColumn<String> get causeIds =>
+      $composableBuilder(column: $table.causeIds, builder: (column) => column);
+
+  GeneratedColumn<int> get durationMs => $composableBuilder(
+    column: $table.durationMs,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<String> get submissionId => $composableBuilder(
+    column: $table.submissionId,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<int> get createdAt =>
+      $composableBuilder(column: $table.createdAt, builder: (column) => column);
+}
+
+class $$AttemptsTableTableManager
+    extends
+        RootTableManager<
+          _$QuizDatabase,
+          $AttemptsTable,
+          DbAttempt,
+          $$AttemptsTableFilterComposer,
+          $$AttemptsTableOrderingComposer,
+          $$AttemptsTableAnnotationComposer,
+          $$AttemptsTableCreateCompanionBuilder,
+          $$AttemptsTableUpdateCompanionBuilder,
+          (
+            DbAttempt,
+            BaseReferences<_$QuizDatabase, $AttemptsTable, DbAttempt>,
+          ),
+          DbAttempt,
+          PrefetchHooks Function()
+        > {
+  $$AttemptsTableTableManager(_$QuizDatabase db, $AttemptsTable table)
+    : super(
+        TableManagerState(
+          db: db,
+          table: table,
+          createFilteringComposer: () =>
+              $$AttemptsTableFilterComposer($db: db, $table: table),
+          createOrderingComposer: () =>
+              $$AttemptsTableOrderingComposer($db: db, $table: table),
+          createComputedFieldComposer: () =>
+              $$AttemptsTableAnnotationComposer($db: db, $table: table),
+          updateCompanionCallback:
+              ({
+                Value<String> id = const Value.absent(),
+                Value<String> questionId = const Value.absent(),
+                Value<String> sessionId = const Value.absent(),
+                Value<String> mode = const Value.absent(),
+                Value<String?> selected = const Value.absent(),
+                Value<int?> correct = const Value.absent(),
+                Value<String?> confidence = const Value.absent(),
+                Value<int> answerVersion = const Value.absent(),
+                Value<int> contentVersion = const Value.absent(),
+                Value<String> status = const Value.absent(),
+                Value<String> causeIds = const Value.absent(),
+                Value<int?> durationMs = const Value.absent(),
+                Value<String> submissionId = const Value.absent(),
+                Value<int> createdAt = const Value.absent(),
+                Value<int> rowid = const Value.absent(),
+              }) => AttemptsCompanion(
+                id: id,
+                questionId: questionId,
+                sessionId: sessionId,
+                mode: mode,
+                selected: selected,
+                correct: correct,
+                confidence: confidence,
+                answerVersion: answerVersion,
+                contentVersion: contentVersion,
+                status: status,
+                causeIds: causeIds,
+                durationMs: durationMs,
+                submissionId: submissionId,
+                createdAt: createdAt,
+                rowid: rowid,
+              ),
+          createCompanionCallback:
+              ({
+                required String id,
+                required String questionId,
+                required String sessionId,
+                required String mode,
+                Value<String?> selected = const Value.absent(),
+                Value<int?> correct = const Value.absent(),
+                Value<String?> confidence = const Value.absent(),
+                Value<int> answerVersion = const Value.absent(),
+                Value<int> contentVersion = const Value.absent(),
+                required String status,
+                Value<String> causeIds = const Value.absent(),
+                Value<int?> durationMs = const Value.absent(),
+                required String submissionId,
+                required int createdAt,
+                Value<int> rowid = const Value.absent(),
+              }) => AttemptsCompanion.insert(
+                id: id,
+                questionId: questionId,
+                sessionId: sessionId,
+                mode: mode,
+                selected: selected,
+                correct: correct,
+                confidence: confidence,
+                answerVersion: answerVersion,
+                contentVersion: contentVersion,
+                status: status,
+                causeIds: causeIds,
+                durationMs: durationMs,
+                submissionId: submissionId,
+                createdAt: createdAt,
+                rowid: rowid,
+              ),
+          withReferenceMapper: (p0) => p0
+              .map(
+                (e) => (
+                  e.readTable<$AttemptsTable, DbAttempt>(table),
+                  BaseReferences<_$QuizDatabase, $AttemptsTable, DbAttempt>(
+                    db,
+                    table,
+                    e,
+                  ),
+                ),
+              )
+              .toList(),
+          prefetchHooksCallback: null,
+        ),
+      );
+}
+
+typedef $$AttemptsTableProcessedTableManager =
+    ProcessedTableManager<
+      _$QuizDatabase,
+      $AttemptsTable,
+      DbAttempt,
+      $$AttemptsTableFilterComposer,
+      $$AttemptsTableOrderingComposer,
+      $$AttemptsTableAnnotationComposer,
+      $$AttemptsTableCreateCompanionBuilder,
+      $$AttemptsTableUpdateCompanionBuilder,
+      (DbAttempt, BaseReferences<_$QuizDatabase, $AttemptsTable, DbAttempt>),
+      DbAttempt,
+      PrefetchHooks Function()
+    >;
 
 class $QuizDatabaseManager {
   final _$QuizDatabase _db;
@@ -11881,4 +14908,6 @@ class $QuizDatabaseManager {
       $$QuestionsTableTableManager(_db, _db.questions);
   $$OcrJobsTableTableManager get ocrJobs =>
       $$OcrJobsTableTableManager(_db, _db.ocrJobs);
+  $$AttemptsTableTableManager get attempts =>
+      $$AttemptsTableTableManager(_db, _db.attempts);
 }

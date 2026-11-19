@@ -6,6 +6,7 @@ import 'dart:typed_data';
 import 'package:file_picker/file_picker.dart';
 
 import '../data/database.dart';
+import '../data/file_lifecycle_guard.dart';
 import '../models/models.dart';
 import 'import_guess.dart';
 import 'page_image_pipeline.dart';
@@ -427,9 +428,10 @@ class ImportService {
             await sink.close();
           }
         } catch (e) {
-          try {
-            await Directory(dirAbs).delete(recursive: true);
-          } catch (_) {}
+          // 十四批 M2（P2-2）：复制失败的任务目录经统一文件操作锁删除。
+          await FileLifecycleGuard.instance.deleteDirectory(
+            Directory(dirAbs),
+          );
           task = _failed(task, '导入失败：文件复制不进去（$e）');
           // SR2-1(a)：失败行的 upsert 也包 try，写不进只返回内存任务。
           try {
@@ -790,17 +792,12 @@ class ImportService {
 
   /// 只删派生文件（`pages/` 与 `page-normalized.png`），原图不动。
   /// _failAndClean 与重试前的防御性清理共用。
+  /// 十四批 M2（P2-2）：经统一文件操作锁（锁内删，与备份暂存区
+  /// 占用、待提交登记互斥；删失败静默，由孤儿清理兜底）。
   Future<void> _deleteDerivedFiles(String dirAbs) async {
-    try {
-      final pagesDir = Directory('$dirAbs/pages');
-      if (await pagesDir.exists()) {
-        await pagesDir.delete(recursive: true);
-      }
-    } catch (_) {}
-    try {
-      final normalized = File('$dirAbs/page-normalized.png');
-      if (await normalized.exists()) await normalized.delete();
-    } catch (_) {}
+    final guard = FileLifecycleGuard.instance;
+    await guard.deleteDirectory(Directory('$dirAbs/pages'));
+    await guard.deleteFile(File('$dirAbs/page-normalized.png'));
   }
 
   /// sourcePath 指向的文件若已不在盘上，返回 ''（不留悬空引用）；

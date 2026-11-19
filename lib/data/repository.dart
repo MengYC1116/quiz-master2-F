@@ -1,5 +1,6 @@
 import '../data/database.dart';
 import '../data/data_change_events.dart';
+import '../data/review_engine.dart';
 import '../models/exam_event.dart';
 import '../models/models.dart';
 import '../services/import_service.dart';
@@ -369,12 +370,90 @@ class QuestionRepository {
     return updated;
   }
 
+  /// 十四批 M3：单条错因 verdict 提交（M3-7 治愈规则 + M3-8 核验字段 +
+  /// M3-10 幂等）。每错因一次独立事务；调用方按题循环，跨错因部分
+  /// 失败时已写错因保留、只补未写成的（见 review_notifier.finishQuestion）。
+  Future<VerdictSubmitResult> submitCauseVerdict({
+    required String questionId,
+    required CauseRecord record,
+    required String verdict,
+    required String verificationStatus,
+    required String verificationSource,
+    String? attemptId,
+    required String sessionId,
+    required String submissionId,
+    int cureChecks = 2,
+    int recheckIntervalDays = 7,
+    bool isRecheck = false,
+    DateTime? now,
+  }) => _db.submitCauseVerdictTxn(
+    questionId: questionId,
+    record: record,
+    verdict: verdict,
+    verificationStatus: verificationStatus,
+    verificationSource: verificationSource,
+    attemptId: attemptId,
+    sessionId: sessionId,
+    submissionId: submissionId,
+    cureChecks: cureChecks,
+    recheckIntervalDays: recheckIntervalDays,
+    isRecheck: isRecheck,
+    now: now,
+  );
+
+  /// 十四批 M3：attempt 写入（一次会话每题一条；跳过后重遇更新同一条）。
+  Future<String> recordAttempt(AttemptData attempt) =>
+      _db.recordAttemptTxn(attempt: attempt);
+
+  /// 十四批 M3：读一条 attempt / 某会话全部 attempts。
+  Future<AttemptData?> loadAttempt({
+    required String sessionId,
+    required String questionId,
+  }) => _db.loadAttempt(sessionId: sessionId, questionId: questionId);
+
+  Future<List<AttemptData>> loadAttemptsForSession(String sessionId) =>
+      _db.loadAttemptsForSession(sessionId: sessionId);
+
+  /// 十四批 M3（M3-10 断点恢复重建用）：本会话里该错因是否已有 verdict 事件。
+  Future<bool> hasSessionVerdict({
+    required String causeStableId,
+    required String sessionId,
+  }) => _db.hasSessionVerdict(
+    causeStableId: causeStableId,
+    sessionId: sessionId,
+  );
+
+  /// 十四批 M3：专项练习“将此错因重新加入复习”（用户主动操作）。
+  Future<void> rejoinCause({
+    required String questionId,
+    required String cause,
+    required String subjectId,
+  }) => _db.rejoinCauseTxn(
+    questionId: questionId,
+    cause: cause,
+    subjectId: subjectId,
+  );
+
   Future<ReviewSessionState?> reviewState() => _db.loadReviewState();
 
+  /// 十四批 M3（M3-10）：保存完整会话快照（队列 + 位置 + session_id +
+  /// 模式 + 跳过次数 + 每题状态）。旧调用方只传 queue/position 时
+  /// 其余列写 NULL。
   Future<void> saveReviewState({
     required List<ReviewQueueItem> queue,
     required int position,
-  }) => _db.saveReviewState(queue: queue, position: position);
+    String? sessionId,
+    String? mode,
+    Map<String, int>? skips,
+    Map<String, Map<String, Object?>>? perQuestionState,
+  }) => _db.saveReviewState(
+    queue: queue,
+    position: position,
+    sessionId: sessionId,
+    mode: mode,
+    skips: skips,
+    perQuestionState: perQuestionState,
+  );
 
   Future<void> clearReviewState() => _db.clearReviewState();
 
@@ -591,10 +670,16 @@ class QuestionRepository {
   /// §2.3/P3：zip 文件级备份（JSON + imports/ + slices/）。
   Future<List<int>> exportBackupZip() => _db.exportBackupZip();
 
+  /// 十四批 M2：带警告的 zip 备份（字节 + 可见警告列表）。
+  Future<({List<int> bytes, List<String> warnings})>
+  exportBackupZipWithReport() => _db.exportBackupZipWithReport();
+
   /// §2.3/P3：zip 备份恢复（JSON + 文件一起恢复）。
   /// GPT-P1：恢复只接受已读到的字节，不再提供按路径重读的入口——
   /// 校验过的字节与导入的字节必须是同一份。
-  Future<void> importBackupZip(List<int> bytes) => _db.importBackupZip(bytes);
+  /// 十四批 M2：返回恢复警告列表（缺失/不可读的图块已从引用里去掉）。
+  Future<List<String>> importBackupZip(List<int> bytes) =>
+      _db.importBackupZip(bytes);
 
   /// §4.5/P3：孤儿扫描（imports/ + slices/ 里无引用的文件）。
   Future<OrphanScan> scanOrphanFiles() => _db.scanOrphans();

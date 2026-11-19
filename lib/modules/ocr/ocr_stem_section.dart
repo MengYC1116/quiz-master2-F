@@ -22,13 +22,15 @@ import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:crypto/crypto.dart';
 import 'package:flutter/material.dart';
 
 import '../../data/database.dart';
 import '../../models/models.dart';
+import '../../services/glm_ocr_client.dart';
 import '../../services/ocr_queue.dart';
+import 'ocr_figures.dart';
 import 'ocr_stem_status.dart';
-import 'question_content.dart';
 import 'question_content_renderer.dart';
 import 'stem_editor.dart';
 
@@ -71,6 +73,7 @@ class OcrStemSection extends StatefulWidget {
     required this.onDismissCandidate,
     required this.onRerecognize,
     this.onEditingChanged,
+    this.onDeleteFigure,
   });
 
   final Question question;
@@ -95,6 +98,10 @@ class OcrStemSection extends StatefulWidget {
   /// 编辑器开合变化（页面用它做活页内刷新守门：编辑中不刷新该题）。
   final ValueChanged<bool>? onEditingChanged;
 
+  /// 删除单个图块（十四批 M2）：调用方调 deleteFigureFromQuestion +
+  /// repo.save 落库；返回 true = 已删除。编辑器里用。
+  final Future<bool> Function(String figureId)? onDeleteFigure;
+
   @override
   State<OcrStemSection> createState() => _OcrStemSectionState();
 }
@@ -104,11 +111,16 @@ class _OcrStemSectionState extends State<OcrStemSection> {
   bool _showCandidateInEditor = false;
   Uint8List? _sliceBytes;
   String? _sliceBytesForPath;
+  // 十四批 M2：当前切片的 SHA-256（图块按 input_hash 比对当前切片用）。
+  // 切片字节未读到时为 null——此时只按 slice_path 比对（重框会换
+  // 版本化路径，slice_path 已能区分；字节读到后再做 hash 全比对）。
+  String? _sliceHash;
 
   @override
   void initState() {
     super.initState();
     _sliceBytes = widget.sliceBytes;
+    _sliceHash = _hashOf(_sliceBytes);
     _loadSliceBytesIfNeeded();
   }
 
@@ -120,11 +132,16 @@ class _OcrStemSectionState extends State<OcrStemSection> {
       _editing = false;
       _showCandidateInEditor = false;
       _sliceBytes = widget.sliceBytes;
+      _sliceHash = _hashOf(_sliceBytes);
       _loadSliceBytesIfNeeded();
     } else if (widget.sliceBytes != oldWidget.sliceBytes) {
       _sliceBytes = widget.sliceBytes;
+      _sliceHash = _hashOf(_sliceBytes);
     }
   }
+
+  static String? _hashOf(Uint8List? bytes) =>
+      bytes == null ? null : sha256.convert(bytes).toString();
 
   void _loadSliceBytesIfNeeded() {
     if (_sliceBytes != null) return;
@@ -141,7 +158,10 @@ class _OcrStemSectionState extends State<OcrStemSection> {
       if (abs == null) return;
       final bytes = await File(abs).readAsBytes();
       if (!mounted || _sliceBytesForPath != path) return;
-      setState(() => _sliceBytes = bytes);
+      setState(() {
+        _sliceBytes = bytes;
+        _sliceHash = sha256.convert(bytes).toString();
+      });
     } catch (_) {
       // 切片读不到：公式回退用通用占位，不挡题干显示。
     }
@@ -195,6 +215,21 @@ class _OcrStemSectionState extends State<OcrStemSection> {
         widget.candidateStemOverride ?? pendingCandidateStem(question);
     final stem = (question.ocrStem ?? '').trim();
     final theme = Theme.of(context);
+    // 十四批 M2：图块按 sequence_index 插入内容序列（buildContentBlocks）。
+    // 展示层按 input_hash 与当前切片 hash 比对——重框后旧图块不一致
+    // 不展示，新 OCR 完成前图块区显示“已重新框选，等待识别”。
+    final storedFigures = parseOcrFigures(question.ocrFigures);
+    final display = currentFiguresForDisplay(
+      storedFigures,
+      slicePath: question.slicePath,
+      inputHash: _sliceHash,
+    );
+    final mdResults = GlmOcrRawData.tryParse(question.ocrRaw)?.mdResults;
+    final blocks = buildContentBlocks(
+      stemMarkdown: stem,
+      figures: display.figures,
+      mdResults: mdResults,
+    );
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -237,6 +272,12 @@ class _OcrStemSectionState extends State<OcrStemSection> {
           _ambiguousBanner(),
           const SizedBox(height: 8),
         ],
+        // 十四批 M2：重框后旧图块已过期、新 OCR 未完成——图块区不展示
+        // 旧图，显示等待识别（编辑态与非编辑态都显示）。
+        if (display.hasStale) ...[
+          _staleFiguresBanner(),
+          const SizedBox(height: 8),
+        ],
         if (_editing)
           StemEditor(
             key: ValueKey('stem-editor-${question.id}'),
@@ -244,6 +285,9 @@ class _OcrStemSectionState extends State<OcrStemSection> {
             candidateStem: candidateStem,
             sliceBytes: _sliceBytes,
             initiallyShowCandidate: _showCandidateInEditor,
+            figures: display.figures,
+            mdResults: mdResults,
+            onDeleteFigure: widget.onDeleteFigure,
             onSave: (newStem) async {
               final ok = await widget.onSaveEdited(newStem);
               if (ok && mounted) _setEditing(false);
@@ -258,7 +302,7 @@ class _OcrStemSectionState extends State<OcrStemSection> {
         else ...[
           if (stem.isNotEmpty)
             QuestionContentRenderer(
-              blocks: parseQuestionContent(stem),
+              blocks: blocks,
               fallbackImage: _sliceImageWidget(),
             )
           else if (question.ocrRaw != null)
@@ -297,6 +341,24 @@ class _OcrStemSectionState extends State<OcrStemSection> {
     final bytes = _sliceBytes;
     if (bytes == null || bytes.isEmpty) return null;
     return Image.memory(bytes, fit: BoxFit.contain);
+  }
+
+  /// 十四批 M2：重框后旧图块过期横幅——旧图不展示，等新识别完成。
+  Widget _staleFiguresBanner() {
+    final theme = Theme.of(context);
+    return Container(
+      key: const Key('ocr-figures-stale-banner'),
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: const Text(
+        '已重新框选，等待识别',
+        style: TextStyle(fontSize: 13),
+      ),
+    );
   }
 
   /// M4 歧义待确认横幅（GPT §4.2 原文案）：切分存在歧义时整段保留，

@@ -31,6 +31,28 @@ class StringListConverter extends TypeConverter<List<String>, String> {
   String toSql(List<String> value) => jsonEncode(value);
 }
 
+/// JSON 文本 ↔ `List<String>?`（十四批 M1：questions.option_labels，
+/// NULL = 未确认；空串/非法 JSON -> []，与 [StringListConverter] 同口径）。
+class NullableStringListConverter
+    extends TypeConverter<List<String>?, String?> {
+  const NullableStringListConverter();
+
+  @override
+  List<String>? fromSql(String? fromDb) {
+    if (fromDb == null) return null;
+    if (fromDb.isEmpty) return const [];
+    try {
+      final decoded = jsonDecode(fromDb);
+      if (decoded is List) return decoded.whereType<String>().toList();
+    } catch (_) {}
+    return const [];
+  }
+
+  @override
+  String? toSql(List<String>? value) =>
+      value == null ? null : jsonEncode(value);
+}
+
 /// JSON 对象数组 ↔ `List<ReviewQueueItem>`（review_state.queue）。
 class QueueConverter extends TypeConverter<List<ReviewQueueItem>, String> {
   const QueueConverter();

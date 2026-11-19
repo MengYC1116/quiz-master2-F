@@ -131,6 +131,7 @@ class GlmOcrResult {
     required this.markdown,
     required this.rawData,
     this.totalTokens,
+    this.transform,
   });
 
   /// md_results 拼成的 Markdown 文本（公式为行内 `$...$` LaTeX）。
@@ -143,6 +144,84 @@ class GlmOcrResult {
 
   /// usage.total_tokens（成本统计用，可空）。
   final int? totalTokens;
+
+  /// 十四批 M2：本次 OCR 请求的真实转换元数据（原图尺寸、请求图尺寸、
+  /// 实际 padX/padY）。裁图时只用它换算，不再假定 0.30 白边。
+  final OcrRequestTransform? transform;
+}
+
+/// 一次 OCR 请求的真实转换元数据（十四批 M2 P1-4 坐标契约）。
+///
+/// - `srcW`/`srcH`：送入请求前原图的宽高（磁盘切片原样）；
+/// - `reqW`/`reqH`：实际发给 API 的图的宽高（加白边后）；
+/// - `padX`/`padY`：实际加的白边像素（未加白边时为 0）。
+/// 随 OCR 结果包保存（进 `ocr_raw` 的 `transform` 键，或图块来源字段），
+/// 供裁图时使用。**不再保存固定的 padding_fraction 0.30**：裁图时只用
+/// 本次请求保存的真实元数据换算，不重新假设所有图片都加了 30% 白边。
+class OcrRequestTransform {
+  const OcrRequestTransform({
+    required this.srcW,
+    required this.srcH,
+    required this.reqW,
+    required this.reqH,
+    required this.padX,
+    required this.padY,
+  });
+
+  final int srcW;
+  final int srcH;
+  final int reqW;
+  final int reqH;
+  final int padX;
+  final int padY;
+
+  Map<String, Object?> toJson() => {
+    'src_w': srcW,
+    'src_h': srcH,
+    'req_w': reqW,
+    'req_h': reqH,
+    'pad_x': padX,
+    'pad_y': padY,
+  };
+
+  static OcrRequestTransform? tryParse(Object? value) {
+    if (value is! Map) return null;
+    final srcW = value['src_w'];
+    final srcH = value['src_h'];
+    final reqW = value['req_w'];
+    final reqH = value['req_h'];
+    final padX = value['pad_x'];
+    final padY = value['pad_y'];
+    if (srcW is! num ||
+        srcH is! num ||
+        reqW is! num ||
+        reqH is! num ||
+        padX is! num ||
+        padY is! num) {
+      return null;
+    }
+    return OcrRequestTransform(
+      srcW: srcW.toInt(),
+      srcH: srcH.toInt(),
+      reqW: reqW.toInt(),
+      reqH: reqH.toInt(),
+      padX: padX.toInt(),
+      padY: padY.toInt(),
+    );
+  }
+
+  @override
+  bool operator ==(Object other) =>
+      other is OcrRequestTransform &&
+      srcW == other.srcW &&
+      srcH == other.srcH &&
+      reqW == other.reqW &&
+      reqH == other.reqH &&
+      padX == other.padX &&
+      padY == other.padY;
+
+  @override
+  int get hashCode => Object.hash(srcW, srcH, reqW, reqH, padX, padY);
 }
 
 /// 候选状态（十三批 P1-1，GPT §2.3）：一份 ocr_raw 包里的候选处于
@@ -189,6 +268,7 @@ class GlmOcrRawData {
     this.inputHash,
     this.claimedContentVersion,
     this.candidateStatus = OcrCandidateStatus.none,
+    this.transform,
   });
 
   final String mdResults;
@@ -205,6 +285,10 @@ class GlmOcrRawData {
 
   /// 候选状态（见 [OcrCandidateStatus]）。
   final OcrCandidateStatus candidateStatus;
+
+  /// 十四批 M2：本次 OCR 请求的真实转换元数据（原图/请求图尺寸、
+  /// 实际 padX/padY）。旧包没有该键时为 null，图块派生时安全弃用。
+  final OcrRequestTransform? transform;
 
   /// 旧版同义字段：= candidateStatus 是否 pending。仅为兼容而保留，
   /// 新逻辑一律读 [candidateStatus]。
@@ -227,6 +311,8 @@ class GlmOcrRawData {
       'claimed_content_version': claimedContentVersion,
     if (completedAtMs != null) 'created_at': completedAtMs,
     if (completedAtMs != null) 'completed_at_ms': completedAtMs,
+    // 十四批 M2：本次请求的真实转换元数据（裁图换算用）。
+    if (transform != null) 'transform': transform!.toJson(),
   };
 
   /// 序列化（存 ocr_raw 用）。失败（不可序列化值）时抛，不静默丢数据。
@@ -272,6 +358,7 @@ class GlmOcrRawData {
         inputHash: decoded['input_hash'] as String?,
         claimedContentVersion: decoded['claimed_content_version'] as int?,
         candidateStatus: status,
+        transform: OcrRequestTransform.tryParse(decoded['transform']),
       );
     } catch (_) {
       return null;
@@ -289,6 +376,7 @@ class GlmOcrRawData {
         inputHash: inputHash,
         claimedContentVersion: claimedContentVersion,
         candidateStatus: status,
+        transform: transform,
       );
 
   /// 补来源身份（worker 写库前调）：input_hash 与 claimed_content_version
@@ -306,6 +394,7 @@ class GlmOcrRawData {
     inputHash: inputHash ?? this.inputHash,
     claimedContentVersion: claimedContentVersion ?? this.claimedContentVersion,
     candidateStatus: candidateStatus,
+    transform: transform,
   );
 
   GlmOcrRawData withCandidate({
@@ -322,6 +411,7 @@ class GlmOcrRawData {
     completedAtMs: completedAtMs,
     inputHash: inputHash ?? this.inputHash,
     claimedContentVersion: claimedContentVersion ?? this.claimedContentVersion,
+    transform: transform,
   );
 
   GlmOcrRawData withoutCandidate() => GlmOcrRawData(
@@ -332,6 +422,20 @@ class GlmOcrRawData {
     completedAtMs: completedAtMs,
     inputHash: inputHash,
     claimedContentVersion: claimedContentVersion,
+    transform: transform,
+  );
+
+  /// 补本次请求的真实转换元数据（客户端 recognize() 在返回结果前调）。
+  GlmOcrRawData withTransform(OcrRequestTransform value) => GlmOcrRawData(
+    mdResults: mdResults,
+    layoutDetails: layoutDetails,
+    usage: usage,
+    jobId: jobId,
+    completedAtMs: completedAtMs,
+    inputHash: inputHash,
+    claimedContentVersion: claimedContentVersion,
+    candidateStatus: candidateStatus,
+    transform: value,
   );
 }
 
@@ -408,6 +512,22 @@ class GlmOcrClient implements OcrRecognizer {
       );
     }
     final originalBytes = await cropFile.readAsBytes();
+    // 十四批 M2：本次请求的真实转换元数据（原图尺寸、请求图尺寸、
+    // 实际 padX/padY）随结果包保存，供裁图换算用，不再假定 0.30。
+    final srcImage = img.decodeImage(originalBytes);
+    if (srcImage == null) {
+      throw OcrException(OcrErrorCode.badImage, '图片损坏，无法识别');
+    }
+    final padX = (srcImage.width * paddingFraction).round();
+    final padY = (srcImage.height * paddingFraction).round();
+    final transform = OcrRequestTransform(
+      srcW: srcImage.width,
+      srcH: srcImage.height,
+      reqW: srcImage.width + padX * 2,
+      reqH: srcImage.height + padY * 2,
+      padX: padX,
+      padY: padY,
+    );
     final paddedBytes = addWhitePadding(originalBytes);
     if (paddedBytes.length > maxImageBytes) {
       throw OcrException(
@@ -450,7 +570,13 @@ class GlmOcrClient implements OcrRecognizer {
     } on HttpException {
       throw OcrException(OcrErrorCode.network, '网络异常，稍后自动重试');
     }
-    return _parseResponse(response);
+    final parsed = _parseResponse(response);
+    return GlmOcrResult(
+      markdown: parsed.markdown,
+      rawData: parsed.rawData.withTransform(transform),
+      totalTokens: parsed.totalTokens,
+      transform: transform,
+    );
   }
 
   GlmOcrResult _parseResponse(GlmOcrHttpResponse response) {
