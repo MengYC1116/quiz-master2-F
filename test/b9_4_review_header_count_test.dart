@@ -148,6 +148,12 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  // M3-11：全部已解决且无到期项时走空状态（伙伴 + “今天没有到期
+  // 复习” + 未来复查错因数），不再渲染页顶三数行；B9-4 的按题计数
+  // 口径不变（metaCounts 仍按 reviewBucketOf 按题落桶，由前两测
+  // 断言）。此处断言空状态与已解决区仍按题汇总：两条已解决错因
+  // 分属两个错因组，每组只关联 1 道题（同一题不双计）；展开一组
+  // 后同一题只出现一次。
   testWidgets('已解决区多错因一题只计 1 道', (tester) async {
     final repo = _FakeRepo(
       questions: [
@@ -166,10 +172,20 @@ void main() {
       ],
     );
     await _pumpReview(tester, repo);
-    expect(find.text('待解决 / 解决中 0 道题'), findsOneWidget);
-    expect(find.text('已解决 1 道'), findsOneWidget);
-    expect(find.text('已解决 2 道'), findsNothing);
-    expect(find.text('复查 1 道'), findsNothing);
+    expect(find.text('今天没有到期复习'), findsOneWidget);
+    expect(
+      find.text('正在等待未来复查的错因有 2 个，到了复查日会自动回来。'),
+      findsOneWidget,
+    );
+    await tester.tap(find.text('查看已掌握题目'));
+    await tester.pumpAndSettle();
+    // 两条错因各成一组，每组只关联 1 道题（不是 2 道）。
+    expect(find.textContaining('关联 1 道题'), findsNWidgets(2));
+    expect(find.textContaining('关联 2 道题'), findsNothing);
+    // 展开第一组：同一题只出现一次。
+    await tester.tap(find.text('解决记录').first);
+    await tester.pumpAndSettle();
+    expect(find.text('第一题'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 }

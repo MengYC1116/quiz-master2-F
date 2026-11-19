@@ -104,11 +104,13 @@ void main() {
       // 直接让文件删失败的注入在当前环境做不到（root 绕过权限位、
       // overlayfs 不支持 chattr +i）：此处锁两点——(a) 成功路径的
       // 数字准确（上一项）；(b) 源码里 `freed += size` 在
-      // `await f.delete()` 之后，且旧写法 `freed += f.lengthSync()`
+      // 物理删除之后，且旧写法 `freed += f.lengthSync()`
       // 已不存在，删失败进 catch 时 freed 不会被提前计入。
+      // 十四批 M2：物理删除走 guard.deleteFileLocked（P2 约束 1，
+      // 已持锁内部函数），顺序锁定随之改到该调用。
       final src = _src('data/db_orphans.dart');
       expect(src, isNot(contains('freed += f.lengthSync()')));
-      final deleteAt = src.indexOf('await f.delete();');
+      final deleteAt = src.indexOf('await guard.deleteFileLocked(f);');
       final freedAt = src.indexOf('freed += size;');
       expect(deleteAt, greaterThan(0));
       expect(freedAt, greaterThan(deleteAt));

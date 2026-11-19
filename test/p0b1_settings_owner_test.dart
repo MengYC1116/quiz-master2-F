@@ -56,6 +56,17 @@ class FakeOwnerRepo extends QuestionRepository {
       sliceKind: 'material',
       sliceText: '题：导数应用综合',
     ),
+    Question(
+      id: 'q3',
+      title: '数列求和',
+      subjectId: 'math',
+      errorTypes: const ['审题失误'],
+      createdAt: DateTime(2026, 11, 10),
+      isOrganized: true,
+      reviewJoined: true,
+      sliceKind: 'material',
+      sliceText: '题：数列求和',
+    ),
   ];
 
   final List<CauseRecord> records = [
@@ -81,6 +92,15 @@ class FakeOwnerRepo extends QuestionRepository {
       subjectId: 'math',
       status: CauseStatus.pending,
       joinedAt: DateTime(2026, 11, 10, 1),
+    ),
+    // M3 D-138：扁平分页按题行计（不是按错因记录计）。3 道题 =
+    // 3 行，pageSize 2 时 2 页、改 20 后 1 页，断言才有区分度。
+    CauseRecord(
+      questionId: 'q3',
+      cause: '审题失误',
+      subjectId: 'math',
+      status: CauseStatus.pending,
+      joinedAt: DateTime(2026, 11, 10, 2),
     ),
   ];
 
@@ -168,9 +188,14 @@ Future<void> pickMenuItem<T>(
   await tester.pumpAndSettle();
   await tester.tap(dropdown);
   await tester.pumpAndSettle();
-  final item = find.byWidgetPredicate(
-    (w) => w is DropdownMenuItem<T> && w.value == value,
-  );
+  final item = find
+      .byWidgetPredicate(
+        (w) => w is DropdownMenuItem<T> && w.value == value,
+      )
+      // 菜单打开时 value 相同的 DropdownMenuItem 有两个（按钮上显示
+      // 的当前值与菜单里的项，后者在树里居后），须取 .last 才是
+      // 菜单里可点的那项（review_page_test 同款做法）。
+      .last;
   await tester.ensureVisible(item);
   await tester.pumpAndSettle();
   await tester.tap(item);

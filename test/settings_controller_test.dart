@@ -93,8 +93,9 @@ class FakeControllerRepo extends QuestionRepository {
   }
 
   @override
-  Future<void> importBackupZip(List<int> bytes) async {
+  Future<List<String>> importBackupZip(List<int> bytes) async {
     restoredZipBytes = bytes;
+    return const [];
   }
 }
 

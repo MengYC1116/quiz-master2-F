@@ -1,9 +1,9 @@
-// 十三批 M2：v3 → v4 迁移 + ocr_jobs 表 + 备份互通验收。
-// v4 = v3 的 14 张表 + ocr_jobs 新表；questions 加 5 个 OCR 列
-//（ocr_raw / ocr_stem / ocr_split_status / ocr_manual_edited /
-// content_version）。v3 库走 Drift onUpgrade 迁移，数据全保留；
-// v2 库走 2→3 再 3→4 两步链式（见 b12_schema_v3_migration_test 的
-// 链式测试）；v2/v3/v4 备份都能恢复进 v4，>4 与 <2 拒绝。
+// 十三批 M2：v3 → v5 迁移 + ocr_jobs 表 + 备份互通验收。
+// v5 = v3 的 14 张表 + ocr_jobs 新表 + attempts 新表；questions 加 5 个
+// OCR 列 + 9 个 M1 列（题型/背景标签/图块/答案版本等）。v3 库走 Drift
+// onUpgrade 迁移，数据全保留；v2 库走 2→3 再 3→4 再 4→5 链式（见
+// b12_schema_v3_migration_test 的链式测试）；v2/v3/v4/v5 备份都能恢复进
+// v5，>5 与 <2 拒绝。
 // 全部用临时目录 / 内存库，不碰真实用户库。
 import 'dart:convert';
 import 'dart:io';
@@ -163,8 +163,8 @@ Future<List<Map<String, Object?>>> _rawRows(
     .toList();
 
 void main() {
-  group('十三批 M2：v3 → v4 迁移', () {
-    test('v3 库打开即迁移到 v4：数据全保留，新列默认值正确', () async {
+  group('十三批 M2：v3 → v5 迁移', () {
+    test('v3 库打开即迁移到 v5：数据全保留，新列默认值正确', () async {
       final tmp = await Directory.systemTemp.createTemp('b13-migrate-');
       addTearDown(() async {
         try {
@@ -180,7 +180,7 @@ void main() {
         (await db.customSelect('PRAGMA user_version').get())
             .single
             .data['user_version'],
-        4,
+        5,
       );
       // 旧数据还在。
       final qs = await AppDatabase.allQuestionsFrom(db);
@@ -200,17 +200,28 @@ void main() {
       expect(qs.single.ocrSplitStatus, '未切分');
       expect(qs.single.ocrManualEdited, isFalse);
       expect(qs.single.contentVersion, 0);
+      // 十四批 M1：v5 的 9 个新列默认值就位（题型 NULL/来源未分类/
+      // 背景 ''/图块 []/答案与选项标签 NULL/answer_version=1）。
+      expect(qs.single.questionType, isNull);
+      expect(qs.single.questionTypeSource, 'unclassified');
+      expect(qs.single.questionBackgroundTags, isEmpty);
+      expect(qs.single.questionBackgroundTagsSource, 'unclassified');
+      expect(qs.single.ocrFigures, '[]');
+      expect(qs.single.correctOption, isNull);
+      expect(qs.single.optionLabels, isNull);
+      expect(qs.single.optionLabelsConfirmed, isFalse);
+      expect(qs.single.answerVersion, 1);
       // ocr_jobs 表存在且为空。
       expect(await _rawRows(db, 'ocr_jobs'), isEmpty);
-      // settings.schemaVersion 写回 4。
+      // settings.schemaVersion 写回 5。
       final settings = await _rawRows(db, 'settings');
       expect(
         settings.singleWhere((r) => r['key'] == 'schemaVersion')['value'],
-        '4',
+        '5',
       );
     });
 
-    test('迁移后 DDL 与全新 v4 库逐字一致', () async {
+    test('迁移后 DDL 与全新 v5 库逐字一致', () async {
       final tmp = await Directory.systemTemp.createTemp('b13-migrate-ddl-');
       addTearDown(() async {
         try {
@@ -228,7 +239,7 @@ void main() {
       expect(await _allDdl(migratedPath), await _allDdl(freshPath));
     });
 
-    test('全新 v4 库含 ocr_jobs 两个索引', () async {
+    test('全新 v5 库含 ocr_jobs 两个索引', () async {
       final tmp = await Directory.systemTemp.createTemp('b13-fresh-idx-');
       addTearDown(() async {
         try {
@@ -253,20 +264,20 @@ void main() {
       );
     });
 
-    test('十三批 P1-1：全新 v4 与迁移后 v4 的 ocr_jobs 都有 lease_token 列', () async {
+    test('十三批 P1-1：全新 v5 与迁移后 v5 的 ocr_jobs 都有 lease_token 列', () async {
       final tmp = await Directory.systemTemp.createTemp('b13-lease-ddl-');
       addTearDown(() async {
         try {
           await tmp.delete(recursive: true);
         } catch (_) {}
       });
-      // 全新 v4。
+      // 全新 v5。
       final freshPath = p.join(tmp.path, 'fresh.db');
       final fresh = await AppDatabase.openAt(freshPath);
       await fresh.close();
       expect(await _allDdl(freshPath), contains(contains('lease_token TEXT')));
-      // v3 迁移到 v4：同一列也在（两份 DDL 字面量逐字一致，
-      // “迁移后 DDL 与全新 v4 库逐字一致”一并锁定）。
+      // v3 迁移到 v5：同一列也在（两份 DDL 字面量逐字一致，
+      // “迁移后 DDL 与全新 v5 库逐字一致”一并锁定）。
       final migratedPath = await _v3DbFile(tmp);
       final migrated = await AppDatabase.openAt(migratedPath);
       await migrated.close();
@@ -327,8 +338,8 @@ void main() {
     });
   });
 
-  group('十三批 M2：备份互通 sv4/sv3/sv2', () {
-    test('sv4 往返：OCR 字段与 ocr_jobs 行都回来', () async {
+  group('十三批 M2：备份互通 sv5/sv3/sv2', () {
+    test('sv5 往返：OCR 字段与 ocr_jobs 行都回来', () async {
       final db = await _openMemoryDb();
       final decoded = await _seedAndExport(db);
       await db.customUpdate('DELETE FROM questions');
@@ -358,7 +369,7 @@ void main() {
       final settings = await _rawRows(db, 'settings');
       expect(
         settings.singleWhere((r) => r['key'] == 'schemaVersion')['value'],
-        '4',
+        '5',
       );
     });
 
@@ -423,11 +434,11 @@ void main() {
       expect(await _rawRows(db, 'recently_viewed_questions'), isEmpty);
     });
 
-    test('sv5 / sv1 拒绝恢复，原库一动不动', () async {
+    test('sv6 / sv1 拒绝恢复，原库一动不动', () async {
       final db = await _openMemoryDb();
       final decoded = await _seedAndExport(db);
       final tooNew = jsonDecode(jsonEncode(decoded)) as Map<String, dynamic>;
-      (tooNew['_meta'] as Map<String, dynamic>)['schemaVersion'] = 5;
+      (tooNew['_meta'] as Map<String, dynamic>)['schemaVersion'] = 6;
       await expectLater(
         () => AppDatabase.importBackupJsonInto(db, tooNew),
         throwsA(isA<BackupRestoreException>()),

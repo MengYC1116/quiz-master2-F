@@ -112,6 +112,7 @@ List<(String, String)> _blocksSummary(List<QuestionContentBlock> blocks) =>
             CodeBlock(:final code, :final language) =>
               ('code:${language ?? ''}', code),
             ImageFallbackBlock() => ('image', ''),
+            FigureBlock(:final figureId) => ('figure', figureId),
           },
         )
         .toList();

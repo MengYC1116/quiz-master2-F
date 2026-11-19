@@ -589,6 +589,7 @@ void main() {
       final result = await AppDatabase.deleteOrphanFiles(
         scan.files.map((f) => f.relativePath).toList(),
         dataDir: tmp.path,
+        db: db,
       );
       expect(result.deletedCount, 3);
       expect(result.freedBytes, 6);
@@ -614,7 +615,7 @@ void main() {
         '../evil.txt',
         'evil.txt',
         '/abs.txt',
-      ], dataDir: tmp.path);
+      ], dataDir: tmp.path, db: db);
       expect(result.deletedCount, 0);
       expect(outside.existsSync(), isTrue);
     });

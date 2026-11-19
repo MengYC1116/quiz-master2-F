@@ -25,8 +25,9 @@ class FakeP1Repo extends QuestionRepository {
   Future<AppSettings> settings() async => AppSettings.defaults;
 
   @override
-  Future<void> importBackupZip(List<int> bytes) async {
+  Future<List<String>> importBackupZip(List<int> bytes) async {
     restoredZipBytes = bytes;
+    return const [];
   }
 
   @override

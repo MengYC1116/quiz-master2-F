@@ -354,13 +354,9 @@ Future<void> expectRichData(QuizDatabase db) async {
   });
   expect(tasks.singleWhere((t) => t.id == 'task-2').pageRotations, isEmpty);
 
-  final state = await db.select(db.reviewState).getSingle();
-  expect(state.queue, [
-    const ReviewQueueItem(questionId: 'q-rich-1', cause: '概念不清'),
-    const ReviewQueueItem(questionId: 'q-rich-2', cause: '计算错误'),
-    const ReviewQueueItem(questionId: 'q-rich-1', cause: '方法不会'),
-  ]);
-  expect(state.position, 1);
+  // 十四批 M2：新导出不含 review_state（导出为 []），旧恢复逻辑
+  // 复刻也恢复不出会话——目标库里没有 review_state 行。
+  expect(await db.select(db.reviewState).get(), isEmpty);
 
   final history = await db.select(db.reviewHistory).get();
   expect(history, hasLength(2));
@@ -383,7 +379,9 @@ void main() {
       expect((await rawRows(db, 'knowledge_points')), hasLength(2));
       expect((await rawRows(db, 'cause_records')), hasLength(3));
       expect((await rawRows(db, 'collect_tasks')), hasLength(3));
-      expect((await rawRows(db, 'review_state')), hasLength(1));
+      // 十四批 M2：备份里的 review_state 行不进恢复（会话快照丢弃），
+      // 恢复后目标库里没有 review_state 行。
+      expect((await rawRows(db, 'review_state')), hasLength(0));
       expect((await rawRows(db, 'review_history')), hasLength(2));
       expect((await rawRows(db, 'recent_tasks')), hasLength(1));
       expect((await rawRows(db, 'settings')), hasLength(4));
@@ -422,19 +420,14 @@ void main() {
       );
     });
 
-    test('review_state.queue 逐项验证：questionId / cause / 队列位置不变', () async {
+    test('review_state.queue 逐项验证：M2 会话不恢复，队列丢弃', () async {
+      // 十四批 M2（P1-6）：备份不含未完成会话——恢复事务清空目标库
+      // 现有的 review_state，备份里的行一律不插。黄金夹具里的
+      // review_state 快照（3 项队列）恢复后不存在。
       final db = await openMemoryDb();
       final golden = await readGoldenJson();
       await AppDatabase.importBackupJsonInto(db, golden);
-      final state = await db.select(db.reviewState).getSingle();
-      expect(state.queue, hasLength(3));
-      expect(state.queue[0].questionId, 'q-rich-1');
-      expect(state.queue[0].cause, '概念不清');
-      expect(state.queue[1].questionId, 'q-rich-2');
-      expect(state.queue[1].cause, '计算错误');
-      expect(state.queue[2].questionId, 'q-rich-1');
-      expect(state.queue[2].cause, '方法不会');
-      expect(state.position, 1);
+      expect(await db.select(db.reviewState).get(), isEmpty);
     });
 
     test('存储表示规范化：非规范 \'\' 编回规范值，规范值逐字节不变', () async {
@@ -486,14 +479,11 @@ void main() {
         await rawString(db, 'collect_tasks', "id = 'task-1'", 'page_rotations'),
         '{"1":90,"3":270}',
       );
-      expect(
-        await rawString(db, 'review_state', 'id = 1', 'queue'),
-        '[{"q":"q-rich-1","c":"概念不清"},{"q":"q-rich-2","c":"计算错误"},'
-        '{"q":"q-rich-1","c":"方法不会"}]',
-      );
+      // 十四批 M2：review_state 行不进恢复（见 6b），此处不断言队列值。
+      expect(await db.select(db.reviewState).get(), isEmpty);
     });
 
-    test('重导出与黄金夹具对比：差异仅 17 处规范化', () async {
+    test('重导出与黄金夹具对比：差异仅 38 处规范化', () async {
       final db = await openMemoryDb();
       final golden = await readGoldenJson();
       await AppDatabase.importBackupJsonInto(db, golden);
@@ -501,7 +491,7 @@ void main() {
         await AppDatabase.exportBackupJsonFrom(db),
       ) as Map<String, dynamic>;
       // 十二批 D-91：黄金夹具是 v2 备份（_meta.schemaVersion = 2），
-      // 重导出盖的是当前版本戳（AppDatabase.schemaVersion = 4），
+      // 重导出盖的是当前版本戳（AppDatabase.schemaVersion = 5），
       // 两者不等是迁移的正常结果，不是回归；断言当前版本。
       expect(
         (reExported['_meta'] as Map)['schemaVersion'],
@@ -517,6 +507,9 @@ void main() {
       );
       final diffs = <String>[];
       for (final t in AppDatabase.backupTables) {
+        // 十四批 M2：review_state 恢复时丢弃、重导出为空，黄金夹具
+        // 里的 1 行不在主键集合对比里（不是规范化差异）。
+        if (t == 'review_state') continue;
         // 十二批 D-91：v2 黄金夹具里没有 recently_viewed_questions
         // 键，缺键按空表算（v3 重导出里它是空列表）。
         final oldRows = {
@@ -550,8 +543,8 @@ void main() {
           "cause_records/$legacyCausePk/remedy_history:  → []",
           "collect_tasks/task-legacy/page_rotations:  → {}",
           // 十二批 D-91：第 8 处是迁移写回——恢复把 settings.schemaVersion
-          // 写回当前版本（v4 的 '4'），黄金夹具（v2）里它是 '2'。
-          "settings/schemaVersion/value: 2 → 4",
+          // 写回当前版本（v5 的 '5'），黄金夹具（v2）里它是 '2'。
+          "settings/schemaVersion/value: 2 → 5",
           // 十三批 M2：第 9–17 处是 v4 新列的 DDL 默认值——v2 黄金夹具
           // 的 questions 行没有这 3 列（ocr_raw / ocr_stem 是可空列，
           // 缺键与 NULL 同值，不产生差异），恢复时按 DDL 默认值补齐。
@@ -564,6 +557,32 @@ void main() {
           "questions/q-legacy-1/ocr_split_status: null → 未切分",
           "questions/q-legacy-1/ocr_manual_edited: null → 0",
           "questions/q-legacy-1/content_version: null → 0",
+          // 十四批 M1：第 18–38 处是 v5 新列的 DDL 默认值——v2 黄金夹具
+          // 的 questions 行没有这 10 列（question_type / correct_option /
+          // option_labels 是可空列，缺键与 NULL 同值，不产生差异），
+          // 其余 7 列恢复时按 DDL 默认值补齐（第 36–38 处是 M3 的
+          // answer_pending_recheck，D-130：仍属 v5）。
+          "questions/q-rich-1/question_type_source: null → unclassified",
+          "questions/q-rich-1/question_background_tags: null → ",
+          "questions/q-rich-1/question_background_tags_source: null → unclassified",
+          "questions/q-rich-1/ocr_figures: null → []",
+          "questions/q-rich-1/option_labels_confirmed: null → 0",
+          "questions/q-rich-1/answer_version: null → 1",
+          "questions/q-rich-1/answer_pending_recheck: null → 0",
+          "questions/q-rich-2/question_type_source: null → unclassified",
+          "questions/q-rich-2/question_background_tags: null → ",
+          "questions/q-rich-2/question_background_tags_source: null → unclassified",
+          "questions/q-rich-2/ocr_figures: null → []",
+          "questions/q-rich-2/option_labels_confirmed: null → 0",
+          "questions/q-rich-2/answer_version: null → 1",
+          "questions/q-rich-2/answer_pending_recheck: null → 0",
+          "questions/q-legacy-1/question_type_source: null → unclassified",
+          "questions/q-legacy-1/question_background_tags: null → ",
+          "questions/q-legacy-1/question_background_tags_source: null → unclassified",
+          "questions/q-legacy-1/ocr_figures: null → []",
+          "questions/q-legacy-1/option_labels_confirmed: null → 0",
+          "questions/q-legacy-1/answer_version: null → 1",
+          "questions/q-legacy-1/answer_pending_recheck: null → 0",
         ]),
       );
     });
@@ -612,9 +631,8 @@ void main() {
       await AppDatabase.importBackupZipInto(db, zipBytes, dataDir: tmp.path);
       final qs = await AppDatabase.allQuestionsFrom(db);
       expect(qs, hasLength(3));
-      final state = await db.select(db.reviewState).getSingle();
-      expect(state.queue, hasLength(3));
-      expect(state.queue[0].questionId, 'q-rich-1');
+      // 十四批 M2：旧备份里的 review_state 快照不恢复。
+      expect(await db.select(db.reviewState).get(), isEmpty);
       final original = File(
         p.join(tmp.path, 'imports', 'task-1', 'original.png'),
       );
@@ -803,14 +821,14 @@ void main() {
         ),
         '{}',
       );
-      expect(await rawString(db, 'review_state', 'id = 1', 'queue'), '');
+      // 十四批 M2：备份里的 review_state 行不进恢复（会话快照丢弃），
+      // 目标库里没有 review_state 行（不再断言 queue 缺键落 ''）。
+      expect(await db.select(db.reviewState).get(), isEmpty);
       // 业务值仍为空集合（语义等价）。
       final qLegacy = (await AppDatabase.allQuestionsFrom(db))
           .singleWhere((q) => q.id == 'q-legacy-1');
       expect(qLegacy.folderIds, isEmpty);
       expect(qLegacy.tags, isEmpty);
-      final state = await db.select(db.reviewState).getSingle();
-      expect(state.queue, isEmpty);
     });
   });
 

@@ -14,6 +14,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:path/path.dart' as p;
 import 'package:quiz_master2/data/database.dart';
 import 'package:quiz_master2/data/drift/quiz_database.dart';
+import 'package:quiz_master2/data/file_lifecycle_guard.dart';
 
 Future<QuizDatabase> _openTestDb() => AppDatabase.openForTest();
 
@@ -73,6 +74,31 @@ Future<File> _writeDataFile(
   final f = File(p.join(dataDir.path, rel));
   await f.parent.create(recursive: true);
   return f.writeAsBytes(bytes);
+}
+
+/// 十四批 M5 修复轮 2（B-FIX2-2）：测试专用 helper——复刻旧生产入口
+/// “不带 DB 也能删”的行为（只取文件锁删文件，不重算数据库引用）。
+/// 生产 API 已改为 `db` 必填，不再提供这条路；旧行为只保留在这里，
+/// 供下面这项测试证明“无 DB 重算会误删被引用的文件”，即该旁路被封
+/// 的原因。不要在生产代码或其它测试里复用它来绕过引用检查。
+Future<int> _deleteOrphanFilesWithoutDbForTest(
+  List<String> relativePaths, {
+  required String dataDir,
+}) async {
+  final guard = FileLifecycleGuard.instance;
+  return guard.withLock(() async {
+    var deleted = 0;
+    for (final rel in relativePaths) {
+      if (!rel.startsWith('imports/') && !rel.startsWith('slices/')) {
+        continue;
+      }
+      final abs = p.join(dataDir, rel);
+      final f = File(abs);
+      if (!f.existsSync()) continue;
+      if (await guard.deleteFileLocked(f)) deleted++;
+    }
+    return deleted;
+  });
 }
 
 void main() {
@@ -140,19 +166,29 @@ void main() {
       expect(File(p.join(tmp.path, 'slices/orphan.png')).existsSync(), isFalse);
     });
 
-    test('不传 db 时保持旧行为（既有调用方不受影响）', () async {
+    test('无 DB 重算的旧行为只剩测试 helper：它会误删被引用的文件（旁路被封的原因）', () async {
       await _seedQuestion(
         db,
         id: 'q1',
         subjectId: 'math',
         slicePath: 'slices/q1.png',
       );
-      final result = await AppDatabase.deleteOrphanFiles([
+      // 生产入口已要求 db 必填，此处只能走测试专用 helper；它不重算
+      // 引用，会把题行仍在引用的 q1.png 也删掉——正是生产 API 封闭
+      // 该路径的原因。
+      final deleted = await _deleteOrphanFilesWithoutDbForTest([
         'slices/q1.png',
       ], dataDir: tmp.path);
-      expect(result.deletedCount, 1);
-      expect(result.skippedReferencedCount, 0);
+      expect(deleted, 1);
       expect(File(p.join(tmp.path, 'slices/q1.png')).existsSync(), isFalse);
+      // 对照：同一文件走生产入口（带 db）时必须被跳过。
+      await _writeDataFile(tmp, 'slices/q1.png', [3]);
+      final result = await AppDatabase.deleteOrphanFiles([
+        'slices/q1.png',
+      ], dataDir: tmp.path, db: db);
+      expect(result.deletedCount, 0);
+      expect(result.skippedReferencedCount, 1);
+      expect(File(p.join(tmp.path, 'slices/q1.png')).existsSync(), isTrue);
     });
   });
 }

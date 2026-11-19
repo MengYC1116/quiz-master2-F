@@ -75,8 +75,8 @@ Future<List<String>> _allDdl(String dbPath) async {
 }
 
 void main() {
-  group('十二批 D-91 + 十三批 M2：v2 → v4 链式迁移', () {
-    test('v2 库打开即链式迁移到 v4：数据全保留，新表与新列就位', () async {
+  group('十二批 D-91 + 十三批 M2：v2 → v5 链式迁移', () {
+    test('v2 库打开即链式迁移到 v5：数据全保留，新表与新列就位', () async {
       final tmp = await Directory.systemTemp.createTemp('b12-migrate-');
       addTearDown(() async {
         try {
@@ -94,7 +94,7 @@ void main() {
         (await db.customSelect('PRAGMA user_version').get())
             .single
             .data['user_version'],
-        4,
+        5,
       );
       // 旧数据还在。
       final qs = await AppDatabase.allQuestionsFrom(db);
@@ -106,6 +106,17 @@ void main() {
       expect(qs.single.ocrSplitStatus, '未切分');
       expect(qs.single.ocrManualEdited, isFalse);
       expect(qs.single.contentVersion, 0);
+      // 十四批 M1：v5 的 9 个新列默认值就位（题型 NULL/来源未分类/
+      // 背景 ''/图块 []/答案与选项标签 NULL/answer_version=1）。
+      expect(qs.single.questionType, isNull);
+      expect(qs.single.questionTypeSource, 'unclassified');
+      expect(qs.single.questionBackgroundTags, isEmpty);
+      expect(qs.single.questionBackgroundTagsSource, 'unclassified');
+      expect(qs.single.ocrFigures, '[]');
+      expect(qs.single.correctOption, isNull);
+      expect(qs.single.optionLabels, isNull);
+      expect(qs.single.optionLabelsConfirmed, isFalse);
+      expect(qs.single.answerVersion, 1);
       final tasks = await AppDatabase.allCollectTasksFrom(db);
       expect(tasks, hasLength(1));
       expect(tasks.single.status, CollectStatus.failed);
@@ -124,7 +135,7 @@ void main() {
         await db.customSelect('SELECT * FROM ocr_jobs').get(),
         isEmpty,
       );
-      // settings.schemaVersion 写回 4。
+      // settings.schemaVersion 写回 5。
       final settings =
           (await db
                   .customSelect(
@@ -134,10 +145,10 @@ void main() {
                   .get())
               .map((r) => r.data)
               .toList();
-      expect(settings.single['value'], '4');
+      expect(settings.single['value'], '5');
     });
 
-    test('迁移后 DDL 与全新 v4 库逐字一致', () async {
+    test('迁移后 DDL 与全新 v5 库逐字一致', () async {
       final tmp = await Directory.systemTemp.createTemp('b12-migrate-ddl-');
       addTearDown(() async {
         try {

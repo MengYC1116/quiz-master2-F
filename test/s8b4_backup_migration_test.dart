@@ -17,7 +17,7 @@ import 'package:quiz_master2/data/drift/quiz_database.dart';
 
 void main() {
   group('B4.2 backupTables', () {
-    test('含补齐的 4 张表 + question_boxes + 最近查看 + OCR 任务，共 15 张', () {
+    test('含补齐的 4 张表 + question_boxes + 最近查看 + OCR 任务 + attempts，共 16 张', () {
       expect(
         AppDatabase.backupTables,
         containsAll([
@@ -30,9 +30,11 @@ void main() {
           'recently_viewed_questions',
           // 十三批 M2：v4 新表。
           'ocr_jobs',
+          // 十四批 M2：v5 新表。
+          'attempts',
         ]),
       );
-      expect(AppDatabase.backupTables.length, 15);
+      expect(AppDatabase.backupTables.length, 16);
     });
   });
 
@@ -151,7 +153,8 @@ void main() {
       );
       final tasks = decoded['collect_tasks'] as List;
       expect(tasks.any((r) => (r as Map)['id'] == 'ct-marker'), isTrue);
-      expect((decoded['review_state'] as List).length, 1);
+      // 十四批 M2：备份不含未完成会话，review_state 导出为 []。
+      expect((decoded['review_state'] as List).length, 0);
       expect((decoded['review_history'] as List).length, 1);
       expect((decoded['recent_tasks'] as List).first['title'], 'marker-task');
       // §2.3：_meta 在顶层，表名仍平铺。
@@ -163,7 +166,7 @@ void main() {
       expect(decoded['question_boxes'], isA<List>());
     });
 
-    test('备份 → 改动/清空 → 恢复 → 4 张表数据回来', () async {
+    test('备份 → 改动/清空 → 恢复 → 3 张表数据回来，会话不恢复（M2）', () async {
       final exported = jsonDecode(
         await AppDatabase.exportBackupJsonFrom(db),
       ) as Map<String, dynamic>;
@@ -185,9 +188,11 @@ void main() {
           .map((r) => r.data)
           .toList();
       expect(tasks.any((r) => r['id'] == 'ct-marker'), isTrue);
+      // 十四批 M2：恢复事务清空 review_state、备份里的行不插，
+      // 会话不回来。
       expect(
         await db.customSelect('SELECT * FROM review_state').get(),
-        hasLength(1),
+        hasLength(0),
       );
       expect(
         await db.customSelect('SELECT * FROM review_history').get(),
@@ -229,6 +234,8 @@ void main() {
         ),
         isTrue,
       );
+      // 本用例恢复被拒绝、原库不动：种子里的 review_state 原行保留
+      // （十四批 M2 的“恢复清空 review_state”只发生在恢复成功时）。
       expect(
         await db.customSelect('SELECT * FROM review_state').get(),
         hasLength(1),

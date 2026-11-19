@@ -714,7 +714,11 @@ void main() {
       expect(found, containsAll(['slices/q2.png', 'imports/task-old/x.jpg']));
       expect(found, isNot(contains('slices/q1.png')));
       // 清理只删孤儿。
-      final res = await AppDatabase.deleteOrphanFiles(found, dataDir: dataDir);
+      final res = await AppDatabase.deleteOrphanFiles(
+        found,
+        dataDir: dataDir,
+        db: db,
+      );
       expect(res.deletedCount, 2);
       expect(File(p.join(dataDir, 'slices', 'q1.png')).existsSync(), isTrue);
     });

@@ -604,17 +604,20 @@ void main() {
         expect(stored.slicePath, endsWith('-b.png'));
         if (reason == null) {
           // 接受先提交：题干为旧候选、状态 accepted，随后重框换切片。
+          // 十四批 M2：重框（slice_path 变化）content_version +1，
+          // 接受 5→6、重框 6→7，终态 7。
           expect(raw.candidateStatus, OcrCandidateStatus.accepted);
           expect(stored.ocrStem, expectedStem);
           expect(stored.ocrSplitStatus, '自动切分');
-          expect(stored.contentVersion, 6);
+          expect(stored.contentVersion, 7);
         } else {
           // 重框先提交：接受被拒 hash_mismatch、候选 stale、题干不动。
+          // 十四批 M2：重框 5→6、接受事务标 stale 再 +1，终态 7。
           expect(reason, 'hash_mismatch');
           expect(raw.candidateStatus, OcrCandidateStatus.stale);
           expect(stored.ocrStem, '旧题干');
           expect(stored.ocrSplitStatus, '未切分');
-          expect(stored.contentVersion, 6);
+          expect(stored.contentVersion, 7);
         }
       }
     });

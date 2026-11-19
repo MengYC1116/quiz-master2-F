@@ -183,6 +183,11 @@ void main() {
         '{"q":"q1"}',
       ]) {
         final data = await _validBackup();
+        // 十四批 M2：导出不再含 review_state 行，手动注入一行
+        // 再改它的 queue（校验仍按行里有的 queue 形状检查旧备份）。
+        data['review_state'] = [
+          {'id': 1, 'queue': '[]', 'position': 0, 'updated_at': 0},
+        ];
         (data['review_state'] as List)[0]['queue'] = bad;
         expect(
           () => AppDatabase.validateBackupData(data),
@@ -191,6 +196,9 @@ void main() {
         );
       }
       final data = await _validBackup();
+      data['review_state'] = [
+        {'id': 1, 'queue': '[]', 'position': 0, 'updated_at': 0},
+      ];
       (data['review_state'] as List)[0]['queue'] = 'not-json';
       final target = await _seedTargetWithMarker();
       final before = await _count(target, 'questions');
@@ -225,6 +233,11 @@ void main() {
         (data['questions'] as List)[0][col] = '';
       }
       (data['cause_records'] as List)[0]['remedy_history'] = '';
+      // 十四批 M2：导出不再含 review_state 行，手动注入一行再写 ''；
+      // 校验仍通过（'' 是 D-51 允许的空集合表示），但恢复时该行丢弃。
+      data['review_state'] = [
+        {'id': 1, 'queue': '[]', 'position': 0, 'updated_at': 0},
+      ];
       (data['review_state'] as List)[0]['queue'] = '';
       (data['collect_tasks'] as List)[0]['page_rotations'] = '';
       AppDatabase.validateBackupData(data); // 不抛
@@ -243,14 +256,9 @@ void main() {
         ),
         isEmpty,
       );
+      // 十四批 M2：注入的 review_state 行恢复时丢弃，目标库里没有行。
       expect(
-        AppDatabase.decodeQueue(
-          (await target
-                  .customSelect('SELECT queue FROM review_state WHERE id = 1')
-                  .get())
-              .single
-              .data['queue'],
-        ),
+        await target.customSelect('SELECT * FROM review_state').get(),
         isEmpty,
       );
       expect(
