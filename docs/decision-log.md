@@ -1222,3 +1222,578 @@ layer-2 行保留不动，编辑器读到时直接丢弃）；③ `docs/代码�
   quiz-master2.db.b13-p1r2）。第二轮窄复审材料
   gpt-rereview-batch13-p1-round2.md 已备好，待主代理跑浏览器复审
   （思考模式）。
+
+## D-117 — 十四批全部待定问题：Meng 2026-11-18 22:57 定（a–e、⑥、⑦）
+
+背景：Meng 22:53 定调——刷题/软件内答题是核心中的核心，是能不能
+留下用户的关键，其他功能再好、这个不合适就百分百流失、项目破产。
+M3 是十四批里最重要、必须最谨慎对待的模块。以下决定全部以此为准。
+
+- (a) P1-8 无标准答案时的“已解决”：选新选项 ③——能点，但记为
+  “未核验的自我判断”，不推进正式治愈；只有用户确认对照过课本、
+  讲义等可靠外部资料后，才计入治愈进度。GPT 同倾向。
+- (b) P1-7 刷题筛选：两个都要。到期复习默认只筛到期/逾期错因；
+  专项练习作为 v1 第二种模式，复用同一会话，只在筛选与提交规则
+  上不同——提前练不推进治愈。
+- (c) 材料大题内小问型式不一：选 ①——主题型记“待确认”，提示用户
+  分框拆题或手动指定；不做“一题多型”存储。材料本身按两维方案记
+  为背景标签。
+- (d) P1-9.4 同会话第二次“已解决”：接受收紧——不再推进治愈。
+  两次成功必须来自不同会话（现行为：同会话连点两次即可治愈，
+  本决定改变现行为）。
+- (e) 实施前流程：先写 PLAN-14-REV2，再送 GPT 做一轮窄审（只审
+  改动部分），通过后再开工；不直接开工。
+- (f) ⑥ 两次治愈成功至少间隔 24 小时：接受。GPT 新提，比 (d)
+  更严（不同 session_id 不够，两次会话隔一分钟也能刷满一次治愈）。
+  代价：一个错因最快也要到第二天才能治愈；换来“已解决”真正可信。
+- (g) ⑦ 桌面端键盘快捷键（A/B/C/D 选选项、回车提交、S 跳过、
+  1/2/3 置信度/判分）：不加。维持旧决定（不用快捷键），本次不推翻。
+- 默认纳入 REV2 的其余项，Meng 同意不反对即按此写：作答前先选
+  置信度（确定/不太确定/猜的）；核验来源字段（软件标准答案/
+  客观判分/外部资料核对/未核验）；答案留版本（改答案后旧作答
+  记录不重新判分）；单独记一份作答记录表（attempts）。
+- 下一步：写 PLAN-14-REV2.md（REV1 + 两轮晚间 GPT 讨论 + 软件内
+  答题 + 本决定），含完整用户使用流程；然后按 (e) 送 GPT 窄审。
+
+## D-118 — 十四批 M1 实施中判断（分类器口径，2026-11-19，工作员自决）
+
+背景：PLAN-14-REV4.3 未写明的四处口径，实施中按既定规则自己判断推进。
+
+- (a) 主观作答信号是兜底信号：简述/解释/论述/分析等主观动词仅当无
+  其他中/高信号时才参与判定；有任一其他信号时不单独成候选，避免
+  “分析+计算”类复合指令误判冲突。同一主观信号内先判 essay（论述 +
+  结合/试论述/不少于/N 字）再判 short_answer，不同时产生两个候选类型。
+- (b) 人工改题型版本递增口径：`withManualQuestionType` 仅当题型**值**
+  变化时 `content_version +1`；值不变、只把来源从 auto 翻为 manual
+  时不递增（来源保护位不是用户可见内容）。人工指定待确认 → NULL +
+  source=manual，之后 OCR 不得自动分类。
+- (c) 分类器未定型时也写回：自动应用/接受候选时，若新内容无可靠信号，
+  分类器结果 NULL + unclassified 也写库（覆盖旧的自动分类），因为内容
+  变了、旧分类不再有依据；`'manual'` 字段除外。
+- (d) 换行分隔设问句的保守口径：无标记小问只认“每段以问号收尾”的情形，
+  判不准即视为无法可靠分割、走单题路径。
+- 另：行内 A–E 选项沿用切分器既有合同——行内 A 前须 ≥2 空格（防
+  “集合 A，且 A. B…”误切，M4 回归不许改切分行为）；测试用例按此合同写。
+- 另：自测发现并修了一个分类器真 bug——多小问全同型时
+  `_classifySubQuestions` 用 `types.single` 抛 `Too many elements`
+  （types 是每小问一个元素，长度 ≥2），改为 `types.toSet().single`；
+  53 个分类器测试覆盖该路径。
+
+## D-119 — 十四批 M1 实施中判断（备份导入白名单最小修复，2026-11-19，工作员自决）
+
+背景：任务指令说“备份导出列白名单与 attempts 全表导出、review_history
+新增字段导出是 M2 的工作，M1 不要改 `lib/data/db_backup.dart`”。实施
+中发现该前提与代码现实不符：导出是 `SELECT *`（新列已进备份文件），
+并非 PLAN E10 所说的“显式列白名单”；导入白名单 `knownColumns` 仍是
+v4，不跟进则 v5 备份往返全断（8 个既有测试失败：b13 往返/sv3/sv2/
+D-101/zip、p1 往返/v2、b3 现场往返），M1 全绿验收门无法通过，且
+v5 用户导出的备份无法恢复（真实回归）。
+
+决定：M1 只做“接受并原样恢复”的最小修复——`knownColumns` 加
+questions 9 列、cause_records 2 列、review_state 4 列、review_history
+8 列；插入映射按缺键走 DDL 默认值、键在原样恢复（option_labels 的
+NULL = 未确认，与 '[]' 不同义，单独处理）；JSON 形状校验加
+option_labels；值域校验加 question_type（17 值，null 允许）、
+option_labels_confirmed（0/1）、review_mode / verification_status /
+verification_source（null 允许，跨字段一致性由 DDL CHECK 在插库时
+enforced）。仍留给 M2、M1 一律不动：attempts 进备份清单与全表导出、
+图块文件 ZIP 归档、review_state 会话快照规则（M2 P1-8）。
+
+## D-120 — 十四批 M2 实施中判断（版本比对口径，2026-11-19，工作员自决）
+
+背景：方案要求“比对口径：只比较用户可见内容字段，不比较 ocr_raw
+技术元数据；仅技术元数据变化不递增”，但同时要求 raw-only 写回
+（候选 pending、LaTeX 不平衡）仍 +1 content_version。两者看似冲突：
+前者说技术元数据不计，后者说一次 raw 写回要 +1。
+
+决定：两者都成立，分工不同——raw-only 写回的 +1 是 v4 规则（worker
+的 claimedVersion 守门与 M5“新结果到了”的判定依赖版本移动），接受候
+选恒 +1（提交了一份新 OCR 内容包）；“仅技术元数据变化不递增”只适
+用于自动应用时用户可见内容完全相同、以及经 upsert 的重新保存（例
+如 usage/token 变化）。中央版本权威在 `upsertQuestionIntoImpl` 内
+统一算：可见内容字段（ocrStem、ocrSplitStatus、ocrFigures、slicePath/
+sliceWidth/sliceHeight、questionType、候选状态）变了 → content_version
++1；答案侧字段变了 → answer_version +1；同一保存最多各 +1；无变化
+不递增；调用方纯函数的预 +1 归一化为恰好一次。候选状态变化计入可
+见内容（用户可见状态，横幅显隐随它变），故 dismissOcrCandidateFlag
+的纯函数 +1 在落库时保留。
+
+## D-121 — 十四批 M2 实施中判断（中央版本权威，2026-11-19，工作员自决）
+
+背景：版本递增曾散落在各写入路径（worker、acceptCandidateStem、
+dismiss、重框、upsert），同一保存可能多 +1 或漏 +1。
+
+决定：全部 UI 保存路径汇合于 `upsertQuestionIntoImpl` 统一算版本
+（见 D-120 的字段口径）；`recordSelfCheckIntoImpl`、
+`setReviewJoinedIntoImpl` 不走 upsert，不受影响；重框
+`replaceQuestionBoxesAndSliceIntoImpl` 内 slice_path 变化时在同一
+事务内 +1。question_type 是归类字段之外的例外（变化 → content +1）；
+文件夹/标签/学科/考试等归类字段修改 → 两个版本都不碰。
+
+## D-122 — 十四批 M2 实施中判断（渲染插入口径，2026-11-19，工作员自决）
+
+背景：方案只说“渲染时按 sequence_index 插入内容序列”，未规定
+md 锚定与文本锚定在渲染层的具体落点。
+
+决定：`buildContentBlocks` 中 md 锚定按 md 引用字符偏移插入相邻
+题干段之间；text 锚定按图块中心纵向相对位置折算到段下标；fallback
+排末尾并标“位置未确认”。图块是统一内容序列的一种 Block
+（FigureBlock），只存在 ocr_figures 里，不拼回题干
+（`blocksToMarkdown` 跳过 FigureBlock）。
+
+## D-123 — 十四批 M2 实施中判断（attempts 校验值域来源，2026-11-19，工作员自决）
+
+背景：备份校验 `_validateBackupRowDomains` 需给 attempts 各列定
+值域，方案未逐字给出。
+
+决定：值域取自 PLAN-14-REV4.3 的 M3 口径与 attempts 表注释：
+mode ∈ {到期复习, 专项练习}、status ∈ {已提交, 已完成作答, 跳过}、
+confidence ∈ {确定, 不太确定, 猜的} 或 null、correct ∈ {0, 1} 或
+null、answer_version/content_version 为 ≥0 整数。M3 若改枚举，校验
+层两处一起改。另注意 DDL 现实：review_history.review_mode 只许
+“到期复习”（专项练习不写本表），verification_source 只许
+软件标准答案/客观判分/外部资料核对/未核验——测试数据已按 DDL 修正。
+
+## D-124 — 十四批 M2 实施中判断（孤儿清理锁口径，2026-11-19，工作员自决）
+
+背景：方案要求“扫描与删除在同一锁内完成”，但设置页的预览扫描
+（scanOrphanFilesFromImpl）本就不持锁。
+
+决定：预览扫描不在锁内，只是给用户看的清单；删除时锁内重算才是
+权威口径（数据库实时查询 + 待提交集合 + 备份暂存区占用，沿用
+FR-06(a) 设计）。`deleteOrphanFilesImpl` 整体包进 `guard.withLock`，
+锁内重算引用，只删三者皆无的文件；`.tmp` 纵使传入也跳过（计入
+skipped）。
+
+## D-125 — 十四批 M2 实施中判断（图块删除口径，2026-11-19，工作员自决）
+
+背景：方案说“纠错编辑器里图块可删；删除后回退整题原图”，未明确
+删除是即时落库还是随“保存修改”一起提交。
+
+决定：编辑器里删除是即时落库动作（deleteFigureFromQuestion +
+repo.save，不等“保存修改”）；旧文件不立即删，进孤儿清理；删除后
+该段显示整题原图（“删除后回退整题原图”在编辑器内实现为本段换成
+整题原图 + “配图已删除，以下为整题原图”文案）。图块不存在时
+deleteFigureFromQuestion 原样返回（不动版本）。
+
+## D-126 — 十四批 M2 实施中判断（.tmp 崩溃残留，2026-11-19，工作员自决）
+
+背景：方案规定“.tmp 临时文件永不由孤儿清理删除”，但未说崩溃后
+残留的 .tmp 怎么办。
+
+决定：写一半的临时文件只由写路径自己在失败/回滚时清理；崩溃残留
+占小量磁盘，不启动自动清理（启动清理只覆盖
+`.backup-staging-<纯数字时间戳>`，严格匹配，其他同名目录一概不动）。
+详情页重框/切片自愈的 tmp 登记窗口内，孤儿清理见登记即跳过；rename
+成功后解除两条登记，库里已指向新路径。
+
+## D-127 — 十四批 M2 实施中判断（图块写失败降级，2026-11-19，工作员自决）
+
+背景：方案要求“任一步失败不写引用、不留无效路径”，但未明确图块
+裁图失败时整份 OCR 结果怎么办。
+
+决定：任一图块写失败整批失败（已写文件按协议清理），调用方按
+“无图块”（ocr_figures='[]'）继续写回题干，不让一次裁图失败丢掉
+整份识别结果。worker 自动应用与 acceptCandidateStem 均按此口径
+（FigureWriteException 时降级为 `[]` 不阻断题干写回）。
+
+## D-128 — 十四批 M2 测试发现（buildContentBlocks 首段越界，2026-11-19，工作员自决）
+
+背景：新测试 `b14_m2_figures_test.dart` 抓到 `buildContentBlocks`
+里首段不足 40 字时 `firstText.substring(0, 40)` 越界抛 RangeError。
+
+决定：改为 `substring(0, min(40, firstText.length))`。属 M2 自己写
+的代码的 bug，非方案问题，修后该文件 25/25 全绿。
+
+## D-129 — 十四批 M2 收尾修正（版本权威 max 口径 + 旧测试按新契约更新，2026-11-19，工作员自决）
+
+背景：全量测试 18 败，根因两类。(a) M2 中央版本权威初版把“调用方
+模型里预置的 +1 归一化掉”写死了：无可见内容变化时一律按库内旧值
+写回。这与 b13 既有契约冲突——`_RacingRecognizer` 与 b13_migration
+测试用 `copyWith(contentVersion: 旧值+1)` 只改版本整行写回（并发守
+门模拟、版本时钟移动），旧 upsert 是如数写回的。初版把它归一化掉后
+worker 不再丢弃识别期间被改的题、迁移测试版本 4 变 3。
+
+决定：版本权威改为 max 口径——新版本 = max(库内旧值, 模型值) +
+（可见内容变了且模型未抬高时再 +1）。调用方显式抬高版本时以调用
+方为准（不双计）；仅当模型版本未抬高时才按可见内容变化递增；版本
+永不回退。D-120/D-121 的“归一化”按此修正理解。答案侧同理。
+
+背景 (b)：其余 16 败是 M2 行为变更与旧断言的正面冲突，按 M2 契约
+更新旧测试（只改测试，不改产品行为）：重框 slice_path 变化 +1，
+故 b13_p1_1_candidate 并发接受+重框终态 6→7；attempts 进备份，
+backupTables 15→16（B4.2、P1 §2.3）；review_state 不进备份、
+恢复丢弃会话，故 B3/B4.2/FR-07/FR-21 的 review_state 行数与队列
+断言改为 0/不存在，FR-07 的 queue 坏值/D-51 测试改为手动注入
+review_state 行再断言；FR-22 源码顺序锁定随物理删除改走
+guard.deleteFileLocked 更新；b14_m1_migration 合成 attempts 行的
+status '已判分' 不在 PLAN 枚举（已提交/已完成作答/跳过）内，改
+为 '已提交'（lib 内无任何代码写 '已判分'）。
+
+## D-130 — 十四批 M3：`answer_pending_recheck` 列仍属 v5，不升 v6（2026-11-19，工作员自决）
+
+背景：P1-A 需要“答案待重新核对”状态表示，questions 需新列
+`answer_pending_recheck`。v5 迁移已由 M1 落地在库，本批若升 v6 会
+多一次全库迁移与备份口径变更。
+
+决定：新列仍属 v5——建表 DDL 与 `_upgrade4To5` 同步加（注释“9 列”
+改为“10 列”），备份导出白名单同步加该列，恢复缺键走 DDL 默认值 0。
+保持 D-91 sqlite_master 一致（建表与迁移的列集合相同）。
+
+## D-131 — 十四批 M3：CauseRecord 模型加 `id`（2026-11-19，工作员自决）
+
+背景：review_history.cause_id 需要指向 cause_records 行的稳定身份，
+旧 CauseRecord 模型无 id 字段，只能用 `questionId|cause` 拼。
+
+决定：模型加可空 `id`（内存新造为 null）；`causeStableId` 有行 id
+用 id，无 id 回退 `questionId|cause`。`_causeRecordFromDb` 读 id，
+`_causeRecordCompanion` 有 id 时带上。
+
+## D-132 — 十四批 M3：review_count 沿用旧口径（2026-11-19，工作员自决）
+
+背景：P2-6 要求实现时与字段原有语义核对，不预设按错因事件还是按题计数。
+
+决定：沿用旧口径——每错因事件 +1（questions.review_count+1 随每条
+verdict 提交）；“不确定”中性事件除外（不改 cause_records，也不 +1）。
+
+## D-133 — 十四批 M3：单选只改标签顺序后重选同一标签，须另点“确认选项”才恢复判分（2026-11-19，工作员自决）
+
+背景：P1-A 延伸——单选只调换标签顺序、集合不变时 correct_option
+含义已变。数据层 `_applyOptionLabelChangeRules`：未带
+answerReconfirmed 信号时置 NULL、待核对；仅当同次保存带重确认信号
+才保留并清待核对。
+
+决定：整理/详情页的“重新选定正确选项”点选即带重确认信号
+（answerReconfirmed=true）；仅重选同一标签不点“确认选项”时，
+判分仍不开——测试已按此两步流程修正，不按“重选即恢复”理解。
+
+## D-134 — 十四批 M3：`_SessionView` stage 选择器空安全（2026-11-19，工作员自决）
+
+背景：单题队列跳过后 sessionQuestions 为空的瞬间，
+`ref.watch(reviewProvider.select((s) => s.currentSessionQuestion.stage))`
+在 build 短路前求值，对空列表取下标抛 RangeError。
+
+决定：取 currentSessionQuestion 的选择器一律先判 hasCurrentQuestion
+（stage 选择器改为 `s.hasCurrentQuestion ? s.currentSessionQuestion.stage : null`，
+null 时返回小结页）。教训：Riverpod `select` 在状态通知时求值，早于
+build 里的 gone 短路。
+
+## D-135 — 十四批 M3：专项练习空状态“返回选题页”只清状态（2026-11-19，工作员自决）
+
+背景：“返回选题页”按钮原先调 `closePracticePicker()`，会整个关掉
+选题页回列表，与文案不符。
+
+决定：新增 notifier 方法 `dismissPracticeEmpty()`，只清空
+practiceEmpty 状态，留在选题页。
+
+## D-136 — 十四批 M3：新增 `sumObjGuessed`（2026-11-19，工作员自决）
+
+背景：M3-15 专项练习小结要“猜对数”，此前页面误写成 sumObjWrong。
+
+决定：ReviewState 加 sumObjGuessed（构造默认值 0、copyWith、
+_enterSession 复位；submitObjectiveAnswer 中 correct==1 且
+confidence=='猜的' 时 +1）。
+
+## D-137 — 十四批 M3：新增 `beginAnswer` / `advanceToNextQuestion`（2026-11-19，工作员自决）
+
+背景：五段流程里“看题 → 作答”只切段不建 attempt；已提交过渡态需
+一个公开推进方法供页面调。
+
+决定：notifier 加公开方法 `beginAnswer()` 与
+`advanceToNextQuestion()`（包 `_advanceQuestion()`）。
+
+## D-138 — 十四批 M3：列表分页改为按题行分页（2026-11-19，工作员自决）
+
+背景：旧分页按组切，学习状态分组（一题一行）后组边界与页边界打架。
+
+决定：`_buildPagedRows` 把四组合成一列按 pageSize 切片，分组头只在
+该页首次出现时画；分页器文案“共 N 条 · 第 X / Y 页”+ 上一页/下一页
++ 每页条数下拉；当前 pageSize 不在标准档时也放进选项，否则
+DropdownButton 因 value 不在 items 里断言。
+
+## D-139 — 十四批 M3：多选点选失效根因——`copyWith` 的 `is` 哨兵误判 `List<dynamic>`（2026-11-19，工作员自决）
+
+背景：M3 自验抓到真 bug——多选点选后 selected 仍 null，提交按钮
+禁用。根因：`selectOption` 里 `[...(sq.selected ?? const [])]`
+推断成 `List<dynamic>`；`SessionQuestionState.copyWith` 用
+`selected is Object && selected is! List<String>?` 作“未传”哨兵，
+`List<dynamic>` 不是 `List<String>`，被误判为未传而丢掉本次点选。
+单选 `[label]` 是 `List<String>`，故未暴露。
+
+决定：三处可空哨兵参数（selected/correct/checkConfirm）改用与
+`ReviewState.copyWith` 同款的 `identical(selected, _unset)` 判等；
+`selectOption` 里显式写 `<String>[...(sq.selected ?? const [])]`，
+防 `as List<String>?` 运行时抛错。修后多选点选→提交→核对全通。
+
+## D-140 — 十四批 M3：选项标签确认 UI 的落点与形态（2026-11-19，工作员自决）
+
+背景：M3-4 要求整理页/详情页的题型区有“确认选项”入口、单选/判断
+才有 correct_option 填写入口、多选/不定项不显示该入口。两页此前
+只有题型 chip，无任何选项标签 UI。
+
+决定：共享 widget `lib/modules/ocr/option_labels_editor.dart`
+（OptionLabelsEditor，整理页与详情页共用）——
+- 位置：整理页题型区（_typeRow 下）、详情页查看态题型区（内联编辑器，
+  即时保存）与编辑态信息表单（随「保存」落盘）。
+- 标签输入：单个文本框，逗号分隔（如 A,B,C,D），解析时按
+  `[,，、；;\s]+` 切分、去空、去重保序；清空即 NULL（未确认）。
+- 判断题标签固定为「正确 / 错误」，不显示标签编辑器与「确认选项」
+  按钮；判分只看 correct_option 是否属于这两项，不依赖
+  option_labels_confirmed。
+- 正确选项点选即带重确认信号（answerReconfirmed=true，见 D-133）；
+  多选/不定项改标签后旧答案作待核对草稿展示，附“确认此答案和解析
+  仍有效”复选框，同次保存不确认则数据层置 NULL（见 P1-A）。
+- 整理页是表单式（编辑器只改表单值，「确认选项」才落盘）；
+  详情页查看态是即时保存式（正确选项点选立即保存，标签改动点
+  「确认选项」保存），与题型 chip 的即时保存口径一致。
+
+## D-141 — 十四批 M3：详情页 saveEdit 漏带 answerPendingRecheck 会静默清标记（2026-11-19，工作员自决）
+
+背景：详情页 `saveEdit` 全新构造 Question 时没带
+`answerPendingRecheck`（默认 false），编辑一次标签/备注等无关字段
+就会把待核对标记清掉，且无任何重确认动作。
+
+决定：saveEdit 从 base 带上 `answerPendingRecheck`；清除时机只由
+`_applyOptionLabelChangeRules` 决定（带重确认信号、或答案/正确选项
+文本确实改了才清）。属 M3 修的 M3 相关缺口，非 M1/M2 代码，不记为
+M1/M2 bug。
+
+## D-142 — 十四批 M3：断点恢复重建只做了单向，补反向（2026-11-19，工作员自决）
+
+背景：`_validateSavedSession` 原先只在 history 为空时清掉已提交标记，
+反向（history 已有、per_question_state 滞后）没补。崩溃窗口
+（数据库已写、review_state 未更新）下，恢复后会把已提交的错因
+再当成未提交展示；重复计数虽由数据层 (d) 规则挡住，但用户会被
+要求重做一次自查。
+
+决定：新增 `hasSessionVerdict` 查询（review_history 按 cause_id +
+session_id 查任意 verdict）+ repository 包装；恢复时对本轮每个
+错因查库，有事件则补进 submittedCauses。只补展示态，不碰计数。
+测试：数据层 hasSessionVerdict（已提交任何 verdict 都算；他会话
+查不到）+ 崩溃窗口恢复不重复计数 + notifier 层三测（崩溃重建、
+版本变化未作答刷新、已提交移出）。
+
+## D-143 — 十四批 M3：放弃暂停会话再开专项练习，应先开选题页（2026-11-19，工作员自决）
+
+背景：`abandonResumeAndStartPractice` 放弃后直接调
+startPracticeSession()，按默认范围（全部、10 道、随机）进了会话，
+跳过了选题页；与无断点时点“专项练习”先开选题页的正常入口不一致。
+
+决定：放弃分支改为清断点后调 openPracticePicker()（与无断点入口
+同款）；到期复习无选题页，`abandonResumeAndStartDue` 直接开会话
+不变。M3 自验新测试“单活动会话：暂停会话时开另一模式先二选一”
+覆盖两分支。
+
+## D-144 — 十四批 M3：题型改出单选/判断时 correct_option 强制置 NULL（2026-11-19，工作员自决）
+
+背景：M3-4 规定 correct_option 只用于单选/判断。整理页 formQuestion
+与详情页 saveEdit 原先按表单值原样写 correct_option：题型从单选
+改成多选/填空后，旧 correct_option 会残留在库里（判分入口虽按题型
+分流不读它，但库里留着一个无意义的“正确答案”是脏数据）。
+
+决定：两处保存入口按保存时题型算 effectiveCorrect——不是单选/
+判断时强制 null（整理页走 clearCorrectOption 标志，详情页全新构造
+直接置 null）。数据层改标签规则不管题型切换，只管标签集合变化，
+两处不重叠。
+
+## D-145 — 十四批 M5 P1-2：OS 级单实例保护（2026-11-19，工作员自决）
+
+背景：GPT 关口审 M5 回复第 2 节判 P1-2 FAIL——
+file_lifecycle_guard.dart 文件头声称“同一时间只允许一个应用实例
+打开同一数据库”，但代码里没有任何执行保障。调查结论：此前确实
+没有任何单实例机制，证据有三：(1) pubspec 无 window_manager /
+single_instance 之类依赖，全库搜 single_instance、FileLock、
+mutex、named pipe、platform channel 均无命中（只有
+getSingleOrNull 之类无关命中）；(2) Windows 入口
+windows/runner/main.cpp 是 plain wWinMain，无互斥量；
+(3) Linux 入口 linux/runner/my_application.cc 显式用了
+G_APPLICATION_NON_UNIQUE，等于主动关掉了 GtkApplication 自带的
+单实例能力，第二个实例会再开一个窗口、再跑一份 Dart。启动链：
+main.dart 只有 runApp，数据库是懒打开的（首次 await db 才建目录/
+开库），OCR worker 在 QuizMasterApp.initState 里才启动，所以
+main() 里 runApp 之前取锁时应用还没碰过任何数据文件。
+
+决定：启动时在数据目录下对锁文件取 OS 级独占锁，不做跨进程文件
+操作锁、不改 REV4.3 架构、不做“转交给第一个实例”。
+- 实现：新文件 lib/services/single_instance.dart（纯 Dart，
+  dart:io + package:path，不 import flutter/drift/AppDatabase，
+  测试 harness 可用 `dart` 直接跑）+ lib/main.dart 改为 async，
+  runApp 之前先取锁。
+- 锁文件：数据目录根下 `instance.lock`，与 quiz-master2.db 同级；
+  数据目录口径与数据库层完全一致（AppDatabase.dataDirectoryPath()，
+  含 db_location.txt 自定义位置；只读标记文件，不建目录、不开库）。
+  以 FileMode.append 打开（只建不存在的文件，不截断）；取
+  RandomAccessFile.lock(FileLock.exclusive)，非阻塞，拿不到立即抛
+  FileSystemException（blocking 语义是 FileLock.blockingExclusive，
+  绝不能用）。注意 dart:io 里没有 tryLock 这个方法，非阻塞独占
+  就是 lock(FileLock.exclusive)。
+- 持有：第一个实例用 main.dart 顶层变量强引用句柄直至进程结束，
+  生产启动不主动释放；正常退出与 kill 下 OS 自动释放。锁文件只留
+  着、不删除（防 unlink 竞态：A 释放并删文件、B 随后建同名新文件，
+  两进程各锁不同的 inode 就互不知晓了）；锁文件的存在本身没有任何
+  含义，只有 OS 锁才算数。锁文件不写内容（不写 PID，机制保持最小）。
+- 锁只按数据目录区分：指向同一数据目录才互斥；指向不同数据目录
+  是两个独立的库，本来就互不干扰。
+- 第二个实例（拿不到锁）：不初始化数据库、不做任何文件操作；同时
+  写 stderr 并弹一个最小 Flutter 中文窗口（_DuplicateInstanceApp，
+  不碰数据库、不启动 worker、不读设置），点“知道了，退出”或关窗口
+  即退出进程。双击启动时只打日志用户根本看不到，所以必须有窗口。
+  退出提示文案（与 stderr 共用同一份，不各写一套）：
+  标题“quiz-master2 已在运行”；正文“已有 quiz-master2 正在运行，
+  请勿重复打开。\n请先关闭正在运行的 quiz-master2 窗口，再重新打开
+  本程序。”；按钮“知道了，退出”。
+- 拿不到锁 vs 锁不可用的区分：lock() 抛 FileSystemException 时按
+  错误码认——11（Linux EWOULDBLOCK）或 33（Windows
+  ERROR_LOCK_VIOLATION）或错误文本含对应描述时判为“已有实例”，
+  返回 null；其他 IO 错误（数据目录建不出来、锁文件打不开等）重新
+  抛出，main 记一条 stderr 后 fail-open 继续启动，交给数据库层原有
+  的 fallback/报错处理——锁本身不可用时不因锁拦住启动。
+- Windows 依据（本机未实测）：同一 dart:io API 在 Windows 下底层
+  是 LockFileEx（非阻塞独占，拿不到时错误 33）；锁随句柄存在，进程
+  退出（含崩溃/被杀）时 OS 自动释放。Win11 真机复核时须实测第二
+  个实例被挡（属推送前 Win11 门槛，协调员排进清单）。
+- 测试与生产的数据目录隔离：测试全用临时目录（Directory.systemTemp，
+  TMPDIR 指到 workspace 下），不锁真实演示库目录；锁文件落点断言
+  在 test/b14_m5_single_instance_test.dart。
+
+测试：test/b14_m5_single_instance_test.dart（4 测，全绿）+
+测试专用小程序 test/b14_m5_single_instance_harness.dart
+（`dart test/b14_m5_single_instance_harness.dart <hold|try> <目录>
+[秒数]`；hold 取锁打印 HELD 并持有指定秒数，try 成功打印 ACQUIRED/
+被挡打印 DENIED 退出码 2）。子进程验证是必需的：Linux 上 flock
+是进程级建议锁，同一进程内两次取锁会成功，不能只测进程内。
+- 第二个进程被挡住：持有者 HELD 后，第二个子进程退出码 2，输出
+  含 DENIED 与中文提示“已有 quiz-master2 正在运行”。
+- 正常退出释放：持有者 hold 1 秒正常退出（0，含 HELD/RELEASED）
+  后，新进程 try 得 ACQUIRED，退出码 0。
+- kill -9 后释放：SIGKILL 持有者后，新进程 try 得 ACQUIRED，
+  退出码 0（不永久锁死）。
+- 同进程取锁—释放—再取：锁文件在数据目录根下 instance.lock；
+  取锁不建 quiz-master2.db；释放后锁文件仍在（不删）。
+flutter analyze（main.dart、single_instance.dart、两测试文件）：0 问题。
+先行探针（已删）：dart:io tryLock 方法不存在；lock(FileLock.exclusive)
+第二个进程抛 FileSystemException（code 11，Resource temporarily
+unavailable），kill -9 后新进程可取锁——与实现依据一致。
+
+未动：file_lifecycle_guard.dart（P1-1 那路正在改，避免冲突）——其
+文件头“单实例前提”现由 main.dart + single_instance.dart 执行，
+文件头注释本身未同步更新，留给协调员决定是否补一句指向 D-145。
+未动 M1–M4 其他代码、未推翻 REV4.3、未推送代码。
+
+## D-146 — 十四批 M5 P1-1：文件锁由“忙时抛错”改为“独立任务排队、同一调用链重入才抛错”（2026-11-19，M5 修复轮，协调员记入）
+
+- 口径：`FileLifecycleGuard.withLock()` 用 Zone 标记持锁调用链（`static final Object _lockZoneKey`，`runZoned(action, zoneValues: {_lockZoneKey: this})`）；同一持锁调用链（含 action 内 await 之后）再次调 `withLock` 抛 `StateError`，非重入保护保留；独立异步任务在已持锁时调 `withLock` 进 `_waiters` 队列排队，不抛错；`_release()` 唤醒队首机制不变；action 抛异常时锁仍释放。
+- 影响：三个入口（备份导出、孤儿清理、物理删除）并发到达时串行执行，不再因竞争抛非重入异常。调用点审计结论：全仓无代码依赖旧的“忙时抛错”行为，无调用方需改动。
+- 证据：新增 `test/b14_m5_lock_test.dart` 5/5 通过（排队等待、释放后获锁、调用链内重入抛错、异常后释锁、三真实入口并发串行）；`test/b14_m2_lifecycle_test.dart` 23/23 回归通过；`flutter analyze` 改动文件 0 问题。
+- 另：`file_lifecycle_guard.dart` 文件头注释原引用的“D-120”是版本比对口径，非调用点审计；已改为指向 `batch14-work/STATUS.md` 的 M2 收尾审计记录与 `PLAN-14-REV4.3` 的 P2-2 审计项。
+
+## D-147 — 十四批 M5 修复轮 2：单实例 fail-open 改为 fail-closed（2026-11-19，M5 修复轮 2，协调员记入）
+
+- 口径：D-145 的 fail-open 口径由本轮 P1 修复推翻（GPT fix1 窄审 P1-2 FAIL 要求）。`main.dart` 的 `FileSystemException` catch 改为 fail-closed：写 stderr + 弹启动失败窗口（新 `_StartupFailureApp`），不初始化数据库、不做任何文件操作、不跑主应用；点“知道了，退出”以 exit(1) 终止进程。“已有实例”中文窗口（`_DuplicateInstanceApp`）只用于 `tryAcquire() == null`。`tryAcquire()` 本身逻辑未动——核验确认它已正确区分竞争（errno 11 Linux / 33 Windows → null）与其它 IO 错误（rethrow）；文案常量放进 `single_instance.dart` 与 main.dart/harness 共用一份。
+- 证据：harness 新增 `mainflow` 模式（与 main.dart 同款三路分支：ACQUIRED 0 / DENIED 2 / STARTUP_FAILED 3）；单实例测试追加 5 测（进程内锁文件被占成目录、数据目录是个文件 → 均抛非竞争 `FileSystemException`；子进程 mainflow 两种锁不可用场景 → 退出码 3 + STARTUP_FAILED、不建库、无新增文件；mainflow 正常对照），9/9 通过（4 旧全绿 + 5 新）。
+- 局限：harness 是 main.dart 分支的镜像（main.dart import flutter，无法用纯 dart 跑），共享文案常量；main.dart 本身的三路分支以代码审阅 + analyze 为证，未用真实 Flutter 应用进程跑——Win11 真机复核时顺带验证（清单第 33 项）。
+
+## D-148 — 十四批 M5 修复轮 2：_optionLabelsOf 改为 null-aware 列表比较（2026-11-19，M5 修复轮 2，协调员记入）
+
+- 口径：删掉 `_optionLabelsOf` 字符串编码比较（源码分隔符确为 '\u0001'，但 null 与 `[]` 都得 `''`，违反 D-119），改为 null-aware 顺序敏感列表比较 `bool _optionLabelsEqual(List<String>? a, List<String>? b)`（identical 快路径；一方 null 另一方非 null → false；长度/逐项比较），两处调用点（upsert 的 answerChanged、_applyOptionLabelChangeRules 的 labelsChanged）改用它；全仓仅此 2 处比较路径。不用“带状态前缀的编码”——直接比较无编码碰撞面。
+- 语义：NULL↔[] 现在触发 labelsChanged：确认清零（除非本次就是确认保存）；多选/不定项有旧答案且无 answerReconfirmed → 答案/解析置 NULL、answerPendingRecheck=1；单选旧 correct_option 不在新集合（[] 时恒成立）→ correct_option 置 NULL、标记置 1；answer_version 按 answerChanged +1，content_version 不动。落库口径已核验：NullableStringListConverter null→NULL、[]→'[]'，往返不塌缩。
+- 证据：新测试 `test/b14_m5_fix2_option_labels_null_test.dart` 6/6 通过（NULL→[] / []→NULL × 多选/单选 + NULL→NULL / []→[] 重保存对照 + 带重确认信号对照）。测试写法注意：置 NULL 须用 `copyWith(clearOptionLabels: true)`，`copyWith(optionLabels: null)` 是“不改”。
+
+## D-149 — 十四批 M5 修复轮 2：图块正式路径加图块 ID 与失败清理保留登记（2026-11-19，M5 修复轮 2，协调员记入）
+
+- 口径（3.1A）：核验确认存在碰撞/覆盖风险才修——`figureCropFileName()` 为 `slices/$questionId-fig-v$ts-$rand.png`，ts 毫秒时间戳 + 32 位随机，非确定性，但无图块 ID；同一毫秒 + 随机巧合撞上时后一次 rename 会静默覆盖前一次（Linux rename 覆盖已存在目标），且路径里无图块身份，替换写新文件时理论上可能撞上旧记录正在引用的路径。双保险：`figureCropFileName()` 增加可选 `figureId` 参数，文件名含稳定图块 ID（`slices/$questionId-fig-$figureId-v$ts-$rand.png`）；写循环传 `figureId: figure.id`；rename 前目标已存在则换新时间戳+随机数重算（最多 8 次，仍撞则抛 FigureWriteException），绝不覆盖旧文件。
+- 口径（3.1B）：`deleteFileLocked()` 返回 false 不区分“文件原本不存在”与“文件存在但删除失败”，不改该函数签名（孤儿清理共用入口）。在 figure_files.dart 内新增 `_deleteFigureFileLocked()`：先用 `FileSystemEntity.typeSync()` 判存在（不用 `File.existsSync()`——它对目录路径返回 false），不存在 → 视为已清理；存在 → 调 deleteFileLocked()，true → 已删，false → 删失败。rollbackFigureFiles() / writeFigureFiles() 失败清理 / rename 失败清理三处统一：只有确认清理完成才解除登记；删除失败的路径保留登记，rollbackFigureFiles() 返回失败路径列表 `Future<List<String>>`（调用方只 await，签名兼容）。保留登记 = 安全方向（孤儿清理跳过 pending 路径，只漏删不误删）；pending 是内存集合，进程重启后登记消失，失败文件由下次启动的孤儿清理收尾，即可重试路径，不另建持久清理表。
+- 证据：新测试 `test/b14_m5_fix2_figure_files_test.dart` 6/6 通过（同参不同 figureId 路径不同、同一题两张图块路径与内容都不同、替换失败后旧图块字节级完整、回滚不存在文件视为清理完成、回滚删失败保留登记且清除障碍后重试成功、写批次失败清理保留删不掉文件的登记）；回归 `test/b14_m2_lifecycle_test.dart` 23/23。
+
+## D-150 — 十四批 M5 修复轮 2：备份快照协议与引用口径统一（2026-11-19，M5 修复轮 2，协调员记入）
+
+- 口径：文件锁 + 单一数据库读事务构成同一逻辑时点——`exportBackupZipFromWithReportImpl` 在 `guard.withLock` 内先跑一个 `db.transaction`，在该事务内完成 JSON 导出（`exportBackupJsonFromImpl`）、引用集合读取（`_referencedRelativePaths`）、图块→题目映射；事务提交后、仍在同一文件锁内，把引用文件复制到暂存区并登记占用，释锁后再从暂存区建 ZIP。为什么这样够：① 同一 DB 事务内的两次读看到同一快照（Drift 2.35.4 事务为 BEGIN IMMEDIATE，drift `lib/src/sqlite3/database.dart:72`；同一 QuizDatabase 连接上的操作由 Drift 串行化，备份事务与删题事务不会交错执行）；② 事务提交后、文件复制完成前，并发删题的数据库提交可以发生，但其物理删文件必须取文件锁，而备份此时仍持锁，删文件排队等待，文件在复制完成前不会消失；③ 复制完成后登记暂存占用，删文件路径见占用即跳过。为什么不把文件复制也放进 DB 事务：IO 复制持 BEGIN IMMEDIATE 写锁会长时间阻塞写事务；文件锁已足以挡住物理删除，DB 事务只覆盖“读快照”这一小段。
+- 口径（引用统一）：新增 `_directlyReferencedRelativePaths(db, dir)`（行直接引用集：questions 三列 + ocr_figures crop_path + collect_tasks source_path + ocr_jobs crop_path）为唯一来源；`_referencedRelativePaths` = 该集合 + 派生保护（page-normalized.png、pages/ 下页图、original.*）；`_missingReferencedFiles` 改为复用该集合再逐个查存在性，仍不含派生文件——派生文件是“有行即保护、文件未必存在”，做存在性检查会把未渲染过的任务误判缺失（原注释理由保留）。
+- 证据：新测试 `test/b14_m5_fix2_backup_test.dart` 3/3 通过（含锁门法并发删题确定性测试：先占住文件锁启动备份，再删题并等删题数据库提交落地，最后放行备份；旧实现下 JSON 含 q1 而 ZIP 缺 q1 文件，新实现下快照在删题提交后取，q1 整行不在备份里，q2 完整在备份里；单独重跑 2 次均 3/3）；改后回归 22 个文件一次运行 238/238 全绿。
+
+## D-151 — 十四批 M5 修复轮 2：孤儿清理 db 必填、物理删除审计与 D-91 证据（2026-11-19，M5 修复轮 2，协调员记入）
+
+- 口径（孤儿清理）：生产删除入口 `deleteOrphanFilesImpl` 与 `AppDatabase.deleteOrphanFiles` 的 `db` 改为 `required QuizDatabase db`，删除前必重算引用；`db == null` 时用空引用集删除的分支删除。旧测试的无 db 行为拆进测试专用 helper（仅测试文件内，复刻旧行为作反例，证明无 DB 重算会误删被引用文件）。生产调用链全仓唯一：settings_notifier.clearOrphans → repository.deleteOrphanFiles → AppDatabase.cleanOrphans（`db: await db`）→ AppDatabase.deleteOrphanFiles → deleteOrphanFilesImpl；其余调用全在测试文件。
+- 口径（物理删除审计）：`_deleteDataFileIfUnreferenced`（lib/data/db_collect.dart:231）核查无缺口，不改实现：只接受 `slices/` 前缀；锁内重查引用（questions 三列 + collect_tasks source_path + ocr_jobs crop_path + ocr_figures crop_path）+ 待提交集合 + 暂存占用，三者皆无才经 `deleteFileLocked` 删；删失败静默留给孤儿清理。全仓 `File.delete()` 调用点审计见 `~/workspace/batch14-work/fix2-delete-audit.md`（生产代码零旁路；唯一例外 settings_notifier clearCache 的 Link 分支已改为经锁删除：`await guard.withLock(() async => e.delete())`，clearCache 本身不持锁，无重入问题）。
+- 口径（D-91）：复用既有测试 `test/b14_m1_migration_test.dart`“迁移后 DDL 与全新 v5 库逐字一致”的比对方法，新增 `test/b14_m5_fix2_d91_test.dart`：同一 v4 夹具 DDL 建 v4 库 → `AppDatabase.openAt` 走 Drift 迁移到 v5；另建全新 v5 库；两库各取 `sqlite_master`（type/name/tbl_name/sql）排序后逐行比对。实际结果：两库 sqlite_master 各 40 行（表 16 张 + sqlite_sequence 1 行 + 索引 23 个，其中显式索引 8 个、sqlite_autoindex_* 15 个），user_version 均为 5；原文逐行 diff 有 14 处差异，逐一核对全部是仅空白/换行差异（成因唯一：SQLite 对 ALTER TABLE 的表保留原始建表文本；v4 夹具 DDL 单行写法、createTablesImpl 多行写法；新表 attempts 与新索引的迁移 DDL 字面量与建表 DDL 一字不差，原文即相同）；空白归一化后 diff 为零差异。D-91 的“逐字一致”按本项目既有口径（b14_m1_migration_test）指归一化后逐字一致。证据文件 `~/workspace/batch14-work/fix2-d91-sqlite-master-diff.txt`（含两库完整 sqlite_master 逐行清单、user_version、表/索引计数与 diff 结果）；db_schema.dart 完整建表 DDL 见 createTablesImpl（16 张表 + 4 个索引）。
+
+## D-152 — 十四批 M5 修复轮 3：编辑器重确认信号随标签语义变化重置（2026-11-19，M5 修复轮 3，A 路）
+
+- 口径：`OptionLabelsEditor` 跟踪上一次已解析的标签列表 `_lastParsedLabels`（`initState` / 切题 / 外部同步时随文本初始化/更新）。`_onLabelsTextChanged()` 每次解析后用顺序敏感的 `sameOptionLabels` 比对：解析结果发生语义变化时，立即把 `_draftReconfirmed` 置回 false，并调用 `onAnswerReconfirmedChanged(false)` 通知调用方把 `answerReconfirmed` 置回 false；只有信号实际从 true 变 false 时才回调（false→false 不重复回调、不无故标脏）。仅空格、分隔符格式变化、解析结果相同时不重置。单选标签顺序再次变化后必须重新点选正确选项（点选即重确认，D-133）重新产生信号；多选/不定项必须在最后一次标签变化之后重新勾选“确认此答案和解析仍有效”。
+- 为什么只认“语义变化”：标签文本框是自由输入，`A,B,C,D` → `A, B, C, D` 只是格式变化，解析结果相同、指向的选项含义未变，不应作废用户刚做的确认；反之任何解析结果变化（含重排）都意味着选项含义可能已变，旧确认不再可信——与数据层“顺序变化也算改”（`_labelsChanged`）的口径一致。
+- 调用方接线：整理页 `onAnswerReconfirmedChanged` → `setAnswerReconfirmed(false)` 进编辑态，保存时带 false；详情页编辑态同款；详情页查看态该回调是空回调，信号只经 `onConfirm` 的 `answerReconfirmed` 参数进 `saveOptionBlock`，重置照样生效——三路均无旁路。
+- 证据：新测试 `test/b14_m5_fix3_editor_reconfirm_test.dart` 5/5 通过（2026-11-19，约 14 秒）：(a) 多选勾选重确认后再次改标签 → 保存时旧答案/解析置 NULL、`answerPendingRecheck=true`；(b) 单选重选正确选项后再次调顺序 → 保存时 `correctOption` 置 NULL、标记置 1；(c1/c2) 最后一次改标签后重新确认/重选 → 答案/正确选项保留；(d) 格式-only 变化不重置对照。测试落到保存结果（真实内存库 `repo.save` 后断言库里状态），不只测编辑器内部状态。
+
+## D-153 — GPT 撤回项口径确认：单选题集合变化、旧正确选项仍在时保留旧正确选项（2026-11-19，M5 修复轮 3，A 路）
+
+- 口径确认：`_applyOptionLabelChangeRules`（lib/data/db_questions.dart:854）对“单选题集合变化、旧正确选项仍在新集合中”的处理——保留旧正确选项——符合 REV4.3 既定口径，是正确的，不要“修”。REV4.3 的既定口径是：单选题不是任何选项集合变化都必须重新确认；核心要求是只调换标签顺序时，也必须重新确认正确选项。集合增删/替换、旧正确选项仍在时，旧正确选项指向的选项含义未变，无须重确认。
+- 经过：GPT 在 fix2 回复开头曾以“把 C 改成 E、但 B 仍存在，旧正确选项继续有效”为例提出一项 P1，随后在正文第 1 节自行对照 REV4.3 更正并撤回该项，理由是与既定口径不符；最终计入结论的 3 项 P1 为第三节的 P1-1（重确认信号未失效，本轮 A 路已修）、P1-2（备份非图块缺失静默跳过，B 路）、P1-3（会话恢复顺序，B 路）。A 路核对：本轮未动 `_applyOptionLabelChangeRules` 的任何分支；本轮新测试 (b) 只覆盖既定口径内的一条——“只调换顺序、未重确认 → 正确选项清空”，不覆盖、不挑战集合变化保留的口径。
+- 后人注意：不得以“集合变化就该重确认”为由要求集合变化一律重确认；如将来要收紧该口径，须先改 REV4.3 并经 Meng / GPT 关口确认，不可由单轮修复自行收紧。
+
+（D-154 未使用：A 路号段预留，跳号。）
+
+## D-155 — 十四批 M5 修复轮 3：备份缺失资产处理口径（2026-11-19，B 路）
+
+- 问题（GPT fix2 P1-2）：备份复制文件时缺失/不可读只对图块加 warning，普通题目切片、页图或其他直接引用文件缺失时直接跳过、不告警——backup.json 有引用、ZIP 里没文件、warnings 还可能为空，用户得到看似成功实际不完整的备份，与备份不变量（题目 JSON 引用的文件都应出现在 ZIP 中）冲突。
+- 修法：快照事务内另取 `_directlyReferencedRelativePaths`（直接引用集），与派生保护区分开。
+  - 关键资产 = 库行直接引用：题目 source_path / page_image_path / slice_path / ocr_figures crop_path、收集任务 source_path、识别任务 crop_path。缺失、无法读取或路径非法时备份直接失败，抛 `BackupRestoreException`，失败信息指明归属（题目「id」/收集任务「id」）与相对路径，不生成看似成功的备份。
+  - 派生文件 = 只在派生保护里的文件（任务的 page-normalized.png、pages/ 下页图、original.* 枚举）：缺失/不可读时逐项警告、不阻断备份。未渲染过的任务本来就没有派生文件，失败会误伤正常备份。
+  - 图块损坏（读得出但解不出图）仍只警告、不阻断（不在 GPT P1-2 的“缺失/读取失败”范围内，且已有警告可见）。
+- 失败 surfacing：设置页 `_backup` 的外层 catch 拆出 `on BackupRestoreException`，把原因原文（含题目/任务 ID 与相对路径）直接提示给用户，同时记一次备份失败（首页横幅）；其余失败仍走通用文案。
+- 旧口径废止：`exportBackupZipFromWithReportImpl` 文件头注释与 `database.dart` / `settings_page.dart` 注释里的“非图块文件缺失静默不进包 / 缺失图块不进包只警告”已同步改写。
+- 验收：新 `test/b14_m5_fix3_backup_missing_test.dart` 8/8 通过（切片缺失、页图缺失、普通引用读取失败、收集任务原文件缺失、图块裁图缺失、派生文件缺失只警告、完整备份不变量、一题缺失一题完整时整体失败；失败后暂存区清理与暂存占用登记解除每项断言）。
+
+## D-156 — 十四批 M5 修复轮 3：会话恢复顺序口径（2026-11-19，B 路）
+
+- 问题（GPT fix2 P1-3）：`_validateSavedSession` 先按 `review_state.perQuestionState` 的缓存状态做 `versionCheck`，后才从 `review_history` 补回 `submittedCauses`。崩溃窗口（verdict 事务已提交、review_state 未更新）+ 题目版本已变化时，会先按“未提交”执行 refresh 而不是按“已提交”执行 remove，已提交题目可能被刷新成新版本继续留在同一会话。
+- 修法：每题先按当前 sessionId 从数据库重建真实提交状态，再执行版本判定。
+  - 重建内容：对本轮每个错因按当前 `sessionId` + `causeStableId` 调 `repo.hasSessionVerdict`；`repo.loadAttempt(sessionId, questionId)` 查库内 attempt 行是否存在（有则采用其 id，覆盖缓存缺失的 `attemptId`；无则清掉缓存里的旧 id）。
+  - `hasSubmitted` 用重建值传入 `versionCheck`；已提交且版本变化 → `remove`（移出当前会话，不刷新成新版本继续留在原会话）；未提交且版本变化 → `refresh`（原逻辑不变）。
+  - 删除旧的题目级 `repo.reviewHistory(qid)` 清空分支：那是题目级历史查询，不是当前 session 的；当前 session 无记录、其他 session 有历史时，旧代码会错误保留旧提交标记。重建集合本身已是“当前 session 有 verdict 行”的错因，stale 标记随之丢掉。
+  - 附带修：`SessionQuestionState.copyWith` 新增 `clearAttemptId` 参数——旧恢复代码 `copyWith(attemptId: null)` 是空操作（`?? this.attemptId` 保留旧值），直接传 null 永远清不掉。
+- 验收：新 `test/b14_m5_fix3_session_restore_test.dart` 4/4 通过（故障注入主测试、版本不变对照、session 隔离、旧 attemptId 清除）。
+
+## D-157 — 十四批 M5 修复轮 3：D-91 验收口径结论（2026-11-19，B 路）
+
+- 结论：空白归一化比较是本项目既有的口径，D-91 的“逐字一致”指空白归一化后逐字一致；PASS* 的星号可以去掉，但表述须修正为“空白归一化后逐字一致（PASS）”，不能宣称原文逐字相同。
+- 证据：① 全部三代锁定测试（`test/b1_stage1_schema_test.dart:21,87-90`、`test/b12_schema_v3_migration_test.dart:18,69`、`test/b14_m1_migration_test.dart:19,97`）实现上都是 `_norm`（`\s+` → 单空格 + trim）后比对，尽管注释写“逐字比对”；② `docs/batch13-ocr/M2-MIGRATION.md:102` 明文“逐字一致（空白折叠后比对，测试锁定）”；③ D-91 原文（decision-log.md:815）“迁移 DDL 必须与 `createTablesImpl` 的手写字面量一字不差”约束的是迁移 DDL 字面量，新表 attempts 与新索引的迁移 DDL 与建表 DDL 一字不差、原文即相同；④ 14 处原文差异全是旧表/旧索引的仅空白/换行差异，成因唯一（SQLite 对 `ALTER TABLE` 的表保留原始建表文本；v4 夹具单行写法 vs `createTablesImpl` 多行写法），归一化后零差异。
+- 若要求原文逐字相同：不能宣称原文 PASS；达到原文一致需在迁移里重建 14 张旧表（或等价手段），且改写 v4 夹具 DDL 也只能让测试通过、不能让真实用户 v4 库迁移后原文一致。重建表高风险，不建议为消星号去做。
+
+## D-158 — 十四批 M5 修复轮 3：图块缺失只警告、不阻断备份（修正 D-155，2026-11-19，M5 修复轮 3，协调员）
+
+- 经过：D-155（B 路）把图块裁图列入“关键资产”，缺失/不可读即备份失败；全量复核 1960/1961，唯一失败是 M2 旧测试 `b14_m2_lifecycle_test.dart` P1-6“导出缺失图块给可见警告，列出题目；单个图块失败不阻断备份”——该测试编码的是 M2 既定口径：图块缺失只警告、不阻断。D-155 起草时未注意到与 P1-6 既定口径的冲突。
+- 修正口径：图块裁图缺失/不可读/路径非法时只警告、不阻断备份，警告须列出题目（沿用 M2 文案“题目「题 q1」的配图缺失，未包含在备份中”）；其余库行直接引用（题目 source_path / page_image_path / slice_path、收集任务 source_path、识别任务 crop_path）缺失/不可读仍按 D-155 直接使备份失败；派生文件仍只警告。复制循环里先判图块、再判直接引用。
+- 为什么图块例外：① 图块是派生资产——裁图可从切片 + ocr_figures 里存的 bbox 重新裁出，切片才是不可再生的源文件；② M2 P1-6 是既定口径（单个图块失败不阻断备份），恢复侧同样“坏图块去掉并记警告，不阻断”，进出口一致；③ GPT fix2 P1-2 明确允许产品决定“允许不完整备份，但必须在报告中逐项列出”——图块缺失时备份成功且警告列出题目，满足“不能出现备份成功且无警告，但 JSON 引用的文件不在 ZIP”这一不变量；④ 反之，一个图块损坏就导致整个备份无法生成，对用户过于严苛。
+## D-159 — 十四批 M5 修复轮 4：ZIP 组装阶段暂存区文件缺失/读取失败分类处理（2026-11-19，M5 修复轮 4，协调员）
+
+- 问题（GPT fix3 P1-1）：`exportBackupZipFromWithReportImpl` 释锁后从暂存区读文件建 ZIP 的循环里，`staged.existsSync()` 为 false 时直接 `continue`，且 `readAsBytes()` 异常未分类处理。原文件复制成功、暂存区文件在 ZIP 组装前缺失时，导出仍可能成功、ZIP 却没有该资产，JSON 仍含引用，与 D-155“关键直接引用资产缺失即备份失败”的 fail-closed 要求不一致。
+- 修法（`lib/data/db_backup.dart`，`exportBackupZipFromWithReportImpl` 约 1377–1610 行）：锁内快照产出的 `directRefs` / `figureQuestions` / `assetOwners` 提升到 `withLock` 闭包外的作用域（与既有 `json` 提升写法一致），使释锁后的 ZIP 组装循环能分类；暂存区文件缺失（`existsSync` false）或读取失败（`readAsBytes` 抛异常）时按类处理——先判图块（只警告，文案与既有图块警告一致、列出题目，如“题目「题 q1」的配图暂存区文件缺失，未包含在备份中”）、再判直接引用（抛 `BackupRestoreException`，信息含归属与相对路径，ZIP 阶段文案须能区分是暂存区问题，如“备份失败：题目「q1」的暂存区文件缺失（slices/q1.png），备份未生成”）、最后派生文件（警告，如“派生文件 imports/t1/page-normalized.png 暂存区文件缺失，未包含在备份中”）。分类优先级与锁内复制阶段一致：图块即使同时在 `directRefs` 里也只警告不阻断（D-158）。
+- 故障注入钩子：Impl 新增可选命名参数 `onStagedForTest`（`void Function(Directory stagingDir, List<String> stagedRels)?`），在 `withLock` 返回后、ZIP 组装循环前调用一次；`AppDatabase.exportBackupZipFromWithReport` 同款透传，生产调用不传。先例：`FileLifecycleGuard.debugClearPendingForTest` / `debugClearStagingForTest`、`YoloOnnxService.loadGateForTest` 均为本库已有的测试专用入口。钩子只应改动 stagingDir 内的文件，不得改 `stagedRels` 清单本身；钩子抛异常按导出失败处理（finally 仍清理暂存区）。
+- 证据：新 `test/b14_m5_fix4_backup_test.dart` 9/9 通过，其中本项 6 个（staging 直接引用缺失/读取失败各抛错、图块缺失/读取失败各警告+成功、派生缺失/读取失败各警告+成功；读取失败注入用暂存区文件换成指向 `/proc/self/mem` 的软链，与 fix3 同款手法；图块裁图须写有效 PNG 字节，否则复制阶段即判“已损坏”进不了暂存区）；回归 `test/b14_m5_fix3_backup_missing_test.dart`、`test/b14_m2_backup_test.dart`、`test/b14_m5_fix2_backup_test.dart` 15/15 全绿。
+
+## D-160 — 十四批 M5 修复轮 4：派生文件路径无法解析记 warning（2026-11-19，M5 修复轮 4，协调员）
+
+- 问题（GPT fix3 P1-2）：锁内复制阶段 `_resolveInsideDir` 返回 null 的分支里，图块 warning、直接引用抛错、其余派生直接 `continue` 无 warning，与 D-155“派生文件缺失/不可读逐项 warning”的口径不一致。
+- 修法：派生分支改为记 warning（“派生文件 $rel 路径非法，未包含在备份中”，与既有“派生文件 $rel 缺失/无法读取，未包含在备份中”文案体系统一），继续导出；图块/直接引用分支不动。
+- 经过（可达性实测结论）：修前先用临时探针（跑完即删）验证该分支经公开导出 API 是否可达，6 场景均未触发“路径非法”警告——原因是复制循环的 `refs` 全出自 `_referencedRelativePaths`，其中每条 rel 都先过 `_toDataRelative`：含 `..` 且仍落回数据目录内的派生引用会被归一化成干净路径（如任务 id `..` 的 `imports/../page-normalized.png` → `page-normalized.png`，循环按 `imports/` / `slices/` 前缀直接跳过）；含 `..` 且越出数据目录的引用使 `_toDataRelative` 返回 null，直接被排除出引用集，根本进不了循环。因此该 null 分支经公开 API 目前不可达，D-160 的 warning 是纵深防御（将来引用集口径变化、该分支一旦可达即有警告可见），不是对某条可复现路径的修复。
+- 证据与边界测试：新测试文件里 P1-2 一项为边界锁定测试（任务 id `..` + 数据目录根的 `pages/p.png` / `original.pdf`）：断言导出成功且不出现“路径非法”警告，注释写明上述触发原理与探针结论；若将来归一化口径变化使该分支可达，本测试即失败提醒复核。
+- 另发现（本轮不修，已报协调员另行定夺）：探针同时发现越界直接引用（如切片 `../escape.png`、`slices/../../escape.png`）也被引用集归一化排除、备份成功零警告，而 JSON 仍引用该文件——这是引用集层面的静默丢弃，与本轮 P1-2 的循环分支不同层；修它须改 `_directlyReferencedRelativePaths` / `_referencedRelativePaths` 的归一化口径，牵连孤儿扫描与 `_missingReferencedFiles`，超出本轮三件事的范围，不在本轮动；新测试不断言该行为，不把它锁成既定口径。
+
+## D-161 — 十四批 M5 修复轮 4：备份 finally 注销放进内层 finally、删目录失败 best-effort（2026-11-19，M5 修复轮 4，协调员）
+
+- 问题（GPT fix3 非阻断观察）：备份 finally 里先 `await guard.deleteDirectory(stagingDir)`，再 `guard.unregisterStaging(stagedRels)`；删目录失败抛异常时后一步不执行，留下进程内的 staging 登记。
+- 经过：核实现实现——`deleteDirectory` 经 `withLock` 调 `deleteDirectoryLocked`，后者内部已吞掉删除异常（`try { if exists delete } catch (_) {}`），删目录抛错目前只在 `withLock` 本身失败（如重入 `StateError`）时才可能发生；本轮修法是纵深防御，不依赖该现状。
+- 修法与取舍（`lib/data/db_backup.dart`，`exportBackupZipFromWithReportImpl` 的 finally）：注销放进内层 finally，保证无论删目录成功与否都注销；删目录失败按 best-effort 吞掉，不掩盖主流程的成功/失败异常。取舍理由：删目录失败只留磁盘残留（启动时 `cleanupStaleBackupStagingDirs` 按严格 `.backup-staging-<纯数字>` 匹配清理，下次启动兜底），而登记残留会一直挡住对该路径的删文件/孤儿清理直到进程重启——漏注销比留残留目录严重得多；且 finally 抛错会掩盖主流程的真实结果（成功变失败、或失败原因被替换），故吞掉。
+- 证据：新测试文件里 finally 两项（正常导出后 `isStaged` 全清 + 暂存目录已删；导出失败后同样全清）。删目录失败本身难以经公开路径注入（见“经过”），测试覆盖的是可观测保证——无论主流程成功还是失败，注销都执行。
+
+## D-162 — 十四批 M5 修复轮 5：备份引用集入口 fail-closed，越界直接引用不再静默丢弃（2026-11-19，M5 修复轮 5，协调员）
+
+- 问题（GPT fix4 §7 新增 P1，阻断）：题目切片 `slice_path = ../escape.png` 或 `slices/../../escape.png` 时，`_toDataRelative` 返回 null，引用直接被排除出引用集，备份仍成功、零警告，但 backup.json 仍引用该文件——与 D-155“关键直接引用缺失即备份失败”的 fail-closed 原则冲突；且问题发生在 D-159 修复之前的上游，D-159 的 staging 故障注入测试覆盖不到。GPT 同时判定 D-160 只有条件闭合：P1-2 的分支级 warning 已补，但入口层问题与 §7 同一上游机制，须与 §7 一起处理、一起闭合。
+- 修法（全部在 `lib/data/db_backup.dart` 的 `exportBackupZipFromWithReportImpl` 内；`lib/data/db_orphans.dart` 的 `_directlyReferencedRelativePaths` / `_referencedRelativePaths` 一行未动，孤儿扫描与恢复复核 `_missingReferencedFiles` 的语义不变）：
+  1. 保留非法引用的审计信息：新增备份专用的非法引用记录 `_BackupIllegalRef`（`raw` 原始路径、`owner` 归属文案、`kind` 类别 direct/figure/derived、`figureTitle` 图块所属题目、`reason` 原因）与枚举 `_BackupIllegalRefKind`。锁内快照事务里与 `_directlyReferencedRelativePaths` / `_referencedRelativePaths` 并行走同一批库行（questions 的 source_path / page_image_path / slice_path + ocr_figures 全部 crop_path、collect_tasks 的 source_path、ocr_jobs 的 crop_path），但 `_toDataRelative` 返回 null 的引用记入本收集，不直接丢弃；不强行塞进正常 `Set<String>`。
+  2. 按类别 fail-closed（与锁内复制阶段、ZIP 组装阶段同一优先级，图块优先于直接引用，D-158）：完整性检查在锁内、复制循环前、建暂存区之前执行——关键直接引用非法 → 抛 `BackupRestoreException` 终止备份，失败信息含归属与原始路径（如“备份失败：题目「q1」的文件路径非法（../escape.png），备份未生成”）；图块裁图非法 → warning（列出题目与原始路径，如“题目「题 q1」的配图路径非法（../escape-fig.png），未包含在备份中”）；派生文件非法 → warning（列出归属任务与原始路径）。同一原始路径既是图块裁图又是题目切片时按切片角色抛错——切片不可再生，图块可从切片 + bbox 再生。直接引用非法失败发生在建暂存区之前，不产生待复制文件，finally 只需清空登记。
+  3. 避免误伤已有归一化：合法性判定与 `_toDataRelative` 同口径——归一化后仍在数据目录内即合法，含内部 `..`（如 `slices/../slices/q1.png` → `slices/q1.png`）按原规则正常处理，不记非法；只有越出数据目录、或数据目录外的绝对路径才算非法。数据目录内的绝对路径（如测试里把文件放进 testDataDirectory 后存绝对路径）仍按 `_toDataRelative` 既有口径归一化为相对路径，不视为非法；`reason` 区分“路径越出数据目录”与“绝对路径不在数据目录内”。
+  4. 派生非法的判定：构造派生路径不可能越出数据目录本身（`_toDataRelative` 不会返回 null），故派生非法的判定是“归一化后不在 imports/ 或 slices/ 白名单内”。唯一经公开导出 API 可达的形态是任务 id 含穿越段（`..` 不含分隔符，会走到派生口径；含 `/` 或 `\` 的 id 按 `_referencedRelativePaths` 既有口径跳过派生检查）：任务 id `..` 时 `imports/../page-normalized.png` 归一化后落在数据目录根。派生枚举与 `_referencedRelativePaths` 同口径——构造的 page-normalized、pages/ 下现存文件、original.* 现存文件；同一原始路径只记一次。枚举的遍历限制也与既有代码一致：`Directory('.../imports/../pages')` 只有在 `imports/` 真实存在时才能穿越 `..`（中间目录不存在时 OS 无法穿越，见测试注释）。
+  5. 不牵连孤儿扫描：本收集只供备份完整性检查用；`_directlyReferencedRelativePaths` / `_referencedRelativePaths` 的全部语义不变，孤儿扫描、孤儿删除、恢复复核 `_missingReferencedFiles` 的删除/清理策略不变。恢复侧的越界引用复核不在本轮范围（恢复校验 `isAllowedDataRelativePath` 另有口径），不扩大。
+- D-160 闭合：P1-2 的分支级 warning（D-160）仍在（纵深防御）；入口层问题由本轮 D-162 闭合。fix4 测试文件里 P1-2 一项的旧锁定被取代：该测试在 fix4 时锁定“任务 id `..` 输入下无路径非法警告”，D-162 后同一输入的派生路径记 warning、直接引用仍正常、备份仍成功——测试已按新口径改写（见下），不是测试被悄悄放宽，而是被修复口径取代的旧锁定。
+- 证据：新 `test/b14_m5_fix5_backup_test.dart` 6/6 通过（切片 `../escape.png` 抛错、切片 `slices/../../escape.png` 抛错、收集任务原文件 `../../outside.pdf` 抛错、越界图块 warning + 备份成功、越界派生 warning + 备份成功、合法内部 `..` 归一化正常处理；抛错/警告均断言含归属对象与原始路径；每项断言失败后无暂存区残留、无暂存占用登记）；fix4 文件 9/9（含改写后的 P1-2 一项）；回归 `test/b14_m5_fix3_backup_missing_test.dart`、`test/b14_m2_backup_test.dart`、`test/b14_m5_fix2_backup_test.dart` 15/15 全绿。
