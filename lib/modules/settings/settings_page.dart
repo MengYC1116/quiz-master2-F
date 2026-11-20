@@ -14,6 +14,17 @@ import '../../state/settings_notifier.dart';
 import '../../theme/design_tokens.dart';
 import '../../widgets/uikit.dart';
 
+/// D-173：恢复成功文案——只有恢复前确实存在未完成复习会话时才提
+/// “已清除未完成的复习会话”；没有会话时只说“恢复成功”，不让用户
+/// 误以为丢了数据。图块警告有则照旧追加（与旧文案同一口径）。
+String restoreSuccessMessage({
+  required bool hadUnfinishedSession,
+  required List<String> warnings,
+}) {
+  final base = hadUnfinishedSession ? '恢复成功，已清除未完成的复习会话' : '恢复成功';
+  return warnings.isEmpty ? base : '$base；${warnings.join('；')}';
+}
+
 /// 设置：分段折叠式六组（外观 / 复习 / 错题本 / 考试 / 数据 / 启动与关于），
 /// 默认全折起，一次只展开一个。每项标题 + 一句短说明 + 选项，简洁直接。
 /// 改设置后经 `settingsProvider`（见 lib/state/settings_notifier.dart）
@@ -407,6 +418,11 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
       _restoreZipBytes = null;
     });
     try {
+      // D-173：恢复前先看有没有未完成复习会话——恢复会清掉它
+      // （十四批 M2 P1-6），文案只在真清掉时才提；没有会话时只说
+      // 恢复成功。恢复前查：恢复事务里 review_state 已被清掉。
+      final hadUnfinishedSession =
+          await _controller.hasUnfinishedReviewSession();
       // 十四批 M2：恢复返回警告列表（缺失/不可读的图块已从引用里去掉）。
       final warnings = await _controller.restoreBackup(
         jsonData: data,
@@ -425,12 +441,13 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
       // 清理时被误删（(a) 的删除前重算是第二道防线）。
       if (mounted) setState(() => _orphanScan = null);
       await _scanStorageAndOrphans();
-      // 十四批 M2（P1-6）：恢复完成文案写死——备份不包含未完成会话，
-      // 恢复后已清除当前会话状态；有图块警告时追加。
+      // D-173：恢复成功文案按恢复前有没有未完成会话分支（见文件顶
+      // `restoreSuccessMessage`）；图块警告有则追加。
       _snack(
-        warnings.isEmpty
-            ? '备份不包含未完成会话，恢复后已清除当前会话状态'
-            : '备份不包含未完成会话，恢复后已清除当前会话状态；${warnings.join('；')}',
+        restoreSuccessMessage(
+          hadUnfinishedSession: hadUnfinishedSession,
+          warnings: warnings,
+        ),
       );
     } on BackupRestoreException catch (e) {
       // §2.3：校验不过拒绝恢复、原库不动；报具体原因（不是笼统的

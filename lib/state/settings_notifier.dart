@@ -174,6 +174,12 @@ class SettingsNotifier extends AsyncNotifier<AppSettings> {
     }
   }
 
+  /// D-173：恢复前是否存有未完成复习会话（review_state 有可恢复的
+  /// 快照行，`loadReviewState` 队列非空才算）。供设置页在恢复成功后
+  /// 决定文案；恢复本身仍按十四批 M2（P1-6）清掉该行。
+  Future<bool> hasUnfinishedReviewSession() async =>
+      (await _repo.reviewState()) != null;
+
   // ---------- 数据库位置 / 迁移 ----------
 
   /// 当前正在用的数据库文件完整路径。
