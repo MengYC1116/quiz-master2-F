@@ -2,7 +2,7 @@
 // 与 lib/data/db_schema.dart 的 DDL 逐字对应（尖峰 B-SPIKE-REPORT.md §1
 // 三路对比零差异的配方）：`dontWriteConstraints` + 列内联自定义约束。
 // 时间全是 INTEGER 毫秒时间戳（与项目既有约定一致）；status 存
-// OcrJobStatus 的枚举名（pending / running / completed / failed）。
+// OcrJobStatus 的枚举名（见 lib/models/models.dart，D-172）。
 // 本文件只定义表结构，不含队列 worker 逻辑（那是 M3 的事）。
 
 import 'package:drift/drift.dart';

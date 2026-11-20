@@ -15,7 +15,7 @@
 part of 'database.dart';
 
 /// [OcrJob] → Drift 行（DbOcrJob → 模型类的反向在文件底部的
-/// [_ocrJobFromDb]；status 存枚举名 pending/running/completed/failed）。
+/// [_ocrJobFromDb]；status 存 OcrJobStatus 的枚举名）。
 OcrJobsCompanion _ocrJobCompanion(OcrJob job) => OcrJobsCompanion.insert(
   id: job.id,
   questionId: job.questionId,

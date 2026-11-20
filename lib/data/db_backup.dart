@@ -59,8 +59,8 @@ Future<String> exportBackupJsonFromImpl(QuizDatabase db) async {
 /// `cause_records.status` ∈ {pending, inProgress, solved}、
 /// questions 的 5 个布尔列 ∈ {0, 1}；十三批 M2：questions 的
 /// ocr_split_status ∈ {未切分, 自动切分, 存在歧义, 人工调整}、
-/// ocr_manual_edited ∈ {0, 1}、ocr_jobs.status ∈
-/// {pending, running, completed, failed}；JSON 列非字符串由 ⑥ 覆盖）。
+/// ocr_manual_edited ∈ {0, 1}、ocr_jobs.status ∈ OcrJobStatus.values
+/// 的枚举名（D-172：白名单直接取枚举，不再手写）；JSON 列非字符串由 ⑥ 覆盖）。
 /// 任一步不过 → 抛 BackupRestoreException（带具体原因），
 /// 调用方一律不动原库。
 /// SR-P2-4：旧写法只强制 subjects/questions 为数组，其它表键缺失时
@@ -499,17 +499,16 @@ void _validateBackupRowDomains(String table, Map row) {
       }
     }
   }
-  // 十三批 M2：ocr_jobs.status ∈ {pending, running, completed, failed}。
+  // 十三批 M2：ocr_jobs.status ∈ OcrJobStatus.values 的枚举名。
+  // D-172：白名单直接取枚举——取消识别包 2 加 cancelled 时只改了
+  // 枚举，这里仍是旧 4 值，含 cancelled 行的备份被误判损坏。
   if (table == 'ocr_jobs' && row.containsKey('status')) {
     final value = row['status'];
     if (value is! String ||
-        (value != 'pending' &&
-            value != 'running' &&
-            value != 'completed' &&
-            value != 'failed')) {
+        !OcrJobStatus.values.any((s) => s.name == value)) {
       throw BackupRestoreException(
         '这份备份文件已损坏：ocr_jobs 表 $id 行的 status 不是合法的'
-        '任务状态（应为 pending / running / completed / failed）：$value',
+        '任务状态（应为 ${OcrJobStatus.values.map((s) => s.name).join(' / ')}）：$value',
       );
     }
   }
