@@ -1829,3 +1829,13 @@ unavailable），kill -9 后新进程可取锁——与实现依据一致。
 - 修法（`lib/data/db_backup.dart`）：白名单改成直接取 `OcrJobStatus.values`（枚举是唯一事实来源，`db_backup.dart` 与 `database.dart` 同库、`models.dart` 已导入，无循环），以后枚举再加新状态不再脱节；报错文案里的合法值列表也由枚举生成。3 处仍写旧 4 值的注释同步改掉（`db_backup.dart:59-63` 与 `:502`、`lib/data/drift/tables/ocr_jobs.dart:5`、`lib/data/db_ocr_jobs.dart:18`）。
 - 同类风险（未改）：同一函数里 `attempts` 的 mode/status/confidence 白名单也是手写字符串（注释写明“M3 若改枚举，两处一起改”），但这三列没有对应的 Dart 枚举、无法直接取枚举，现状未出问题，这次不动；若以后给 attempts 立枚举，应同款改成取枚举。
 - 证据：新测试 `test/b14_win11_d172_backup_cancelled_status_test.dart`（含 cancelled 行的备份校验通过且完整恢复、枚举全部值逐一过校验、非法值仍拒绝）。
+
+---
+
+## D-173 — 恢复成功文案：只在真有未完成会话时才提示已清除（2026-11-20，Win11 真机反馈，Meng 批准改）
+
+- 问题：每次恢复成功都显示“备份不包含未完成会话，恢复后已清除当前会话状态”，即使根本没有进行中的复习会话，读起来像丢了数据。
+- 根因：文案写死（`lib/modules/settings/settings_page.dart:428`，十四批 M2 P1-6 的固定提示），不区分恢复前有没有会话。备份不含未完成会话本身是既定设计（`review_state` 导出为 `[]`、恢复时清表不插行），错的只是提示口径。
+- 信号：`review_state` 是单行表（`id CHECK (id = 1)`），有可恢复快照行当且仅当会话开始后未完成/未放弃（写：复习中 `_persistSession`；清：完成、回列表、从头开始/放弃续治）；`loadReviewState` 队列为空时返回 null，所以 `reviewState() != null` 就是“有未完成会话”。注：快照若在复习页重载校验时才发现失效，行会残留到下次加载才清——极小概率下文案会为一个已不可续治的快照提一句，不影响数据。
+- 修法：恢复前先查一次（`SettingsNotifier.hasUnfinishedReviewSession`，读既有 `repository.reviewState()`，不改 `restoreBackup` 的警告列表契约）；成功文案抽成纯函数 `restoreSuccessMessage`（`settings_page.dart` 文件顶）：有会话 →“恢复成功，已清除未完成的复习会话”，无会话 →“恢复成功”；图块警告有则照旧追加。恢复前确认弹窗的文案不动（里面本来就没提会话）。恢复本身仍清 `review_state`，行为不变。
+- 证据：新测试 `test/b14_win11_d173_restore_success_copy_test.dart`（文案四种组合 + 信号 true/false，共 6 项）。
