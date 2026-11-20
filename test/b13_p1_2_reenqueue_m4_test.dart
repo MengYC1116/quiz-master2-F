@@ -4,7 +4,7 @@
 // - a：重框入队失败时框选结果保留 + ocrEnqueueFailed 标志置位（load 后仍
 //   可见），重试成功后标志清除、任务落盘；入队成功无标志、任务立即落盘；
 //   重试时切片已删按入队契约 null 不算失败。
-// - e：acceptOcrCandidateWithReason 五种 reason + 成功 + no_question，
+// - e：acceptOcrCandidateOutcome 五种 reason + 成功 + no_question，
 //   OrganizeNotifier 子集，candidateRejectionMessage 文案映射。
 // - d：M4 歧义横幅——存在歧义时出现、自动切分/未切分时不出现、队列状态
 //   chip 不受横幅影响。
@@ -482,7 +482,7 @@ void main() {
       var container = _detailContainer(repo);
       var notifier = container.read(detailProvider.notifier);
       await notifier.load();
-      expect(await notifier.acceptOcrCandidateWithReason(), isNull);
+      expect((await notifier.acceptOcrCandidateOutcome()).reason, isNull);
       expect(
         container.read(detailProvider).question?.ocrStem,
         '候选',
@@ -517,7 +517,7 @@ void main() {
       // 接受读的是真实库：题也要从真实库里删掉，才是“题目已删”。
       await AppDatabase.deleteQuestionFrom(db, 'q1');
       expect(
-        await notifier.acceptOcrCandidateWithReason(),
+        (await notifier.acceptOcrCandidateOutcome()).reason,
         'question_deleted',
       );
       container.dispose();
@@ -528,7 +528,7 @@ void main() {
       container = _detailContainer(repo);
       notifier = container.read(detailProvider.notifier);
       await notifier.load();
-      expect(await notifier.acceptOcrCandidateWithReason(), 'no_candidate');
+      expect((await notifier.acceptOcrCandidateOutcome()).reason, 'no_candidate');
       container.dispose();
 
       // not_pending：候选已 accepted。
@@ -554,7 +554,7 @@ void main() {
       container = _detailContainer(repo);
       notifier = container.read(detailProvider.notifier);
       await notifier.load();
-      expect(await notifier.acceptOcrCandidateWithReason(), 'not_pending');
+      expect((await notifier.acceptOcrCandidateOutcome()).reason, 'not_pending');
       container.dispose();
 
       // hash_mismatch：inputHash 与切片不一致，库里候选被标 stale。
@@ -576,7 +576,7 @@ void main() {
       container = _detailContainer(repo);
       notifier = container.read(detailProvider.notifier);
       await notifier.load();
-      expect(await notifier.acceptOcrCandidateWithReason(), 'hash_mismatch');
+      expect((await notifier.acceptOcrCandidateOutcome()).reason, 'hash_mismatch');
       // 标 stale 写在真实库里（Notifier 不再经 fake repo.save）。
       expect(
         GlmOcrRawData.tryParse(
@@ -602,7 +602,7 @@ void main() {
       container = _detailContainer(repo);
       notifier = container.read(detailProvider.notifier);
       await notifier.load();
-      expect(await notifier.acceptOcrCandidateWithReason(), 'slice_missing');
+      expect((await notifier.acceptOcrCandidateOutcome()).reason, 'slice_missing');
       container.dispose();
     });
 
@@ -612,7 +612,7 @@ void main() {
       final notifier = container.read(detailProvider.notifier);
       await notifier.load();
       expect(container.read(detailProvider).question, isNull);
-      expect(await notifier.acceptOcrCandidateWithReason(), 'no_question');
+      expect((await notifier.acceptOcrCandidateOutcome()).reason, 'no_question');
     });
 
     test('OrganizeNotifier 子集：成功 / hash_mismatch / no_candidate', () async {
@@ -637,7 +637,7 @@ void main() {
       var container = _organizeContainer(repo);
       var notifier = container.read(organizeProvider.notifier);
       await notifier.refresh();
-      expect(await notifier.acceptOcrCandidateWithReason(), isNull);
+      expect((await notifier.acceptOcrCandidateOutcome()).reason, isNull);
       expect(container.read(organizeProvider).current?.ocrStem, '候选');
       container.dispose();
 
@@ -657,7 +657,7 @@ void main() {
       container = _organizeContainer(repo);
       notifier = container.read(organizeProvider.notifier);
       await notifier.refresh();
-      expect(await notifier.acceptOcrCandidateWithReason(), 'hash_mismatch');
+      expect((await notifier.acceptOcrCandidateOutcome()).reason, 'hash_mismatch');
       container.dispose();
 
       repo = _FakeOrganizeRepo(questions: [_q('q1', ocrStem: '题干')]);
@@ -665,7 +665,7 @@ void main() {
       container = _organizeContainer(repo);
       notifier = container.read(organizeProvider.notifier);
       await notifier.refresh();
-      expect(await notifier.acceptOcrCandidateWithReason(), 'no_candidate');
+      expect((await notifier.acceptOcrCandidateOutcome()).reason, 'no_candidate');
     });
 
     test('candidateRejectionMessage：每个 reason 都有明确文案', () {

@@ -28,6 +28,7 @@ Question q(
   bool isOrganized = false,
   String? questionType,
   List<String>? optionLabels,
+  String? correctOption,
   String? answer,
   String? ocrRaw,
 }) => Question(
@@ -42,6 +43,7 @@ Question q(
   isOrganized: isOrganized,
   questionType: questionType,
   optionLabels: optionLabels,
+  correctOption: correctOption,
   answer: answer,
   ocrRaw: ocrRaw,
 );
@@ -402,6 +404,11 @@ void main() {
         ],
       );
       await pumpOrganize(tester, repo: repo);
+      // Win11 反馈包 1：编辑器已移进「答案 · 解析 · 笔记」区内，先展开。
+      await tester.ensureVisible(find.text('答案 · 解析 · 笔记（可选）'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('答案 · 解析 · 笔记（可选）'));
+      await tester.pumpAndSettle();
       // 检测到 [A, B]：初始位就是两项；未接线时兜底 A–D 会多出 C、D。
       expect(find.widgetWithText(QmChip, 'A'), findsOneWidget);
       expect(find.widgetWithText(QmChip, 'B'), findsOneWidget);
@@ -424,16 +431,16 @@ void main() {
         ],
       );
       await pumpOrganize(tester, repo: repo);
-      final answerField = find.byWidgetPredicate(
-        (w) => w is TextField && w.decoration?.hintText == '还没想好可留空',
-      );
-      String answerText() =>
-          tester.widget<TextField>(answerField).controller?.text ?? '';
       await tester.ensureVisible(find.text('答案 · 解析 · 笔记（可选）'));
       await tester.pumpAndSettle();
       await tester.tap(find.text('答案 · 解析 · 笔记（可选）'));
       await tester.pumpAndSettle();
-      expect(answerText(), isEmpty);
+      // Win11 反馈包 1：选择题不显示文字答案框——多选答案只活在点选
+      // 里，保存时拼成字母串落库。
+      final answerField = find.byWidgetPredicate(
+        (w) => w is TextField && w.decoration?.hintText == '还没想好可留空',
+      );
+      expect(answerField, findsNothing);
       Future<void> tapChip(String letter) async {
         final chip = find.widgetWithText(QmChip, letter);
         await tester.ensureVisible(chip);
@@ -442,17 +449,27 @@ void main() {
         await tester.pumpAndSettle();
       }
 
+      Future<void> saveDraft() async {
+        await tester.ensureVisible(find.text('保存草稿'));
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('保存草稿'));
+        await tester.pumpAndSettle();
+      }
+
       await tapChip('A');
-      expect(answerText(), 'A');
       await tapChip('C');
-      expect(answerText(), 'A,C');
-      // 取消点选 A：答案字段同步回落。
+      await saveDraft();
+      expect(
+        repo.saved.any((x) => x.id == 'q1' && x.answer == 'A,C'),
+        isTrue,
+      );
+      // 取消点选 A：保存后答案同步回落。
       await tapChip('A');
-      expect(answerText(), 'C');
-      // 手动输入行为不变：直接改答案字段仍按输入走。
-      await tester.enterText(answerField, 'B,D');
-      await tester.pumpAndSettle();
-      expect(answerText(), 'B,D');
+      await saveDraft();
+      expect(
+        repo.saved.any((x) => x.id == 'q1' && x.answer == 'C'),
+        isTrue,
+      );
     });
 
     testWidgets('修框切片默认展开：只有整题一张卡', (tester) async {
@@ -1270,6 +1287,239 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.text('#易错'), findsOneWidget);
       expect(tester.takeException(), isNull);
+    });
+  });
+
+  group('Win11 反馈包 1：答案区', () {
+    Finder answerField() => find.byWidgetPredicate(
+      (w) => w is TextField && w.decoration?.hintText == '还没想好可留空',
+    );
+
+    Future<void> openAnswerSection(WidgetTester tester) async {
+      await tester.ensureVisible(find.text('答案 · 解析 · 笔记（可选）'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('答案 · 解析 · 笔记（可选）'));
+      await tester.pumpAndSettle();
+    }
+
+    Future<void> tapChip(WidgetTester tester, String letter) async {
+      final chip = find.widgetWithText(QmChip, letter);
+      await tester.ensureVisible(chip);
+      await tester.pumpAndSettle();
+      await tester.tap(chip);
+      await tester.pumpAndSettle();
+    }
+
+    Future<void> pickType(WidgetTester tester, String currentLabel, String targetLabel) async {
+      await tester.ensureVisible(find.widgetWithText(QmChip, currentLabel));
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(QmChip, currentLabel));
+      await tester.pumpAndSettle();
+      expect(find.text('选择题型'), findsOneWidget);
+      await tester.tap(find.text(targetLabel));
+      await tester.pumpAndSettle();
+    }
+
+    testWidgets('单选题：答案区只留字母按钮，不显示文字答案框', (tester) async {
+      final repo = FakeOrganizeRepo(
+        questions: [
+          q(
+            'q1',
+            '单选函数',
+            questionType: 'choice_single',
+            optionLabels: const ['A', 'B', 'C', 'D'],
+            correctOption: 'B',
+            answer: '旧文字答案',
+          ),
+        ],
+        folderList: const [
+          Folder(id: 'f1', name: '试卷', subjectId: 'math'),
+        ],
+      );
+      await pumpOrganize(tester, repo: repo);
+      await openAnswerSection(tester);
+      expect(answerField(), findsNothing);
+      expect(find.widgetWithText(QmChip, 'A'), findsOneWidget);
+      expect(find.widgetWithText(QmChip, 'B'), findsOneWidget);
+      expect(
+        tester.widget<QmChip>(find.widgetWithText(QmChip, 'B')).selected,
+        isTrue,
+      );
+      // 旧文字答案保留在本次编辑中，并有提示（不静默丢掉）。
+      expect(find.textContaining('文字答案“旧文字答案”已保留'), findsOneWidget);
+    });
+
+    testWidgets('多选题：A–E 五位在 Wrap 内；点选后保存，答案为拼合字母', (tester) async {
+      final repo = FakeOrganizeRepo(
+        questions: [
+          q(
+            'q1',
+            '多选函数',
+            questionType: 'choice_multi',
+            optionLabels: const ['A', 'B', 'C', 'D', 'E'],
+          ),
+        ],
+        folderList: const [
+          Folder(id: 'f1', name: '试卷', subjectId: 'math'),
+        ],
+      );
+      await pumpOrganize(tester, repo: repo);
+      await openAnswerSection(tester);
+      expect(answerField(), findsNothing);
+      // 五个字母位都在 Wrap 里（超宽自动换行，不挤出容器）。
+      for (final letter in ['A', 'B', 'C', 'D', 'E']) {
+        expect(
+          find.descendant(
+            of: find.byType(Wrap),
+            matching: find.widgetWithText(QmChip, letter),
+          ),
+          findsOneWidget,
+          reason: '选项 $letter 应在 Wrap 内的 QmChip 里',
+        );
+      }
+      await tapChip(tester, 'A');
+      await tapChip(tester, 'C');
+      await tester.ensureVisible(find.text('保存草稿'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('保存草稿'));
+      await tester.pumpAndSettle();
+      expect(
+        repo.saved.any((x) => x.id == 'q1' && x.answer == 'A,C'),
+        isTrue,
+      );
+    });
+
+    testWidgets('判断题：只留正确/错误，无文字答案框', (tester) async {
+      final repo = FakeOrganizeRepo(
+        questions: [
+          q('q1', '判断函数', questionType: 'true_false'),
+        ],
+        folderList: const [
+          Folder(id: 'f1', name: '试卷', subjectId: 'math'),
+        ],
+      );
+      await pumpOrganize(tester, repo: repo);
+      await openAnswerSection(tester);
+      expect(answerField(), findsNothing);
+      expect(find.widgetWithText(QmChip, '正确'), findsOneWidget);
+      expect(find.widgetWithText(QmChip, '错误'), findsOneWidget);
+    });
+
+    testWidgets('待确认：先显示文字答案框（多行，占位文案不变）', (tester) async {
+      final repo = threeQuestionRepo();
+      await pumpOrganize(tester, repo: repo);
+      await openAnswerSection(tester);
+      expect(answerField(), findsOneWidget);
+      final field = tester.widget<TextField>(answerField());
+      expect(field.maxLines, 5);
+      expect(field.decoration?.hintText, '还没想好可留空');
+      expect(find.widgetWithText(QmChip, 'A'), findsNothing);
+    });
+
+    testWidgets('填空题：只留文字答案框，无字母按钮', (tester) async {
+      final repo = FakeOrganizeRepo(
+        questions: [
+          q(
+            'q1',
+            '填空函数',
+            questionType: 'fill_blank',
+            answer: 'x=1',
+          ),
+        ],
+        folderList: const [
+          Folder(id: 'f1', name: '试卷', subjectId: 'math'),
+        ],
+      );
+      await pumpOrganize(tester, repo: repo);
+      await openAnswerSection(tester);
+      expect(answerField(), findsOneWidget);
+      expect(
+        tester.widget<TextField>(answerField()).controller?.text,
+        'x=1',
+      );
+      expect(tester.widget<TextField>(answerField()).maxLines, 5);
+      expect(find.widgetWithText(QmChip, 'A'), findsNothing);
+    });
+
+    testWidgets('题型切换保留答案：单选切填空提示保留，切回单选正确答案仍在', (tester) async {
+      final repo = FakeOrganizeRepo(
+        questions: [
+          q(
+            'q1',
+            '单选函数',
+            questionType: 'choice_single',
+            optionLabels: const ['A', 'B', 'C', 'D'],
+            correctOption: 'B',
+          ),
+        ],
+        folderList: const [
+          Folder(id: 'f1', name: '试卷', subjectId: 'math'),
+        ],
+      );
+      await pumpOrganize(tester, repo: repo);
+      await pickType(tester, '单项选择', '填空题');
+      await openAnswerSection(tester);
+      expect(find.textContaining('之前选定的正确答案（B）'), findsOneWidget);
+      expect(answerField(), findsOneWidget);
+      await pickType(tester, '填空题', '单项选择');
+      expect(
+        tester.widget<QmChip>(find.widgetWithText(QmChip, 'B')).selected,
+        isTrue,
+      );
+      await tester.ensureVisible(find.text('保存草稿'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('保存草稿'));
+      await tester.pumpAndSettle();
+      expect(repo.saved.last.correctOption, 'B');
+    });
+
+    testWidgets('切题不串答案区状态', (tester) async {
+      final repo = FakeOrganizeRepo(
+        questions: [
+          q(
+            'q1',
+            '单选函数',
+            questionType: 'choice_single',
+            optionLabels: const ['A', 'B', 'C', 'D'],
+            correctOption: 'B',
+            createdAt: DateTime(2026, 11, 8),
+          ),
+          q(
+            'q2',
+            '填空函数',
+            questionType: 'fill_blank',
+            answer: '填空答案',
+            createdAt: DateTime(2026, 11, 5),
+          ),
+        ],
+        folderList: const [
+          Folder(id: 'f1', name: '试卷', subjectId: 'math'),
+        ],
+      );
+      await pumpOrganize(tester, repo: repo);
+      await openAnswerSection(tester);
+      expect(find.widgetWithText(QmChip, 'A'), findsOneWidget);
+      expect(answerField(), findsNothing);
+      await tester.ensureVisible(find.text('下一道'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('下一道'));
+      await tester.pumpAndSettle();
+      expect(answerField(), findsOneWidget);
+      expect(
+        tester.widget<TextField>(answerField()).controller?.text,
+        '填空答案',
+      );
+      expect(find.widgetWithText(QmChip, 'A'), findsNothing);
+      await tester.ensureVisible(find.text('上一道'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('上一道'));
+      await tester.pumpAndSettle();
+      expect(find.widgetWithText(QmChip, 'A'), findsOneWidget);
+      expect(
+        tester.widget<QmChip>(find.widgetWithText(QmChip, 'B')).selected,
+        isTrue,
+      );
+      expect(answerField(), findsNothing);
     });
   });
 }

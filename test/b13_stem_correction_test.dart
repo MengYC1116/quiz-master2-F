@@ -395,7 +395,7 @@ void main() {
       );
       await AppDatabase.upsertQuestionInto(db, q);
       final repo = QuestionRepository(AppDatabase.instance);
-      final updated = await acceptCandidateStem(repo, q);
+      final updated = (await acceptCandidateStem(repo, q)).question;
       // 接受的题干从 raw 包里经 splitStem 取（与预览一致），选项不进题干。
       expect(updated.ocrStem, '新题');
       expect(updated.ocrSplitStatus, '自动切分');
@@ -430,7 +430,7 @@ void main() {
       );
       await AppDatabase.upsertQuestionInto(db, q);
       final repo = QuestionRepository(AppDatabase.instance);
-      final updated = await acceptCandidateStem(repo, q);
+      final updated = (await acceptCandidateStem(repo, q)).question;
       expect(updated.ocrSplitStatus, '未切分');
       final stored = await AppDatabase.instance.questionById('q1');
       expect(stored?.ocrSplitStatus, '未切分');

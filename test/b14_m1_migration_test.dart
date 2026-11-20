@@ -185,8 +185,8 @@ Future<Map<String, dynamic>> _seedAndExport(QuizDatabase db) async {
 }
 
 void main() {
-  group('十四批 M1：v4 → v5 迁移', () {
-    test('v4 库打开即迁移到 v5：数据全保留，新列默认值正确，content_version 原值保留', () async {
+  group('十四批 M1：v4 → v6 迁移', () {
+    test('v4 库打开即迁移到 v6：数据全保留，新列默认值正确，content_version 原值保留', () async {
       final tmp = await Directory.systemTemp.createTemp('b14-migrate-');
       addTearDown(() async {
         try {
@@ -202,12 +202,12 @@ void main() {
         (await db.customSelect('PRAGMA user_version').get())
             .single
             .data['user_version'],
-        5,
+        6,
       );
       final settings = await _rawRows(db, 'settings');
       expect(
         settings.singleWhere((r) => r['key'] == 'schemaVersion')['value'],
-        '5',
+        '6',
       );
       // 旧数据还在。
       final qs = await AppDatabase.allQuestionsFrom(db);
@@ -226,6 +226,10 @@ void main() {
       expect(q1.optionLabelsConfirmed, isFalse);
       expect(q1.answerVersion, 1);
       expect(q1.contentVersion, 7);
+      // Win11 反馈包 5（v5→v6）：新列默认值 NULL（本夹具题无 ocr_raw，
+      // 开库回填不产出内容）。
+      expect(q1.optionContents, isNull);
+      expect(q1.optionContentsParserVersion, isNull);
       // 旧复习记录还在，新增列全 NULL。
       final history = await _rawRows(db, 'review_history');
       expect(history, hasLength(1));
@@ -318,7 +322,7 @@ void main() {
       expect(rows.single['status'], 'inProgress');
     });
 
-    test('迁移后 DDL 与全新 v5 库逐字一致', () async {
+    test('迁移后 DDL 与全新 v6 库逐字一致', () async {
       final tmp = await Directory.systemTemp.createTemp('b14-migrate-');
       addTearDown(() async {
         try {

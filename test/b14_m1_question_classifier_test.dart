@@ -435,7 +435,7 @@ void main() {
       );
       await AppDatabase.upsertQuestionInto(db, q);
       final repo = QuestionRepository(AppDatabase.instance);
-      final updated = await acceptCandidateStem(repo, q);
+      final updated = (await acceptCandidateStem(repo, q)).question;
       expect(updated.questionType, 'choice_single');
       expect(updated.questionTypeSource, 'auto');
       expect(updated.questionBackgroundTags, '案例');
@@ -458,7 +458,7 @@ void main() {
       );
       await AppDatabase.upsertQuestionInto(db, q);
       final repo = QuestionRepository(AppDatabase.instance);
-      final updated = await acceptCandidateStem(repo, q);
+      final updated = (await acceptCandidateStem(repo, q)).question;
       expect(updated.questionType, 'calculation');
       expect(updated.questionTypeSource, 'manual');
       expect(updated.questionBackgroundTags, '材料');
@@ -479,7 +479,7 @@ void main() {
       );
       await AppDatabase.upsertQuestionInto(db, q);
       final repo = QuestionRepository(AppDatabase.instance);
-      final updated = await acceptCandidateStem(repo, q);
+      final updated = (await acceptCandidateStem(repo, q)).question;
       expect(updated.questionType, isNull);
       expect(updated.questionTypeSource, 'manual');
       expect(updated.contentVersion, 3);

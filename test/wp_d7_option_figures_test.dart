@@ -8,22 +8,23 @@
 // - 图块归属优先级 P1（md 结构明确关联：引用在标号 div 内，或紧跟标号块后）
 //   > P2（页面坐标 + 选项区域，同一 API 像素空间、空间尺寸一致才比）
 //   > P3（md 引用顺序 + 选项标号，仅 R5-3 四条件全满足）
-//   > P4（无法可靠匹配 → optionLabel null，进「未关联图片」区）。
+//   > P4（无法可靠匹配 → optionLabel null，默认放序列末尾）。
 // - 一张图片最多归属一个选项；一个选项可归属多张图片（S4-1）。
 // - optionLabel 只解决归属，不独自决定选项内精确位置（R5-4）：位置优先
 //   保留可靠的 md 锚点顺序（md 引用相对该选项文本块的位置），无可靠锚点
 //   时才统一插在选项标号所在块的紧后方。
-// - 无 optionLabel 且无法可靠放置的图块不再默认堆到末尾，改入题干末尾的
-//   独立「未关联图片」区（TextBlock“以下图片未确认属于哪个选项” + 图块，
-//   图块强制标未确认）；题干图（md 引用在首个选项标号之前）仍按原 md/text
+// - 无 optionLabel 且无法可靠放置的图块默认放序列末尾（Win11 反馈包 3：
+//   不再设独立「未关联图片」区、不再标“位置未确认”，用户自己拖到正确
+//   位置）；题干图（md 引用在首个选项标号之前）仍按原 md/text
 //   逻辑放置，互不干扰。
 // - 坐标约定（U2）：不做 PDF 仿射变换；GLM bbox 单位是送入 API 的图像的
 //   像素坐标，换算只有减白边再 clip；PDF 点坐标/MediaBox/CropBox/Rotate/
 //   UserUnit 从不进入 OCR 流水线；页面旋转只在渲染时由 pdfrx 应用一次。
 // - 已知边界（写进测试名与实现注释，不是静默行为）：纯文本选项（非 div）
 //   在 parseQuestionContent 里会合并成一个 TextBlock，块内无逐选项锚点，
-//   归属已知但无处可插的图块进未关联区；autoSplit 已把选项切出题干时，
-//   题干块里同样没有标号块，图块同样进未关联区（诚实标注，不冒充位置）。
+//   归属已知但无处可插的图块默认放序列末尾；autoSplit 已把选项切出题干时，
+//   题干块里同样没有标号块，图块同样默认放序列末尾（Win11 反馈包 3：
+//   不再设未关联区、不再标未确认）。
 import 'package:flutter_test/flutter_test.dart';
 import 'package:quiz_master2/modules/ocr/ocr_figures.dart';
 import 'package:quiz_master2/modules/ocr/question_content.dart';
@@ -118,12 +119,10 @@ const stemAllDivs =
     '题干文字\n\n<div>A. 甲</div>\n<div>B. 乙</div>\n<div>C. 丙</div>\n<div>D. 丁</div>';
 
 /// 把 buildContentBlocks 的输出读成可断言的序列：
-/// `TEXT:xxx` / `FIG:yyy` / `ZONE`（未关联区标题块）。
+/// `TEXT:xxx` / `FIG:yyy`（`:unconfirmed` 后缀是数据层标记，界面不再显示）。
 List<String> describe(List<QuestionContentBlock> blocks) => [
   for (final b in blocks)
     switch (b) {
-      TextBlock(:final text) when text == '以下图片未确认属于哪个选项' =>
-        'ZONE',
       TextBlock(:final text) => 'TEXT:${text.replaceAll('\n', '\\n')}',
       FigureBlock(:final figureId, :final unconfirmed) =>
         'FIG:$figureId${unconfirmed ? ':unconfirmed' : ''}',
@@ -193,7 +192,6 @@ void main() {
       expect(indexOfFig(desc, 'figure-q1-0'), greaterThan(desc.indexWhere((s) => s == 'TEXT:A. 甲')));
       expect(indexOfFig(desc, 'figure-q1-1'), greaterThan(indexOfFig(desc, 'figure-q1-0')));
       expect(indexOfFig(desc, 'figure-q1-1'), lessThan(desc.indexWhere((s) => s == 'TEXT:B. 乙')));
-      expect(desc, isNot(contains('ZONE')));
     });
 
     test('R5-4：图片在选项文字之前（引用在标号 div 内）→ 跟在标号块后', () {
@@ -267,7 +265,7 @@ void main() {
       ]);
     });
 
-    test('Markdown 没有选项标号 → 无锚点图片进「未关联图片」区，不堆在题干末尾冒充正常内容', () {
+    test('Markdown 没有选项标号 → 无锚点图片默认放序列末尾，不作任何未确认标注', () {
       final figs = figuresFor(
         md: '题干文字',
         pages: [
@@ -284,8 +282,8 @@ void main() {
           mdResults: '题干文字',
         ),
       );
-      // 未关联区标题块在图之前；图是未确认态，不是正常内容。
-      expect(desc, ['TEXT:题干文字\\n\\n第二段', 'ZONE', 'FIG:figure-q1-0:unconfirmed']);
+      // 无区标题块；图在序列末尾（数据层仍记未确认，界面不标注）。
+      expect(desc, ['TEXT:题干文字\\n\\n第二段', 'FIG:figure-q1-0:unconfirmed']);
     });
 
     test('无标号但 md 锚点可靠的题干图仍按 md 位置放，不进未关联区', () {
@@ -304,11 +302,11 @@ void main() {
           mdResults: '第一段\n\n![](page=0,bbox=[10, 60, 60, 80])\n\n第二段',
         ),
       );
-      expect(desc, isNot(contains('ZONE')));
+      // md 锚定的题干图按 md 位置放，不默认堆到末尾。
       expect(desc.last, 'FIG:figure-q1-0');
     });
 
-    test('标号缺失一个（无 C）：其余 P1 关联正常，缺失项的图片进未关联区', () {
+    test('标号缺失一个（无 C）：其余 P1 关联正常，缺失项的图片默认放序列末尾', () {
       const md =
           '题干文字\n\n'
           '<div>A. 甲</div>\n![](page=0,bbox=[40, 92, 140, 108])\n'
@@ -347,12 +345,11 @@ void main() {
         'TEXT:乙的第二段',
         'TEXT:D. 丁',
         'FIG:figure-q1-3',
-        'ZONE',
         'FIG:figure-q1-2:unconfirmed',
       ]);
     });
 
-    test('标号顺序错误（A、C、B、D）：P1 关联仍各归其主，纯顺序映射被挡、进未关联区', () {
+    test('标号顺序错误（A、C、B、D）：P1 关联仍各归其主，纯顺序映射被挡、默认放序列末尾', () {
       const md =
           '题干文字\n\n'
           '<div>A. 甲</div>\n![](page=0,bbox=[40, 92, 140, 108])\n'
@@ -380,12 +377,11 @@ void main() {
       final desc = describe(
         buildContentBlocks(stemMarkdown: stem, figures: figs, mdResults: md),
       );
-      expect(desc, contains('ZONE'));
+      expect(desc.last, 'FIG:figure-q1-3:unconfirmed');
       expect(indexOfFig(desc, 'figure-q1-0'), greaterThan(desc.indexWhere((s) => s == 'TEXT:A. 甲')));
       expect(indexOfFig(desc, 'figure-q1-1'), greaterThan(desc.indexWhere((s) => s == 'TEXT:C. 丙')));
       expect(indexOfFig(desc, 'figure-q1-2'), greaterThan(desc.indexWhere((s) => s == 'TEXT:B. 乙')));
       expect(indexOfFig(desc, 'figure-q1-4'), greaterThan(desc.indexWhere((s) => s == 'TEXT:D. 丁')));
-      expect(desc.last, 'FIG:figure-q1-3:unconfirmed');
     });
 
     test('两个选项相邻图片 → 各归其主', () {
@@ -553,7 +549,7 @@ void main() {
       expect(figs[1].bbox2d, [40, 92, 140, 108]);
     });
 
-    test('题干图、选项图、未关联图混合 → 各按其道', () {
+    test('题干图、选项图、未关联图混合 → 各按其道（未关联图默认放序列末尾）', () {
       const md =
           '题干文字\n\n![](page=0,bbox=[10, 45, 60, 58])\n\n'
           '<div>A. 甲</div>\n![](page=0,bbox=[40, 92, 140, 108])\n'
@@ -589,12 +585,11 @@ void main() {
         'FIG:figure-q1-2',
         'TEXT:C. 丙',
         'TEXT:丙的第二段',
-        'ZONE',
         'FIG:figure-q1-3:unconfirmed',
       ]);
     });
 
-    test('同一选项标号重复出现 → 该标号锚点歧义，其图进未关联区，其余正常', () {
+    test('同一选项标号重复出现 → 该标号锚点歧义，其图默认放序列末尾，其余正常', () {
       const md =
           '题干文字\n\n'
           '<div>A. 甲</div>\n![](page=0,bbox=[40, 92, 140, 108])\n'
@@ -627,7 +622,6 @@ void main() {
         'TEXT:A. 甲又出现',
         'TEXT:B. 乙',
         'FIG:figure-q1-2',
-        'ZONE',
         'FIG:figure-q1-0:unconfirmed',
         'FIG:figure-q1-1:unconfirmed',
       ]);
@@ -656,7 +650,7 @@ void main() {
       ]);
     });
 
-    test('有图片引用但无对应选项标号 → 该图进未关联区，其余正常', () {
+    test('有图片引用但无对应选项标号 → 该图默认放序列末尾，其余正常', () {
       // 只有 A、B 两个标号（序列不完整 → P3 不启用）；第三张图的引用
       // 在 B 之后、非邻接、行带外 → 无任何可靠关联。
       const md =
@@ -683,7 +677,6 @@ void main() {
         buildContentBlocks(stemMarkdown: stem, figures: figs, mdResults: md),
       );
       expect(desc.last, 'FIG:figure-q1-2:unconfirmed');
-      expect(desc, contains('ZONE'));
     });
 
     test('坐标系一致但页面方向旋转（视觉上下颠倒）→ 不做旋转处理，md 结构仍正确归属', () {
@@ -844,7 +837,7 @@ void main() {
       expect(first['coordinate_issue'], isNull);
     });
 
-    test('未关联区标题块只出现一次（多张未关联图共用一区）', () {
+    test('多张未锚定图都在序列末尾，无区标题块', () {
       final figs = figuresFor(
         md: '题干文字',
         pages: [
@@ -854,11 +847,10 @@ void main() {
       final desc = describe(
         buildContentBlocks(stemMarkdown: '题干文字', figures: figs, mdResults: '题干文字'),
       );
-      expect(desc.where((s) => s == 'ZONE').length, 1);
-      expect(desc, ['TEXT:题干文字', 'ZONE', 'FIG:figure-q1-0:unconfirmed', 'FIG:figure-q1-1:unconfirmed']);
+      expect(desc, ['TEXT:题干文字', 'FIG:figure-q1-0:unconfirmed', 'FIG:figure-q1-1:unconfirmed']);
     });
 
-    test('标号块不在题干里（autoSplit 已切掉选项）→ 归属已知但无处可插，进未关联区', () {
+    test('标号块不在题干里（autoSplit 已切掉选项）→ 归属已知但无处可插，默认放序列末尾', () {
       // 直接构造带 optionLabel 的图块，题干里没有任何标号块。
       const fig = OcrFigure(
         id: 'figure-q1-0',
@@ -882,7 +874,7 @@ void main() {
           mdResults: '题干文字\n\n<div>A. 甲</div>\n<div>B. 乙</div>\n![](page=0,bbox=[40, 142, 140, 158])',
         ),
       );
-      expect(desc, ['TEXT:题干文字', 'ZONE', 'FIG:figure-q1-0:unconfirmed']);
+      expect(desc, ['TEXT:题干文字', 'FIG:figure-q1-0:unconfirmed']);
     });
   });
 }

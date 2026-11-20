@@ -291,7 +291,7 @@ void main() {
         ocrStem: '旧题干',
         ocrRaw: raw.toJsonString(),
       );
-      final accepted = await acceptCandidateStem(repo, q);
+      final accepted = (await acceptCandidateStem(repo, q)).question;
       expect(accepted.contentVersion, 6);
       final figures = parseOcrFigures(accepted.ocrFigures);
       expect(figures.length, 1);
@@ -375,7 +375,7 @@ void main() {
         ocrStem: '旧题干',
         ocrRaw: raw.toJsonString(),
       );
-      final accepted = await acceptCandidateStem(repo, q);
+      final accepted = (await acceptCandidateStem(repo, q)).question;
       final figures = parseOcrFigures(accepted.ocrFigures);
       expect(figures.length, 1);
       // 重框：换框 + 换切片（版本化新路径）。
@@ -596,7 +596,7 @@ void main() {
         ocrStem: '旧题干',
         ocrRaw: raw.toJsonString(),
       );
-      final accepted = await acceptCandidateStem(repo, q);
+      final accepted = (await acceptCandidateStem(repo, q)).question;
       final figure = parseOcrFigures(accepted.ocrFigures).single;
       final cropRel = figure.cropPath;
       final cropAbs = AppDatabase.resolveDataPath(cropRel)!;
@@ -631,7 +631,7 @@ void main() {
         ocrStem: '旧题干',
         ocrRaw: raw.toJsonString(),
       );
-      final accepted = await acceptCandidateStem(repo, q);
+      final accepted = (await acceptCandidateStem(repo, q)).question;
       final cropRel = parseOcrFigures(accepted.ocrFigures).single.cropPath;
       final cropAbs = AppDatabase.resolveDataPath(cropRel)!;
       // 模拟进行中的备份导出：暂存区占用图块文件。
@@ -746,7 +746,7 @@ void main() {
         ocrStem: '旧题干',
         ocrRaw: raw.toJsonString(),
       );
-      final accepted = await acceptCandidateStem(repo, q);
+      final accepted = (await acceptCandidateStem(repo, q)).question;
       final cropRel = parseOcrFigures(accepted.ocrFigures).single.cropPath;
       final report = await AppDatabase.exportBackupZipFromWithReport(
         db,
@@ -794,7 +794,7 @@ void main() {
         ocrStem: '旧题干',
         ocrRaw: raw.toJsonString(),
       );
-      final accepted = await acceptCandidateStem(repo, q);
+      final accepted = (await acceptCandidateStem(repo, q)).question;
       final cropRel = parseOcrFigures(accepted.ocrFigures).single.cropPath;
       // 删掉图块文件再导出。
       await File(AppDatabase.resolveDataPath(cropRel)!).delete();
@@ -823,7 +823,7 @@ void main() {
         ocrStem: '旧题干',
         ocrRaw: raw.toJsonString(),
       );
-      final accepted = await acceptCandidateStem(repo, q);
+      final accepted = (await acceptCandidateStem(repo, q)).question;
       final cropRel = parseOcrFigures(accepted.ocrFigures).single.cropPath;
       final report = await AppDatabase.exportBackupZipFromWithReport(
         db,

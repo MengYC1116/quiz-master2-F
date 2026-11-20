@@ -26,6 +26,8 @@ String _norm(String s) => s.replaceAll(RegExp(r'\s+'), ' ').trim();
 // answer_pending_recheck，D-130：仍属 v5，不升 v6）、cause_records
 // 加 2 列、review_history 加 8 列、review_state 加 4 列；新增索引 2 个
 //（idx_questions_question_type、idx_review_history_submission）。
+// Win11 反馈包 5：v6 期望 DDL（16 表 + 8 索引，仍 24 条；questions
+// 末尾加 option_contents + option_contents_parser_version 两列）。
 const _expected = [
   'CREATE UNIQUE INDEX idx_boxes_one_layer1_per_question ON question_boxes(question_id) WHERE layer = 1 AND question_id IS NOT NULL',
   'CREATE INDEX idx_boxes_parent ON question_boxes(parent_box_id)',
@@ -42,7 +44,7 @@ const _expected = [
   'CREATE TABLE folders( id TEXT PRIMARY KEY, name TEXT NOT NULL, subject_id TEXT NOT NULL, parent_id TEXT, sort_order INTEGER NOT NULL DEFAULT 0)',
   'CREATE TABLE knowledge_points( id TEXT PRIMARY KEY, subject_id TEXT NOT NULL, chapter TEXT NOT NULL, name TEXT NOT NULL)',
   "CREATE TABLE question_boxes( id TEXT PRIMARY KEY, collect_task_id TEXT, question_id TEXT, parent_box_id TEXT, page INTEGER NOT NULL DEFAULT 1 CHECK (page >= 1), layer INTEGER NOT NULL CHECK (layer IN (1, 2)), type TEXT NOT NULL CHECK (type IN ('question', 'stem', 'option', 'figure')), x REAL NOT NULL CHECK (x >= 0 AND x <= 1), y REAL NOT NULL CHECK (y >= 0 AND y <= 1), w REAL NOT NULL CHECK (w >= 0 AND w <= 1), h REAL NOT NULL CHECK (h >= 0 AND h <= 1), confidence REAL CHECK (confidence IS NULL OR (confidence >= 0 AND confidence <= 1)), origin TEXT NOT NULL DEFAULT 'manual' CHECK (origin IN ('yolo', 'manual')), updated_at INTEGER NOT NULL)",
-  "CREATE TABLE questions( id TEXT PRIMARY KEY, title TEXT NOT NULL, subject_id TEXT NOT NULL, folder_ids TEXT NOT NULL DEFAULT '', exam_id TEXT, knowledge_ids TEXT NOT NULL DEFAULT '', error_types TEXT NOT NULL DEFAULT '', custom_error_types TEXT NOT NULL DEFAULT '', tags TEXT NOT NULL DEFAULT '', answer TEXT, explanation TEXT, notes TEXT, review_count INTEGER NOT NULL DEFAULT 0, is_organized INTEGER NOT NULL DEFAULT 0, is_demo INTEGER NOT NULL DEFAULT 0, is_favorite INTEGER NOT NULL DEFAULT 0, is_archived INTEGER NOT NULL DEFAULT 0, review_joined INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL, slice_kind TEXT NOT NULL DEFAULT 'material', slice_text TEXT NOT NULL DEFAULT '', source_path TEXT, source_kind TEXT, source_page INTEGER, page_image_path TEXT, slice_path TEXT, slice_width INTEGER, slice_height INTEGER, ocr_raw TEXT, ocr_stem TEXT, ocr_split_status TEXT NOT NULL DEFAULT '未切分', ocr_manual_edited INTEGER NOT NULL DEFAULT 0, content_version INTEGER NOT NULL DEFAULT 0, question_type TEXT, question_type_source TEXT NOT NULL DEFAULT 'unclassified', question_background_tags TEXT NOT NULL DEFAULT '', question_background_tags_source TEXT NOT NULL DEFAULT 'unclassified', ocr_figures TEXT NOT NULL DEFAULT '[]', correct_option TEXT, option_labels TEXT, option_labels_confirmed INTEGER NOT NULL DEFAULT 0, answer_version INTEGER NOT NULL DEFAULT 1, answer_pending_recheck INTEGER NOT NULL DEFAULT 0)",
+  "CREATE TABLE questions( id TEXT PRIMARY KEY, title TEXT NOT NULL, subject_id TEXT NOT NULL, folder_ids TEXT NOT NULL DEFAULT '', exam_id TEXT, knowledge_ids TEXT NOT NULL DEFAULT '', error_types TEXT NOT NULL DEFAULT '', custom_error_types TEXT NOT NULL DEFAULT '', tags TEXT NOT NULL DEFAULT '', answer TEXT, explanation TEXT, notes TEXT, review_count INTEGER NOT NULL DEFAULT 0, is_organized INTEGER NOT NULL DEFAULT 0, is_demo INTEGER NOT NULL DEFAULT 0, is_favorite INTEGER NOT NULL DEFAULT 0, is_archived INTEGER NOT NULL DEFAULT 0, review_joined INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL, slice_kind TEXT NOT NULL DEFAULT 'material', slice_text TEXT NOT NULL DEFAULT '', source_path TEXT, source_kind TEXT, source_page INTEGER, page_image_path TEXT, slice_path TEXT, slice_width INTEGER, slice_height INTEGER, ocr_raw TEXT, ocr_stem TEXT, ocr_split_status TEXT NOT NULL DEFAULT '未切分', ocr_manual_edited INTEGER NOT NULL DEFAULT 0, content_version INTEGER NOT NULL DEFAULT 0, question_type TEXT, question_type_source TEXT NOT NULL DEFAULT 'unclassified', question_background_tags TEXT NOT NULL DEFAULT '', question_background_tags_source TEXT NOT NULL DEFAULT 'unclassified', ocr_figures TEXT NOT NULL DEFAULT '[]', correct_option TEXT, option_labels TEXT, option_labels_confirmed INTEGER NOT NULL DEFAULT 0, answer_version INTEGER NOT NULL DEFAULT 1, answer_pending_recheck INTEGER NOT NULL DEFAULT 0, option_contents TEXT, option_contents_parser_version INTEGER)",
   'CREATE TABLE ocr_jobs( id TEXT PRIMARY KEY, question_id TEXT NOT NULL, crop_path TEXT, input_hash TEXT, status TEXT NOT NULL DEFAULT \'pending\', attempt_count INTEGER NOT NULL DEFAULT 0, available_at INTEGER, started_at INTEGER, lease_until INTEGER, lease_token TEXT, last_error_code TEXT, last_error_message TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, completed_at INTEGER)',
   'CREATE TABLE recent_tasks( id INTEGER PRIMARY KEY CHECK (id = 1), kind TEXT NOT NULL, subject_id TEXT NOT NULL, title TEXT NOT NULL, updated_at INTEGER NOT NULL)',
   'CREATE TABLE recently_viewed_questions( question_id TEXT PRIMARY KEY, viewed_at INTEGER NOT NULL)',
@@ -55,7 +57,7 @@ const _expected = [
 
 void main() {
   group('B Stage 1：新代码建库 schema 与 v2 基线零差异', () {
-    test('openAt 新建空库：user_version=5，24 条 DDL 逐字一致', () async {
+    test('openAt 新建空库：user_version=6，24 条 DDL 逐字一致', () async {
       final tmp = await Directory.systemTemp.createTemp('b1-schema-');
       addTearDown(() async {
         try {
@@ -76,7 +78,7 @@ void main() {
           probe
               .select('PRAGMA user_version')
               .single['user_version'],
-          5,
+          6,
         );
         final actual =
             probe

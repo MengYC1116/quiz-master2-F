@@ -660,7 +660,7 @@ void main() {
       expect(figures[1].bbox2d, [10, 60, 60, 80]);
     });
 
-    test('锚定失败：无文本块时标位置未确认，排末尾', () {
+    test('锚定失败：无文本块时记 fallback、排末尾（数据层记未确认，界面不标注）', () {
       final figures = buildOcrFigures(
         questionId: 'q1',
         raw: raw(
@@ -813,7 +813,7 @@ void main() {
       expect(blocks[0], isA<TextBlock>());
       expect(blocks[1], isA<FigureBlock>());
       expect((blocks[1] as FigureBlock).unconfirmed, isFalse);
-      // fallback 图块排在内容序列末尾并标“位置未确认”。
+      // fallback 图块排在内容序列末尾（数据层仍记未确认，界面不标注）。
       final fallbackFigures = buildOcrFigures(
         questionId: 'q1',
         raw: raw(

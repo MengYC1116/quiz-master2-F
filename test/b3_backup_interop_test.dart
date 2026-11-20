@@ -543,8 +543,8 @@ void main() {
           "cause_records/$legacyCausePk/remedy_history:  → []",
           "collect_tasks/task-legacy/page_rotations:  → {}",
           // 十二批 D-91：第 8 处是迁移写回——恢复把 settings.schemaVersion
-          // 写回当前版本（v5 的 '5'），黄金夹具（v2）里它是 '2'。
-          "settings/schemaVersion/value: 2 → 5",
+          // 写回当前版本（v6 的 '6'），黄金夹具（v2）里它是 '2'。
+          "settings/schemaVersion/value: 2 → 6",
           // 十三批 M2：第 9–17 处是 v4 新列的 DDL 默认值——v2 黄金夹具
           // 的 questions 行没有这 3 列（ocr_raw / ocr_stem 是可空列，
           // 缺键与 NULL 同值，不产生差异），恢复时按 DDL 默认值补齐。

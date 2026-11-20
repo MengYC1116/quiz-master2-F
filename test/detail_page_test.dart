@@ -743,11 +743,12 @@ void main() {
       );
       await pumpDetail(tester, repo: repo);
       await tapText(tester, '编辑');
+      // Win11 反馈包 1：选择题不显示文字答案框——多选答案只活在点选
+      // 里，保存时拼成字母串落库。
       final answerField = find.byWidgetPredicate(
         (w) => w is TextField && w.decoration?.labelText == '答案',
       );
-      String answerText() =>
-          tester.widget<TextField>(answerField).controller?.text ?? '';
+      expect(answerField, findsNothing);
       Future<void> tapChip(String letter) async {
         final chip = find.widgetWithText(QmChip, letter);
         await tester.ensureVisible(chip);
@@ -756,18 +757,17 @@ void main() {
         await tester.pumpAndSettle();
       }
 
-      expect(answerText(), isEmpty);
       await tapChip('A');
-      expect(answerText(), 'A');
       await tapChip('C');
-      expect(answerText(), 'A,C');
-      // 取消点选 A：答案字段同步回落。
+      await tapText(tester, '保存', first: true);
+      expect(repo.saved.last.answer, 'A,C');
+      // 再进编辑：取消点选 A，保存后答案同步回落。
+      await tapText(tester, '编辑');
       await tapChip('A');
-      expect(answerText(), 'C');
-      // 手动输入行为不变：直接改答案字段仍按输入走。
-      await tester.enterText(answerField, 'B,D');
-      await tester.pumpAndSettle();
-      expect(answerText(), 'B,D');
+      await tapChip('C');
+      await tapChip('A');
+      await tapText(tester, '保存', first: true);
+      expect(repo.saved.last.answer, 'C');
     });
 
     testWidgets('取消无改动直接退出编辑', (tester) async {
@@ -1642,6 +1642,97 @@ void main() {
         await openSection(tester, '复习记录');
         expect(tester.takeException(), isNull);
       }
+    });
+  });
+
+  group('Win11 反馈包 1：答案区', () {
+    Finder editAnswerField() => find.byWidgetPredicate(
+      (w) => w is TextField && w.decoration?.labelText == '答案',
+    );
+
+    Future<void> pickEditType(
+      WidgetTester tester,
+      String currentLabel,
+      String targetLabel,
+    ) async {
+      await tester.ensureVisible(find.widgetWithText(QmChip, currentLabel));
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(QmChip, currentLabel));
+      await tester.pumpAndSettle();
+      expect(find.text('选择题型'), findsOneWidget);
+      await tester.tap(find.text(targetLabel));
+      await tester.pumpAndSettle();
+    }
+
+    testWidgets('编辑态单选题：不显示文字答案框，只留字母按钮', (tester) async {
+      final repo = FakeDetailRepo(
+        questions: [
+          dtq(
+            'q1',
+            '单选函数',
+            questionType: 'choice_single',
+            optionLabels: const ['A', 'B', 'C', 'D'],
+            correctOption: 'B',
+            answer: '旧文字答案',
+          ),
+        ],
+      );
+      await pumpDetail(tester, repo: repo);
+      await tapText(tester, '编辑');
+      expect(editAnswerField(), findsNothing);
+      expect(find.widgetWithText(QmChip, 'A'), findsOneWidget);
+      expect(
+        tester.widget<QmChip>(find.widgetWithText(QmChip, 'B')).selected,
+        isTrue,
+      );
+      expect(find.textContaining('文字答案“旧文字答案”已保留'), findsOneWidget);
+    });
+
+    testWidgets('编辑态填空题：只留文字答案框，无字母按钮', (tester) async {
+      final repo = FakeDetailRepo(
+        questions: [
+          dtq(
+            'q1',
+            '填空函数',
+            questionType: 'fill_blank',
+            answer: 'x=1',
+          ),
+        ],
+      );
+      await pumpDetail(tester, repo: repo);
+      await tapText(tester, '编辑');
+      expect(editAnswerField(), findsOneWidget);
+      expect(
+        tester.widget<TextField>(editAnswerField()).controller?.text,
+        'x=1',
+      );
+      expect(find.widgetWithText(QmChip, 'A'), findsNothing);
+    });
+
+    testWidgets('编辑态题型切换保留答案：单选切填空提示保留，切回单选正确答案仍在', (tester) async {
+      final repo = FakeDetailRepo(
+        questions: [
+          dtq(
+            'q1',
+            '单选函数',
+            questionType: 'choice_single',
+            optionLabels: const ['A', 'B', 'C', 'D'],
+            correctOption: 'B',
+          ),
+        ],
+      );
+      await pumpDetail(tester, repo: repo);
+      await tapText(tester, '编辑');
+      await pickEditType(tester, '单项选择', '填空题');
+      expect(find.textContaining('之前选定的正确答案（B）'), findsOneWidget);
+      expect(editAnswerField(), findsOneWidget);
+      await pickEditType(tester, '填空题', '单项选择');
+      expect(
+        tester.widget<QmChip>(find.widgetWithText(QmChip, 'B')).selected,
+        isTrue,
+      );
+      await tapText(tester, '保存', first: true);
+      expect(repo.saved.last.correctOption, 'B');
     });
   });
 }

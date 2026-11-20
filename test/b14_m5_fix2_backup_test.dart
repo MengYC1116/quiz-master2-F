@@ -87,7 +87,7 @@ void main() {
       answerVersion: 3,
     );
     await AppDatabase.upsertQuestionInto(db, q);
-    final accepted = await acceptCandidateStem(repo, q);
+    final accepted = (await acceptCandidateStem(repo, q)).question;
     return parseOcrFigures(accepted.ocrFigures).single.cropPath;
   }
 

@@ -273,7 +273,7 @@ void main() {
           jobId: 'ocr-1',
         ),
       );
-      final updated = await acceptCandidateStem(repo, q);
+      final updated = (await acceptCandidateStem(repo, q)).question;
       expect(updated.ocrStem, '2. 双曲线 \$ 4 x^{2}-y^{2}=4 \$的离心率为');
       expect(updated.ocrSplitStatus, '自动切分');
       expect(updated.ocrManualEdited, isTrue);
@@ -374,7 +374,7 @@ void main() {
           inputHash: hash,
         ),
       );
-      final accepted = await acceptCandidateStem(repo, q);
+      final accepted = (await acceptCandidateStem(repo, q)).question;
       await repo.save(accepted);
       await expectLater(
         acceptCandidateStem(repo, accepted),
@@ -640,7 +640,7 @@ void main() {
           jobId: 'ocr-1',
         ),
       );
-      final updated = await acceptCandidateStem(repo, q);
+      final updated = (await acceptCandidateStem(repo, q)).question;
       expect(updated.ocrStem, '2. 双曲线 \$ 4 x^{2}-y^{2}=4 \$的离心率为');
       expect(updated.ocrSplitStatus, '自动切分');
       expect(updated.ocrManualEdited, isTrue);
