@@ -68,7 +68,11 @@ void main() {
     );
   }
 
-  Future<void> insertTask(String id, String sourcePath) async {
+  Future<void> insertTask(
+    String id,
+    String sourcePath, {
+    String fileName = 'm.pdf',
+  }) async {
     await db.customInsert(
       'INSERT INTO collect_tasks (id, name, file_name, subject_id, status, '
       'progress, page_count, page, error, question_id, created_at, '
@@ -77,7 +81,7 @@ void main() {
       variables: [
         Variable.withString(id),
         Variable.withString('任务 $id'),
-        Variable.withString('m.pdf'),
+        Variable.withString(fileName),
         Variable.withString('math'),
         Variable.withString('needBox'),
         Variable.withInt(100),
@@ -91,6 +95,22 @@ void main() {
       ],
     );
   }
+
+  /// 最小 JPEG（SOI + APP1 Exif，方向 6；无图像数据——备份分类只读
+  /// EXIF 头，不解码像素）。Q4：方向 6 的图片任务的归一化副本是必需
+  /// 的，暂存区丢失仍须警告（PDF 任务的副本是可选的，见下）。
+  List<int> exifOrientation6Jpeg() => [
+    0xFF, 0xD8, // SOI
+    0xFF, 0xE1, // APP1
+    0x00, 0x22, // 段长 34（含长度字段本身）
+    0x45, 0x78, 0x69, 0x66, 0x00, 0x00, // "Exif\0\0"
+    0x49, 0x49, 0x2A, 0x00, 0x08, 0x00, 0x00, 0x00, // TIFF 头（II, 42, IFD 偏移 8）
+    0x01, 0x00, // IFD 条目数 1
+    // tag 0x0112（Orientation），SHORT，1 个，值 6。
+    0x12, 0x01, 0x03, 0x00, 0x01, 0x00, 0x00, 0x00, 0x06, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, // 下一 IFD 偏移 0
+    0xFF, 0xD9, // EOI
+  ];
 
   /// 钩子内把暂存区里的文件换成指向 /proc/self/mem 的软链：
   /// File.existsSync() 为真（跟随链接后是文件），readAsBytes()
@@ -258,8 +278,14 @@ void main() {
     });
 
     test('staging 中派生文件缺失：备份成功，警告含该派生路径', () async {
-      await insertTask('t1', 'imports/t1/original.pdf');
-      await writeBytes('imports/t1/original.pdf', [1, 2, 3]);
+      // Q4：须用必需的归一化副本测这条（方向 6 的图片任务）——PDF
+      // 任务的副本是可选的，暂存区丢失静默跳过、不警告。
+      await insertTask(
+        't1',
+        'imports/t1/original.jpg',
+        fileName: 'photo.jpg',
+      );
+      await writeBytes('imports/t1/original.jpg', exifOrientation6Jpeg());
       await writeBytes('imports/t1/page-normalized.png', [4, 5, 6]);
       final report = await _backup(
         db,
@@ -274,14 +300,19 @@ void main() {
         contains('派生文件 imports/t1/page-normalized.png 暂存区文件缺失，未包含在备份中'),
       );
       final decoded = decodeReport(report);
-      expect(decoded.zipNames, contains('imports/t1/original.pdf'));
+      expect(decoded.zipNames, contains('imports/t1/original.jpg'));
       expect(decoded.zipNames, isNot(contains('imports/t1/page-normalized.png')));
       expectNoStagingLeft();
     });
 
     test('staging 中派生文件读取失败：备份成功，警告含该派生路径', () async {
-      await insertTask('t1', 'imports/t1/original.pdf');
-      await writeBytes('imports/t1/original.pdf', [1, 2, 3]);
+      // Q4：同上，用必需的归一化副本（方向 6 的图片任务）。
+      await insertTask(
+        't1',
+        'imports/t1/original.jpg',
+        fileName: 'photo.jpg',
+      );
+      await writeBytes('imports/t1/original.jpg', exifOrientation6Jpeg());
       await writeBytes('imports/t1/page-normalized.png', [4, 5, 6]);
       final report = await _backup(
         db,
@@ -296,7 +327,7 @@ void main() {
         contains('派生文件 imports/t1/page-normalized.png 暂存区文件无法读取，未包含在备份中'),
       );
       final decoded = decodeReport(report);
-      expect(decoded.zipNames, contains('imports/t1/original.pdf'));
+      expect(decoded.zipNames, contains('imports/t1/original.jpg'));
       expect(decoded.zipNames, isNot(contains('imports/t1/page-normalized.png')));
       expectNoStagingLeft();
     });

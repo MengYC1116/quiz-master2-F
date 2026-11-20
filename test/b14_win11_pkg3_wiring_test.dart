@@ -319,7 +319,7 @@ void main() {
         q,
         ['figure-q1-2', 'figure-q1-0', 'figure-q1-1'],
         'figure-q1-2',
-        2,
+        '2',
       );
       final figs = parseOcrFigures(reordered.ocrFigures);
       expect(figs.map((f) => f.id).toList(), [
@@ -356,7 +356,7 @@ void main() {
           q,
           ['figure-q1-0'],
           'figure-q1-0',
-          0,
+          '0',
         ),
         throwsArgumentError,
       );
@@ -365,7 +365,7 @@ void main() {
           q,
           ['figure-q1-0', 'figure-q1-9'],
           'figure-q1-0',
-          0,
+          '0',
         ),
         throwsArgumentError,
       );
@@ -394,7 +394,7 @@ void main() {
       final ok = await notifier.reorderFigure(
         ['figure-q1-2', 'figure-q1-0', 'figure-q1-1'],
         'figure-q1-2',
-        1,
+        '1',
       );
       expect(ok, isTrue);
       final stored = await reload('q1');
@@ -436,7 +436,7 @@ void main() {
       final ok = await notifier.reorderFigure(
         ['figure-q1-0'],
         'figure-q1-0',
-        0,
+        '0',
       );
       expect(ok, isFalse);
       final stored = await reload('q1');
@@ -455,7 +455,7 @@ void main() {
       final ok = await notifier.reorderFigure(
         ['figure-q1-0'],
         'figure-q1-0',
-        0,
+        '0',
       );
       expect(ok, isFalse);
     });
@@ -485,7 +485,7 @@ void main() {
       final ok = await notifier.reorderFigure(
         ['figure-q1-2', 'figure-q1-0', 'figure-q1-1'],
         'figure-q1-2',
-        1,
+        '1',
       );
       expect(ok, isTrue);
       final stored = await reload('q1');
@@ -528,7 +528,7 @@ void main() {
       final ok = await notifier.reorderFigure(
         ['figure-q1-0', 'figure-q1-9'],
         'figure-q1-0',
-        0,
+        '0',
       );
       expect(ok, isFalse);
       final stored = await reload('q1');

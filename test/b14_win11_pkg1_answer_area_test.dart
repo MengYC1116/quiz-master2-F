@@ -87,6 +87,16 @@ Finder _findRendered(String text) => find.byWidgetPredicate(
   (w) => w is RichText && w.text.toPlainText() == text,
 );
 
+/// 字母芯片本体的 BoxDecoration（label 文字最近的祖先 Container）。
+BoxDecoration _chipDecoration(WidgetTester tester, String letter) {
+  final containers = find.ancestor(
+    of: find.text(letter),
+    matching: find.byType(Container),
+  );
+  final container = tester.widget<Container>(containers.first);
+  return container.decoration! as BoxDecoration;
+}
+
 void main() {
   group('Win11 反馈包 1：AnswerOptionEditor 横向小 chip', () {
     testWidgets('字母芯片横向 Wrap：A–E 五位都在同一 Wrap 内', (tester) async {
@@ -190,6 +200,58 @@ void main() {
       );
       expect(_findRendered('偶函数'), findsOneWidget);
       expect(_findRendered('奇函数'), findsOneWidget);
+    });
+
+    testWidgets('Win11 反馈 Q3：未选正确答案时四颗芯片全白', (tester) async {
+      final cap = _Cap();
+      await _pump(
+        tester,
+        cap,
+        questionType: 'choice_single',
+        optionLabels: const ['A', 'B', 'C', 'D'],
+        correctOption: null,
+      );
+      for (final letter in ['A', 'B', 'C', 'D']) {
+        final d = _chipDecoration(tester, letter);
+        expect(d.color, const Color(0xFFFFFEF9), reason: '选项 $letter 未选应为白底');
+        expect(
+          (d.border as Border).top.color,
+          const Color(0xFFCFC39E),
+          reason: '选项 $letter 未选应为 line-strong 边',
+        );
+        expect(
+          tester.widget<Text>(find.text(letter)).style?.color,
+          const Color(0xFF3D4E6B),
+          reason: '选项 $letter 未选应为 ink-2 字',
+        );
+      }
+    });
+
+    testWidgets('Win11 反馈 Q3：已选 A 蓝色、其余白', (tester) async {
+      final cap = _Cap();
+      await _pump(
+        tester,
+        cap,
+        questionType: 'choice_single',
+        optionLabels: const ['A', 'B', 'C', 'D'],
+        correctOption: 'A',
+      );
+      final selected = _chipDecoration(tester, 'A');
+      expect(selected.color, const Color(0xFF2E7CF6));
+      expect((selected.border as Border).top.color, const Color(0xFF2E7CF6));
+      expect(
+        tester.widget<Text>(find.text('A')).style?.color,
+        const Color(0xFFFFFFFF),
+      );
+      for (final letter in ['B', 'C', 'D']) {
+        final d = _chipDecoration(tester, letter);
+        expect(d.color, const Color(0xFFFFFEF9), reason: '选项 $letter 未选应为白底');
+        expect(
+          (d.border as Border).top.color,
+          const Color(0xFFCFC39E),
+          reason: '选项 $letter 未选应为 line-strong 边',
+        );
+      }
     });
   });
 }

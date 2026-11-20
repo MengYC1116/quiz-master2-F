@@ -79,7 +79,7 @@ Future<void> _pumpEditor(
   WidgetTester tester, {
   required String stem,
   required List<OcrFigure> figures,
-  Future<bool> Function(List<String> orderedIds, String movedId, int movedTextAt)?
+  Future<bool> Function(List<String> orderedIds, String movedId, String movedTextAt)?
   onReorderFigure,
 }) async {
   await tester.pumpWidget(
@@ -127,7 +127,7 @@ void main() {
         figs,
         orderedIds: ['figure-q1-2', 'figure-q1-0', 'figure-q1-1'],
         movedFigureId: 'figure-q1-2',
-        manualTextAt: 2,
+        manualTextAt: '2',
       );
       expect(
         reordered.map((f) => f.id).toList(),
@@ -158,7 +158,7 @@ void main() {
         figs,
         orderedIds: ['figure-q1-1', 'figure-q1-0'],
         movedFigureId: 'figure-q1-0',
-        manualTextAt: 1,
+        manualTextAt: '1',
       );
       expect(reordered[1].anchorSource, 'manual');
       expect(reordered[1].anchorRef, '1');
@@ -246,7 +246,7 @@ void main() {
         figs,
         orderedIds: ['figure-q1-2', 'figure-q1-0', 'figure-q1-1'],
         movedFigureId: 'figure-q1-2',
-        manualTextAt: 1,
+        manualTextAt: '1',
       );
       // 落库形态：JSON 顺序即新顺序；读回后再渲染，顺序一致。
       final stored = parseOcrFigures(encodeOcrFigures(reordered));
@@ -395,7 +395,7 @@ void main() {
     testWidgets('拖图块到末尾：落下即调 onReorderFigure，顺序换位', (tester) async {
       List<String>? savedOrder;
       String? savedMoved;
-      int? savedTextAt;
+      String? savedTextAt;
       await _pumpEditor(
         tester,
         stem: '第一段\n\n第二段',
@@ -423,7 +423,7 @@ void main() {
       expect(savedOrder, ['figure-q1-1', 'figure-q1-0']);
       expect(savedMoved, 'figure-q1-0');
       // 落点在唯一文字段之后。
-      expect(savedTextAt, 1);
+      expect(savedTextAt, '1');
       // 编辑器里图 1 已在图 0 上方。
       expect(_handleTop(tester, 'figure-q1-1'), lessThan(_handleTop(tester, 'figure-q1-0')));
     });
@@ -520,7 +520,7 @@ void main() {
   group('OcrStemSection：编辑 / 重新识别按钮上移到标题行', () {
     Future<void> pumpSection(
       WidgetTester tester, {
-      Future<bool> Function(List<String>, String, int)? onReorderFigure,
+      Future<bool> Function(List<String>, String, String)? onReorderFigure,
     }) async {
       // 切片路径须与题目的 slicePath（''）一致，否则展示层按
       // currentFiguresForDisplay 滤掉图块。

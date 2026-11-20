@@ -808,11 +808,16 @@ void main() {
         figures: figures,
         mdResults: '第一段\n\n![](page=0,bbox=[10, 60, 60, 80])\n\n第二段',
       );
-      // 题干解析为单文本块；md 锚定的图块按 md 引用偏移插入其后。
-      expect(blocks.length, 2);
+      // Q2 REV2：题干解析为单文本块，但 md 引用在两段之间，图块按
+      // 段落段尾放置——块在段落边界处切成两半，图块插在两半之间
+      // （不再是旧的“整个块尾”放置，见 §9.1 案例 1）。
+      expect(blocks.length, 3);
       expect(blocks[0], isA<TextBlock>());
+      expect((blocks[0] as TextBlock).text, '第一段\n\n');
       expect(blocks[1], isA<FigureBlock>());
       expect((blocks[1] as FigureBlock).unconfirmed, isFalse);
+      expect(blocks[2], isA<TextBlock>());
+      expect((blocks[2] as TextBlock).text, '第二段');
       // fallback 图块排在内容序列末尾（数据层仍记未确认，界面不标注）。
       final fallbackFigures = buildOcrFigures(
         questionId: 'q1',

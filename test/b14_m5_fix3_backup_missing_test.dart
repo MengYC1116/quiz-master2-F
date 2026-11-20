@@ -8,7 +8,11 @@
 // 无法读取时备份直接失败（BackupRestoreException，指明题目/任务 ID 与
 // 相对路径）；只在派生保护里的文件（任务的 page-normalized.png、
 // pages/ 下页图、original.* 枚举，未渲染过的任务本来就没有）缺失/
-// 不可读时逐项警告、不阻断备份。例外（D-158）：图块裁图缺失/不可读/
+// 不可读时逐项警告、不阻断备份。
+// Win11 后续修复 Round 3（Q4）更新：派生文件再分必需/可选——可选的
+// 归一化副本（拆分行、PDF 行、EXIF == 1 行等，按构造从未生成）缺失
+// 时静默跳过，不警告；只有必需的（EXIF 方向 3/6/8 且 source_hash
+// 可信的图片任务）缺失才警告。见 b14_win11_r3_q4 专项测试。例外（D-158）：图块裁图缺失/不可读/
 // 路径非法时只警告、不阻断（图块可从切片 + bbox 再生，M2 P1-6 既定口径
 // “单个图块失败不阻断备份”；警告须列出题目）。图块损坏（读得出但解不
 // 出图）仍只警告。全部用临时目录 / 内存库，不碰真实用户库。
@@ -265,8 +269,8 @@ void main() {
     });
   });
 
-  group('十四批 M5 修复轮 3：派生文件缺失只警告、不阻断备份', () {
-    test('未渲染任务的派生文件缺失：备份成功，警告逐项列出该文件', () async {
+  group('Win11 后续修复 Round 3（Q4）：派生文件缺失按必需/可选分类', () {
+    test('PDF 任务的归一化副本缺失：备份成功且无警告、状态 complete（Q4 规则 2）', () async {
       await db.customInsert(
         'INSERT INTO collect_tasks (id, name, file_name, subject_id, status, '
         'progress, page_count, page, error, question_id, created_at, '
@@ -288,14 +292,15 @@ void main() {
           Variable.withString('{}'),
         ],
       );
-      // 只有原文件在；page-normalized.png 是派生保护（无库行直接引用），
-      // 未渲染所以本来就没有——必须警告、不能使备份失败。
+      // Q4 更新（取代 M5 修复轮 3 的旧锁定）：PDF 行只走 _importPdf，
+      // 归一化副本按构造就不存在，缺失是预期行为——不再警告、不进
+      // brokenFiles、不变 partial。旧测试曾锁定“必须警告”，那正是
+      // 本次要消除的误报。
       await writeBytes('imports/task-1/original.pdf', [1, 2, 3]);
       final report = await _backup(db, dataDir);
-      expect(
-        report.warnings,
-        contains('派生文件 imports/task-1/page-normalized.png 缺失，未包含在备份中'),
-      );
+      expect(report.warnings, isEmpty);
+      expect(report.brokenFiles, isEmpty);
+      expect(report.status, BackupExportStatus.complete);
       final decoded = decodeReport(report);
       expect(
         decoded.zipNames,
