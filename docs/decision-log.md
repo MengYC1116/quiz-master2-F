@@ -1812,3 +1812,12 @@ unavailable），kill -9 后新进程可取锁——与实现依据一致。
 - 问题（模拟核验 F1）：OrganizeNotifier.refresh() 里 await loadFolders() 后直接调 loadForm()，期间用户离开页面、Provider 已销毁时，loadForm() 写 state 抛 UnmountedRefException（Riverpod "Cannot use the Ref … after it has been disposed"）。窗口毫秒级，应用不崩，但属未捕获异常。
 - 修法（lib/state/organize_notifier.dart）：refresh()、goTo()、jumpTo() 三处 await loadFolders() 后都加 `if (_disposed) return;`，与 submitNewFolder 既有守门同款。goTo/jumpTo 与 refresh 是同一处隐患（同一调用、同一修法），一并修掉，不另立项。
 - 证据：新测试 test/organize_notifier_test.dart 1 项（fake repo 的 folders() 挂门：refresh 停在 await 上时 dispose 容器、再放行，await 不抛错；修前复现抛错、修后通过）。
+
+## D-104（修订）— Win11 反馈包 5：识别全部（题干 + 选项），题干与选项分开存、分开展示（2026-11-20，Meng 批准实施）
+
+- 修订：原 D-104（2026-11-18 14:16）“只识别题干、不识别选项”改为“识别全部（题干 + 选项），题干与选项分开存、分开展示”。切分逻辑不变（仍在 A 处切），选项文本不再丢弃：GLM 返回 md 里的选项解析成选项内容，存进选项槽位，与 option_labels 字母对齐；题干区仍只显示题干，选项文字显示在选项区（整理页与详情页题干下方），可手动改。
+- 数据结构：选项内容用标签映射 JSON `{"A":"…","B":"…"}`（不用平行数组）；option_labels 仍作显示顺序与标签来源；删/增/改只动对应键；有标签无文字允许空；有文字无标签不静默丢弃（解析器记入 orphans，不丢）。新增列 `option_contents TEXT`、`option_contents_parser_version INTEGER`，库版本 v5→v6（迁移 + 备份字段清单同步，见下）。
+- 解析器：统一解析器 `lib/services/option_contents.dart`（纯函数，解析器版本 1），新 OCR 与 ocr_raw 回填共用同一份规则；回填幂等、不覆盖人工改过的选项、保留 ocr_raw 原文、记解析器版本。选项文字去掉开头 `A.`、`（A）` 等标记再存；切分失败（notSplit）时选项区不再重复显示；判断题固定“正确/错误”，不走选项解析；选项里公式按 LaTeX 渲染不破坏反斜杠/上下标，选项配图引用剥离时不丢图块、可诊断。
+- 分类器：有结构化选项内容（≥2 个选项槽有文字）即可作选择候选，与切分信号互补。
+- 迁移与备份：旧库自动升 v6、新库默认空、v6 备份完整恢复、v5 备份缺字段用空值兼容、迁移中断不留半迁移状态、重复迁移不重复加字段、非法 JSON 可识别；v6 备份被旧版本恢复时明确报错而非静默丢选项。
+- 证据：新测试 `test/b14_win11_pkg5_option_contents_test.dart` 36/36、`test/b14_win11_pkg5_option_editor_test.dart` 6/6（解析器、编解码、分类器信号、迁移 v5→v6、备份 v5→v6 与 v6→v6、回填幂等、模型往返、编辑器交互）。
