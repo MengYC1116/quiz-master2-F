@@ -75,23 +75,24 @@ void main() {
       expect(single01Q4.substring(r.cutIndex!), startsWith('A.'));
     });
 
-    test('double01-q1 一框两题（Q6+Q7）：两个候选切分点 → 存在歧义，不选第一个',
-        () {
-      // 一框含两道题不在 OCR 层处理（GPT 评审 §1.1）。两个 A 都可信，
-      // 按规则标歧义、整段保留，一句不丢，等上游拆框或人工处理。
+    test('double01-q1 一框两题（Q6+Q7）：同行弱选项按 REV5 R2-1 不切分', () {
+      // REV5 R2-1：Q6/Q7 的 B、C 均为同行单空格弱标记，三项仅 1 强、
+      // 非完整 A–D，结构分不足 → 不切分。原文照录，未改一字。
       final r = splitStem(double01Q1);
-      expect(r.status, StemSplitStatus.ambiguous);
+      expect(r.status, StemSplitStatus.notSplit);
       expect(r.cutIndex, isNull);
       expect(r.stemText, double01Q1);
-      expect(r.reason, contains('2 个候选切分点'));
+      expect(r.reason, isNotEmpty);
     });
 
-    test('double01-q5 英语听力 Q1：只有 A、B、C，没有 D 也切', () {
+    test('double01-q5 英语听力 Q1：A、B、C 同行弱选项，按 REV5 不切分', () {
+      // REV5 R2-1：B、C 均为同行单空格弱标记，三项仅 A 一个强标记、
+      // 非完整 A–D，结构分不足 → 不切分。原文照录，未改一字。
       final r = splitStem(double01Q5);
-      expect(r.status, StemSplitStatus.autoSplit);
-      expect(r.stemText, '1. What will the man probably do for the woman?');
-      expect(r.cutIndex, isNotNull);
-      expect(double01Q5.substring(r.cutIndex!), startsWith('A.'));
+      expect(r.status, StemSplitStatus.notSplit);
+      expect(r.cutIndex, isNull);
+      expect(r.stemText, double01Q5);
+      expect(r.reason, isNotEmpty);
     });
 
     test('triple01-q3 复数：(A) 括号式切分，题干里的 (    ) 空格不误切', () {
@@ -159,8 +160,8 @@ void main() {
   });
 
   group('边界：A、B 足够，C、D 不是必要条件', () {
-    test('只有 A、B，没有 C、D：切分', () {
-      const input = '5. 下列正确的是\n\nA. 第一项 B. 第二项';
+    test('只有 A、B，没有 C、D：切分（两项均须为强标记，REV5 R2-1）', () {
+      const input = '5. 下列正确的是\n\nA. 第一项\nB. 第二项';
       final r = splitStem(input);
       expect(r.status, StemSplitStatus.autoSplit);
       expect(r.stemText, '5. 下列正确的是');
@@ -230,8 +231,8 @@ void main() {
     });
 
     test('一框两题（合成）：两个可信 A → 存在歧义', () {
-      const input = '1. 第一题题干\n\nA. 选项一 B. 选项二\n\n'
-          '2. 第二题题干\n\nA. 选项三 B. 选项四';
+      const input = '1. 第一题题干\n\nA. 选项一\nB. 选项二\n\n'
+          '2. 第二题题干\n\nA. 选项三\nB. 选项四';
       final r = splitStem(input);
       expect(r.status, StemSplitStatus.ambiguous);
       expect(r.cutIndex, isNull);
@@ -241,7 +242,7 @@ void main() {
 
   group('边界：标记格式', () {
     test('全角字母 + 全角句点 Ａ．Ｂ．Ｃ．：切分', () {
-      const input = '9. 下列正确的是\n\nＡ． 第一项 Ｂ． 第二项 Ｃ． 第三项';
+      const input = '9. 下列正确的是\n\nＡ． 第一项\nＢ． 第二项\nＣ． 第三项';
       final r = splitStem(input);
       expect(r.status, StemSplitStatus.autoSplit);
       expect(r.stemText, '9. 下列正确的是');
@@ -270,12 +271,12 @@ void main() {
       expect(r.stemText, '10. 下列正确的是');
     });
 
-    test('A、B 格式不一致（A. 对 (B)）：不切分', () {
+    test('A、B 格式混杂（A. 对 (B)）：按 REV5 归一化，切分', () {
+      // REV5 §2.2 步骤 2：标记形式归一化，混用不扣分；旧“格式一致”规则废弃。
       const input = '13. 下列正确的是\n\nA. 第一项\n(B) 第二项';
       final r = splitStem(input);
-      expect(r.status, StemSplitStatus.notSplit);
-      expect(r.stemText, input);
-      expect(r.reason, contains('格式不一致'));
+      expect(r.status, StemSplitStatus.autoSplit);
+      expect(r.stemText, '13. 下列正确的是');
     });
 
     test('B 标记后无实际选项内容：不切分', () {
@@ -302,7 +303,9 @@ void main() {
     });
 
     test('同一行 A 与题干隔开 ≥2 空格（栏位间隔）：切分', () {
-      const input = '下列说法正确的是    A. 第一项 B. 第二项';
+      // REV5：A 由 ≥2 空格定为强标记；同行四项完整 A–D 由结构分第二条放行
+      // （仅 A、B 两项时 B 为弱标记，按 R2-1 不切分，见 wp_a2 新测试）。
+      const input = '下列说法正确的是    A. 第一项 B. 第二项 C. 第三项 D. 第四项';
       final r = splitStem(input);
       expect(r.status, StemSplitStatus.autoSplit);
       expect(r.stemText, '下列说法正确的是');
@@ -358,14 +361,14 @@ void main() {
 
     test('多个图引用行都去掉', () {
       const input =
-          '看图\n\n![](page=0,bbox=[1, 2, 3, 4])\n\n![](page=0,bbox=[5, 6, 7, 8])\n\nA. 第一项 B. 第二项';
+          '看图\n\n![](page=0,bbox=[1, 2, 3, 4])\n\n![](page=0,bbox=[5, 6, 7, 8])\n\nA. 第一项\nB. 第二项';
       final r = splitStem(input);
       expect(r.status, StemSplitStatus.autoSplit);
       expect(r.stemText, '看图');
     });
 
     test('普通 md 图片不是图块锚点，不删', () {
-      const input = '看图\n\n![](https://example.com/a.png)\n\nA. 第一项 B. 第二项';
+      const input = '看图\n\n![](https://example.com/a.png)\n\nA. 第一项\nB. 第二项';
       final r = splitStem(input);
       expect(r.status, StemSplitStatus.autoSplit);
       expect(r.stemText, contains('![](https://example.com/a.png)'));
@@ -381,7 +384,7 @@ void main() {
 
   group('结果结构', () {
     test('自动切分时 cutIndex 指向 A 标记，stemText 与原文前缀一致', () {
-      const input = '5. 下列正确的是\n\nA. 第一项 B. 第二项';
+      const input = '5. 下列正确的是\n\nA. 第一项\nB. 第二项';
       final r = splitStem(input);
       expect(r.cutIndex, input.indexOf('A. 第一项'));
       expect(r.stemText, input.substring(0, r.cutIndex).trim());
@@ -393,6 +396,41 @@ void main() {
       expect(StemSplitStatus.notSplit.label, '未切分');
       expect(StemSplitStatus.autoSplit.label, '自动切分');
       expect(StemSplitStatus.ambiguous.label, '存在歧义');
+    });
+  });
+
+  // WP-A #1 收尾：StemSplitResult.optionLabels（只加字段、不改判定）。
+  group('optionLabels 访问器', () {
+    test('4 选项题干 → [A, B, C, D]', () {
+      final r = splitStem(single01Q2);
+      expect(r.status, StemSplitStatus.autoSplit);
+      expect(r.optionLabels, ['A', 'B', 'C', 'D']);
+    });
+
+    test('5 选项题干 → [A, B, C, D, E]', () {
+      const input = '下列说法正确的是\n\nA. 甲\nB. 乙\nC. 丙\nD. 丁\nE. 戊';
+      final r = splitStem(input);
+      expect(r.status, StemSplitStatus.autoSplit);
+      expect(r.optionLabels, ['A', 'B', 'C', 'D', 'E']);
+    });
+
+    test('2 选项题干 → [A, B]', () {
+      const input = '5. 下列正确的是\n\nA. 第一项\nB. 第二项';
+      final r = splitStem(input);
+      expect(r.status, StemSplitStatus.autoSplit);
+      expect(r.optionLabels, ['A', 'B']);
+    });
+
+    test('notSplit → null（无序列不猜）', () {
+      final r = splitStem(double01Q5);
+      expect(r.status, StemSplitStatus.notSplit);
+      expect(r.optionLabels, isNull);
+    });
+
+    test('空文本 → null', () {
+      final r = splitStem('   ');
+      expect(r.status, StemSplitStatus.notSplit);
+      expect(r.optionLabels, isNull);
     });
   });
 }

@@ -136,7 +136,7 @@ class _FakeOrganizeRepo extends QuestionRepository {
   Future<List<Subject>> subjects() async => Subject.all;
 
   @override
-  Future<void> save(Question question) async {
+  Future<void> save(Question question, {SaveToken? token}) async {
     saved.add(question);
     final i = questions.indexWhere((x) => x.id == question.id);
     if (i >= 0) {
@@ -216,7 +216,7 @@ class _FakeDetailRepo extends QuestionRepository {
   Future<List<KnowledgePoint>> knowledgePoints() async => const [];
 
   @override
-  Future<void> save(Question question) async {
+  Future<void> save(Question question, {SaveToken? token}) async {
     saved.add(question);
     final i = questions.indexWhere((x) => x.id == question.id);
     if (i >= 0) {

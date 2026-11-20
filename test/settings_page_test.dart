@@ -443,7 +443,12 @@ void main() {
         'slices/orphan.png',
         'imports/task-9/original.jpg',
       ]);
-      expect(find.text('已清理 2 个无用文件，释放 3.0 KB'), findsOneWidget);
+      // WP-C #8 U3-2：孤儿清理改为移入回收站（7 天后彻底删除），
+      // 不再立即释放空间，提示文案随之改。
+      expect(
+        find.text('已把 2 个无用文件移入回收站，7 天后彻底删除'),
+        findsOneWidget,
+      );
     });
 
     testWidgets('P3 孤儿清理：无孤儿时按钮置灰、不弹确认', (tester) async {

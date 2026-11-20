@@ -5,8 +5,8 @@
 // - 五段会话（看题 → 作答 → 核对 → 错因自查 → 下一题 → 小结），
 //   一道题内部的状态变化；跳过两次留到下次、暂停续接、自查治愈
 //   计数、保存失败横幅。
-// - 软件内答题：单选/判断点选 + 置信度 + 客观判分、标签未确认走
-//   纸上作答 + 补全标签跳转返回、多选只记录不判分、主观核对确认
+// - 软件内答题：单选/判断点选 + 置信度 + 客观判分、判分不可用走
+//   纸上作答 + 补全答案跳转返回、多选只记录不判分、主观核对确认
 //   四态、证据关联判断、批注开关。
 // - 专项练习：选题页、隔离（不推进治愈）、空范围、重新加入复习。
 // - 亮/深 × 三档无溢出、不用图标字体。
@@ -510,7 +510,9 @@ FakeReviewRepo singleRepo({int solvedCount = 0}) {
 }
 
 /// 单选题库：标签已确认（或未确认）+ 正确答案 B，供客观判分测试。
-FakeReviewRepo choiceRepo({bool labelsConfirmed = true}) {
+/// WP-A #1 收尾：correctOption 可空——未设正确答案时判分不可用，
+/// 走纸上作答（不再由 optionLabelsConfirmed 决定）。
+FakeReviewRepo choiceRepo({bool labelsConfirmed = true, String? correctOption = 'B'}) {
   final repo = reviewRepo();
   repo.questions = [
     rq(
@@ -525,7 +527,7 @@ FakeReviewRepo choiceRepo({bool labelsConfirmed = true}) {
       questionType: 'choice_single',
       optionLabels: const ['A', 'B', 'C', 'D'],
       optionLabelsConfirmed: labelsConfirmed,
-      correctOption: 'B',
+      correctOption: correctOption,
     ),
   ];
   repo.records = [
@@ -535,7 +537,9 @@ FakeReviewRepo choiceRepo({bool labelsConfirmed = true}) {
 }
 
 /// 多选题库：标签已确认，正确答案写 answer 字段，不自动判分。
-FakeReviewRepo multiRepo() {
+/// WP-A #1 收尾：labelsConfirmed 可关——多选门禁只看标签是否齐全，
+/// 不读确认列。
+FakeReviewRepo multiRepo({bool labelsConfirmed = true}) {
   final repo = reviewRepo();
   repo.questions = [
     rq(
@@ -548,7 +552,7 @@ FakeReviewRepo multiRepo() {
       reviewJoined: true,
       questionType: 'choice_multi',
       optionLabels: const ['A', 'B', 'C', 'D'],
-      optionLabelsConfirmed: true,
+      optionLabelsConfirmed: labelsConfirmed,
     ),
   ];
   repo.records = [
@@ -1180,25 +1184,40 @@ void main() {
       expect(find.textContaining('今天解决了 0 个错因'), findsOneWidget);
     });
 
-    testWidgets('标签未确认：不显示选项按钮，走纸上作答；补全标签后返回会话继续点选', (tester) async {
+    testWidgets('配置有效但未确认的单选题显示选项按钮（不读确认列）', (tester) async {
       final repo = choiceRepo(labelsConfirmed: false);
+      await pumpReview(tester, repo: repo);
+      await tapButton(tester, '开始复习');
+      await tapButton(tester, '开始作答');
+      // 标签 [A,B,C,D] + 正确答案 B 齐全：objectiveGradingAvailable
+      // 为 true，确认列为 false 也不应挡住选项按钮。
+      expect(find.widgetWithText(QmButton, 'A'), findsOneWidget);
+      expect(find.textContaining('选项标签尚未确认'), findsNothing);
+      expect(find.textContaining('未配置有效答案'), findsNothing);
+      await tapButton(tester, 'B');
+      await tapButton(tester, '确定');
+      await tapButton(tester, '提交答案');
+      expect(find.text('回答正确'), findsOneWidget);
+    });
+
+    testWidgets('未设正确答案：不显示选项按钮，走纸上作答；补全答案后返回会话继续点选', (tester) async {
+      final repo = choiceRepo(labelsConfirmed: false, correctOption: null);
       await pumpReview(
         tester,
         repo: repo,
         onOpenDetail: (q, ids) async {
-          // 模拟详情页题型区“确认选项”：标签确认 + 正确答案已填。
+          // 模拟详情页补全答案：填上正确答案 B（确认列不动，仍为 false）。
           final i = repo.questions.indexWhere((x) => x.id == q.id);
-          repo.questions[i] = repo.questions[i].copyWith(
-            optionLabelsConfirmed: true,
-          );
+          repo.questions[i] = repo.questions[i].copyWith(correctOption: 'B');
         },
       );
       await tapButton(tester, '开始复习');
       await tapButton(tester, '开始作答');
-      expect(find.textContaining('选项标签尚未确认'), findsOneWidget);
+      expect(find.textContaining('未配置有效答案'), findsOneWidget);
+      expect(find.textContaining('选项标签尚未确认'), findsNothing);
       expect(find.widgetWithText(QmButton, 'A'), findsNothing);
-      expect(find.widgetWithText(QmButton, '补全标签'), findsOneWidget);
-      await tapButton(tester, '补全标签');
+      expect(find.widgetWithText(QmButton, '补全答案'), findsOneWidget);
+      await tapButton(tester, '补全答案');
       // 返回会话：沿用同一会话，不出“继续上次会话”选择，回到看题步。
       expect(find.textContaining('继续上次会话'), findsNothing);
       expect(find.textContaining('第 1 / 1 道题'), findsOneWidget);
@@ -1208,6 +1227,19 @@ void main() {
       await tapButton(tester, '确定');
       await tapButton(tester, '提交答案');
       expect(find.text('回答正确'), findsOneWidget);
+    });
+
+    testWidgets('多选：标签未确认但标签齐全时仍显示选项按钮（不读确认列）', (tester) async {
+      await pumpReview(tester, repo: multiRepo(labelsConfirmed: false));
+      await tapButton(tester, '开始复习');
+      await tapButton(tester, '开始作答');
+      expect(find.widgetWithText(QmButton, 'B'), findsOneWidget);
+      expect(find.textContaining('选项标签尚未确认'), findsNothing);
+      await tapButton(tester, 'B');
+      await tapButton(tester, 'C');
+      expect(find.textContaining('不自动判分'), findsOneWidget);
+      await tapButton(tester, '提交答案');
+      expect(find.textContaining('B、C'), findsOneWidget);
     });
 
     testWidgets('多选只记录选择、不自动判分', (tester) async {

@@ -15,8 +15,10 @@ import 'package:quiz_master2/data/database.dart';
 import 'package:quiz_master2/data/repository.dart';
 import 'package:quiz_master2/models/models.dart';
 import 'package:quiz_master2/modules/detail/question_detail_page.dart';
+import 'package:quiz_master2/services/glm_ocr_client.dart';
 import 'package:quiz_master2/state/detail_notifier.dart';
 import 'package:quiz_master2/theme/app_theme.dart';
+import 'package:quiz_master2/widgets/uikit.dart';
 import 'package:quiz_master2/widgets/widgets.dart';
 
 late final Directory _testTmp;
@@ -50,6 +52,10 @@ Question dtq(
   int? sliceWidth,
   int? sliceHeight,
   int? sourcePage,
+  String? questionType,
+  List<String>? optionLabels,
+  String? correctOption,
+  String? ocrRaw,
 }) => Question(
   id: id,
   title: title,
@@ -76,6 +82,10 @@ Question dtq(
   sliceWidth: sliceWidth,
   sliceHeight: sliceHeight,
   sourcePage: sourcePage,
+  questionType: questionType,
+  optionLabels: optionLabels,
+  correctOption: correctOption,
+  ocrRaw: ocrRaw,
 );
 
 class FakeDetailRepo extends QuestionRepository {
@@ -150,7 +160,7 @@ class FakeDetailRepo extends QuestionRepository {
   Future<List<KnowledgePoint>> knowledgePoints() async => List.of(kpList);
 
   @override
-  Future<void> save(Question question) async {
+  Future<void> save(Question question, {SaveToken? token}) async {
     saved.add(question);
     final i = questions.indexWhere((x) => x.id == question.id);
     if (i >= 0) {
@@ -693,6 +703,71 @@ void main() {
       expect(find.text('数学 · 极限题｜函数极限改'), findsOneWidget);
       expect(repo.saved.last.title, '函数极限改');
       expect(find.text('编辑'), findsOneWidget);
+    });
+
+    testWidgets('WP-A #1 收尾：切分检测到的 2 项序列作编辑器初始值（查看态 + 编辑态）', (tester) async {
+      const md = '下列说法正确的是\n\nA. 甲\nB. 乙';
+      final repo = FakeDetailRepo(
+        questions: [
+          dtq(
+            'q1',
+            '下列说法',
+            questionType: 'choice_single',
+            ocrRaw: GlmOcrRawData(mdResults: md).toJsonString(),
+          ),
+        ],
+      );
+      await pumpDetail(tester, repo: repo);
+      // 查看态：展开「题目信息」后编辑器初始位就是检测到的两项。
+      await tapText(tester, '题目信息');
+      expect(find.widgetWithText(QmChip, 'A'), findsOneWidget);
+      expect(find.widgetWithText(QmChip, 'B'), findsOneWidget);
+      expect(find.widgetWithText(QmChip, 'C'), findsNothing);
+      // 编辑态：同款初始值（未接线时兜底 A–D 会多出 C、D）。
+      await tapText(tester, '编辑');
+      expect(find.widgetWithText(QmChip, 'A'), findsOneWidget);
+      expect(find.widgetWithText(QmChip, 'B'), findsOneWidget);
+      expect(find.widgetWithText(QmChip, 'C'), findsNothing);
+    });
+
+    testWidgets('WP-A #1 收尾：编辑态多选点选选项位后答案字段文本随之更新', (tester) async {
+      final repo = FakeDetailRepo(
+        questions: [
+          dtq(
+            'q1',
+            '多选函数',
+            questionType: 'choice_multi',
+            optionLabels: const ['A', 'B', 'C', 'D'],
+          ),
+        ],
+      );
+      await pumpDetail(tester, repo: repo);
+      await tapText(tester, '编辑');
+      final answerField = find.byWidgetPredicate(
+        (w) => w is TextField && w.decoration?.labelText == '答案',
+      );
+      String answerText() =>
+          tester.widget<TextField>(answerField).controller?.text ?? '';
+      Future<void> tapChip(String letter) async {
+        final chip = find.widgetWithText(QmChip, letter);
+        await tester.ensureVisible(chip);
+        await tester.pumpAndSettle();
+        await tester.tap(chip);
+        await tester.pumpAndSettle();
+      }
+
+      expect(answerText(), isEmpty);
+      await tapChip('A');
+      expect(answerText(), 'A');
+      await tapChip('C');
+      expect(answerText(), 'A,C');
+      // 取消点选 A：答案字段同步回落。
+      await tapChip('A');
+      expect(answerText(), 'C');
+      // 手动输入行为不变：直接改答案字段仍按输入走。
+      await tester.enterText(answerField, 'B,D');
+      await tester.pumpAndSettle();
+      expect(answerText(), 'B,D');
     });
 
     testWidgets('取消无改动直接退出编辑', (tester) async {

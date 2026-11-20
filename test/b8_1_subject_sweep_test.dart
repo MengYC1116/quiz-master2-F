@@ -165,7 +165,7 @@ class _SweepOrganizeRepo extends QuestionRepository {
   Future<List<String>> tags() async => const [];
 
   @override
-  Future<void> save(Question question) async {}
+  Future<void> save(Question question, {SaveToken? token}) async {}
 
   @override
   Future<void> syncCauseRecords(Question question) async {}

@@ -163,7 +163,7 @@ class FakeDetailNotifierRepo extends QuestionRepository {
   Future<List<KnowledgePoint>> knowledgePoints() async => List.of(kpList);
 
   @override
-  Future<void> save(Question question) async {
+  Future<void> save(Question question, {SaveToken? token}) async {
     saved.add(question);
     final i = questions.indexWhere((x) => x.id == question.id);
     if (i >= 0) {

@@ -11,6 +11,7 @@ import 'package:quiz_master2/data/database.dart';
 import 'package:quiz_master2/data/repository.dart';
 import 'package:quiz_master2/models/models.dart';
 import 'package:quiz_master2/modules/organize/organize_page.dart';
+import 'package:quiz_master2/services/glm_ocr_client.dart';
 import 'package:quiz_master2/theme/app_theme.dart';
 import 'package:quiz_master2/widgets/uikit.dart';
 import 'package:quiz_master2/widgets/widgets.dart';
@@ -25,6 +26,10 @@ Question q(
   String? examId,
   DateTime? createdAt,
   bool isOrganized = false,
+  String? questionType,
+  List<String>? optionLabels,
+  String? answer,
+  String? ocrRaw,
 }) => Question(
   id: id,
   title: title,
@@ -35,6 +40,10 @@ Question q(
   sliceText: sliceText,
   createdAt: createdAt ?? DateTime(2026, 11, 8),
   isOrganized: isOrganized,
+  questionType: questionType,
+  optionLabels: optionLabels,
+  answer: answer,
+  ocrRaw: ocrRaw,
 );
 
 class FakeOrganizeRepo extends QuestionRepository {
@@ -86,7 +95,7 @@ class FakeOrganizeRepo extends QuestionRepository {
   final Set<String> failSaveIds = {};
 
   @override
-  Future<void> save(Question question) async {
+  Future<void> save(Question question, {SaveToken? token}) async {
     if (failSaveIds.contains(question.id)) {
       throw StateError('模拟写库失败');
     }
@@ -292,7 +301,7 @@ class FailingSaveRepo extends FakeOrganizeRepo {
   bool failSave = false;
 
   @override
-  Future<void> save(Question question) async {
+  Future<void> save(Question question, {SaveToken? token}) async {
     if (failSave) throw StateError('模拟写库失败');
     return super.save(question);
   }
@@ -377,6 +386,75 @@ void main() {
       expect(find.textContaining('数学 · 导数综合'), findsOneWidget);
     });
 
+    testWidgets('WP-A #1 收尾：切分检测到的 2 项序列作编辑器初始值（非默认 A–D）', (tester) async {
+      const md = '下列说法正确的是\n\nA. 甲\nB. 乙';
+      final repo = FakeOrganizeRepo(
+        questions: [
+          q(
+            'q1',
+            '下列说法',
+            questionType: 'choice_single',
+            ocrRaw: GlmOcrRawData(mdResults: md).toJsonString(),
+          ),
+        ],
+        folderList: const [
+          Folder(id: 'f1', name: '试卷', subjectId: 'math'),
+        ],
+      );
+      await pumpOrganize(tester, repo: repo);
+      // 检测到 [A, B]：初始位就是两项；未接线时兜底 A–D 会多出 C、D。
+      expect(find.widgetWithText(QmChip, 'A'), findsOneWidget);
+      expect(find.widgetWithText(QmChip, 'B'), findsOneWidget);
+      expect(find.widgetWithText(QmChip, 'C'), findsNothing);
+      expect(find.widgetWithText(QmChip, 'D'), findsNothing);
+    });
+
+    testWidgets('WP-A #1 收尾：多选点选选项位后答案字段文本随之更新', (tester) async {
+      final repo = FakeOrganizeRepo(
+        questions: [
+          q(
+            'q1',
+            '多选函数',
+            questionType: 'choice_multi',
+            optionLabels: const ['A', 'B', 'C', 'D'],
+          ),
+        ],
+        folderList: const [
+          Folder(id: 'f1', name: '试卷', subjectId: 'math'),
+        ],
+      );
+      await pumpOrganize(tester, repo: repo);
+      final answerField = find.byWidgetPredicate(
+        (w) => w is TextField && w.decoration?.hintText == '还没想好可留空',
+      );
+      String answerText() =>
+          tester.widget<TextField>(answerField).controller?.text ?? '';
+      await tester.ensureVisible(find.text('答案 · 解析 · 笔记（可选）'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('答案 · 解析 · 笔记（可选）'));
+      await tester.pumpAndSettle();
+      expect(answerText(), isEmpty);
+      Future<void> tapChip(String letter) async {
+        final chip = find.widgetWithText(QmChip, letter);
+        await tester.ensureVisible(chip);
+        await tester.pumpAndSettle();
+        await tester.tap(chip);
+        await tester.pumpAndSettle();
+      }
+
+      await tapChip('A');
+      expect(answerText(), 'A');
+      await tapChip('C');
+      expect(answerText(), 'A,C');
+      // 取消点选 A：答案字段同步回落。
+      await tapChip('A');
+      expect(answerText(), 'C');
+      // 手动输入行为不变：直接改答案字段仍按输入走。
+      await tester.enterText(answerField, 'B,D');
+      await tester.pumpAndSettle();
+      expect(answerText(), 'B,D');
+    });
+
     testWidgets('修框切片默认展开：只有整题一张卡', (tester) async {
       await pumpOrganize(tester);
       expect(find.text('修框切片'), findsOneWidget);
@@ -392,11 +470,11 @@ void main() {
       await tester.tap(find.byType(QuestionSlice));
       await tester.pumpAndSettle();
       expect(find.text('整题图 · 放大查看'), findsOneWidget);
-      // S8A1：初始缩放不再是写死的 1.5×，而是 min(1.5, fit)。
-      // 1280×720 下视口 900 宽、纸面封顶 680 宽，fit=900/680≈1.32，
-      // 徽标 132%。纸面渲染中心须与视口中心重合（±3px），且整张
-      // 纸面在视口内（无裁切）。
-      expect(find.text('132%'), findsOneWidget);
+      // WP-E #9：初始缩放改为 s0 = min(1.0, fit)，默认 100%，不再放大。
+      // 1280×720 下视口 900 宽、纸面封顶 680 宽，fit≈1.32，但 s0 取
+      // min(1.0, 1.32) = 1.0，徽标 100%。纸面渲染中心须与视口中心
+      // 重合（±3px），且整张纸面在视口内（无裁切）。
+      expect(find.text('100%'), findsOneWidget);
       final paperRect = tester.getRect(
         find.descendant(
           of: find.byType(Dialog),

@@ -100,20 +100,30 @@ void main() {
       expect(await f.exists(), isFalse);
     });
 
-    test('删除失败不计 freed：先记大小、删成功后再计入（源码顺序锁定）', () {
+    test('删除失败不计 freed：先记大小、移入回收站成功后再计入（源码顺序锁定）', () {
       // 直接让文件删失败的注入在当前环境做不到（root 绕过权限位、
       // overlayfs 不支持 chattr +i）：此处锁两点——(a) 成功路径的
       // 数字准确（上一项）；(b) 源码里 `freed += size` 在
-      // 物理删除之后，且旧写法 `freed += f.lengthSync()`
-      // 已不存在，删失败进 catch 时 freed 不会被提前计入。
-      // 十四批 M2：物理删除走 guard.deleteFileLocked（P2 约束 1，
-      // 已持锁内部函数），顺序锁定随之改到该调用。
+      // 移入回收站成功之后，且旧写法 `freed += f.lengthSync()`
+      // 已不存在，移入失败进 `if (!moved) continue;` 时 freed
+      // 不会被提前计入。
+      // WP-C #8（U3-2）：孤儿删除由直接物理删改为移入回收站，
+      // 物理删除走 `_moveFileToTrashLocked`（已持锁内部函数，
+      // P2 约束 1），顺序锁定随之改到该调用；FR-22 的不变量
+      // （只计成功移除的文件）不变。
+      // 注意：`freed += size;` 在本文件另有一处（回收站清扫，
+      // 402 行附近），故从移入调用处起向后搜，只锁
+      // deleteOrphanFilesImpl 循环内的这一处顺序。
       final src = _src('data/db_orphans.dart');
       expect(src, isNot(contains('freed += f.lengthSync()')));
-      final deleteAt = src.indexOf('await guard.deleteFileLocked(f);');
-      final freedAt = src.indexOf('freed += size;');
-      expect(deleteAt, greaterThan(0));
-      expect(freedAt, greaterThan(deleteAt));
+      final sizeAt = src.indexOf('final size = f.lengthSync();');
+      final movedAt = src.indexOf('await _moveFileToTrashLocked(');
+      expect(sizeAt, greaterThan(0));
+      expect(movedAt, greaterThan(sizeAt));
+      final notMovedAt = src.indexOf('if (!moved) continue;', movedAt);
+      final freedAt = src.indexOf('freed += size;', movedAt);
+      expect(notMovedAt, greaterThan(movedAt));
+      expect(freedAt, greaterThan(notMovedAt));
     });
   });
 

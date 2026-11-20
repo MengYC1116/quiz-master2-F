@@ -72,15 +72,16 @@ void main() {
       expect(gradeObjective(q, 'A'), 0);
     });
 
-    test('单选：标签未确认时不判分（走纸上作答）', () {
+    test('单选：标签未确认但配置有效时仍可判分（WP-A #1 REV5：不再读 confirmed 列）', () {
       final q = _q(
         'q1',
         questionType: 'choice_single',
         optionLabels: ['A', 'B', 'C', 'D'],
         correctOption: 'B',
       );
-      expect(objectiveGradingAvailable(q), isFalse);
-      expect(gradeObjective(q, 'B'), isNull);
+      expect(objectiveGradingAvailable(q), isTrue);
+      expect(gradeObjective(q, 'B'), 1);
+      expect(gradeObjective(q, 'A'), 0);
     });
 
     test('单选：已确认但未填正确答案时不判分', () {

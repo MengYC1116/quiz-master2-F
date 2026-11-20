@@ -631,7 +631,7 @@ void main() {
       expect(objectiveGradingAvailable(saved), isFalse);
     });
 
-    test('单选只改标签顺序、重选同一标签 → 恢复判分（须另点确认选项）', () async {
+    test('单选只改标签顺序、重选同一标签 → 立即恢复判分（WP-A #1 REV5：不再另点确认选项）', () async {
       final q = _q(
         'q1',
         questionType: 'choice_single',
@@ -641,8 +641,9 @@ void main() {
       );
       await AppDatabase.upsertQuestionInto(db, q);
       var saved = await readQuestion('q1');
-      // 同一次保存重选正确标签：correct_option 保留、待核对清除，
-      // 但标签确认须另点“确认选项”才能恢复，判分仍关闭。
+      // 同一次保存重选正确标签：correct_option 保留、待核对清除。
+      // REV5 起判分不再读 option_labels_confirmed 列：确认列仍被数据层
+      // 清零（保留列），但判分立即恢复，不再等另一次“确认选项”保存。
       await repo.save(
         saved.copyWith(
           optionLabels: ['B', 'A', 'C', 'D'],
@@ -654,16 +655,6 @@ void main() {
       expect(saved.correctOption, 'B');
       expect(saved.answerPendingRecheck, isFalse);
       expect(saved.optionLabelsConfirmed, isFalse);
-      expect(objectiveGradingAvailable(saved), isFalse);
-      // 点“确认选项”保存后恢复判分。
-      await repo.save(
-        saved.copyWith(
-          optionLabelsConfirmed: true,
-          optionLabelsJustConfirmed: true,
-        ),
-      );
-      saved = await readQuestion('q1');
-      expect(saved.optionLabelsConfirmed, isTrue);
       expect(objectiveGradingAvailable(saved), isTrue);
       expect(gradeObjective(saved, 'B'), 1);
     });

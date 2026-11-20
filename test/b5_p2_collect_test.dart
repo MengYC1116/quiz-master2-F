@@ -1402,7 +1402,7 @@ class _DetailFakeRepo extends QuestionRepository {
   ) async => const [];
 
   @override
-  Future<void> save(Question question) async {
+  Future<void> save(Question question, {SaveToken? token}) async {
     saved.add(question);
     final i = questions.indexWhere((x) => x.id == question.id);
     if (i >= 0) {
@@ -1544,7 +1544,7 @@ class _OrganizeFakeRepo extends QuestionRepository {
   Future<List<String>> tags() async => List.of(tagList);
 
   @override
-  Future<void> save(Question question) async {
+  Future<void> save(Question question, {SaveToken? token}) async {
     saved.add(question);
     final i = questions.indexWhere((x) => x.id == question.id);
     if (i >= 0) {

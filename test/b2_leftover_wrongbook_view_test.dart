@@ -85,7 +85,7 @@ class FakeViewRepo extends QuestionRepository {
   Future<AppSettings> settings() async => settingsValue;
 
   @override
-  Future<void> save(Question question) async {
+  Future<void> save(Question question, {SaveToken? token}) async {
     final i = questions.indexWhere((x) => x.id == question.id);
     if (i >= 0) questions[i] = question;
   }

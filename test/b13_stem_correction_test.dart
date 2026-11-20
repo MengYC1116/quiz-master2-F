@@ -113,6 +113,10 @@ List<(String, String)> _blocksSummary(List<QuestionContentBlock> blocks) =>
               ('code:${language ?? ''}', code),
             ImageFallbackBlock() => ('image', ''),
             FigureBlock(:final figureId) => ('figure', figureId),
+            // WP-C #6 新增块类型（穷举开关配套分支，不改旧断言口径）。
+            TableBlock(:final rows) => ('table', rows.length.toString()),
+            HeadingBlock(:final text, :final level) =>
+              ('heading$level', text),
           },
         )
         .toList();
@@ -884,7 +888,7 @@ class _FakeOrganizeRepo extends QuestionRepository {
   Future<List<Subject>> subjects() async => Subject.all;
 
   @override
-  Future<void> save(Question question) async {
+  Future<void> save(Question question, {SaveToken? token}) async {
     saved.add(question);
     final i = questions.indexWhere((x) => x.id == question.id);
     if (i >= 0) {
@@ -964,7 +968,7 @@ class _FakeDetailRepo extends QuestionRepository {
   Future<List<KnowledgePoint>> knowledgePoints() async => const [];
 
   @override
-  Future<void> save(Question question) async {
+  Future<void> save(Question question, {SaveToken? token}) async {
     saved.add(question);
     final i = questions.indexWhere((x) => x.id == question.id);
     if (i >= 0) {

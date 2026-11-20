@@ -111,7 +111,7 @@ class FakeOrganizeNotifierRepo extends QuestionRepository {
   Future<List<String>> tags() async => List.of(tagList);
 
   @override
-  Future<void> save(Question question) async {
+  Future<void> save(Question question, {SaveToken? token}) async {
     if (failSaveIds.contains(question.id)) {
       throw StateError('模拟写库失败');
     }

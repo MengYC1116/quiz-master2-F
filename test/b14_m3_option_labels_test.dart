@@ -2,9 +2,10 @@
 //
 // 覆盖：
 // - parseOptionLabels 解析口径（分隔符、去空、去重保序、空串→null）。
-// - OptionLabelsEditor：单选确认流程、正确选项点选即重确认、
-//   判断题固定标签、多选改标签 P1-A 提示与复选框、单选只改顺序提示、
-//   待核对标记提示、非选择题型不渲染。
+// - OptionLabelsEditor（WP-A #1 REV5：无标签文本框、无「确认选项」按钮；
+//   按位增删、「+」追加下一字母、点选正确答案即重确认、判断题固定两行、
+//   多选改标签 P1-A 提示与复选框、待核对标记提示、非选择题型不渲染）。
+//   旧版“确认选项保存置 confirmed”流程已随确认列停用而移除。
 // - OrganizeNotifier：表单值→保存的信号透传（确认保存置 confirmed+
 //   justConfirmed 信号、保存后信号清零、标签清空时确认态清零、
 //   正确选项点选带 answerReconfirmed 信号）。
@@ -80,6 +81,7 @@ void main() {
 
   Future<void> pumpEditor(
     WidgetTester tester, {
+    String questionId = 'q1',
     required String questionType,
     List<String>? optionLabels,
     List<String>? storedOptionLabels,
@@ -104,8 +106,8 @@ void main() {
       MaterialApp(
         home: Scaffold(
           body: OptionLabelsEditor(
-            key: const ValueKey('q1'),
-            questionId: 'q1',
+            key: ValueKey(questionId),
+            questionId: questionId,
             questionType: questionType,
             optionLabels: optionLabels,
             storedOptionLabels: storedOptionLabels ?? optionLabels,
@@ -135,10 +137,9 @@ void main() {
   }
 
   group('OptionLabelsEditor', () {
-    testWidgets('单选已确认：显示标签与确认态，点正确选项带重确认信号', (tester) async {
+    testWidgets('单选：纵向列出选项位，点正确选项带重确认信号', (tester) async {
       String? picked;
       var reconfirmed = false;
-      Map<String, Object?>? confirmed;
       await pumpEditor(
         tester,
         questionType: 'choice_single',
@@ -147,62 +148,46 @@ void main() {
         correctOption: 'B',
         onCorrectOptionChanged: (v) => picked = v,
         onAnswerReconfirmedChanged: (v) => reconfirmed = v,
-        onConfirm: ({
-          required List<String>? labels,
-          required String? correctOption,
-          required bool answerReconfirmed,
-          required bool confirmLabels,
-        }) {
-          confirmed = {
-            'labels': labels,
-            'correct': correctOption,
-            'reconfirmed': answerReconfirmed,
-            'confirm': confirmLabels,
-          };
-        },
       );
-      expect(find.textContaining('选项标签已确认，可客观判分'), findsOneWidget);
-      expect(find.widgetWithText(QmButton, '确认选项'), findsOneWidget);
+      // REV5：无标签文本框、无「确认选项」按钮；配置有效即显示可判分。
+      expect(find.byType(TextField), findsNothing);
+      expect(find.widgetWithText(QmButton, '确认选项'), findsNothing);
+      expect(find.textContaining('已设正确答案，可客观判分'), findsOneWidget);
+      for (final letter in ['A', 'B', 'C', 'D']) {
+        expect(find.widgetWithText(QmChip, letter), findsOneWidget);
+      }
+      expect(find.widgetWithText(QmButton, '+ 添加选项'), findsOneWidget);
       // 点选 C：正确选项改动 + 重确认信号。
       await tester.tap(find.widgetWithText(QmChip, 'C'));
       await tester.pumpAndSettle();
       expect(picked, 'C');
       expect(reconfirmed, isTrue);
-      // 点确认选项：草稿原样带上，confirmLabels=true。
-      await tester.tap(find.widgetWithText(QmButton, '确认选项'));
-      await tester.pumpAndSettle();
-      expect(confirmed?['labels'], ['A', 'B', 'C', 'D']);
-      expect(confirmed?['correct'], 'C');
-      expect(confirmed?['reconfirmed'], isTrue);
-      expect(confirmed?['confirm'], isTrue);
     });
 
-    testWidgets('单选未确认：提示未确认；标签为空时确认按钮禁用', (tester) async {
+    testWidgets('单选：未设正确答案时提示；标签为 null 时默认 A–D 四位', (tester) async {
       await pumpEditor(
         tester,
         questionType: 'choice_single',
         optionLabels: const ['A', 'B'],
         optionLabelsConfirmed: false,
       );
-      expect(find.textContaining('选项标签未确认'), findsOneWidget);
+      expect(find.textContaining('未设正确答案'), findsOneWidget);
+      expect(find.byType(TextField), findsNothing);
       final button = find
-          .widgetWithText(QmButton, '确认选项')
+          .widgetWithText(QmButton, '+ 添加选项')
           .evaluate()
           .first
           .widget as QmButton;
       expect(button.onPressed, isNotNull);
 
-      await pumpEditor(tester, questionType: 'choice_single');
-      expect(find.textContaining('还没有选项标签'), findsOneWidget);
-      final disabled = find
-          .widgetWithText(QmButton, '确认选项')
-          .evaluate()
-          .first
-          .widget as QmButton;
-      expect(disabled.onPressed, isNull);
+      await pumpEditor(tester, questionId: 'q2', questionType: 'choice_single');
+      for (final letter in ['A', 'B', 'C', 'D']) {
+        expect(find.widgetWithText(QmChip, letter), findsOneWidget);
+      }
+      expect(find.textContaining('未设正确答案'), findsOneWidget);
     });
 
-    testWidgets('标签文本框输入：解析后回调；正确选项不在新集合时清掉', (tester) async {
+    testWidgets('删位：正确选项被删时清掉；删其他位不影响正确答案', (tester) async {
       List<String>? seen;
       String? correctSeen = 'B';
       await pumpEditor(
@@ -213,11 +198,17 @@ void main() {
         onLabelsChanged: (v) => seen = v,
         onCorrectOptionChanged: (v) => correctSeen = v,
       );
-      await tester.enterText(find.byType(TextField), 'A,C,E');
+      // 先删 D（非答案位）：标签少一位，正确答案保留。
+      await tester.tap(find.byTooltip('删除选项 D'));
       await tester.pumpAndSettle();
-      expect(seen, ['A', 'C', 'E']);
-      // 旧正确选项 B 不在新集合里：草稿清掉并回调 null。
+      expect(seen, ['A', 'B', 'C']);
+      expect(correctSeen, 'B');
+      // 再删 B（答案位）：草稿清掉并回调 null。
+      await tester.tap(find.byTooltip('删除选项 B'));
+      await tester.pumpAndSettle();
+      expect(seen, ['A', 'C']);
       expect(correctSeen, isNull);
+      expect(find.textContaining('未设正确答案'), findsOneWidget);
     });
 
     testWidgets('判断题：固定标签，无标签编辑器与确认按钮；点选即时保存', (tester) async {
@@ -268,16 +259,27 @@ void main() {
       expect(reconfirmed, isTrue);
     });
 
-    testWidgets('单选只改标签顺序：正确答案待重新核对提示', (tester) async {
+    testWidgets('单选删位：删非答案位旧答案仍有效；删答案位提示重选', (tester) async {
+      String? correctSeen = 'B';
       await pumpEditor(
         tester,
         questionType: 'choice_single',
-        optionLabels: const ['B', 'A', 'C', 'D'],
+        optionLabels: const ['A', 'B', 'C', 'D'],
         storedOptionLabels: const ['A', 'B', 'C', 'D'],
         storedCorrectOption: 'B',
         correctOption: 'B',
+        onCorrectOptionChanged: (v) => correctSeen = v,
       );
-      expect(find.textContaining('选项标签顺序变了：正确答案待重新核对'), findsOneWidget);
+      // 删 D（非答案位）：正确答案保留，状态仍为可判分。
+      await tester.tap(find.byTooltip('删除选项 D'));
+      await tester.pumpAndSettle();
+      expect(correctSeen, 'B');
+      expect(find.textContaining('已设正确答案，可客观判分'), findsOneWidget);
+      // 删 B（答案位）：正确答案清空，提示重选。
+      await tester.tap(find.byTooltip('删除选项 B'));
+      await tester.pumpAndSettle();
+      expect(correctSeen, isNull);
+      expect(find.textContaining('未设正确答案'), findsOneWidget);
     });
 
     testWidgets('标签未改但挂着待核对标记：显示待核对提示', (tester) async {
@@ -609,7 +611,7 @@ class _FakeOrgRepo extends QuestionRepository {
   Future<bool> hasOcrApiKey() async => false;
 
   @override
-  Future<void> save(Question question) async {
+  Future<void> save(Question question, {SaveToken? token}) async {
     saved.add(question);
     final i = questions.indexWhere((x) => x.id == question.id);
     if (i >= 0) {
@@ -683,7 +685,7 @@ class _FakeDetailRepo extends QuestionRepository {
   Future<void> recordQuestionViewed(String questionId) async {}
 
   @override
-  Future<void> save(Question question) async {
+  Future<void> save(Question question, {SaveToken? token}) async {
     saved.add(question);
     final i = questions.indexWhere((x) => x.id == question.id);
     if (i >= 0) {

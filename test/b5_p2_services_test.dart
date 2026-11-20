@@ -714,35 +714,54 @@ void main() {
 
     testWidgets('SR-P2-75：放大对话框点 ＋/－ 仍可用', (tester) async {
       // 同上：testWidgets 体内用同步文件 IO。
+      // 文件名不用 q1.png：SR-P2-74/SR2-63 已在同一 _tmp 下用 q1.png
+      // 建过同宽（960）ResizeImage 缓存项、其加载在 FakeAsync 下卡住；
+      // 同 key 会复用那个卡住的 completer，runAsync 也救不回来。
+      // 用独立文件名，加载链在 runAsync 内从新 completer 启动。
       final sliceDir = Directory('${_tmp.path}/slices');
       sliceDir.createSync(recursive: true);
-      File('${sliceDir.path}/q1.png').writeAsBytesSync(_onePixelPng);
+      File('${sliceDir.path}/q75.png').writeAsBytesSync(_onePixelPng);
       final q = Question(
-        id: 'q1',
+        id: 'q75',
         title: '第 1 题',
         subjectId: 'math',
         createdAt: DateTime.now(),
-        slicePath: 'slices/q1.png',
-        sourcePath: 'slices/q1.png',
+        slicePath: 'slices/q75.png',
+        sourcePath: 'slices/q75.png',
       );
-      await tester.pumpWidget(
-        MaterialApp(
-          theme: AppTheme.light(),
-          home: Scaffold(
-            body: Builder(
-              builder: (context) => TextButton(
-                onPressed: () => showQuestionZoomDialog(context, q),
-                child: const Text('打开'),
+      // S6-3：未就绪时 ＋ 禁用；Image.file 的异步解码只在 runAsync +
+      // 真实延时中推进（见 test/wpe_zoom_dialog_test.dart 的
+      // _openDialog/_awaitImageDecode）：加载链须在 runAsync 内启动、
+      // 再等真实延时解码完成，否则 1px 图永不解码、＋ 恒禁用。
+      // （WP-E #9 收尾补；生产环境图片毫秒级解码、行为正确。）
+      await tester.runAsync(() async {
+        await tester.pumpWidget(
+          MaterialApp(
+            theme: AppTheme.light(),
+            home: Scaffold(
+              body: Builder(
+                builder: (context) => TextButton(
+                  onPressed: () => showQuestionZoomDialog(context, q),
+                  child: const Text('打开'),
+                ),
               ),
             ),
           ),
-        ),
-      );
-      await tester.pump();
-      await tester.tap(find.text('打开'));
+        );
+        await tester.pump();
+        await tester.tap(find.text('打开'));
+        await tester.pump();
+      });
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 100));
       expect(find.text('整题图 · 放大查看'), findsOneWidget);
+      // 等图片解码完成（_imageSettled 为真），＋/－ 方可用。
+      await tester.runAsync(() async {
+        await Future<void>.delayed(const Duration(milliseconds: 500));
+        await tester.pump();
+      });
+      await tester.pump();
+      await tester.pump();
       // SR2-13：只断言对话框还在钉不住缩放——带 bug 时点 ＋ 会
       // 触发重建、缩放被重置回初始值，对话框本身不会消失。
       // 读 % 徽标：点 ＋ 后变大，点 － 后变小。

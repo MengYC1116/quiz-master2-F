@@ -364,7 +364,7 @@ class FakeRepo extends QuestionRepository {
   }
 
   @override
-  Future<void> save(Question q) async => savedQuestions.add(q);
+  Future<void> save(Question q, {SaveToken? token}) async => savedQuestions.add(q);
 
   @override
   Future<void> saveRecentTask({

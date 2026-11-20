@@ -22,7 +22,7 @@ import 'package:quiz_master2/data/drift/quiz_database.dart';
 import 'package:quiz_master2/data/file_lifecycle_guard.dart';
 import 'package:quiz_master2/models/models.dart';
 
-Future<({List<int> bytes, List<String> warnings})> _backup(
+Future<({List<int> bytes, List<String> warnings, List<String> brokenFiles, BackupExportStatus status})> _backup(
   QuizDatabase db,
   Directory dataDir,
 ) => AppDatabase.exportBackupZipFromWithReport(
@@ -83,7 +83,7 @@ void main() {
   }
 
   ({Map<String, dynamic> decoded, Set<String> zipNames}) decodeReport(
-    ({List<int> bytes, List<String> warnings}) report,
+    ({List<int> bytes, List<String> warnings, List<String> brokenFiles, BackupExportStatus status}) report,
   ) {
     final archive = ZipDecoder().decodeBytes(report.bytes);
     final zipNames = archive.files.map((f) => f.name).toSet();

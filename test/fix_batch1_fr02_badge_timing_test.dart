@@ -76,7 +76,7 @@ class TimingFakeRepo extends QuestionRepository {
   ) async => const [];
 
   @override
-  Future<void> save(Question question) async {
+  Future<void> save(Question question, {SaveToken? token}) async {
     final i = questions.indexWhere((x) => x.id == question.id);
     if (i >= 0) {
       questions[i] = question;

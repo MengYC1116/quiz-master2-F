@@ -51,7 +51,7 @@ class _B86FakeRepo extends QuestionRepository {
   Future<List<Subject>> subjects() async => Subject.all;
 
   @override
-  Future<void> save(Question question) async {}
+  Future<void> save(Question question, {SaveToken? token}) async {}
 
   @override
   Future<void> syncCauseRecords(Question question) async {}
