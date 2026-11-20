@@ -33,7 +33,9 @@ import '../../models/models.dart';
 import '../../modules/ocr/ocr_stem_section.dart';
 import '../../modules/ocr/option_labels_editor.dart';
 import '../../modules/ocr/question_type_picker.dart';
+import '../../services/glm_ocr_client.dart';
 import '../../services/question_export_service.dart';
+import '../../services/stem_splitter.dart';
 import '../../services/yolo_onnx_service.dart';
 import '../../state/detail_notifier.dart';
 import '../../state/repository_provider.dart';
@@ -1639,6 +1641,16 @@ class _DetailViewState extends ConsumerState<_DetailView> {
     );
   }
 
+  /// WP-A #1 收尾：切分器检测到的选项字母序列（见
+  /// [StemSplitResult.optionLabels]），只作 [AnswerOptionEditor]
+  /// 的初始值；无 OCR 原文或未切出序列时返回 null（编辑器走 A–D
+  /// 兜底）。纯函数，不持久化。
+  List<String>? _detectedOptionLabels(Question q) {
+    final raw = GlmOcrRawData.tryParse(q.ocrRaw);
+    if (raw == null) return null;
+    return splitStem(raw.mdResults).optionLabels;
+  }
+
   Widget _buildInfoSection(Question q) {
     if (_editing) return _buildInfoEdit(q);
     final exam = q.examId == null
@@ -1732,19 +1744,24 @@ class _DetailViewState extends ConsumerState<_DetailView> {
     // 十四批 M3：选项标签确认编辑器（查看态，题型区；正确选项点选
     // 立即保存，标签改动点「确认选项」保存——与题型 chip 的即时保存
     // 口径一致；复习页“补全标签”跳转落在这里）。
+    // WP-A #1 收尾：detectedOptionLabels 把切分器检测到的选项序列
+    // 作初始值（optionLabels 为空时才算）。查看态无答案文本框，
+    // 不接 onMultiSelectionChanged（多选点选只活在编辑器内）。
     final scale = qmScaleOf(context);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         grid,
         SizedBox(height: 12 * scale),
-        OptionLabelsEditor(
+        AnswerOptionEditor(
           key: ValueKey(q.id),
           questionId: q.id,
           questionType: q.questionType,
           optionLabels: q.optionLabels,
           storedOptionLabels: q.optionLabels,
-          optionLabelsConfirmed: q.optionLabelsConfirmed,
+          detectedOptionLabels: q.optionLabels == null
+              ? _detectedOptionLabels(q)
+              : null,
           correctOption: q.correctOption,
           storedCorrectOption: q.correctOption,
           answerPendingRecheck: q.answerPendingRecheck,
@@ -2031,14 +2048,18 @@ class _DetailViewState extends ConsumerState<_DetailView> {
         ]),
         // 十四批 M3：选项标签确认编辑器（编辑态；随「保存」落盘——
         // 「确认选项」只改编辑态确认值，不单独写库）。
+        // WP-A #1 收尾：detectedOptionLabels 同查看态；多选点选结果
+        // 经 onMultiSelectionChanged 写进答案文本框。
         SizedBox(height: 12 * scale),
-        OptionLabelsEditor(
+        AnswerOptionEditor(
           key: ValueKey('edit-${q.id}'),
           questionId: q.id,
           questionType: _st.editQuestionType,
           optionLabels: _st.editOptionLabels,
           storedOptionLabels: q.optionLabels,
-          optionLabelsConfirmed: _st.editOptionLabelsConfirmed,
+          detectedOptionLabels: _st.editOptionLabels == null
+              ? _detectedOptionLabels(q)
+              : null,
           correctOption: _st.editCorrectOption,
           storedCorrectOption: q.correctOption,
           answerPendingRecheck: q.answerPendingRecheck,
@@ -2056,6 +2077,10 @@ class _DetailViewState extends ConsumerState<_DetailView> {
           },
           onAnswerReconfirmedChanged: (v) {
             _notifier.setEditAnswerReconfirmed(v);
+            _markDirty();
+          },
+          onMultiSelectionChanged: (value) {
+            _answerCtrl.text = value;
             _markDirty();
           },
           onConfirm: ({

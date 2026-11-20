@@ -566,16 +566,24 @@ class SubjectLabel extends StatelessWidget {
 /// [returnLabel] 是浮层提示里的返回地（默认“整理台”，详情页传“题目详情”）。
 /// 文字符号（D3），不用图标字体。
 ///
-/// 打开缩放 = min(1.5, fit)，fit 为纸面刚好完整装进视口的缩放
-/// （纸面封顶宽 680、内容高度；标准档 1280×720 下视口 900×~541，
-/// fit ≈ 1.32，徽标 132%）。HTML 原型是 fit×1.5、徽标恒 150%，但
-/// fit×1.5 在约束维度上必然溢出 50%（打开即裁切），故这里取
-/// min(1.5, fit)，保证打开即居中、无裁切——对 HTML 公式的有意偏离。
-/// 初始矩阵按视口尺寸算（M = T((1−s)·Vw/2,(1−s)·Vh/2)·S(s)）：
-/// InteractiveViewer 的 alignment 默认为 null，矩阵绕 child 原点
-/// (0,0) 应用，不是绕视口中心；旧代码用纸面尺寸算平移且假设中心
-/// 支点，只在纸面恰为 900×480 时近似成立（垂直 +15px、左右对称
-/// 裁切被误读为左移 60–80px）。见 S8A1-ZOOM-REPORT.md。
+/// 打开缩放 s0 = min(1.0, fit)，fit 为纸面刚好完整装进视口的缩放
+/// （纸面封顶宽 680、内容高度；fit = min(视口宽/纸面布局宽，
+/// 视口高/纸面布局高），视口取对话框内容区实测尺寸）。
+/// 100% = Flutter 逻辑像素下的纸面自然显示尺寸（纸面布局尺寸 ×1.0），
+/// 不是物理像素；放得下就 100%，放不下才按 fit 缩小。
+/// InteractiveViewer 的 alignment 保持 null（默认），初始矩阵为绕
+/// 视口中心的全变换 T(C)·S(s0)·T(−C)（C 为视口中心），纸面中心
+/// 不动、天然居中（旧代码手算平移矩阵且假设中心支点，只在纸面恰为
+/// 900×480 时近似成立，见 S8A1-ZOOM-REPORT.md）。不用
+/// alignment: Alignment.center：SDK 的手势/边界数学只认控制器矩阵
+/// M，alignment 会把有效变换共轭为 T(C)·M·T(−C)，致放大后拖动被
+/// 钳制拒绝（定稿 §9.2 步骤 2 与 §9.3 冲突，见定稿附录 REV5 修正）。
+/// 两种视图状态（R7-1/S6-2）：初始态（未手动交互）下视口或纸面
+/// 尺寸变化时重算 s0 并居中；用户第一次手动缩放/拖动后进入交互态，
+/// 此后窗口变化保持当前矩阵；重开对话框回到初始态。
+/// 图片就绪（R7-2/S6-3）：QuestionSlice 已布局出非零尺寸且图片
+/// 字节已解码（尺寸已知）；未就绪前不应用任何矩阵、不显示错误位置，
+/// 滚轮/加减按钮/拖动手势均无动作。
 Future<void> showQuestionZoomDialog(
   BuildContext context,
   Question question, {
@@ -601,7 +609,32 @@ class _ZoomDialogState extends State<_ZoomDialog> {
   late final TransformationController _controller;
   final _paperKey = GlobalKey();
   final _viewportKey = GlobalKey();
-  bool _centered = false;
+
+  /// 用户交互态（R7-1/S6-2）：用户第一次手动缩放（滚轮/按钮）或拖动后
+  /// 为 true；交互态下窗口尺寸变化保持当前矩阵，不重算 s0。
+  bool _interacted = false;
+
+  /// 图片就绪（R7-2）：QuestionSlice 已布局出非零尺寸且图片字节已解码
+  /// （或根本无图片文件可等，如演示题/缺图占位）。未就绪前不应用矩阵、
+  /// 禁用缩放与拖动。
+  bool _imageSettled = false;
+
+  /// 已为之设过初始矩阵的就绪纸面尺寸（R7-2 守门）：占位尺寸变为真实
+  /// 尺寸时触发一次重算；同一尺寸不反复重初始化。
+  Size? _readySize;
+
+  /// 加载代次（U4-2）：每个对话框实例一个计数；旧图片的异步回调须先
+  /// 核对代次，不符即丢弃，不得污染新实例。
+  int _loadGeneration = 0;
+
+  /// 对话框关闭后到达的回调一律忽略（与 mounted 双重校验）。
+  bool _disposed = false;
+
+  /// 图片流监听（与 _imageSettled 联动）：只在有真实切片文件时挂接。
+  ImageStream? _imageStream;
+  ImageStreamListener? _imageListener;
+  bool _imageListenerAttached = false;
+
   double _scale = 1.0;
   Size? _viewportSize;
 
@@ -613,20 +646,121 @@ class _ZoomDialogState extends State<_ZoomDialog> {
   static double _fitFor(Size viewport, Size paper) =>
       math.min(viewport.width / paper.width, viewport.height / paper.height);
 
+  /// 绕视口中心 [center] 的缩放矩阵 T(C)·S(s)·T(−C)（WP-E #9 REV5
+  /// 修正：alignment 为 null 时控制器矩阵即有效变换，纸面中心与视口
+  /// 中心重合，缩放前后纸面中心不动、天然居中）。
+  static Matrix4 _centeredScale(double s, Offset center) =>
+      Matrix4.translationValues(center.dx, center.dy, 0.0) *
+      Matrix4.diagonal3Values(s, s, 1.0) *
+      Matrix4.translationValues(-center.dx, -center.dy, 0.0);
+
   @override
   void initState() {
     super.initState();
     _controller = TransformationController();
     _controller.addListener(_onTransform);
-    // 初始矩阵由 _centerInitial 在首帧后按实测尺寸设置（见下）。
-    // 不预设 1.5×：InteractiveViewer 的 alignment 默认为 null，
-    // 矩阵绕 child 原点 (0,0) 应用；纯缩放矩阵会把纸面顶到左上、
-    // 右边裁掉（HTML 的 paperbox 是 left:50%/top:50% 居中放）。
-    WidgetsBinding.instance.addPostFrameCallback((_) => _centerInitial());
+    // 初始矩阵由 _onReadyFrame 在图片就绪后按实测尺寸设置（见下）。
+    // 不预设矩阵：未就绪前不应用任何矩阵、不显示错误位置。
+    _scheduleReadyCheck();
   }
 
-  void _centerInitial() {
-    if (_centered || !mounted) return;
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _ensureImageListener();
+  }
+
+  @override
+  void didUpdateWidget(_ZoomDialog oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.question.id != widget.question.id ||
+        oldWidget.question.slicePath != widget.question.slicePath) {
+      // 同一对话框实例换题（理论上不发生）：全部初始态重置，旧图片的
+      // 异步回调凭代次丢弃，不得污染新题。
+      _detachImageListener();
+      _imageListenerAttached = false;
+      _imageSettled = false;
+      _readySize = null;
+      _interacted = false;
+      _loadGeneration++;
+      _ensureImageListener();
+      _scheduleReadyCheck();
+    }
+  }
+
+  /// 切片文件（存在才需等解码）：无 slicePath 或文件不存在时显示
+  /// 演示文字/缺图占位，布局尺寸首帧即最终尺寸，无需等图片。
+  File? _sliceFile() {
+    final slicePath = widget.question.slicePath;
+    if (slicePath == null) return null;
+    // resolveDataPath 为 null（路径不安全）时 QuestionSlice 同样走
+    // 缺图占位，无需等图片。
+    final abs = AppDatabase.resolveDataPath(slicePath);
+    if (abs == null) return null;
+    final file = File(abs);
+    return file.existsSync() ? file : null;
+  }
+
+  /// 与 QuestionSlice._realSliceBody 的 cacheWidth 同式
+  /// （maxHeight 480 × 2 × dpr，封顶 2048），使监听的 provider 与
+  /// 实际显示的 ResizeImage 同 key、共享同一份解码。
+  int _sliceCacheWidth() {
+    final dpr = MediaQuery.devicePixelRatioOf(context);
+    return math.min(((480 * 2) * dpr).ceil(), 2048);
+  }
+
+  /// 挂接切片图片的解码监听（U4-2：回调核对实例代次）。
+  /// 无图片文件可等时直接记为已就绪。
+  void _ensureImageListener() {
+    if (_imageListenerAttached || !mounted || _disposed) return;
+    final file = _sliceFile();
+    if (file == null) {
+      _imageSettled = true;
+      _imageListenerAttached = true;
+      return;
+    }
+    _imageListenerAttached = true;
+    final gen = _loadGeneration;
+    _imageListener = ImageStreamListener(
+      (ImageInfo info, bool synchronousCall) => _onImageSettled(gen),
+      onError: (Object error, StackTrace? stackTrace) =>
+          _onImageSettled(gen),
+    );
+    _imageStream =
+        ResizeImage(FileImage(file), width: _sliceCacheWidth()).resolve(
+      ImageConfiguration.empty,
+    );
+    _imageStream!.addListener(_imageListener!);
+  }
+
+  void _onImageSettled(int gen) {
+    if (!mounted || _disposed || gen != _loadGeneration) return;
+    if (_imageSettled) return;
+    // 解码成功或解码失败（走缺图占位，尺寸已最终）都算就绪。
+    _imageSettled = true;
+    _scheduleReadyCheck();
+  }
+
+  void _detachImageListener() {
+    if (_imageStream != null && _imageListener != null) {
+      _imageStream!.removeListener(_imageListener!);
+    }
+    _imageStream = null;
+    _imageListener = null;
+  }
+
+  void _scheduleReadyCheck() {
+    final gen = _loadGeneration;
+    WidgetsBinding.instance.addPostFrameCallback((_) => _onReadyFrame(gen));
+  }
+
+  /// 就绪检查（每帧后跑一次；仍在初始态时自我续约，以便视口/纸面
+  /// 尺寸变化时重算；进入交互态即停）。
+  void _onReadyFrame(int gen) {
+    if (!mounted || _disposed) return;
+    if (gen != _loadGeneration) return;
+    if (_interacted) return;
+    _ensureImageListener();
     final viewport = _viewportKey.currentContext?.size;
     final size = _paperKey.currentContext?.size;
     if (viewport == null ||
@@ -636,24 +770,37 @@ class _ZoomDialogState extends State<_ZoomDialog> {
         size.width <= 0 ||
         size.height <= 0) {
       // 尺寸未就绪：下一帧重试。
-      WidgetsBinding.instance.addPostFrameCallback((_) => _centerInitial());
+      _scheduleReadyCheck();
       return;
     }
-    _centered = true;
+    if (!_imageSettled) {
+      // 图片字节未解码（尺寸未知）：不应用任何矩阵、不显示错误位置。
+      _scheduleReadyCheck();
+      return;
+    }
+    if (_readySize == size && _viewportSize == viewport) {
+      // 已为当前就绪尺寸设过矩阵：不反复重初始化，但继续守望
+      // （初始态下视口变化时仍需重算）。
+      _scheduleReadyCheck();
+      return;
+    }
+    _loadGeneration++;
+    _readySize = size;
     _viewportSize = viewport;
-    final s0 = math.min(1.5, _fitFor(viewport, size));
-    // 绕视口中心缩放：M = T((1−s0)·Vw/2,(1−s0)·Vh/2)·S(s0)，
-    // 平移量用视口尺寸（旧代码用纸面尺寸 −W/4、−H/4，只在纸面
-    // 恰为 900×480 时近似成立）。_scale 不预赋值，由 _onTransform
-    // 监听到矩阵变化后 setState 更新徽标。
-    _controller.value = Matrix4.identity()
-      ..translateByDouble(
-        (1 - s0) * viewport.width / 2,
-        (1 - s0) * viewport.height / 2,
-        0,
-        1,
-      )
-      ..scaleByDouble(s0, s0, 1, 1);
+    final s0 = math.min(1.0, _fitFor(viewport, size));
+    // 绕视口中心的全变换 T(C)·S(s0)·T(−C)（C 为视口中心；alignment
+    // 保持 null，控制器矩阵即有效变换，纸面中心不动、天然居中）。
+    // 不用 alignment:center + 纯缩放：SDK 手势/边界数学只认控制器
+    // 矩阵 M，alignment 会把有效变换共轭为 T(C)·M·T(−C)，致放大后
+    // 拖动被钳制拒绝（见定稿附录 REV5 修正）。_scale 由 _onTransform
+    // 监听更新徽标。
+    _controller.value =
+        _centeredScale(s0, Offset(viewport.width / 2, viewport.height / 2));
+    // s0 == 1.0 时矩阵与初值相同、_onTransform 不触发 setState；这里
+    // 主动重建一次，让“已就绪”反映到按钮/手势的启用态上。
+    // （只在尺寸对变化、真正设矩阵时跑一次，不会每帧重建。）
+    setState(() {});
+    _scheduleReadyCheck();
   }
 
   void _onTransform() {
@@ -663,31 +810,33 @@ class _ZoomDialogState extends State<_ZoomDialog> {
 
   @override
   void dispose() {
+    _disposed = true;
+    _loadGeneration++;
+    _detachImageListener();
     _controller.removeListener(_onTransform);
     _controller.dispose();
     super.dispose();
   }
 
   void _multiply(double factor) {
-    // 绕视口中心缩放：M' = T(C)·S(f)·T(−C)·M。
-    // 旧代码右乘缩放矩阵，绕视口左上原点缩放，纸面往右下漂移。
-    // SR-P2-75：回退视口尺寸用的缩放因子在这里局部取，不要在 build
-    // 里给字段赋值（build 内改状态，后续若有人在 build 流程里读它
-    // 会拿到上一帧的值）；_multiply 只在按钮/滚轮回调里触发，
-    // build 之后，读当前 context 的缩放因子是安全的。
-    final dialogScale = qmScaleOf(context);
-    final viewport =
-        _viewportSize ??
-        Size(
-          DesignTokens.organizeZoomWidth * dialogScale,
-          DesignTokens.organizeZoomHeight * dialogScale - 50 * dialogScale,
-        );
-    final c = Offset(viewport.width / 2, viewport.height / 2);
-    final m = Matrix4.identity()
-      ..translateByDouble(c.dx, c.dy, 0, 1)
-      ..scaleByDouble(factor, factor, 1, 1)
-      ..translateByDouble(-c.dx, -c.dy, 0, 1);
-    _controller.value = m * _controller.value;
+    // S6-3：图片未就绪时缩放无动作；首次手动缩放进入交互态。
+    if (!_imageSettled) return;
+    _interacted = true;
+    // 绕当前视口中心缩放（alignment 为 null，控制器矩阵即有效变换）：
+    // T(C)·S(f)·T(−C)·M（WP-E #9 REV5 修正，改回旧式）。REV5 前本
+    // 函数曾为左乘纯缩放 S(f)·M，那是为适配 alignment:center 的共轭
+    // （有效变换 T(C)·M·T(−C)）而改的；alignment 回 null 后须改回
+    // 本式，否则 ＋/－ 会绕左上角缩放。滚轮/加减按钮仍走本函数。
+    final viewport = _viewportKey.currentContext?.size ?? _viewportSize;
+    if (viewport == null || viewport.width <= 0 || viewport.height <= 0) {
+      // 视口尺寸未知时退回纯缩放（不应发生：就绪门已保证量过视口）。
+      _controller.value =
+          Matrix4.diagonal3Values(factor, factor, 1.0) * _controller.value;
+      return;
+    }
+    _controller.value = _centeredScale(
+            factor, Offset(viewport.width / 2, viewport.height / 2)) *
+        _controller.value;
   }
 
   @override
@@ -747,14 +896,17 @@ class _ZoomDialogState extends State<_ZoomDialog> {
                     label: '＋',
                     variant: QmButtonVariant.plain,
                     size: QmButtonSize.small,
-                    onPressed: () => _multiply(1.25),
+                    // S6-3：图片未就绪时按钮禁用（无动作）。
+                    onPressed:
+                        _imageSettled ? () => _multiply(1.25) : null,
                   ),
                   SizedBox(width: 6 * scale),
                   QmButton(
                     label: '－',
                     variant: QmButtonVariant.plain,
                     size: QmButtonSize.small,
-                    onPressed: () => _multiply(0.8),
+                    onPressed:
+                        _imageSettled ? () => _multiply(0.8) : null,
                   ),
                   SizedBox(width: 6 * scale),
                   QmButton(
@@ -773,14 +925,29 @@ class _ZoomDialogState extends State<_ZoomDialog> {
                 child: Listener(
                   onPointerSignal: (e) {
                     if (e is PointerScrollEvent) {
+                      // S6-3：图片未就绪时滚轮无动作。
+                      if (!_imageSettled) return;
                       final s = e.scrollDelta.dy < 0 ? 1.12 : 0.9;
                       _multiply(s);
                     }
                   },
                   child: InteractiveViewer(
                     transformationController: _controller,
+                    // WP-E #9 REV5 修正：alignment 保持 null（默认），
+                    // 居中由初始矩阵 T(C)·S(s0)·T(−C) 实现；不用
+                    // alignment:center——SDK 手势/边界数学只认控制器
+                    // 矩阵 M，alignment 会共轭有效变换致放大后拖动
+                    // 被钳制拒绝（见定稿附录 REV5 修正）。
                     minScale: 0.5,
                     maxScale: 5,
+                    // S6-3：图片未就绪时禁用手势缩放与拖动。
+                    panEnabled: _imageSettled,
+                    scaleEnabled: _imageSettled,
+                    // R7-1：第一次手动缩放/拖动即进入交互态，此后窗口
+                    // 尺寸变化保持当前矩阵。
+                    onInteractionStart: (_) {
+                      if (_imageSettled) _interacted = true;
+                    },
                     child: Center(
                       child: GestureDetector(
                         onTap: () => Navigator.of(context).pop(),
@@ -789,9 +956,16 @@ class _ZoomDialogState extends State<_ZoomDialog> {
                           child: IntrinsicHeight(
                             // B2 Bug 2：与整理页 _paperImage 同因——SizedBox
                             // 680 宽、真图按固有尺寸窄于它。Align 让 Stack 收成切片
-                            // 实际尺寸；纸面本身已是左对齐，外观不变。
+                            // 实际尺寸（_paperKey 量测仍是切片实际尺寸）；WP-E #9：
+                            // 对话框内纸面须在 680 盒内居中。取 center 而非
+                            // topCenter：IntrinsicHeight 按盒宽算内在高，窄纸面
+                            // 的盒比纸面高（如 200×100 图盒高 340、纸面高 102），
+                            // topCenter 会让纸面贴盒顶、垂直偏 119.5px；
+                            // center 使纸面在盒内真正居中（§9.3“完整居中”/
+                            // §9.4“纸面在正中央”）；全宽纸面盒高即纸面高，
+                            // 两者无差别。
                             child: Align(
-                              alignment: Alignment.topLeft,
+                              alignment: Alignment.center,
                               child: Stack(
                                 key: _paperKey,
                                 children: [

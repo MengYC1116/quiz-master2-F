@@ -95,22 +95,16 @@ String childSubmissionId(String parentId, String causeStableIdValue) =>
 // 客观判分（M3-4）
 // ---------------------------------------------------------------------------
 
-/// 本题是否具备客观判分资格：单选须标签已确认且 correct_option 属于
-/// 当前标签集；判断题须 correctOption 属于固定的“正确/错误”两项，
-/// 不依赖 option_labels_confirmed；待重新核对（P1-A）时一律无资格；
-/// 多选/不定项永远不判分。
+/// 本题是否具备客观判分资格（WP-A #1，REV5 R1-3）：单选/判断须
+/// [Question.answerConfigValid]（结构完整、内部一致）且未待重新核对；
+/// 多选/不定项永远不判分。不再读 `optionLabelsConfirmed` 列——该列
+/// 保留（v5 不动），旧值不再产生任何效果。
 bool objectiveGradingAvailable(Question q) {
   if (q.answerPendingRecheck) return false;
   switch (q.questionType) {
     case 'choice_single':
-      if (!q.optionLabelsConfirmed) return false;
-      final labels = q.optionLabels;
-      final correct = q.correctOption;
-      if (labels == null || labels.isEmpty) return false;
-      if (correct == null || correct.isEmpty) return false;
-      return labels.contains(correct);
     case 'true_false':
-      return q.correctOption == '正确' || q.correctOption == '错误';
+      return q.answerConfigValid;
     default:
       return false;
   }

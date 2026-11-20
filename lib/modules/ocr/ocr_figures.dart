@@ -27,15 +27,34 @@
 // 阅读顺序（P1-3，不只按 y1 猜）：首选 GLM Markdown 图引用位置；
 // 备用文本块坐标映射；双栏先分区（横向中线、无块跨中线时才分栏）、
 // 栏内 y1、栏间左→右，不做全局 y1 排序；单栏栏内 y1。锚定失败 →
-// 图块按 bbox y1 排在内容序列末尾之前、界面明确标为“位置未确认”
-// （anchor_source='fallback'），用户可在纠错编辑器里删除该图块
-// （删除后回退整题原图）；绝不把位置未确认的图块静默当成已确认顺序展示。
+// 图块进题干末尾的独立「未关联图片」区（WP-D #7：标题块
+// [unassociatedFiguresHeader] + 图块，图块强制标未确认），绝不把
+// 位置未确认的图块静默当成已确认顺序展示，也不再默认堆到末尾冒充
+// 正常内容（旧 `at = blocks.length` 默认值已删）。
 //
-// 渲染插入口径（M2 D-120）：`sequence_index` 是图块在阅读顺序中的
-// 序号（图块之间）；渲染时按它插入内容序列——md 锚定的图块按 md 引用
-// 在全文中的字符位置插入到相邻题干段之间；text 锚定的图块按其在页内
-// 的纵向相对位置插入；fallback 图块排在内容序列末尾之前并标
-// “位置未确认”。本文件只给排序与锚点，插入实现见 [buildContentBlocks]。
+// 选项归属（WP-D #7，定稿 §7 + 附录 R5/S4/U2）：每个图块带
+// [OcrFigure.optionLabel]（A–E 或 null），按 P1（md 结构明确关联）
+// > P2（页面坐标 + 选项区域，同一 API 像素空间、空间尺寸一致才比）
+// > P3（md 引用顺序 + 选项标号，仅 R5-3 四条件全满足）> P4（null）
+// 确定；一张图片最多归属一个选项，一个选项可归属多张图片（S4-1）。
+// 坐标约定（U2）：不做 PDF 仿射变换，GLM bbox 即送入 API 的图像的
+// 像素坐标，换算只有减白边再 clip；PDF 点坐标/MediaBox/CropBox/
+// Rotate/UserUnit 从不进入 OCR 流水线；页面旋转只在渲染时由 pdfrx
+// 应用一次，逐图不做旋转处理（显式假设）。
+//
+// 已知边界（不是静默行为）：纯文本选项在解析时合并成一段、段内含
+// 多个标号时无逐选项锚点，归属已知但无处可插的图块进未关联区；
+// autoSplit 已把选项切出题干时题干块里同样没有标号块，图块同样进
+// 未关联区；表格选项（#2 §2.3）无逐行插入锚点，不参与本包的标号块
+// 定位。
+//
+// 渲染插入口径（M2 D-120 + WP-D #7）：`sequence_index` 是图块在阅读
+// 顺序中的序号（图块之间）；渲染时按它插入内容序列——md 锚定的题干图
+// 按 md 引用在全文中的字符位置插入到相邻题干段之间；text 锚定的题干图
+// 按其在页内的纵向相对位置插入；有 optionLabel 的图块插在其选项标号
+// 所在段内（R5-4：md 锚点可靠时保留原始锚点顺序，否则插标号块紧后方）；
+// 无法可靠放置的图块进「未关联图片」区。本文件只给排序、锚点与归属，
+// 插入实现见 [buildContentBlocks]；逐图诊断记录见 [diagnoseFigures]。
 
 import 'dart:convert';
 import 'dart:math' as math;
@@ -178,6 +197,7 @@ class OcrFigure {
     required this.transform,
     required this.srcRect,
     required this.cropPath,
+    this.optionLabel,
   });
 
   /// 图块 ID：`figure-<qid>-<index>`（index 为阅读顺序号）。
@@ -214,6 +234,13 @@ class OcrFigure {
   /// 裁图相对路径（`slices/<qid>-fig-v<ts>-<rand>.png`）。
   final String cropPath;
 
+  /// 选项归属（WP-D #7，定稿 §7.2 优先级 1–4）：图块所属选项的标号
+  /// （A–E），无法可靠匹配时为 null，不归入任何选项。只解决归属，
+  /// 不独自决定选项内精确位置（R5-4：位置优先保留可靠的原始锚点顺序）。
+  /// 旧数据（JSON 里无此键）解析为 null；本字段是 `ocr_figures`
+  /// JSON 列里的一个键，不动数据库 schema（v5 不变）。
+  final String? optionLabel;
+
   /// 是否位置未确认（锚定失败的图块，界面必须明确标注）。
   bool get unconfirmed => anchorSource == 'fallback';
 
@@ -225,7 +252,11 @@ class OcrFigure {
     return this.inputHash == inputHash;
   }
 
-  OcrFigure copyWith({int? sequenceIndex, String? cropPath}) => OcrFigure(
+  OcrFigure copyWith({
+    int? sequenceIndex,
+    String? cropPath,
+    String? optionLabel,
+  }) => OcrFigure(
     id: id,
     slicePath: slicePath,
     inputHash: inputHash,
@@ -238,6 +269,7 @@ class OcrFigure {
     transform: transform,
     srcRect: srcRect,
     cropPath: cropPath ?? this.cropPath,
+    optionLabel: optionLabel ?? this.optionLabel,
   );
 
   Map<String, Object?> toJson() => {
@@ -253,6 +285,7 @@ class OcrFigure {
     'transform': transform.toJson(),
     'src_rect': srcRect.toJson(),
     'crop_path': cropPath,
+    if (optionLabel != null) 'option_label': optionLabel,
   };
 
   static OcrFigure? tryParse(Object? value) {
@@ -287,6 +320,12 @@ class OcrFigure {
       final spaceWidth = value['space_width'];
       final spaceHeight = value['space_height'];
       final inputHash = value['input_hash'];
+      final rawLabel = value['option_label'];
+      final optionLabel = rawLabel is String &&
+              rawLabel.length == 1 &&
+              _isOptionLetter(rawLabel)
+          ? _normalizeOptionLetter(rawLabel)
+          : null;
       return OcrFigure(
         id: id,
         slicePath: slicePath,
@@ -300,6 +339,7 @@ class OcrFigure {
         transform: transform,
         srcRect: srcRect,
         cropPath: cropPath,
+        optionLabel: optionLabel,
       );
     } catch (_) {
       return null;
@@ -344,6 +384,7 @@ bool sameFiguresIgnoringCrop(List<OcrFigure> a, List<OcrFigure> b) {
     if (x.sequenceIndex != y.sequenceIndex ||
         x.anchorSource != y.anchorSource ||
         x.anchorRef != y.anchorRef ||
+        x.optionLabel != y.optionLabel ||
         x.srcRect != y.srcRect ||
         x.bbox2d.length != y.bbox2d.length) {
       return false;
@@ -503,6 +544,426 @@ bool _bboxMatches(List<int> a, List<int> b) {
   return true;
 }
 
+// ---------------------------------------------------------------------------
+// WP-D #7 选项图片锚定（定稿 §7.2 + 附录 R5/S4/U2）。
+//
+// 选项标号识别与 #2 共用（§7.2.4）：标记形式与
+// `lib/services/stem_splitter.dart:195-201` 的 _markerPattern /
+// _barePattern 原样一致（括号式 `(A)`/`（A）`、字母+标点
+// `A.`/`A．`/`A、`/`A)`/`A）`/`A:`/`A：`、裸字母 `A `；全角 Ａ-Ｅ
+// 归一化为 A-E）。两处正则字面量须保持一致，#2 改动此处须同步。
+// 与 #2 不同的一点（实现注释，非设计改动）：#2 的块级候选要求 div 内
+// “标记外有内容”才算选项——那是为自动切分守门；此处图片本身就是
+// 选项的内容（纯图片选项的标号 div 如 `<div>A.</div>` 除标记外无文字），
+// 因此标号 div 为空时仍认标号，图片即其内容。
+// ---------------------------------------------------------------------------
+
+bool _isOptionLetter(String ch) {
+  if (ch.length != 1) return false;
+  final c = ch.codeUnitAt(0);
+  return (c >= 0x41 && c <= 0x45) || (c >= 0xFF21 && c <= 0xFF25);
+}
+
+String _normalizeOptionLetter(String ch) {
+  final c = ch.codeUnitAt(0);
+  if (c >= 0xFF21 && c <= 0xFF25) {
+    return String.fromCharCode(0x41 + (c - 0xFF21));
+  }
+  return ch;
+}
+
+final _optionMarkerPattern = RegExp(
+  r'[（(]\s*[A-EＡ-Ｅ]\s*[)）]|[A-EＡ-Ｅ][.．、)）:：]',
+);
+final _bareOptionMarkerPattern = RegExp(r'[A-EＡ-Ｅ] (?=\S)');
+
+/// 文本去空白后是否以选项标记开头（#2 步骤 1 块级候选同款开头判定）。
+/// 返回标号字母（A–E），不是则返回 null。
+String? _leadingOptionLabel(String text) {
+  final s = text.trimLeft();
+  if (s.isEmpty) return null;
+  final m = _optionMarkerPattern.matchAsPrefix(s) ??
+      _bareOptionMarkerPattern.matchAsPrefix(s);
+  if (m == null) return null;
+  for (var i = 0; i < m.group(0)!.length; i++) {
+    final ch = m.group(0)![i];
+    if (_isOptionLetter(ch)) return _normalizeOptionLetter(ch);
+  }
+  return null;
+}
+
+/// md 全文里的一个选项标号出现位置。
+class _OptionLabelOccurrence {
+  const _OptionLabelOccurrence({
+    required this.letter,
+    required this.offset,
+    required this.markerEnd,
+    this.divStart,
+    this.divEnd,
+  });
+
+  /// 标号字母（A–E）。
+  final String letter;
+
+  /// 标记首字符在 md 全文中的字符偏移。
+  final int offset;
+
+  /// 标记结束偏移（标记文本末尾，不含后续内容）。
+  final int markerEnd;
+
+  /// 标号所在 div/p 元素的起止偏移（含标签本身；纯文本行标号时为 null）。
+  /// divEnd 为 `</div>`/`</p>` 之后的位置。
+  final int? divStart;
+  final int? divEnd;
+}
+
+/// 在 md 全文（原始文本，不剥标签）中找出全部选项标号出现位置，按偏移排序。
+/// 顺序：先扫 `<div>`/`<p>` 块（块内去标签后以标记开头），再扫纯文本行首
+/// （行首标记）；行首扫描跳过已落在 div/p 块内的行，不重复计数。
+List<_OptionLabelOccurrence> _optionLabelOccurrences(String md) {
+  final out = <_OptionLabelOccurrence>[];
+  final divSpans = <({int start, int end})>[];
+  final openTag = RegExp(r'<(div|p)\b[^>]*>', caseSensitive: false);
+  final closeTag = RegExp(r'</(div|p)\s*>', caseSensitive: false);
+  for (final open in openTag.allMatches(md)) {
+    final close = closeTag.firstMatch(md.substring(open.end));
+    if (close == null) continue;
+    final contentStart = open.end;
+    final contentEnd = open.end + close.start;
+    final divEnd = open.end + close.end;
+    divSpans.add((start: open.start, end: divEnd));
+    // 块内文本：去标签后 trimLeft，以标记开头即为标号。
+    final inner = md
+        .substring(contentStart, contentEnd)
+        .replaceAll(RegExp(r'<[^>]*>'), '')
+        .trimLeft();
+    if (inner.isEmpty) continue;
+    final marker = _optionMarkerPattern.matchAsPrefix(inner) ??
+        _bareOptionMarkerPattern.matchAsPrefix(inner);
+    if (marker == null) continue;
+    // 标记在 md 中的真实偏移：从块内容起点向后找第一个不在标签内的标记。
+    var markerOffset = -1;
+    var markerEnd = -1;
+    for (final m in _optionMarkerPattern
+        .allMatches(md.substring(contentStart, contentEnd))) {
+      final at = contentStart + m.start;
+      if (_insideTag(md, at)) continue;
+      markerOffset = at;
+      markerEnd = contentStart + m.end;
+      break;
+    }
+    if (markerOffset < 0) {
+      for (final m in _bareOptionMarkerPattern
+          .allMatches(md.substring(contentStart, contentEnd))) {
+        final at = contentStart + m.start;
+        if (_insideTag(md, at)) continue;
+        markerOffset = at;
+        markerEnd = contentStart + m.end;
+        break;
+      }
+    }
+    if (markerOffset < 0) continue;
+    var letter = '';
+    for (var i = 0; i < marker.group(0)!.length; i++) {
+      final ch = marker.group(0)![i];
+      if (_isOptionLetter(ch)) {
+        letter = _normalizeOptionLetter(ch);
+        break;
+      }
+    }
+    if (letter.isEmpty) continue;
+    out.add(
+      _OptionLabelOccurrence(
+        letter: letter,
+        offset: markerOffset,
+        markerEnd: markerEnd,
+        divStart: open.start,
+        divEnd: divEnd,
+      ),
+    );
+  }
+  // 纯文本行首标号（跳过 div/p 块内的行）。
+  var lineStart = 0;
+  while (lineStart <= md.length) {
+    final lineEnd = md.indexOf('\n', lineStart);
+    final end = lineEnd < 0 ? md.length : lineEnd;
+    final insideDiv = divSpans.any(
+      (s) => lineStart >= s.start && lineStart < s.end,
+    );
+    if (!insideDiv) {
+      final line = md.substring(lineStart, end);
+      final trimmed = line.trimLeft();
+      if (trimmed.isNotEmpty) {
+        final marker = _optionMarkerPattern.matchAsPrefix(trimmed) ??
+            _bareOptionMarkerPattern.matchAsPrefix(trimmed);
+        if (marker != null) {
+          var letter = '';
+          for (var i = 0; i < marker.group(0)!.length; i++) {
+            final ch = marker.group(0)![i];
+            if (_isOptionLetter(ch)) {
+              letter = _normalizeOptionLetter(ch);
+              break;
+            }
+          }
+          if (letter.isNotEmpty) {
+            out.add(
+              _OptionLabelOccurrence(
+                letter: letter,
+                offset: lineStart + (line.length - trimmed.length),
+                markerEnd:
+                    lineStart + (line.length - trimmed.length) + marker.end,
+              ),
+            );
+          }
+        }
+      }
+    }
+    if (lineEnd < 0) break;
+    lineStart = lineEnd + 1;
+  }
+  out.sort((a, b) => a.offset.compareTo(b.offset));
+  return out;
+}
+
+/// [offset] 是否落在 md 的某个 `<…>` 标签内。
+bool _insideTag(String md, int offset) {
+  final lt = md.lastIndexOf('<', offset);
+  if (lt < 0) return false;
+  final gt = md.indexOf('>', lt);
+  return gt < 0 || gt > offset;
+}
+
+/// 选项在页面中的区域（P2 用）：标号文本块所在行带。
+class _OptionRegion {
+  const _OptionRegion({
+    required this.letter,
+    required this.page,
+    required this.x1,
+    required this.y1,
+    required this.x2,
+    required this.y2,
+    required this.spaceWidth,
+    required this.spaceHeight,
+  });
+
+  final String letter;
+  final int page;
+
+  /// 行带矩形（API 像素空间，与图块 bbox 同一坐标系）：
+  /// x 为标号块横向范围，y 为标号块 y1 至下一标号 y1（末个标号封顶
+  /// 为自身 y2 + 页内标号中位间距，见 [_optionRegions]）。
+  final int x1;
+  final int y1;
+  final int x2;
+  final int y2;
+
+  /// 该标号块所在坐标空间尺寸（P2 比对要求与图块一致，见 U2）。
+  final int? spaceWidth;
+  final int? spaceHeight;
+}
+
+/// 从 layout 文本块里提取选项区域：内容去空白后以选项标记开头的文本块。
+List<_OptionRegion> _optionRegions(List<_LayoutBlock> textBlocks) {
+  final labels = <_LayoutBlock, String>{};
+  for (final b in textBlocks) {
+    final letter = _leadingOptionLabel(b.content.trim());
+    if (letter != null) labels[b] = letter;
+  }
+  if (labels.isEmpty) return const [];
+  final byPage = <int, List<_LayoutBlock>>{};
+  for (final b in labels.keys) {
+    (byPage[b.page] ??= []).add(b);
+  }
+  final out = <_OptionRegion>[];
+  for (final entry in byPage.entries) {
+    final pageBlocks = [...entry.value]..sort((a, b) => a.y1.compareTo(b.y1));
+    // 页内标号 y1 的正向间距中位数（末个标号行带的封顶用）。
+    final distinctY1 = <int>{for (final b in pageBlocks) b.y1}.toList()
+      ..sort();
+    final gaps = <int>[];
+    for (var i = 1; i < distinctY1.length; i++) {
+      final g = distinctY1[i] - distinctY1[i - 1];
+      if (g > 0) gaps.add(g);
+    }
+    gaps.sort();
+    // 下中位数（保守封顶：不让末标号行带伸得比典型间距更远；缺号造成
+    // 的大间距不得把末行带撑进下一区域）。
+    final medianGap = gaps.isEmpty ? 0 : gaps[(gaps.length - 1) ~/ 2];
+    for (final b in pageBlocks) {
+      var bandEnd = -1;
+      for (final other in pageBlocks) {
+        if (other.y1 > b.y1 && (bandEnd < 0 || other.y1 < bandEnd)) {
+          bandEnd = other.y1;
+        }
+      }
+      if (bandEnd < 0) {
+        final fallback = medianGap > 0 ? medianGap : (b.y2 - b.y1);
+        bandEnd = b.y2 + fallback;
+      }
+      out.add(
+        _OptionRegion(
+          letter: labels[b]!,
+          page: b.page,
+          x1: b.x1,
+          y1: b.y1,
+          x2: b.x2,
+          y2: bandEnd,
+          spaceWidth: b.spaceWidth,
+          spaceHeight: b.spaceHeight,
+        ),
+      );
+    }
+  }
+  return out;
+}
+
+/// 优先级 1——明确关联：md 引用在标号 div 内，或紧跟标号块后。
+///
+/// - 引用落在标号 div/p 元素内（含 `<div>A. ![](…)</div>`）→ 该标号；
+/// - 引用是标号块结束后的第一个引用、且位于下一标号之前（末标号则
+///   无此限）、中间除标签与空白外无其他文字（含 `<div>A. 甲</div>`
+///   后紧跟引用、以及居中图 `<div align="center">![](…)</div>`
+///   紧跟标号块）→ 该标号；
+/// - 末标号之后的多个引用成簇时（引用之间还隔着其他引用），只有第一个
+///   满足“中间无其他文字”，其余不走 P1（顺序证据归 P3 管）。
+String? _p1LabelForRef(
+  String md,
+  List<_OptionLabelOccurrence> labels,
+  int refOffset,
+) {
+  _OptionLabelOccurrence? prev;
+  for (final l in labels) {
+    if (l.offset <= refOffset) {
+      prev = l;
+    } else {
+      break;
+    }
+  }
+  if (prev == null) return null;
+  if (prev.divStart != null &&
+      prev.divEnd != null &&
+      refOffset >= prev.divStart! &&
+      refOffset < prev.divEnd!) {
+    return prev.letter;
+  }
+  final from = prev.divEnd ?? prev.markerEnd;
+  if (refOffset < from) return null;
+  final between = md
+      .substring(from, refOffset)
+      .replaceAll(RegExp(r'<[^>]*>'), '')
+      .trim();
+  if (between.isEmpty) return prev.letter;
+  return null;
+}
+
+/// 优先级 2——页面坐标 + 选项区域：图块中心点落在某选项行带内。
+///
+/// 坐标校验（U2/S4-2）：图块与标号块须在同一 API 像素空间——同一页、
+/// 且双方 spaceWidth/spaceHeight 均非空且相等；任一不符 → 该对不匹配，
+/// 不放宽阈值硬匹配。多个行带都含中心点时（并排选项），取横向离标号块
+/// 最近者（中心点在标号块横向范围内记 0 分）。
+String? _p2LabelForFigure(_LayoutBlock image, List<_OptionRegion> regions) {
+  if (regions.isEmpty) return null;
+  final cx = image.centerX;
+  final cy = image.centerY;
+  _OptionRegion? best;
+  var bestScore = 1 << 30;
+  var bestDy = 1 << 30;
+  for (final r in regions) {
+    if (image.page != r.page) continue;
+    if (image.spaceWidth == null ||
+        image.spaceHeight == null ||
+        r.spaceWidth == null ||
+        r.spaceHeight == null ||
+        image.spaceWidth != r.spaceWidth ||
+        image.spaceHeight != r.spaceHeight) {
+      continue;
+    }
+    if (cy < r.y1 || cy >= r.y2) continue;
+    if (cx < r.x1) continue;
+    final score = cx <= r.x2 ? 0 : cx - r.x2;
+    final dy = (cy - (r.y1 + r.y2) ~/ 2).abs();
+    if (score < bestScore || (score == bestScore && dy < bestDy)) {
+      best = r;
+      bestScore = score;
+      bestDy = dy;
+    }
+  }
+  return best?.letter;
+}
+
+/// 优先级 3——md 引用顺序 + 选项标号（R5-3 四条件全满足才启用）。
+///
+/// 返回 md 引用序号 → 标号字母的映射；条件任一不满足 → 空映射。
+/// - 条件 1：选项序列完整（自 A 起严格连续、无重复、无缺号，至少 A–D）；
+/// - 条件 2：引用顺序无歧义（每图恰一个 md 引用、引用位置各不相同）；
+/// - 条件 3：无冲突（选项引用在全部引用中连续成段，中间无题干图夹杂；
+///   同一标号多图时引用顺序与选项内位置一致——分组内引用连续）；
+/// - 映射：引用数 == 标号数时按顺序一一对应；引用数 ≠ 标号数时按引用
+///   落在哪个标号区间（本标号偏移至下一标号偏移）映射——一张图片最多
+///   归属一个选项，一个选项可归属多张图片（S4-1）。
+Map<int, String> _p3Mapping({
+  required List<_OptionLabelOccurrence> labels,
+  required List<_MdFigureRef> optionRefs,
+  required List<_MdFigureRef> allRefs,
+  required bool refsUnambiguous,
+}) {
+  if (!refsUnambiguous) return const {};
+  if (labels.length < 4 || optionRefs.isEmpty) return const {};
+  // 条件 1：自 A 起严格连续。
+  if (labels.first.letter != 'A') return const {};
+  for (var i = 0; i < labels.length; i++) {
+    if (labels[i].letter.codeUnitAt(0) != 0x41 + i) return const {};
+  }
+  // 条件 2：调用方已核每图恰一个引用；此处核引用位置各不相同。
+  final offsets = {for (final r in optionRefs) r.offset};
+  if (offsets.length != optionRefs.length) return const {};
+  // 条件 3：选项引用在全部引用中连续成段。
+  final sortedAll = [...allRefs]..sort((a, b) => a.offset.compareTo(b.offset));
+  final firstIdx = sortedAll.indexWhere((r) => r.order == optionRefs.first.order);
+  final lastIdx = sortedAll.indexWhere((r) => r.order == optionRefs.last.order);
+  if (firstIdx < 0 || lastIdx < 0) return const {};
+  if (lastIdx - firstIdx + 1 != optionRefs.length) return const {};
+  final sortedOption = [...optionRefs]..sort((a, b) => a.offset.compareTo(b.offset));
+  final out = <int, String>{};
+  if (sortedOption.length == labels.length) {
+    for (var i = 0; i < sortedOption.length; i++) {
+      out[sortedOption[i].order] = labels[i].letter;
+    }
+    return out;
+  }
+  // 引用数 ≠ 标号数：按区间映射；同标号分组须在引用顺序中连续。
+  final byLabel = <String, List<_MdFigureRef>>{};
+  for (final ref in sortedOption) {
+    String? letter;
+    for (var i = 0; i < labels.length; i++) {
+      final start = labels[i].offset;
+      final end = i + 1 < labels.length ? labels[i + 1].offset : 1 << 30;
+      if (ref.offset >= start && ref.offset < end) {
+        letter = labels[i].letter;
+        break;
+      }
+    }
+    if (letter == null) return const {};
+    (byLabel[letter] ??= []).add(ref);
+  }
+  var seen = 0;
+  for (final group in byLabel.values) {
+    // 分组内引用须连续：组内首尾之间不得夹其他标号的引用。
+    final first = sortedOption.indexWhere((r) => r.order == group.first.order);
+    final last = sortedOption.indexWhere((r) => r.order == group.last.order);
+    if (last - first + 1 != group.length) return const {};
+    seen += group.length;
+  }
+  if (seen != sortedOption.length) return const {};
+  for (final entry in byLabel.entries) {
+    for (final ref in entry.value) {
+      out[ref.order] = entry.key;
+    }
+  }
+  return out;
+}
+
 /// 文本块阅读顺序：先按版面区域分区——以页面横向中线分栏，但只有
 /// 没有任何文本块跨中线时才真正分栏（否则当单栏）；栏内按 y1 排序，
 /// 栏间按左栏 → 右栏拼接；不做全局 y1 排序。
@@ -545,6 +1006,9 @@ class _FigureCandidate {
   /// 文本块锚定：最近文本块 id 与它在阅读顺序中的位置。
   final String? textAnchorId;
   final int? textAnchorOrder;
+
+  /// 选项归属（WP-D #7）：P1/P2/P3 逐级确定，无法可靠匹配时为 null。
+  String? optionLabel;
 }
 
 /// 从一次 OCR 结果包派生图块列表（不含裁图文件写入；裁图见
@@ -595,6 +1059,28 @@ List<OcrFigure> buildOcrFigures({
   };
 
   final candidates = <_FigureCandidate>[];
+  // WP-D #7 选项归属（定稿 §7.2，优先级 P1 > P2 > P3 > P4）：
+  // - 标号出现位置（md 全文）与选项区域（layout 文本块）；
+  // - 坐标校验（U2）：md 引用 bbox 与任何 layout 块都对不上时，说明
+  //   md 与 layout 的坐标系已存疑，P2（坐标路径）整题停用，只走
+  //   md 结构路径（P1/P3），绝不放宽阈值硬匹配。
+  final labelOccurrences = _optionLabelOccurrences(raw.mdResults);
+  final firstLabelOffset =
+      labelOccurrences.isEmpty ? null : labelOccurrences.first.offset;
+  final optionRegions = _optionRegions(textBlocks);
+  final unmatchedMdRefs = mdRefs.where((ref) {
+    return !blocks.any(
+      (b) => b.page == ref.page && _bboxMatches(b.bbox, ref.bbox),
+    );
+  }).toList();
+  final p2Enabled = unmatchedMdRefs.isEmpty;
+  // 每图匹配到的 md 引用数（P3 条件 2：有引用的图须恰一个引用）。
+  final mdRefMatchCounts = <_LayoutBlock, int>{};
+  for (final block in images) {
+    mdRefMatchCounts[block] = mdRefs
+        .where((ref) => ref.page == block.page && _bboxMatches(ref.bbox, block.bbox))
+        .length;
+  }
   for (final block in images) {
     final srcRect = convertApiBboxToSrc(
       bbox: block.bbox,
@@ -658,6 +1144,64 @@ List<OcrFigure> buildOcrFigures({
       ),
     );
   }
+  // WP-D #7：逐图确定 optionLabel（P1 > P2 > P3 > P4=null）。
+  // 选项候选图 = md 引用在首个选项标号之后（含）的图，或无 md 引用的图
+  // （无引用时由 P2 坐标决定，题干图由行带位置自然排除）；md 引用在
+  // 首个标号之前的图是题干图，永不归属选项。
+  final optionRefs = <_MdFigureRef>[];
+  var refsUnambiguous = true;
+  for (final c in candidates) {
+    if (c.mdOffset == null) continue;
+    if (firstLabelOffset == null || c.mdOffset! < firstLabelOffset) continue;
+    if ((mdRefMatchCounts[c.block] ?? 0) != 1) refsUnambiguous = false;
+    optionRefs.add(
+      _MdFigureRef(
+        order: c.mdOrder!,
+        page: c.block.page,
+        bbox: c.block.bbox,
+        offset: c.mdOffset!,
+      ),
+    );
+  }
+  optionRefs.sort((a, b) => a.offset.compareTo(b.offset));
+  final p3 = _p3Mapping(
+    labels: labelOccurrences,
+    optionRefs: optionRefs,
+    allRefs: mdRefs,
+    refsUnambiguous: refsUnambiguous,
+  );
+  for (final c in candidates) {
+    final isOptionCandidate = c.mdOffset == null ||
+        (firstLabelOffset != null && c.mdOffset! >= firstLabelOffset);
+    if (!isOptionCandidate) continue;
+    // P1：md 结构明确关联。
+    if (c.mdOffset != null) {
+      c.optionLabel = _p1LabelForRef(raw.mdResults, labelOccurrences, c.mdOffset!);
+    }
+    // P2：页面坐标 + 选项区域（坐标系存疑时整题停用）。
+    // 有 md 引用时，P2 不得与 md 区间证据冲突：引用所在标号区间
+    // （最近的前置标号）即 md 认定的归属，坐标匹配须与之一致，
+    // 否则以 md 为准、P2 不判（视觉顺序颠倒/旋转时坐标本就不可信）。
+    if (c.optionLabel == null && p2Enabled) {
+      final p2 = _p2LabelForFigure(c.block, optionRegions);
+      if (p2 != null) {
+        if (c.mdOffset == null) {
+          c.optionLabel = p2;
+        } else {
+          String? spanLabel;
+          for (final l in labelOccurrences) {
+            if (l.offset <= c.mdOffset!) spanLabel = l.letter;
+          }
+          if (spanLabel != null && p2 == spanLabel) c.optionLabel = p2;
+        }
+      }
+    }
+    // P3：md 引用顺序 + 选项标号（四条件全满足才启用，见 _p3Mapping）。
+    if (c.optionLabel == null && c.mdOrder != null) {
+      c.optionLabel = p3[c.mdOrder!];
+    }
+    // P4：仍无结果 → null，不归入任何选项。
+  }
   // 排序：md 锚定的按 md 引用顺序；text 锚定的按最近文本块的阅读顺序；
   // fallback 的按 bbox y1 排在末尾之前（本函数返回的列表里 fallback
   // 在最后；渲染时它们排在内容序列末尾之前并标“位置未确认”）。
@@ -697,6 +1241,7 @@ List<OcrFigure> buildOcrFigures({
         transform: transform,
         srcRect: c.srcRect,
         cropPath: '',
+        optionLabel: c.optionLabel,
       ),
     );
   }
@@ -749,14 +1294,248 @@ Uint8List? cropFigurePng({
   return (figures: current, hasStale: current.isEmpty);
 }
 
+/// 未关联图片区的标题文本（WP-D #7 §7.2.2）：无可靠归属/位置的图块
+/// 改入题干末尾的独立区，此标题块与正常内容分隔、明确标出。
+const String unassociatedFiguresHeader = '以下图片未确认属于哪个选项';
+
+/// 一个图块的放置结果（[buildContentBlocks] 与 [diagnoseFigures] 共用）。
+class _FigurePlacement {
+  const _FigurePlacement({
+    required this.figure,
+    required this.at,
+    required this.zone,
+  });
+
+  final OcrFigure figure;
+
+  /// 插入下标（插入到该下标的段之前）；进未关联区时为 null。
+  final int? at;
+
+  /// 是否进未关联区。
+  final bool zone;
+}
+
+/// 题干首段在 md 全文中的位置（-1 表示未找到）。
+///
+/// 定位键取首个非空 TextBlock 的首个非空行（去空白后前 40 字）。
+/// §7.1 的起点定位失败即源于旧实现取整块前 40 字：纯文本题干在解析时
+/// 合并成一段，块内后段文字在 md 里被图引用隔开，整块 40 字在 md 中
+/// 根本不存在，导致 stemStartInMd == -1、md 锚点全失效。
+/// 取首行后，键只含引用之前的文字，定位恢复。
+int _stemStartInMd(List<QuestionContentBlock> blocks, String? mdResults) {
+  if (mdResults == null || mdResults.isEmpty) return -1;
+  final firstText = blocks
+      .whereType<TextBlock>()
+      .map((b) => b.text.trim())
+      .firstWhere((t) => t.isNotEmpty, orElse: () => '');
+  if (firstText.isEmpty) return -1;
+  final firstLine = firstText
+      .split('\n')
+      .map((l) => l.trim())
+      .firstWhere((l) => l.isNotEmpty, orElse: () => '');
+  if (firstLine.isEmpty) return -1;
+  if (firstLine.length >= 8) {
+    return mdResults.indexOf(
+      firstLine.substring(0, math.min(40, firstLine.length)),
+    );
+  }
+  return mdResults.indexOf(firstLine);
+}
+
+/// 各内容段的字符累计长度（按拼回文本计，用于 md 偏移映射）。
+List<int> _blockTextLengths(List<QuestionContentBlock> blocks) {
+  final lengths = <int>[];
+  for (final b in blocks) {
+    lengths.add(switch (b) {
+      TextBlock(:final text) => text.length,
+      FormulaBlock(:final latex, :final displayMode) =>
+        latex.length + (displayMode ? 4 : 2),
+      CodeBlock(:final code) => code.length + 6,
+      ImageFallbackBlock() => 0,
+      FigureBlock() => 0,
+      // WP-C #6：表格按拼回的 HTML 长度估算（图块 md 偏移映射用），
+      // 标题按 `## ` + 文字长度估算。
+      TableBlock() => blocksToMarkdown([b]).length,
+      HeadingBlock(:final text, :final level) => text.length + level + 1,
+    });
+  }
+  return lengths;
+}
+
+/// 选项标号块在内容段里的位置：标号字母 → 段下标。同一标号在多个段首
+/// 出现时视为歧义（R5-5），该标号不建锚点、其图块进未关联区。
+/// 只认段首标号（TextBlock 去空白后以标记开头，#2 块级候选同款形式）；
+/// 纯文本选项在解析时合并成一段、段内含多个标号时无逐选项锚点——
+/// 归属已知但无处可插的图块进未关联区（已知边界，见文件头注释）。
+Map<String, int> _optionLabelBlockIndex(List<QuestionContentBlock> blocks) {
+  final out = <String, int>{};
+  final ambiguous = <String>{};
+  for (var i = 0; i < blocks.length; i++) {
+    final b = blocks[i];
+    if (b is! TextBlock) continue;
+    final letter = _leadingOptionLabel(b.text);
+    if (letter == null) continue;
+    if (ambiguous.contains(letter)) continue;
+    if (out.containsKey(letter)) {
+      ambiguous.add(letter);
+      out.remove(letter);
+    } else {
+      out[letter] = i;
+    }
+  }
+  return out;
+}
+
+/// R5-4：有归属的图块在选项内的精确位置——优先保留可靠的原始锚点顺序。
+/// 在 md 里数该选项段内、引用之前已闭合的块边界（div/p 闭合数；无 div 时
+/// 数段落分隔 `\n\n`），即为引用之前已有几段选项文字，图就插在第几段后；
+/// 无可靠 md 锚点时返回标号块紧后方。返回值钳制在选项段内
+/// （[labelAt]+1 .. [spanEnd]，spanEnd 为下一标号块下标或段总数）。
+int _optionPositionFromMd({
+  required String mdResults,
+  required List<_OptionLabelOccurrence> labels,
+  required String optionLabel,
+  required int refOffset,
+  required int labelAt,
+  required int spanEnd,
+}) {
+  _OptionLabelOccurrence? own;
+  for (final l in labels) {
+    if (l.letter == optionLabel && l.offset <= refOffset) own = l;
+  }
+  if (own == null) return labelAt + 1;
+  final span = mdResults.substring(own.offset, refOffset);
+  final int boundaries;
+  if (span.contains('<div') || span.contains('<p')) {
+    boundaries =
+        '</div>'.allMatches(span).length + '</p>'.allMatches(span).length;
+  } else {
+    boundaries = '\n\n'.allMatches(span).length;
+  }
+  final at = labelAt + (boundaries < 1 ? 1 : boundaries);
+  return at.clamp(labelAt + 1, spanEnd);
+}
+
+/// 计算每个图块的放置位置（WP-D #7 §7.2.2 + R5-4）。
+///
+/// - 有 optionLabel 且题干块里有唯一标号块 → 插在该选项段内
+///   （md 锚点可靠时按 R5-4 保留原始锚点顺序，否则插标号块紧后方）；
+/// - 有 optionLabel 但题干块里无标号块（如 autoSplit 已把选项切出题干）
+///   → 未关联区（归属已知但无处可插，不冒充位置）；
+/// - 无 optionLabel 且是选项区图（md 引用在首个选项标号之后）→ 未关联区；
+/// - 无 optionLabel 的题干图 → 原逻辑（md 偏移 / 文本纵向比例）；
+/// - 无 optionLabel 且锚点不可靠（fallback，或 md/text 锚点算不出位置）
+///   → 未关联区。
+/// 注意：此处已无 `at = blocks.length` 的默认 fallback——算不出位置的
+/// 图块一律进未关联区，不再默认堆到末尾冒充正常内容。
+List<_FigurePlacement> _computePlacements({
+  required List<QuestionContentBlock> blocks,
+  required List<int> blockTextLengths,
+  required List<OcrFigure> figures,
+  required String? mdResults,
+  required int stemStartInMd,
+}) {
+  final labelBlockIndex = _optionLabelBlockIndex(blocks);
+  // 标号块按段下标排序，供选项段边界（下一标号块）用。
+  final labelBlocksSorted = labelBlockIndex.entries.toList()
+    ..sort((a, b) => a.value.compareTo(b.value));
+  final mdLabels = mdResults == null
+      ? const <_OptionLabelOccurrence>[]
+      : _optionLabelOccurrences(mdResults);
+  final firstLabelOffset = mdLabels.isEmpty ? null : mdLabels.first.offset;
+  final placements = <_FigurePlacement>[];
+  for (final fig in figures) {
+    // 有归属：找标号块。
+    if (fig.optionLabel != null) {
+      final labelAt = labelBlockIndex[fig.optionLabel!];
+      if (labelAt != null) {
+        var spanEnd = blocks.length;
+        for (final e in labelBlocksSorted) {
+          if (e.value > labelAt) {
+            spanEnd = e.value;
+            break;
+          }
+        }
+        var at = labelAt + 1;
+        final refOffset = mdResults == null
+            ? null
+            : _mdOffsetForFigure(mdResults, fig);
+        if (fig.anchorSource == 'md' &&
+            refOffset != null &&
+            stemStartInMd >= 0) {
+          at = _optionPositionFromMd(
+            mdResults: mdResults!,
+            labels: mdLabels,
+            optionLabel: fig.optionLabel!,
+            refOffset: refOffset,
+            labelAt: labelAt,
+            spanEnd: spanEnd,
+          );
+        }
+        placements.add(_FigurePlacement(figure: fig, at: at, zone: false));
+      } else {
+        placements.add(_FigurePlacement(figure: fig, at: null, zone: true));
+      }
+      continue;
+    }
+    // 无归属：选项区图（引用在首个标号之后）→ 未关联区。
+    final refOffset = mdResults == null
+        ? null
+        : _mdOffsetForFigure(mdResults, fig);
+    if (firstLabelOffset != null &&
+        refOffset != null &&
+        refOffset >= firstLabelOffset) {
+      placements.add(_FigurePlacement(figure: fig, at: null, zone: true));
+      continue;
+    }
+    // 题干图原逻辑：md 偏移映射。
+    if (fig.anchorSource == 'md' && refOffset != null && stemStartInMd >= 0) {
+      final rel = refOffset - stemStartInMd;
+      var acc = 0;
+      int? at;
+      for (var i = 0; i < blocks.length; i++) {
+        acc += blockTextLengths[i];
+        if (rel <= acc) {
+          at = i + 1;
+          break;
+        }
+      }
+      if (at != null) {
+        placements.add(_FigurePlacement(figure: fig, at: at, zone: false));
+        continue;
+      }
+      // 引用超出题干范围 → 位置不可靠，进未关联区。
+      placements.add(_FigurePlacement(figure: fig, at: null, zone: true));
+      continue;
+    }
+    // 题干图原逻辑：文本纵向比例。
+    if (fig.anchorSource == 'text') {
+      final pageH = fig.spaceHeight ?? 0;
+      if (pageH > 0 && blocks.isNotEmpty) {
+        final ratio = (fig.srcRect.y + fig.srcRect.height / 2) / pageH;
+        final at = (ratio * blocks.length).floor().clamp(0, blocks.length);
+        placements.add(_FigurePlacement(figure: fig, at: at, zone: false));
+        continue;
+      }
+    }
+    // fallback / 锚点不可用 → 未关联区。
+    placements.add(_FigurePlacement(figure: fig, at: null, zone: true));
+  }
+  return placements;
+}
+
 /// 把图块按阅读顺序插入题干内容段（渲染用；见文件头“渲染插入口径”）。
 ///
-/// - md 锚定的图块：按 md 引用在全文中的字符位置，插入到相邻题干段
+/// - md 锚定的题干图：按 md 引用在全文中的字符位置，插入到相邻题干段
 ///   之间（题干文本在 md 全文中的起始位置由题干首段定位）；
-/// - text 锚定的图块：按其在页内的纵向相对位置插入（图块中心 y /
+/// - text 锚定的题干图：按其在页内的纵向相对位置插入（图块中心 y /
 ///   页高 × 段数，钳制在段范围内）；
-/// - fallback 图块：排在内容序列末尾之前（即最后一段之前没有时排
-///   最后），[FigureBlock.unconfirmed] 为 true，界面标“位置未确认”。
+/// - 有 optionLabel 的图块：插在其选项标号所在段内（R5-4：md 锚点可靠
+///   时保留原始锚点顺序，否则插标号块紧后方；标号块不在题干里时进
+///   未关联区）；
+/// - 无法可靠放置的图块：不再默认插到末尾，改入题干末尾的独立
+///   「未关联图片」区（标题块 [unassociatedFiguresHeader] + 图块，
+///   图块强制标未确认），与正常内容分隔。
 List<QuestionContentBlock> buildContentBlocks({
   required String stemMarkdown,
   required List<OcrFigure> figures,
@@ -764,74 +1543,29 @@ List<QuestionContentBlock> buildContentBlocks({
 }) {
   final blocks = parseQuestionContent(stemMarkdown);
   if (figures.isEmpty) return blocks;
-  // 题干段的字符累计长度（按拼回文本计，用于 md 偏移映射）。
-  final blockTextLengths = <int>[];
-  for (final b in blocks) {
-    blockTextLengths.add(switch (b) {
-      TextBlock(:final text) => text.length,
-      FormulaBlock(:final latex, :final displayMode) =>
-        latex.length + (displayMode ? 4 : 2),
-      CodeBlock(:final code) => code.length + 6,
-      ImageFallbackBlock() => 0,
-      FigureBlock() => 0,
-    });
-  }
-  int stemStartInMd = -1;
-  if (mdResults != null && mdResults.isNotEmpty) {
-    // 题干首段（去空白后前 40 字）在 md 全文中的位置。
-    final firstText = blocks
-        .whereType<TextBlock>()
-        .map((b) => b.text.trim())
-        .firstWhere((t) => t.isNotEmpty, orElse: () => '');
-    if (firstText.length >= 8) {
-      stemStartInMd = mdResults.indexOf(
-        firstText.substring(0, math.min(40, firstText.length)),
-      );
-    } else if (firstText.isNotEmpty) {
-      stemStartInMd = mdResults.indexOf(firstText);
-    }
-  }
-  // 每个图块的插入下标（插入到该下标的段之前；== blocks.length 表示末尾）。
-  final insertions = <({int at, OcrFigure figure})>[];
-  for (final fig in figures) {
-    var at = blocks.length;
-    if (fig.anchorSource == 'md' && mdResults != null && stemStartInMd >= 0) {
-      final refOffset = _mdOffsetForFigure(mdResults, fig);
-      if (refOffset != null) {
-        final rel = refOffset - stemStartInMd;
-        var acc = 0;
-        at = blocks.length;
-        for (var i = 0; i < blocks.length; i++) {
-          acc += blockTextLengths[i];
-          if (rel <= acc) {
-            at = i + 1;
-            break;
-          }
-        }
-      }
-    } else if (fig.anchorSource == 'text') {
-      final pageH = fig.spaceHeight ?? 0;
-      if (pageH > 0 && blocks.isNotEmpty) {
-        final ratio =
-            (fig.srcRect.y + fig.srcRect.height / 2) / pageH;
-        at = (ratio * blocks.length).floor().clamp(0, blocks.length);
-      }
-    }
-    // fallback：at 保持末尾。
-    insertions.add((at: at, figure: fig));
-  }
+  final blockTextLengths = _blockTextLengths(blocks);
+  final stemStart = _stemStartInMd(blocks, mdResults);
+  final placements = _computePlacements(
+    blocks: blocks,
+    blockTextLengths: blockTextLengths,
+    figures: figures,
+    mdResults: mdResults,
+    stemStartInMd: stemStart,
+  );
   // 同一位置的多个图块保持 sequence_index 顺序。
-  insertions.sort((a, b) {
-    final cmp = a.at.compareTo(b.at);
-    if (cmp != 0) return cmp;
-    return a.figure.sequenceIndex.compareTo(b.figure.sequenceIndex);
-  });
+  final placed = placements.where((p) => !p.zone).toList()
+    ..sort((a, b) {
+      final cmp = a.at!.compareTo(b.at!);
+      if (cmp != 0) return cmp;
+      return a.figure.sequenceIndex.compareTo(b.figure.sequenceIndex);
+    });
+  final zoned = placements.where((p) => p.zone).toList()
+    ..sort((a, b) => a.figure.sequenceIndex.compareTo(b.figure.sequenceIndex));
   final out = <QuestionContentBlock>[];
   var nextInsert = 0;
   for (var i = 0; i <= blocks.length; i++) {
-    while (nextInsert < insertions.length &&
-        insertions[nextInsert].at == i) {
-      final fig = insertions[nextInsert].figure;
+    while (nextInsert < placed.length && placed[nextInsert].at == i) {
+      final fig = placed[nextInsert].figure;
       out.add(
         FigureBlock(
           figureId: fig.id,
@@ -843,7 +1577,138 @@ List<QuestionContentBlock> buildContentBlocks({
     }
     if (i < blocks.length) out.add(blocks[i]);
   }
+  if (zoned.isNotEmpty) {
+    out.add(const TextBlock(unassociatedFiguresHeader));
+    for (final z in zoned) {
+      // 进未关联区本身即位置未确认：强制标未确认，不论原 anchorSource。
+      out.add(
+        FigureBlock(
+          figureId: z.figure.id,
+          cropPath: z.figure.cropPath,
+          unconfirmed: true,
+        ),
+      );
+    }
+  }
   return out;
+}
+
+/// R5-1 逐图诊断记录（结构化字段，供 Win11 真机补做 live 诊断复用）。
+///
+/// 不读库、不读文件、不改代码：只根据传入的图块 + 题干 + md 全文计算。
+/// 每条记录含：figure ID；原始 bbox（4 个数 + 单位）；bbox 所属坐标系
+/// （PDF 页面空间还是 PNG 像素空间——本流水线只用 PNG 像素空间，见 U2）；
+/// 切片像素尺寸；本次请求实际使用的 padX/padY；md 引用原文；对应文本
+/// 锚点；anchorSource；mdOrder；当前最终插入位置（块序号）；是否在
+/// 未关联区；坐标系问题（有则报，无则 null）。
+/// 人工真值表（R5-2：Figure / 人工确认归属 / 当前系统归属 / 差异）须由
+/// 人工看原始页面图像填写，不在本函数内预设。
+/// 另注意：原始 PDF 页面尺寸（pt）、页面 PNG 实际像素尺寸、裁切区域及
+/// 裁切偏移、缩放比例不在 OCR 图块数据里——GLM 只见切片像素，PDF 层
+/// 参数从不进入本流水线（U2）；live 诊断时由导出方另行提供。
+List<Map<String, Object?>> diagnoseFigures({
+  required List<OcrFigure> figures,
+  required String stemMarkdown,
+  required String? mdResults,
+}) {
+  final blocks = parseQuestionContent(stemMarkdown);
+  final stemStart = _stemStartInMd(blocks, mdResults);
+  final rendered = buildContentBlocks(
+    stemMarkdown: stemMarkdown,
+    figures: figures,
+    mdResults: mdResults,
+  );
+  // md 引用 bbox 在图块列表中无对应者（疑似裁切偏移/缩放错误）。
+  final refs = mdResults == null ? const <_MdFigureRef>[] : _mdFigureRefs(mdResults);
+  final unmatchedRefCount = refs
+      .where(
+        (ref) => !figures.any(
+          (f) => f.bbox2d.length == 4 && _bboxMatches(f.bbox2d, ref.bbox),
+        ),
+      )
+      .length;
+  final out = <Map<String, Object?>>[];
+  for (final fig in figures) {
+    int? insertionIndex;
+    var inZone = false;
+    for (var i = 0; i < rendered.length; i++) {
+      final b = rendered[i];
+      if (b is FigureBlock && b.figureId == fig.id) {
+        insertionIndex = i;
+      }
+    }
+    // 未关联区判定：插入位置之前是否有区标题块。
+    final insertionIdx = insertionIndex;
+    if (insertionIdx != null) {
+      for (var i = 0; i < insertionIdx; i++) {
+        final b = rendered[i];
+        if (b is TextBlock && b.text == unassociatedFiguresHeader) {
+          inZone = true;
+          break;
+        }
+      }
+    }
+    String? mdRefRaw;
+    int? mdRefOffset;
+    int? mdOrder;
+    if (fig.anchorSource == 'md') {
+      mdOrder = int.tryParse(fig.anchorRef);
+      if (mdOrder != null && mdOrder >= 0 && mdOrder < refs.length) {
+        mdRefOffset = refs[mdOrder].offset;
+        mdRefRaw = mdResults!.substring(
+          refs[mdOrder].offset,
+          _mdRefEnd(mdResults, refs[mdOrder].offset),
+        );
+      }
+    }
+    String? coordinateIssue;
+    final spaceMismatch =
+        fig.spaceWidth != null &&
+        fig.spaceHeight != null &&
+        ((fig.spaceWidth! - fig.transform.reqW).abs() > figureBboxTolerancePx ||
+            (fig.spaceHeight! - fig.transform.reqH).abs() > figureBboxTolerancePx);
+    if (spaceMismatch) {
+      coordinateIssue = '图块空间尺寸与本次请求尺寸不一致'
+          '（space ${fig.spaceWidth}×${fig.spaceHeight}，'
+          '请求 ${fig.transform.reqW}×${fig.transform.reqH}），不猜坐标';
+    } else if (unmatchedRefCount > 0) {
+      coordinateIssue = 'md 引用 bbox 在图块列表中无对应 layout 块'
+          '（$unmatchedRefCount 个引用未匹配），疑似裁切偏移/缩放错误，'
+          '不放宽阈值硬匹配，需人工核对原始页面图像';
+    }
+    out.add({
+      'figure_id': fig.id,
+      'bbox_2d': [...fig.bbox2d],
+      'bbox_unit': 'px（送入 GLM 的图像像素坐标，原点左上角）',
+      'coordinate_system':
+          'PNG 像素空间（送入 GLM 的图像）；PDF 点坐标 / MediaBox / '
+          'CropBox / Rotate / UserUnit 不进入本流水线（U2）',
+      'slice_path': fig.slicePath,
+      'input_hash': fig.inputHash,
+      'slice_pixel_size': '${fig.transform.srcW}×${fig.transform.srcH}',
+      'req_pixel_size': '${fig.transform.reqW}×${fig.transform.reqH}',
+      'pad_x': fig.transform.padX,
+      'pad_y': fig.transform.padY,
+      'md_ref_raw': mdRefRaw,
+      'md_ref_offset': mdRefOffset,
+      'text_anchor': fig.anchorSource == 'text' ? fig.anchorRef : null,
+      'anchor_source': fig.anchorSource,
+      'md_order': mdOrder,
+      'option_label': fig.optionLabel,
+      'stem_start_in_md': stemStart,
+      'insertion_index': insertionIndex,
+      'in_unassociated_zone': inZone,
+      'coordinate_issue': coordinateIssue,
+      'rotation_note': '页面旋转只在渲染时由 pdfrx 应用一次；逐图不做旋转处理（U2 显式假设）',
+    });
+  }
+  return out;
+}
+
+/// md 图引用原文的结束位置（供 [diagnoseFigures] 截取引用原文）。
+int _mdRefEnd(String md, int start) {
+  final close = md.indexOf(')', start);
+  return close < 0 ? md.length : close + 1;
 }
 
 /// md 全文里第 [figure.anchorRef] 号图引用的字符偏移（md 锚定用）。

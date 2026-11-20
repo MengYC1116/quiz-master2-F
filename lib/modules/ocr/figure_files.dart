@@ -167,7 +167,8 @@ Future<FigureWriteResult> writeFigureFiles({
       final targetAbs = finalAbs;
       try {
         await File(tmpAbs).parent.create(recursive: true);
-        await File(tmpAbs).writeAsBytes(png);
+        // WP-C #8 U3-1：写盘持守门——备份复制与写盘串行化，不读半写文件。
+        await guard.withLock(() => File(tmpAbs).writeAsBytes(png));
       } catch (_) {
         throw FigureWriteException('图块临时文件写失败：${figure.id}');
       }
@@ -175,10 +176,11 @@ Future<FigureWriteResult> writeFigureFiles({
       guard.registerPending(finalRel);
       registeredFinals.add(finalRel);
       // 3. 原子改名（异步）。[beforeRename] 只在测试里用来在登记与
-      // 改名之间的窗口触发孤儿清理（⑦）。
+      // 改名之间的窗口触发孤儿清理（⑦）——它自己要取锁，故必须在
+      // 锁外调用；改名本身持守门（WP-C #8 U3-1）。
       try {
         await beforeRename?.call();
-        await File(tmpAbs).rename(targetAbs);
+        await guard.withLock(() => File(tmpAbs).rename(targetAbs));
       } catch (_) {
         // 7. rename 失败：按实际文件存在状态清理（临时文件还在就删
         // 临时文件；正式文件若已出现——如目标已存在导致 rename 失败

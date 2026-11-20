@@ -190,6 +190,9 @@ Future<int> backfillInterruptedImportsIntoImpl(QuizDatabase db) async {
 /// 切片，事务提交后删无引用的切片文件（与 deleteQuestionFrom 同款）。
 Future<void> deleteCollectTaskFromImpl(QuizDatabase db, String id) async {
   String? sliceToClean;
+  // WP-C #8 U3-2：事务内读行时快照被删题的 ocrFigures 是否未知
+  // （行删后全库扫描已查不到它）。
+  var unknownBefore = false;
   await db.transaction(() async {
     // 先读任务指向的题：is_organized 在事务内读，避免读到删之间
     // 被整理工作台改掉状态。
@@ -207,6 +210,7 @@ Future<void> deleteCollectTaskFromImpl(QuizDatabase db, String id) async {
       )..where((t) => t.id.equals(questionId))).getSingleOrNull();
       if (qRow != null && qRow.isOrganized != 1) {
         sliceToClean = qRow.slicePath;
+        unknownBefore = _ocrFiguresJsonIsUnknown(qRow.ocrFigures);
         await _deleteQuestionTxn(db, questionId);
       }
     }
@@ -215,7 +219,11 @@ Future<void> deleteCollectTaskFromImpl(QuizDatabase db, String id) async {
     )..where((b) => b.collectTaskId.equals(id) & b.questionId.isNull())).go();
     await (db.delete(db.collectTasks)..where((t) => t.id.equals(id))).go();
   });
-  await _deleteDataFileIfUnreferenced(db, sliceToClean);
+  await _deleteDataFileIfUnreferenced(
+    db,
+    sliceToClean,
+    unknownFigureRefsBeforeDelete: unknownBefore,
+  );
   await _deleteTaskDirIfUnreferenced(db, id);
 }
 
@@ -224,26 +232,58 @@ Future<void> deleteCollectTaskFromImpl(QuizDatabase db, String id) async {
 ///   前缀；调用方只传题的 `slice_path` 与图块 `crop_path`）；绝对路径、
 ///   `..` 越界、`imports/` 或其它前缀一律拒绝删除——误删是丢数据，宁留孤儿；
 /// - 解析失败或仍被任何题/任务引用 → 不删；
+/// - WP-C #8 U3-2：不直接物理删除，改为在守门内移入回收站（`.trash/`），
+///   物理删除只在启动清扫时执行；移入失败（清单损坏等）时文件原地保留；
+/// - [unknownFigureRefsBeforeDelete]：调用方在删库行事务前已判定的
+///   “被删题 ocrFigures JSON 未知”（行删后全库扫描已查不到它，必须
+///   事务前快照传入；见 [_ocrFiguresUnknownOf]）。为 true 时本路径
+///   一律视为被引用、永不删除。
 /// - 文件删失败静默跳过（由孤儿清理兜底），不抛错、不回滚数据库。
 /// 解析统一走 [AppDatabase._resolveInsideDir]，不再经 [AppDatabase.resolveDataPath]。
 /// 十四批 M2（P1-B）：删除在统一文件操作锁内执行——锁内重查引用
 /// （数据库实时查询 + 待提交集合 + 备份暂存区占用），三者皆无才删。
-Future<void> _deleteDataFileIfUnreferenced(QuizDatabase db, String? rel) async {
+Future<void> _deleteDataFileIfUnreferenced(
+  QuizDatabase db,
+  String? rel, {
+  bool unknownFigureRefsBeforeDelete = false,
+}) async {
   if (rel == null || rel.isEmpty) return;
   final normalized = rel.replaceAll('\\', '/');
   if (!normalized.startsWith('slices/')) return;
-  final abs = _resolveInsideDir(AppDatabase.dataDirectoryPath(), normalized);
+  final dataDir = AppDatabase.dataDirectoryPath();
+  final abs = _resolveInsideDir(dataDir, normalized);
   if (abs == null) return;
   final guard = FileLifecycleGuard.instance;
   await guard.withLock(() async {
+    // WP-C #8 U3-2：被删行本身的未知（事务前快照）先拦；现时全库的
+    // 未知由 [_isFileReferenced] 内的扫描拦（启动清扫也走那条）。
+    if (unknownFigureRefsBeforeDelete) {
+      debugPrint(
+        'U3-2 引用未知：被删题的 ocrFigures JSON 无法解析，$normalized 按被引用处理，永不删除',
+      );
+      return;
+    }
     if (await _isFileReferenced(db, normalized)) return;
     if (guard.isPending(normalized) || guard.isStaged(normalized)) return;
-    // 已持锁：走内部删除（不再次取锁，P2 约束 1）。
-    await guard.deleteFileLocked(File(abs));
+    final f = File(abs);
+    if (!f.existsSync()) return;
+    // WP-C #8 U3-2：已持锁，走内部移入回收站（不再次取锁，P2 约束 1）。
+    await _moveFileToTrashLocked(
+      dataDir: dataDir,
+      file: f,
+      originalRel: normalized,
+    );
   });
 }
 
 Future<bool> _isFileReferenced(QuizDatabase db, String rel) async {
+  // WP-C #8 U3-2：引用未知时 `slices/` 路径一律视为被引用、永不删除
+  // （图块裁图只活在 `slices/`；`imports/` 路径不受 ocrFigures JSON
+  // 影响，不在此拦截）。删题级联与启动清扫都走这里，单点 fail-closed。
+  if (rel.startsWith('slices/') && await _hasUnknownFigureRefs(db)) {
+    debugPrint('U3-2 引用未知：ocrFigures JSON 无法解析，$rel 按被引用处理，永不删除');
+    return true;
+  }
   // B2 集成：三列任一等于 rel 即被引用（原三条 SELECT id ...
   // WHERE <col> = ? LIMIT 1 的 OR 等价形）。
   final inQuestions =
@@ -281,23 +321,11 @@ Future<bool> _isFileReferenced(QuizDatabase db, String rel) async {
   return false;
 }
 
-/// §4.5：删任务目录（`imports/<taskId>/`）——仅当没有任何题的
-/// source_path / page_image_path 还指向该目录下时才删。
-/// SR-P2-15：同时查 `collect_tasks.source_path`——拆分任务的
-/// source_path 指向原任务目录（`imports/<原任务id>/original.pdf`），
-/// 只查题会漏掉这条引用。拆分任务目前不直接读该文件，实际影响≈0，
-/// 但检查口径与函数注释“没有任何题还指向该目录”之外的任务引用
-/// 存在缺口。LIKE 里的 `_`/`%` 先转义（见 [_likeEscape]），
-/// 含 `_` 的任务 id 不会误匹配其它目录。
-/// B3-P01：先校验 taskId 只含安全字符（字母/数字/`_`/`-`）；
-/// `../slices` 这类 id 直接拒绝——不能靠“前缀检查”蒙混，
-/// `imports/../slices` 规范化后就是数据目录下的 `slices/`，
-/// 旧写法会把整个切片目录递归删掉。
-Future<void> _deleteTaskDirIfUnreferenced(
-  QuizDatabase db,
-  String taskId,
-) async {
-  if (!_safeTaskIdPattern.hasMatch(taskId)) return;
+/// WP-C #8 U3-2：任务目录是否仍被任何题/任务引用（删任务目录与
+/// 启动清扫重查共用）。口径与 [_deleteTaskDirIfUnreferenced] 原检查
+/// 一致：questions 的 source_path / page_image_path 前缀 + 拆分任务行
+/// 的 source_path 前缀。LIKE 里的 `_`/`%` 先转义（见 [_likeEscape]）。
+Future<bool> _isTaskDirReferenced(QuizDatabase db, String taskId) async {
   final prefix = 'imports/$taskId/';
   final escaped = _likeEscape(prefix);
   // B2 集成：questions 两列的 LIKE 粗筛走类型化 select；可空文本列
@@ -315,7 +343,7 @@ Future<void> _deleteTaskDirIfUnreferenced(
               )
               ..limit(1))
             .get();
-    if (refs.isNotEmpty) return;
+    if (refs.isNotEmpty) return true;
   }
   // SR-P2-15：拆分任务行的 source_path 也可能指向该目录。
   final taskRefs =
@@ -323,7 +351,31 @@ Future<void> _deleteTaskDirIfUnreferenced(
             ..where((t) => t.sourcePath.like('$escaped%', escapeChar: '\\'))
             ..limit(1))
           .get();
-  if (taskRefs.isNotEmpty) return;
+  if (taskRefs.isNotEmpty) return true;
+  return false;
+}
+
+/// §4.5：删任务目录（`imports/<taskId>/`）——仅当没有任何题的
+/// source_path / page_image_path 还指向该目录下时才删。
+/// WP-C #8 U3-2：不直接物理删除，改为在守门内整目录移入回收站，
+/// 物理删除只在启动清扫时执行。
+/// SR-P2-15：同时查 `collect_tasks.source_path`——拆分任务的
+/// source_path 指向原任务目录（`imports/<原任务id>/original.pdf`），
+/// 只查题会漏掉这条引用。拆分任务目前不直接读该文件，实际影响≈0，
+/// 但检查口径与函数注释“没有任何题还指向该目录”之外的任务引用
+/// 存在缺口。LIKE 里的 `_`/`%` 先转义（见 [_likeEscape]），
+/// 含 `_` 的任务 id 不会误匹配其它目录。
+/// B3-P01：先校验 taskId 只含安全字符（字母/数字/`_`/`-`）；
+/// `../slices` 这类 id 直接拒绝——不能靠“前缀检查”蒙混，
+/// `imports/../slices` 规范化后就是数据目录下的 `slices/`，
+/// 旧写法会把整个切片目录递归删掉。
+Future<void> _deleteTaskDirIfUnreferenced(
+  QuizDatabase db,
+  String taskId,
+) async {
+  if (!_safeTaskIdPattern.hasMatch(taskId)) return;
+  if (await _isTaskDirReferenced(db, taskId)) return;
+  final prefix = 'imports/$taskId/';
   final abs = _resolveInsideDir(
     AppDatabase.dataDirectoryPath(),
     'imports/$taskId',
@@ -344,8 +396,13 @@ Future<void> _deleteTaskDirIfUnreferenced(
     if (inFlight) return;
     final dir = Directory(abs);
     if (dir.existsSync()) {
-      // 已持锁：走内部删除（不再次取锁，P2 约束 1）。
-      await guard.deleteDirectoryLocked(dir);
+      // WP-C #8 U3-2：已持锁，走内部整目录移入回收站
+      // （不再次取锁，P2 约束 1）。
+      await _moveDirectoryToTrashLocked(
+        dataDir: AppDatabase.dataDirectoryPath(),
+        dir: dir,
+        originalRel: prefix,
+      );
     }
   });
 }

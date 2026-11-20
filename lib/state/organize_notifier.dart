@@ -38,9 +38,11 @@
 // 订阅 `DataChangeBus`，见 `badge_counts_provider.dart`）。
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../data/data_change_events.dart';
+import '../data/database.dart';
 import '../data/repository.dart';
 import '../models/models.dart';
 import '../modules/ocr/question_classifier.dart';
@@ -100,6 +102,9 @@ class OrganizeState {
     // 十三批 M5：当前题的 OCR 任务行与 key 有无（识别题干状态推导用）。
     this.ocrJobs = const [],
     this.hasOcrApiKey = false,
+    // WP-B #3/#4/#5（REV5）：全局刷新代次与表单绑定题 id。
+    this.generation = 0,
+    this.loadedQuestionId,
   });
 
   /// 待整理队列（未整理、未归档）。
@@ -168,6 +173,18 @@ class OrganizeState {
   /// 刷新它们绝不碰表单值与 formResetKey（见 [_refreshOcrStatus]）。
   final List<OcrJob> ocrJobs;
   final bool hasOcrApiKey;
+
+  /// WP-B #3/#4/#5：全局刷新代次。任何替换队列或改变 current 的
+  /// 操作开头 +1（见 R3-3）；某代次开始的异步任务在代次变化后完成
+  /// 时一律作废（以代次校验为准）。`refreshOcrForQuestion` 不碰它
+  ///（只用每题 `_ocrRefreshVersions`）。
+  final int generation;
+
+  /// WP-B #3/#4/#5：表单当前载入的是哪道题。`loadForm()` 结束时置
+  /// 为 `current.id`；队列为空 / `current == null` / 切题尚未加载
+  /// 新表单时强制 null。不变量：任何时刻 current.id 必须属于当前
+  /// 有效队列，表单必须绑定 current.id。
+  final String? loadedQuestionId;
 
   Question? get current =>
       queue.isEmpty ? null : queue[index.clamp(0, queue.length - 1)];
@@ -287,7 +304,15 @@ class OrganizeState {
     int? formResetKey,
     List<OcrJob>? ocrJobs,
     bool? hasOcrApiKey,
+    int? generation,
+    Object? loadedQuestionId = _unset,
   }) {
+    // R3-4：队列为空 → loadedQuestionId 强制 null（current 为 null
+    // 时同理；current 仅在队列为空时为 null）。哨兵区分“设 null”与“不改”。
+    final newQueue = queue ?? this.queue;
+    final newLoadedQuestionId = loadedQuestionId == _unset
+        ? this.loadedQuestionId
+        : loadedQuestionId as String?;
     return OrganizeState(
       queue: queue ?? this.queue,
       index: index ?? this.index,
@@ -325,6 +350,8 @@ class OrganizeState {
       formResetKey: formResetKey ?? this.formResetKey,
       ocrJobs: ocrJobs ?? this.ocrJobs,
       hasOcrApiKey: hasOcrApiKey ?? this.hasOcrApiKey,
+      generation: generation ?? this.generation,
+      loadedQuestionId: newQueue.isEmpty ? null : newLoadedQuestionId,
     );
   }
 }
@@ -376,6 +403,29 @@ class OrganizeNotifier extends Notifier<OrganizeState> {
 
   bool _disposed = false;
 
+  /// WP-B #3/#4/#5：每题的单题刷新请求版本号（不进 State、不参与
+  /// UI 重建）。同一题两次刷新逆序完成时，旧版本号的任务作废。
+  final Map<String, int> _ocrRefreshVersions = {};
+
+  /// S1-1 通用守门：方法入口、第一个 await 之前捕获的三样
+  /// （`gen` / `q` / `formId`）在每次 await 返回之后、任何一次
+  /// 状态写回或 `repo.save` 之前必须全满足，否则旧任务立即返回，
+  /// 什么都不写。只比 id 不够：A 保存启动 → 切 B → 回 A，旧 A
+  /// 任务的 id 检查会再次通过，只有 generation 能识别它是旧任务。
+  bool _gateOk(int gen, Question? q, String? formId) =>
+      !_disposed &&
+      gen == state.generation &&
+      state.current?.id == q?.id &&
+      state.loadedQuestionId == q?.id;
+
+  void _logStale(String where, int gen, Question? q) {
+    debugPrint(
+      '[OrganizeNotifier] $where 旧任务作废：gen=$gen '
+      'currentGen=${state.generation} q=${q?.id} '
+      'current=${state.current?.id} loaded=${state.loadedQuestionId}',
+    );
+  }
+
   @override
   OrganizeState build() {
     ref.onDispose(() => _disposed = true);
@@ -391,10 +441,48 @@ class OrganizeNotifier extends Notifier<OrganizeState> {
   /// 今日小结两个数（B11-10）。读完先写队列与元数据，再读当前题
   /// 的文件夹、再按当前题重建表单（原 `_refresh` 末尾的
   /// `_loadFolders()` + `_loadForm()`，顺序不变）。
+  /// 最近一次 refresh 的 Future 与代次。旧 refresh 因代次旧而中止时，
+  /// 等赢的那个 refresh 落完再返回（见 [_awaitNewerRefresh]）。
+  Future<void>? _latestRefreshFuture;
+  int _latestRefreshGen = -1;
+
   Future<void> refresh() async {
     // D-42：build() 的 microtask 首查可能在页面已离开、Provider 已销毁后
     // 才跑——先判 _disposed 再碰 ref；repo 入口处捕获一次，之后不再 ref.read。
     if (_disposed) return;
+    // R3-3：代次先加（后面的 await 都属于新一代），使此前开始的
+    // 单题刷新、保存等旧任务失效；队列重建期间表单失效，先置 null，
+    // 结尾 loadForm 再置新 id（R3-4）。此段在第一个 await 之前，
+    // 同步执行，不会被交错。
+    state = state.copyWith(
+      generation: state.generation + 1,
+      loadedQuestionId: null,
+    );
+    final gen = state.generation;
+    final future = _refreshBody(gen);
+    _latestRefreshFuture = future;
+    _latestRefreshGen = gen;
+    await future;
+  }
+
+  /// 等更新的 refresh 完成再返回。`await refresh()` 的调用方看到的
+  /// 一定是已加载完的状态：旧 refresh 因代次旧而中止时不能直接返回
+  ///（否则调用方读到空队列/旧表单——build 首查与显式 refresh 并发时
+  /// 旧测试就是这样空着失败的）；要等赢的那个 refresh 落完。链式
+  /// 等待不会死锁：等待链严格按代次递增，最终停在最新的 refresh 上，
+  /// 它从不等待别人；新 refresh 抛错时旧的也只当等待结束（try/catch），
+  /// 不把别人的错抛给自己的调用方。
+  Future<void> _awaitNewerRefresh(int gen) async {
+    final newer = _latestRefreshGen > gen ? _latestRefreshFuture : null;
+    if (newer == null) return;
+    try {
+      await newer;
+    } catch (_) {
+      // 新 refresh 失败：旧的等待到此为止，直接返回。
+    }
+  }
+
+  Future<void> _refreshBody(int gen) async {
     final repo = _repo;
     final all = await repo.all();
     final pending = all.where((q) => !q.isOrganized && !q.isArchived).toList();
@@ -417,7 +505,13 @@ class OrganizeNotifier extends Notifier<OrganizeState> {
       organizedToday = await repo.organizedTodayCount();
       toReview = (await repo.dueToday()).length;
     }
+    // S1-2 / R3-6：读库期间若有更新的 refresh 开始（代次又加了），
+    // 本次旧刷新不把旧队列写回；等赢的 refresh 落完再返回（见上）。
     if (_disposed) return;
+    if (gen != state.generation) {
+      await _awaitNewerRefresh(gen);
+      return;
+    }
     var index = state.index;
     if (index >= pending.length) {
       index = pending.isEmpty ? 0 : pending.length - 1;
@@ -436,9 +530,14 @@ class OrganizeNotifier extends Notifier<OrganizeState> {
       loading: false,
     );
     await loadFolders();
-    // F1：await 期间页面可能已离开——先判 _disposed 再碰 state
-    //（与 submitNewFolder 同款守门；loadForm 里写 state 会抛错）。
+    // F1 + S1-2：await 期间页面可能已离开、或有更新的 refresh 开始——
+    // 先判 _disposed 与代次再碰 state（loadForm 里写 state 会抛错；
+    // 旧 refresh 的 loadForm 不得覆盖新表单）。代次旧时等赢的落完再返回。
     if (_disposed) return;
+    if (gen != state.generation) {
+      await _awaitNewerRefresh(gen);
+      return;
+    }
     loadForm();
     // 十三批 M5：读当前题的 OCR 任务行与 key 有无（状态推导用）。
     // 不 await：它是装饰性 best-effort 加载，失败/挂起都不能挡
@@ -453,11 +552,16 @@ class OrganizeNotifier extends Notifier<OrganizeState> {
   Future<void> _refreshOcrStatus() async {
     final current = state.current;
     if (current == null || _disposed) return;
+    final gen = state.generation;
     final repo = _repo;
     try {
       final jobs = await repo.ocrJobsForQuestion(current.id);
       final hasKey = await repo.hasOcrApiKey();
-      if (_disposed || state.current?.id != current.id) return;
+      if (_disposed ||
+          gen != state.generation ||
+          state.current?.id != current.id) {
+        return;
+      }
       state = state.copyWith(ocrJobs: jobs, hasOcrApiKey: hasKey);
     } catch (_) {
       // OCR 状态读不到：界面按题本身的 OCR 字段推导（无任务时），不挡整理。
@@ -476,22 +580,36 @@ class OrganizeNotifier extends Notifier<OrganizeState> {
   /// 改走 [candidateStemFor] 只取候选（见页面 _onDataChange）。
   Future<void> refreshOcrForQuestion(String questionId) async {
     if (_disposed) return;
+    // WP-B §3.2 第 4 条：入口捕获代次与每题版本号；每次 await 后重校验。
+    // 快照只在 await 之后取；题不在队列就不换行；不调 loadForm()，
+    // 不动表单；不碰 generation（只用每题版本号）。
+    final gen = state.generation;
+    final version = (_ocrRefreshVersions[questionId] ?? 0) + 1;
+    _ocrRefreshVersions[questionId] = version;
     final repo = _repo;
+    bool stale() =>
+        _disposed ||
+        gen != state.generation ||
+        _ocrRefreshVersions[questionId] != version;
     try {
       final fresh = await repo.questionById(questionId);
-      if (fresh == null || _disposed) return;
+      if (stale()) return; // 旧任务作废。
+      if (fresh == null) return;
+      // await 之后重读最新队列，只换本行，绝不整体写回旧快照。
       final queue = [...state.queue];
       final i = queue.indexWhere((x) => x.id == questionId);
-      if (i < 0) return;
+      if (i < 0) return; // 题已不在队列（已确认离开），不重新插入。
       queue[i] = fresh;
-      var jobs = state.ocrJobs;
-      var hasKey = state.hasOcrApiKey;
+      if (stale()) return;
+      state = state.copyWith(queue: queue);
+      // 当前题才刷新 OCR 任务信息；不调 loadForm()，不动表单。
       if (state.current?.id == questionId) {
-        jobs = await repo.ocrJobsForQuestion(questionId);
-        hasKey = await repo.hasOcrApiKey();
+        final jobs = await repo.ocrJobsForQuestion(questionId);
+        if (stale()) return;
+        final hasKey = await repo.hasOcrApiKey();
+        if (stale()) return;
+        state = state.copyWith(ocrJobs: jobs, hasOcrApiKey: hasKey);
       }
-      if (_disposed) return;
-      state = state.copyWith(queue: queue, ocrJobs: jobs, hasOcrApiKey: hasKey);
     } catch (_) {
       // OCR 状态读不到：保持旧行，不挡整理。
     }
@@ -513,7 +631,19 @@ class OrganizeNotifier extends Notifier<OrganizeState> {
     final repo = _repo;
     try {
       final updated = applyManualStemEdit(q, newStem);
-      await repo.save(updated);
+      // S1-3：紧贴写操作之前重查该题仍在队列中（与调用之间零 await）；
+      // 写操作带版本令牌（期望版本取自当前模型），行已消失或版本不符
+      // 时 repo.save 抛 SaveTokenMismatch → 返回 false（不复活已删行，
+      // 不覆盖更新的保存）。
+      if (!state.queue.any((x) => x.id == q.id)) return false;
+      await repo.save(
+        updated,
+        token: SaveToken(
+          questionId: q.id,
+          expectedContentVersion: q.contentVersion,
+        ),
+      );
+      if (_disposed) return true; // 写库已成功；队列写回跳过。
       _replaceQueueRow(updated);
       return true;
     } catch (_) {
@@ -536,17 +666,34 @@ class OrganizeNotifier extends Notifier<OrganizeState> {
   /// slice_missing），其余失败返回 'save_failed'，无当前题返回
   /// 'no_question'。页面按 reason 给明确文案（见 ocr_stem_section.dart
   /// 的 [candidateRejectionMessage]）。
+  // U1-3 界限（明确写出，不假装全原子）：队列成员关系是 Notifier
+  // 内存状态，不在库里，事务无法校验它。成员检查在调用前同步完成
+  //（与调用之间零 await，T1-1）；事务内的版本校验是防止写错题的
+  // 底线。残余窗口（检查后、事务前成员关系变化）下，最坏结果是对
+  // 一个已离队的题目执行一次带版本校验的写入——写入内容仍是用户对
+  // 该题的真实编辑，且版本校验保证不覆盖更新的保存。这是有意接受
+  // 的界限，不是未发现的漏洞。
   Future<String?> acceptOcrCandidateWithReason() async {
     final q = state.current;
     if (q == null) return 'no_question';
     final repo = _repo;
+    // S1-3：紧贴写操作之前重查该题仍在队列中（与调用之间零 await）。
+    // 行已不在队列 → 返回失败并触发队列刷新。
+    if (!state.queue.any((x) => x.id == q.id)) {
+      await refresh();
+      return 'question_deleted';
+    }
     try {
       // 十三批 P1 第二轮：acceptCandidateStem 在事务内原子校验并落库，
-      // 返回的就是已保存的题，不再另行 repo.save。
+      // 返回的就是已保存的题，不再另行 repo.save。版本条件由它内部
+      // 的事务校验负责（stem_correction.dart，不在本次范围）。
       final updated = await acceptCandidateStem(repo, q);
+      if (_disposed) return null; // 已落库；队列写回跳过。
       _replaceQueueRow(updated);
       return null;
     } on CandidateRejection catch (e) {
+      // 行已消失或版本不符 → 触发队列刷新（S1-3），再把原因交回页面。
+      await refresh();
       return e.reason;
     } catch (_) {
       return 'save_failed';
@@ -561,9 +708,25 @@ class OrganizeNotifier extends Notifier<OrganizeState> {
     final repo = _repo;
     try {
       final updated = dismissOcrCandidateFlag(q);
-      await repo.save(updated);
+      // S1-3：紧贴写操作之前重查仍在队列中；写操作带版本令牌，
+      // 行已消失或版本不符时抛 SaveTokenMismatch → 返回 false 并刷新队列。
+      if (!state.queue.any((x) => x.id == q.id)) {
+        await refresh();
+        return false;
+      }
+      await repo.save(
+        updated,
+        token: SaveToken(
+          questionId: q.id,
+          expectedContentVersion: q.contentVersion,
+        ),
+      );
+      if (_disposed) return true;
       _replaceQueueRow(updated);
       return true;
+    } on SaveTokenMismatch {
+      await refresh();
+      return false;
     } catch (_) {
       return false;
     }
@@ -580,9 +743,24 @@ class OrganizeNotifier extends Notifier<OrganizeState> {
     try {
       final updated = deleteFigureFromQuestion(q, figureId);
       if (identical(updated, q)) return true;
-      await repo.save(updated);
+      // S1-3：同 dismissOcrCandidate（成员重查 + 版本令牌 + 失败刷新）。
+      if (!state.queue.any((x) => x.id == q.id)) {
+        await refresh();
+        return false;
+      }
+      await repo.save(
+        updated,
+        token: SaveToken(
+          questionId: q.id,
+          expectedContentVersion: q.contentVersion,
+        ),
+      );
+      if (_disposed) return true;
       _replaceQueueRow(updated);
       return true;
+    } on SaveTokenMismatch {
+      await refresh();
+      return false;
     } catch (_) {
       return false;
     }
@@ -609,6 +787,7 @@ class OrganizeNotifier extends Notifier<OrganizeState> {
   }
 
   void _replaceQueueRow(Question updated) {
+    if (_disposed) return;
     final i = state.queue.indexWhere((x) => x.id == updated.id);
     if (i < 0) return;
     final queue = [...state.queue];
@@ -620,8 +799,11 @@ class OrganizeNotifier extends Notifier<OrganizeState> {
   Future<void> loadFolders() async {
     final current = state.current;
     if (current == null) return;
+    // S1-2：读到一半若代次变了（有更新的刷新/切题开始），本次文件夹
+    // 写回直接跳过，不覆盖新一代的状态。
+    final gen = state.generation;
     final folders = await _repo.folders(subjectId: current.subjectId);
-    if (_disposed) return;
+    if (_disposed || gen != state.generation) return;
     state = state.copyWith(folders: folders);
   }
 
@@ -633,7 +815,13 @@ class OrganizeNotifier extends Notifier<OrganizeState> {
   /// （原 `_loadForm` 里设控制器文本 + 收框的部分）。
   void loadForm() {
     final q = state.current;
-    if (q == null) return;
+    if (q == null) {
+      // R3-4：无当前题时表单失效，loadedQuestionId 强制 null。
+      if (state.loadedQuestionId != null) {
+        state = state.copyWith(loadedQuestionId: null);
+      }
+      return;
+    }
     state = state.copyWith(
       folderIds: List.of(q.folderIds),
       examId: q.examId,
@@ -657,6 +845,8 @@ class OrganizeNotifier extends Notifier<OrganizeState> {
       answerReconfirmed: false,
       optionLabelsJustConfirmed: false,
       formResetKey: state.formResetKey + 1,
+      // WP-B：表单绑定到当前题（R3-4）；copyWith 遇空队列会强制 null。
+      loadedQuestionId: q.id,
     );
   }
 
@@ -795,11 +985,44 @@ class OrganizeNotifier extends Notifier<OrganizeState> {
     required String explanation,
     required String notes,
   }) async {
+    // R3-3：本次保存要写回队列行——先加代次（后面的 await 都属于
+    // 新一代），使此前开始的单题刷新等旧任务失效。表单本身未换题，
+    // loadedQuestionId 不动（仍是 q.id，守门要比它）。
+    state = state.copyWith(generation: state.generation + 1);
+    final gen = state.generation;
     final q = state.current;
+    final formId = state.loadedQuestionId;
     if (q == null) return true;
     // D-42：repo 入口处捕获一次（保存 + 同步错因记录跨两次 await）。
     final repo = _repo;
     try {
+      // S1-1 / S1-4 卡点：保存前重读全表取本行——这是 repo.save 调用前
+      // 最后一个 await，可供测试挂住旧保存任务（切 B 回 A 后代次
+      // 检查拦截，repo.save 一次也不调用）。
+      // 用 all() 而不用 questionById：部分旧 fake 未覆盖 questionById，
+      // 基类实现读真实 Drift 库，在 widget 测试里永不完成（b5 注释
+      // FR-09 同款 hazard），会把保存永远挂住；all() 是整理页 fake
+      // 必然覆盖的方法（队列加载就靠它），不存在这个 hazard。
+      // 注意令牌仍取自表单加载时的模型 q.contentVersion，不取刚读到
+      // 的行版本：刚读到的行若已被 OCR worker 等改过，用它的版本当
+      // 令牌会把表单的旧题干整行覆盖回去（U1-1 令牌语义）。
+      // 行已消失 → 直接中止并刷新队列，不写库；读失败 → 不拦保存，
+      // 令牌在事务内做最终校验（行存在性以令牌为准）。
+      List<Question>? rows;
+      try {
+        rows = await repo.all();
+      } catch (_) {
+        rows = null;
+      }
+      if (rows != null && rows.every((x) => x.id != q.id)) {
+        unawaited(refresh());
+        return false;
+      }
+      // T1-1：四条件检查与 repo.save 调用处于同一个同步块内、中间零 await。
+      if (!_gateOk(gen, q, formId)) {
+        _logStale('saveCurrent', gen, q);
+        return false;
+      }
       final updated = state.formQuestionWithType(
         state.formQuestion(
           q,
@@ -808,28 +1031,59 @@ class OrganizeNotifier extends Notifier<OrganizeState> {
           notes: notes,
         ),
       );
+      final token = SaveToken(
+        questionId: q.id,
+        expectedContentVersion: q.contentVersion,
+      );
       // FR-02：save 先发角标事件、syncCauseRecords 后写库时，角标重读
       // 可能抢在同步提交前（错因同步改变复习归属时角标滞后一次）；
       // 与 joinReviewBatch 同款用 scope 包起来，事件在同步提交后
       // 才合并发出一次。
       await DataChangeBus.instance.scope(() async {
-        await repo.save(updated);
+        await repo.save(updated, token: token);
         await repo.syncCauseRecords(updated);
       });
-      final i = state.queue.indexWhere((x) => x.id == q.id);
-      if (i >= 0) {
-        final queue = [...state.queue];
-        queue[i] = updated;
-        state = state.copyWith(queue: queue);
+      // 保存已落库。队列行必须用刚读到的行刷新（U1 连续保存陷阱：
+      // updated 仍带旧 contentVersion，直接写回会让下一次保存的令牌
+      // 仍是旧版本而被误杀）。此次写回是按 id 的库内真值，不写表单值，
+      // 因此只判 _disposed，不再套四条件守门（守门防的是旧值覆盖新值，
+      // 刚读到的行不可能是旧值）。
+      // 用 all() 重读而不用 questionById（同上：旧 fake 未覆盖
+      // questionById 会永挂；all() 必然覆盖）。读失败/行缺失时
+      // 不拦：队列行保持旧值，下次 refresh 纠正。
+      Question? savedRow;
+      try {
+        final savedRows = await repo.all();
+        for (final r in savedRows) {
+          if (r.id == q.id) {
+            savedRow = r;
+            break;
+          }
+        }
+      } catch (_) {
+        savedRow = null;
       }
+      if (_disposed) return true;
+      if (savedRow != null) _replaceQueueRow(savedRow);
       // 十四批 M3：重确认信号是单次保存信号，成功落盘后清零，不跨保存带。
-      if (state.answerReconfirmed || state.optionLabelsJustConfirmed) {
-        state = state.copyWith(
-          answerReconfirmed: false,
-          optionLabelsJustConfirmed: false,
-        );
+      // 只在仍是同一代、同一题、同一表单时清零（表单值，守门）。
+      if (_gateOk(gen, q, formId)) {
+        if (state.answerReconfirmed || state.optionLabelsJustConfirmed) {
+          state = state.copyWith(
+            answerReconfirmed: false,
+            optionLabelsJustConfirmed: false,
+          );
+        }
+      } else {
+        _logStale('saveCurrent:signals', gen, q);
       }
       return true;
+    } on SaveTokenMismatch {
+      // 令牌不符：已有更新的保存先落库，本次表单是旧的——不写库、
+      // 不清信号，刷新队列与表单（最新值），由用户重新保存。
+      _logStale('saveCurrent:token', gen, q);
+      await refresh();
+      return false;
     } catch (_) {
       return false;
     }
@@ -842,10 +1096,18 @@ class OrganizeNotifier extends Notifier<OrganizeState> {
     if (next < 0 || next >= state.queue.length || next == state.index) {
       return;
     }
-    state = state.copyWith(index: next);
+    // R3-3：改下标前先加代次；表单随之下线（loadedQuestionId 置 null），
+    // loadForm 成功后再置新 id（R3-4）。
+    final gen = state.generation + 1;
+    state = state.copyWith(
+      generation: gen,
+      index: next,
+      loadedQuestionId: null,
+    );
     await loadFolders();
-    // F1：同 refresh，await 期间页面可能已离开，先判 _disposed。
-    if (_disposed) return;
+    // F1 + S1-2：await 期间页面可能已离开、或有更新的操作开始——
+    // 先判 _disposed 与代次，旧切题的 loadForm 不得落地。
+    if (_disposed || gen != state.generation) return;
     loadForm();
   }
 
@@ -858,8 +1120,34 @@ class OrganizeNotifier extends Notifier<OrganizeState> {
     required String explanation,
     required String notes,
   }) async {
+    // R3-3：与 saveCurrent 同款，保存前先加代次。
+    state = state.copyWith(generation: state.generation + 1);
+    final gen = state.generation;
     final q = state.current;
+    final formId = state.loadedQuestionId;
     if (q == null) return;
+    // D-42：repo 入口处捕获一次（保存 + 同步错因记录 + 记最近任务跨多次 await）。
+    // FR-02：与 saveCurrent 同款，save + 同步 + 记最近任务包进一个
+    // scope，角标事件只在全部提交后发一次。
+    final repo = _repo;
+    // S1-1：保存前重读全表取本行（S1-4 卡点，同 saveCurrent，
+    // 用 all() 而不用 questionById，原因同 saveCurrent）；行已消失
+    // 直接中止并刷新，不写库；读失败不拦，令牌在事务内做最终校验。
+    // 再四条件检查，与 repo.save 调用同一同步块、中间零 await。
+    List<Question>? rows;
+    try {
+      rows = await repo.all();
+    } catch (_) {
+      rows = null;
+    }
+    if (rows != null && rows.every((x) => x.id != q.id)) {
+      await refresh();
+      return;
+    }
+    if (!_gateOk(gen, q, formId)) {
+      _logStale('confirmCurrent', gen, q);
+      return;
+    }
     final updated = state.formQuestionWithType(
       state.formQuestion(
         q,
@@ -869,19 +1157,29 @@ class OrganizeNotifier extends Notifier<OrganizeState> {
         organized: true,
       ),
     );
-    // D-42：repo 入口处捕获一次（保存 + 同步错因记录 + 记最近任务跨多次 await）。
-    // FR-02：与 saveCurrent 同款，save + 同步 + 记最近任务包进一个
-    // scope，角标事件只在全部提交后发一次。
-    final repo = _repo;
-    await DataChangeBus.instance.scope(() async {
-      await repo.save(updated);
-      await repo.syncCauseRecords(updated);
-      await repo.saveRecentTask(
-        kind: '整理',
-        subjectId: q.subjectId,
-        title: q.title,
-      );
-    });
+    final token = SaveToken(
+      questionId: q.id,
+      expectedContentVersion: q.contentVersion,
+    );
+    try {
+      await DataChangeBus.instance.scope(() async {
+        await repo.save(updated, token: token);
+        await repo.syncCauseRecords(updated);
+        await repo.saveRecentTask(
+          kind: '整理',
+          subjectId: q.subjectId,
+          title: q.title,
+        );
+      });
+    } on SaveTokenMismatch {
+      // 令牌不符：已有更新的保存先落库，本次表单是旧的——不记最近任务、
+      // 不推进队列，刷新队列与表单（最新值），由用户重新确认。
+      // 这里必须接住：页面 _confirmCurrent 不接异常，直接外抛会变成
+      // 未处理异步错误；而令牌不符是正常的竞态结果，不是程序错误。
+      _logStale('confirmCurrent:token', gen, q);
+      await refresh();
+      return;
+    }
     await refresh();
   }
 
@@ -893,10 +1191,16 @@ class OrganizeNotifier extends Notifier<OrganizeState> {
       await refresh();
       return;
     }
-    state = state.copyWith(index: idx);
+    // R3-3：改下标前先加代次；表单随之下线（R3-4），loadForm 再置新 id。
+    final gen = state.generation + 1;
+    state = state.copyWith(
+      generation: gen,
+      index: idx,
+      loadedQuestionId: null,
+    );
     await loadFolders();
-    // F1：同 refresh，await 期间页面可能已离开，先判 _disposed。
-    if (_disposed) return;
+    // F1 + S1-2：同 goTo，旧跳转的 loadForm 不得落地。
+    if (_disposed || gen != state.generation) return;
     loadForm();
   }
 
@@ -905,10 +1209,14 @@ class OrganizeNotifier extends Notifier<OrganizeState> {
   /// 再重建表单；不重读文件夹（原代码同款——与 `_goTo` 不同，
   /// 这里不调 `_loadFolders`）。弹出层重绘由页面 `markNeedsBuild`。
   void applyQueueSort(String sort) {
+    // R3-3：队列排序替换队列、回到第 1 道——先加代次，表单随之下线，
+    // loadForm 再置新 id（R3-4）。同步方法，无 await 交错。
     state = state.copyWith(
       sort: sort,
       queue: _sorted(state.queue, sort, state.subjects),
       index: 0,
+      generation: state.generation + 1,
+      loadedQuestionId: null,
     );
     loadForm();
   }
@@ -922,6 +1230,11 @@ class OrganizeNotifier extends Notifier<OrganizeState> {
   Future<Folder?> submitNewFolder(String name, String subjectId) async {
     // D-42：repo 入口处捕获一次（预检与保存跨多次 await，`on StateError`
     // 接不住 UnmountedRefException）。
+    // S1-1：新建文件夹后“把新建的选上这道题”是表单值写回——入口捕获
+    // 代次/当前题/表单 id，await 后守门不通过时只返回文件夹，不选上。
+    final gen = state.generation;
+    final q = state.current;
+    final formId = state.loadedQuestionId;
     final repo = _repo;
     // SR-P2-36：整科同名预检（新建不传 excludeId）——旧代码只查顶层
     // 同名，跨层同名会一路写到 upsertFolder 才被 StateError 拦下。
@@ -945,6 +1258,11 @@ class OrganizeNotifier extends Notifier<OrganizeState> {
     }
     await loadFolders();
     if (_disposed) return folder;
+    // S1-1：守门不通过（切题/刷新已开始）时不把新建文件夹选上新题的表单。
+    if (!_gateOk(gen, q, formId)) {
+      _logStale('submitNewFolder', gen, q);
+      return folder;
+    }
     state = state.copyWith(
       folderIds: state.folderIds.contains(folder.id)
           ? state.folderIds
@@ -956,6 +1274,11 @@ class OrganizeNotifier extends Notifier<OrganizeState> {
   /// 新建试卷（原 `_submitNewExam`）：写库后追加进试卷表、
   /// 并把新建的归属到这道题。
   Future<void> submitNewExam(String name, DateTime? date) async {
+    // S1-1：examId 是表单值，写回前守门；exams 列表是元数据（追加式），
+    // 读当前 state 追加，不会丢改动，始终写回。
+    final gen = state.generation;
+    final q = state.current;
+    final formId = state.loadedQuestionId;
     final exam = Exam(
       // SR-P2-28：id 用 newEntityId（毫秒 + 随机后缀），防同毫秒连点撞主键。
       id: newEntityId('exam'),
@@ -964,16 +1287,30 @@ class OrganizeNotifier extends Notifier<OrganizeState> {
     );
     await _repo.addExam(exam);
     if (_disposed) return;
-    state = state.copyWith(exams: [...state.exams, exam], examId: exam.id);
+    state = state.copyWith(
+      exams: [...state.exams, exam],
+      examId: _gateOk(gen, q, formId) ? exam.id : state.examId,
+    );
+    if (!_gateOk(gen, q, formId)) _logStale('submitNewExam', gen, q);
   }
 
   /// 新建标签（原 `_submitNewTag`）：写库后追加进标签表并选上这道题。
   /// 标签名禁逗号与竖线（§6 第 4 条）由页面先校验，不进这里。
   Future<void> submitNewTag(String name) async {
+    // S1-1：同 submitNewExam——tags 是表单值（守门），allTags 是元数据。
+    final gen = state.generation;
+    final q = state.current;
+    final formId = state.loadedQuestionId;
     await _repo.addTag(name);
     if (_disposed) return;
+    final gateOk = _gateOk(gen, q, formId);
+    if (!gateOk) _logStale('submitNewTag', gen, q);
     state = state.copyWith(
-      tags: state.tags.contains(name) ? state.tags : [...state.tags, name],
+      tags: gateOk
+          ? (state.tags.contains(name)
+                ? state.tags
+                : [...state.tags, name])
+          : state.tags,
       allTags: state.allTags.contains(name)
           ? state.allTags
           : [...state.allTags, name],
@@ -1014,7 +1351,11 @@ class OrganizeNotifier extends Notifier<OrganizeState> {
 
   /// 单删一道题（原 `_deleteOne`）：写库；弹出层随后把该题
   /// 从自己的 `_questions` 快照与勾选里去掉。
-  Future<void> deleteQuestion(Question q) => _repo.delete(q);
+  /// R3-3：删题改变队列成员，先加代次，使进行中的旧任务失效。
+  Future<void> deleteQuestion(Question q) async {
+    state = state.copyWith(generation: state.generation + 1);
+    await _repo.delete(q);
+  }
 
   /// 批量打标签（原 `_applyBatchTag` 里写库的部分）：
   /// 返回已保存的题 id 与选中总数。循环中途某题写库失败时停下，
@@ -1025,6 +1366,8 @@ class OrganizeNotifier extends Notifier<OrganizeState> {
     List<Question> selected,
     String tag,
   ) async {
+    // R3-5：批量打标签按显式 id 列表操作，不碰 current 表单值；
+    // 只改标签，不替换队列、不改变 current，不加代次。
     // D-42 + Stage 4：repo 入口处捕获一次；批量提交只发一个事件
     //（scope 把逐题保存的事件合并成一个）。
     final repo = _repo;
@@ -1051,6 +1394,9 @@ class OrganizeNotifier extends Notifier<OrganizeState> {
     List<Question> selected,
     Folder folder,
   ) async {
+    // R3-3/R3-5：批量移文件夹改变队列成员归属，先加代次；按显式 id
+    // 列表操作，不碰 current 表单值，不带版本令牌（快照行版本可能已旧）。
+    state = state.copyWith(generation: state.generation + 1);
     // D-42 + Stage 4：repo 入口处捕获一次；批量提交只发一个事件。
     final repo = _repo;
     var applied = 0;
@@ -1106,6 +1452,9 @@ class OrganizeNotifier extends Notifier<OrganizeState> {
   Future<int> batchConfirmQuestions(List<Question> selected) async {
     final blocked = selected.where((q) => q.folderIds.isEmpty).toList();
     final ok = selected.where((q) => q.folderIds.isNotEmpty).toList();
+    // R3-3/R3-5：批量确认改变队列成员，先加代次；按显式 id 列表操作，
+    // 不碰 current 表单值，不带版本令牌（同 batchAddFolders）。
+    state = state.copyWith(generation: state.generation + 1);
     // D-42 + Stage 4：repo 入口处捕获一次；批量提交只发一个事件。
     final repo = _repo;
     await DataChangeBus.instance.scope(() async {
@@ -1126,6 +1475,8 @@ class OrganizeNotifier extends Notifier<OrganizeState> {
   /// 的整批事务不同——整理页批量删除仍保留逐题容错语义。
   Future<({int ok, int missing, int failed, Set<String> deletedIds})>
   batchDeleteQuestions(List<Question> selected) async {
+    // R3-3：批量删除改变队列成员，先加代次，使进行中的旧任务失效。
+    state = state.copyWith(generation: state.generation + 1);
     // D-42 + Stage 4：repo 入口处捕获一次；批量提交只发一个事件。
     final repo = _repo;
     var ok = 0;

@@ -107,7 +107,16 @@ class SettingsNotifier extends AsyncNotifier<AppSettings> {
 
   /// 十四批 M2：带警告的 zip 导出（字节 + 可见警告列表，警告列出
   /// 缺失/不可读图块的题目）。设置页走这条。
-  Future<({List<int> bytes, List<String> warnings})>
+  /// WP-C #8 U3-2：另含 `brokenFiles`（未进包的文件清单）与 `status`
+  ///（complete 仅当零警告且零 BROKEN 文件）。
+  Future<
+    ({
+      List<int> bytes,
+      List<String> warnings,
+      List<String> brokenFiles,
+      BackupExportStatus status,
+    })
+  >
   exportBackupBytesWithReport() => _repo.exportBackupZipWithReport();
 
   /// 记一次备份失败（写库标志；页面再调 onBackupFailed 通知应用层）。

@@ -26,6 +26,400 @@ Set<String> _figureCropPathsFromJson(String? ocrFiguresJson) {
   return paths;
 }
 
+/// WP-C #8 U3-2：`ocr_figures` JSON 是否“引用未知”。
+/// 非空字符串解不出“Map 列表、且 crop_path 若在必为字符串”即未知——
+/// 此时无法证明已枚举全部图块裁图，调用方必须按“引用未知”处理、
+/// 永不删除相关文件（与上面静默空集的旧口径相反）。
+/// 空 / null = 明确无图块，不算未知；`[]` = 明确空列表，不算未知。
+bool _ocrFiguresJsonIsUnknown(String? ocrFiguresJson) {
+  if (ocrFiguresJson == null || ocrFiguresJson.isEmpty) return false;
+  try {
+    final decoded = jsonDecode(ocrFiguresJson);
+    if (decoded is! List) return true;
+    for (final item in decoded) {
+      if (item is! Map) return true;
+      if (item.containsKey('crop_path') && item['crop_path'] is! String) {
+        return true;
+      }
+    }
+    return false;
+  } catch (_) {
+    return true;
+  }
+}
+
+/// WP-C #8 U3-2：任一题的 `ocr_figures` JSON 无法解析 → 全库图块
+/// 引用未知。删题级联、孤儿清理、启动清扫都以此为 fail-closed 开关。
+Future<bool> _hasUnknownFigureRefs(QuizDatabase db) async {
+  for (final row in await db.select(db.questions).get()) {
+    if (_ocrFiguresJsonIsUnknown(row.ocrFigures)) return true;
+  }
+  return false;
+}
+
+/// WP-C #8 U3-2：某题的 `ocrFigures` JSON 是否未知（删题前快照用）。
+/// 删题是“先删库行、后删文件”：行删后全库扫描已查不到被删行本身的
+/// 未知 JSON，故调用方须在事务前先算好、经
+/// [_deleteDataFileIfUnreferenced] 的 `unknownFigureRefsBeforeDelete`
+/// 参数传进来；行不存在时返回 false。
+Future<bool> _ocrFiguresUnknownOf(
+  QuizDatabase db,
+  String questionId,
+) async {
+  final row =
+      await (db.select(
+        db.questions,
+      )..where((t) => t.id.equals(questionId))).getSingleOrNull();
+  if (row == null) return false;
+  return _ocrFiguresJsonIsUnknown(row.ocrFigures);
+}
+
+// ------------------------------------------------------------------
+// WP-C #8 U3-2：回收站。
+//
+// 删除分两步：引用检查与“移入回收站”在文件守门内完成；物理删除只在
+// 启动清扫（[sweepTrashImpl]）时执行。位置在数据目录内 `.trash/`，
+// 清单 `.trash/manifest.json` 记每条的 trash 文件名、原相对路径与
+// 移入时间戳。
+// - 不被孤儿扫描计入：扫描只列 `imports/` 与 `slices/`；
+// - 不进备份：备份只打包 `_referencedRelativePaths` 产出的
+//   `imports/` / `slices/` 引用，回收站路径从不出现在引用集里；
+// - 清单损坏 / 无法解析 → 全部留下、记日志、永不删除（fail-closed）；
+// - 盘上有、清单里无的条目（移入与写清单之间崩溃）→ 留下、记日志；
+// - 清单里有、盘上无的条目 → 删清单条目、记日志。
+// 已知局限：回收站占用不计入 `_dataDirFileUsageBytes` 的 2GB 口径
+// （该函数只数 `imports/` + `slices/`）；7 天内不释放空间是设计内
+// 行为，设置页文案已明示。
+// ------------------------------------------------------------------
+
+/// 回收站目录名（数据目录内）。
+const String _trashDirName = '.trash';
+
+/// 回收站清单文件名（回收站目录内）。
+const String _trashManifestName = 'manifest.json';
+
+/// 回收站保留天数：移入超过 7 天（严格大于）才有资格被清扫物理删除。
+const int _trashRetentionDays = 7;
+
+/// 启动清扫回收站的结果。
+typedef TrashSweepResult = ({
+  int deletedCount,
+  int freedBytes,
+  int keptReferencedCount,
+  int keptUnknownCount,
+});
+
+/// 回收站清单条目（内部表示）。
+typedef _TrashEntry = ({
+  String trashName,
+  String originalRel,
+  int movedAtMs,
+});
+
+int _trashRand() => DateTime.now().microsecondsSinceEpoch % (1 << 32);
+
+/// 读清单：文件不存在 → 空清单；解析失败 / 结构不对 → null（损坏）。
+/// 调用方见 null 必须按 fail-closed 处理（全部留下），不得当成空清单。
+List<_TrashEntry>? _readTrashManifest(Directory trashDir) {
+  final f = File(p.join(trashDir.path, _trashManifestName));
+  if (!f.existsSync()) return [];
+  try {
+    final decoded = jsonDecode(f.readAsStringSync());
+    if (decoded is! Map<String, Object?>) return null;
+    final raw = decoded['entries'];
+    if (raw is! List) return null;
+    final entries = <_TrashEntry>[];
+    for (final item in raw) {
+      if (item is! Map<String, Object?>) return null;
+      final trashName = item['trashName'];
+      final originalRel = item['originalRel'];
+      final movedAtMs = item['movedAtMs'];
+      if (trashName is! String ||
+          originalRel is! String ||
+          movedAtMs is! int) {
+        return null;
+      }
+      entries.add((
+        trashName: trashName,
+        originalRel: originalRel,
+        movedAtMs: movedAtMs,
+      ));
+    }
+    return entries;
+  } catch (_) {
+    return null;
+  }
+}
+
+/// 写清单：先写临时文件再改名（同目录原子替换），不直接覆盖。
+void _writeTrashManifest(Directory trashDir, List<_TrashEntry> entries) {
+  final tmp = File(p.join(trashDir.path, '.$_trashManifestName.tmp'));
+  tmp.writeAsStringSync(
+    jsonEncode({
+      'entries': [
+        for (final e in entries)
+          {
+            'trashName': e.trashName,
+            'originalRel': e.originalRel,
+            'movedAtMs': e.movedAtMs,
+          },
+      ],
+    }),
+  );
+  tmp.renameSync(p.join(trashDir.path, _trashManifestName));
+}
+
+/// 锁内把单个文件移入回收站（调用者已持锁）。
+/// 返回 true = 已移入并记入清单；false = 未移入（文件原地保留）。
+/// 清单损坏时拒绝移入（文件原地保留，记日志）；清单写失败时文件已在
+/// 回收站、清单里无记录——清扫时按未知处理、永不删除，只记日志。
+Future<bool> _moveFileToTrashLocked({
+  required String dataDir,
+  required File file,
+  required String originalRel,
+}) async {
+  FileLifecycleGuard.instance.requireLocked();
+  final trashDir = Directory(p.join(dataDir, _trashDirName));
+  try {
+    await trashDir.create(recursive: true);
+  } catch (_) {
+    return false;
+  }
+  final entries = _readTrashManifest(trashDir);
+  if (entries == null) {
+    debugPrint('U3-2 回收站：清单损坏，拒绝移入 $originalRel（文件原地保留）');
+    return false;
+  }
+  final movedAtMs = DateTime.now().millisecondsSinceEpoch;
+  final trashName =
+      '$movedAtMs-${_trashRand()}-${p.basename(file.path)}';
+  try {
+    await file.rename(p.join(trashDir.path, trashName));
+  } catch (_) {
+    return false;
+  }
+  entries.add((
+    trashName: trashName,
+    originalRel: originalRel,
+    movedAtMs: movedAtMs,
+  ));
+  try {
+    _writeTrashManifest(trashDir, entries);
+  } catch (_) {
+    debugPrint(
+      'U3-2 回收站：清单写入失败，$originalRel 已移入但未登记，清扫时按未知保留',
+    );
+  }
+  return true;
+}
+
+/// 锁内把整个目录移入回收站（调用者已持锁；任务目录删除用）。
+/// [originalRel] 记 `imports/<taskId>/`（带尾斜杠，标明是目录条目）。
+/// 返回值语义同 [_moveFileToTrashLocked]。
+Future<bool> _moveDirectoryToTrashLocked({
+  required String dataDir,
+  required Directory dir,
+  required String originalRel,
+}) async {
+  FileLifecycleGuard.instance.requireLocked();
+  final trashDir = Directory(p.join(dataDir, _trashDirName));
+  try {
+    await trashDir.create(recursive: true);
+  } catch (_) {
+    return false;
+  }
+  final entries = _readTrashManifest(trashDir);
+  if (entries == null) {
+    debugPrint('U3-2 回收站：清单损坏，拒绝移入 $originalRel（目录原地保留）');
+    return false;
+  }
+  final movedAtMs = DateTime.now().millisecondsSinceEpoch;
+  final trashName =
+      '$movedAtMs-${_trashRand()}-${p.basename(dir.path)}';
+  try {
+    await dir.rename(p.join(trashDir.path, trashName));
+  } catch (_) {
+    return false;
+  }
+  entries.add((
+    trashName: trashName,
+    originalRel: originalRel,
+    movedAtMs: movedAtMs,
+  ));
+  try {
+    _writeTrashManifest(trashDir, entries);
+  } catch (_) {
+    debugPrint(
+      'U3-2 回收站：清单写入失败，$originalRel 已移入但未登记，清扫时按未知保留',
+    );
+  }
+  return true;
+}
+
+/// WP-C #8 U3-2：启动清扫回收站（开库后、best-effort，见 `_openDb`）。
+/// 只删移入超过 7 天的条目；清扫时按原相对路径重新查引用——文件用
+/// [_isFileReferenced]（含“引用未知”fail-closed：`slices/` 路径在
+/// ocrFigures JSON 无法解析时一律视为被引用），任务目录用
+/// [_isTaskDirReferenced]；仍有引用 → 留下并记日志。
+/// 任何一步失败都不抛错（调用方 `_openDb` 另有 try/catch 兜底），
+/// 失败只记日志、留待下次启动再清。
+Future<TrashSweepResult> sweepTrashImpl(
+  QuizDatabase db, {
+  String? dataDir,
+}) async {
+  final dir = dataDir ?? AppDatabase.dataDirectoryPath();
+  final guard = FileLifecycleGuard.instance;
+  return guard.withLock(() async {
+    var deleted = 0;
+    var freed = 0;
+    var keptReferenced = 0;
+    var keptUnknown = 0;
+    final trashDir = Directory(p.join(dir, _trashDirName));
+    if (!trashDir.existsSync()) {
+      return (
+        deletedCount: deleted,
+        freedBytes: freed,
+        keptReferencedCount: keptReferenced,
+        keptUnknownCount: keptUnknown,
+      );
+    }
+    final entries = _readTrashManifest(trashDir);
+    if (entries == null) {
+      // 清单损坏：盘上条目数不清原路径，全部留下、永不删除。
+      var count = 0;
+      try {
+        for (final e in trashDir.listSync()) {
+          if (e.path.endsWith(_trashManifestName)) continue;
+          count++;
+        }
+      } catch (_) {}
+      debugPrint(
+        'U3-2 回收站：清单损坏，$count 个条目全部留下，永不删除',
+      );
+      return (
+        deletedCount: deleted,
+        freedBytes: freed,
+        keptReferencedCount: keptReferenced,
+        keptUnknownCount: count,
+      );
+    }
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final cutoff =
+        now - _trashRetentionDays * 24 * 3600 * 1000;
+    // 盘上有、清单里无的条目：移入与写清单之间崩溃的残留，原路径
+    // 未知 → 留下、记日志，永不删除。
+    final knownNames = entries.map((e) => e.trashName).toSet();
+    try {
+      for (final e in trashDir.listSync()) {
+        final name = p.basename(e.path);
+        if (name == _trashManifestName ||
+            name == '.$_trashManifestName.tmp') {
+          continue;
+        }
+        if (!knownNames.contains(name)) {
+          keptUnknown++;
+          debugPrint('U3-2 回收站：清单外条目 $name 原路径未知，留下不删');
+        }
+      }
+    } catch (_) {}
+    var manifestChanged = false;
+    for (final entry in List.of(entries)) {
+      final trashPath = p.join(trashDir.path, entry.trashName);
+      final type = FileSystemEntity.typeSync(trashPath);
+      if (type == FileSystemEntityType.notFound) {
+        // 清单里有、盘上无：删清单条目、记日志。
+        entries.remove(entry);
+        manifestChanged = true;
+        debugPrint('U3-2 回收站：清单条目 ${entry.originalRel} 的文件已不在，删清单记录');
+        continue;
+      }
+      if (entry.movedAtMs >= cutoff) continue; // 未满 7 天，留下。
+      // 已满 7 天：重新查引用，仍有引用 → 留下。
+      final isDirEntry = entry.originalRel.endsWith('/');
+      var referenced = false;
+      if (isDirEntry) {
+        final taskId = entry.originalRel
+            .split('/')
+            .where((s) => s.isNotEmpty)
+            .last;
+        referenced = await _isTaskDirReferenced(db, taskId);
+        if (!referenced) {
+          final prefix = 'imports/$taskId/';
+          final inFlight = [
+            ...guard.pendingSnapshot,
+            ...guard.stagingSnapshot,
+          ].any((r) => r.startsWith(prefix));
+          if (inFlight) referenced = true;
+        }
+      } else {
+        // U3-2：引用未知时 slices/ 条目按“未知”计、留下（与“仍有引用”
+        // 区分计数；_isFileReferenced 内同样会拦下它，这里只为计数准确）。
+        if (entry.originalRel.startsWith('slices/') &&
+            await _hasUnknownFigureRefs(db)) {
+          keptUnknown++;
+          debugPrint(
+            'U3-2 引用未知：ocrFigures JSON 无法解析，${entry.originalRel} 留下不删',
+          );
+          continue;
+        }
+        referenced = await _isFileReferenced(db, entry.originalRel);
+        if (!referenced &&
+            (guard.isPending(entry.originalRel) ||
+                guard.isStaged(entry.originalRel))) {
+          referenced = true;
+        }
+      }
+      if (referenced) {
+        keptReferenced++;
+        debugPrint('U3-2 回收站：${entry.originalRel} 仍有引用，留下不删');
+        continue;
+      }
+      // 无引用：物理删除（已持锁，走内部删除）。
+      var size = 0;
+      try {
+        if (type == FileSystemEntityType.directory) {
+          for (final e in Directory(
+            trashPath,
+          ).listSync(recursive: true)) {
+            if (e is File) {
+              try {
+                size += e.lengthSync();
+              } catch (_) {}
+            }
+          }
+          await guard.deleteDirectoryLocked(Directory(trashPath));
+        } else {
+          try {
+            size = File(trashPath).lengthSync();
+          } catch (_) {}
+          final ok =
+              await guard.deleteFileLocked(File(trashPath));
+          if (!ok) continue;
+        }
+      } catch (_) {
+        continue;
+      }
+      freed += size;
+      deleted++;
+      entries.remove(entry);
+      manifestChanged = true;
+    }
+    if (manifestChanged) {
+      try {
+        _writeTrashManifest(trashDir, entries);
+      } catch (_) {
+        debugPrint('U3-2 回收站：清扫后清单写回失败，下次启动再清');
+      }
+    }
+    return (
+      deletedCount: deleted,
+      freedBytes: freed,
+      keptReferencedCount: keptReferenced,
+      keptUnknownCount: keptUnknown,
+    );
+  });
+}
+
 /// 十四批 M2：某题的全部图块裁图相对路径（删题后逐个重查引用再删
 /// 时用；与 [_figureCropPathsFromJson] 同口径）。
 Future<List<String>> _figureCropPathsOf(
@@ -181,14 +575,19 @@ Future<OrphanScan> scanOrphanFilesFromImpl(
 }
 
 /// 删指定的孤儿文件（只接受 `imports/` / `slices/` 下的相对路径，
-/// 且解析后必须在数据目录内；其它路径静默跳过）。删完把空的父
-/// 目录也清掉（只到 `imports/<taskId>` 这一层，不删根）。
-/// 返回实际删掉的文件数、释放字节数与“删除前重算引用后发现仍被
-/// 引用而跳过”的文件数。
+/// 且解析后必须在数据目录内；其它路径静默跳过）。WP-C #8 U3-2：
+/// 不直接物理删除，改为在守门内移入回收站（`.trash/`），物理删除只在
+/// 启动清扫时执行。返回的 `deletedCount` = 移入回收站的文件数、
+/// `freedBytes` = 移入的字节数（尚未真正释放，7 天后清扫才释放）、
+/// `skippedReferencedCount` = 删除前重算引用后发现仍被引用而跳过的
+/// 文件数（含“引用未知”时跳过的 `slices/` 候选）。
 ///
 /// FR-06(a)：不信任调用方传来的旧扫描——删除前用 [db] 重算一次引用
 /// （复用 `_referencedRelativePaths`，一次调用只算一次），当时仍被
 /// 引用的文件跳过不删、计入 `skippedReferencedCount`。
+/// WP-C #8 U3-2：任一题的 `ocr_figures` JSON 无法解析时，图块裁图
+/// 候选一律不删——`slices/` 候选全部跳过（图块裁图只活在 `slices/`），
+/// `imports/` 候选不受影响；跳过记日志。
 /// 十四批 M5 修复轮 2（B-FIX2-2）：`db` 改为必填——无数据库实时引用
 /// 检查的删除路径已封闭；旧测试需要不带 DB 的行为时，用测试文件内
 /// 的测试专用 helper，不要调生产入口。
@@ -208,6 +607,8 @@ deleteOrphanFilesImpl(
     // 删除前重算一次引用：扫描时无引用、删除时又被引用的文件——
     // 典型是恢复后旧扫描里的文件——必须跳过。
     final refs = await _referencedRelativePaths(db, dir);
+    // WP-C #8 U3-2：引用未知时 `slices/` 候选一律不删（见函数注释）。
+    final unknownFigureRefs = await _hasUnknownFigureRefs(db);
     var deleted = 0;
     var freed = 0;
     var skipped = 0;
@@ -219,6 +620,14 @@ deleteOrphanFilesImpl(
       // 十四批 M2：`.tmp` 临时文件永不由孤儿清理删除（纵使调用方
       // 传进来了也跳过）。
       if (rel.endsWith('.tmp')) {
+        skipped++;
+        continue;
+      }
+      // WP-C #8 U3-2：引用未知 → `slices/` 候选永不删除，记日志。
+      if (rel.startsWith('slices/') && unknownFigureRefs) {
+        debugPrint(
+          'U3-2 引用未知：ocrFigures JSON 无法解析，跳过 slices/ 候选 $rel，永不删除',
+        );
         skipped++;
         continue;
       }
@@ -237,9 +646,14 @@ deleteOrphanFilesImpl(
       // FR-22：先记大小、删成功后再计入 freed——删失败时汇报数字
       // 不虚高（旧写法在 delete 之前就 +=，catch 为空时照计）。
       final size = f.lengthSync();
-      // 已持锁：走内部删除（不再次取锁，P2 约束 1）。
-      final ok = await guard.deleteFileLocked(f);
-      if (!ok) continue;
+      // WP-C #8 U3-2：已持锁，走内部移入回收站（不再次取锁，P2 约束 1）。
+      // 移入失败（清单损坏等）→ 文件原地保留，不计数。
+      final moved = await _moveFileToTrashLocked(
+        dataDir: dir,
+        file: f,
+        originalRel: rel,
+      );
+      if (!moved) continue;
       freed += size;
       deleted++;
       touchedParents.add(f.parent);
@@ -277,7 +691,8 @@ extension AppDatabaseOrphans on AppDatabase {
   Future<OrphanScan> scanOrphans() async =>
       AppDatabase.scanOrphanFilesFrom(await db);
 
-  /// 孤儿清理（实例版）：删指定的孤儿文件，删除前用当前库重算
+  /// 孤儿清理（实例版）：把指定的孤儿文件移入回收站（WP-C #8 U3-2，
+  /// 物理删除只在启动清扫时执行），删除前用当前库重算
   /// 一次引用（FR-06(a)，仍被引用的跳过并计入返回）。
   Future<({int deletedCount, int freedBytes, int skippedReferencedCount})>
   cleanOrphans(List<String> relativePaths) async =>

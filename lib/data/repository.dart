@@ -492,7 +492,14 @@ class QuestionRepository {
   Future<void> archive(Question q, {bool archived = true}) async =>
       _db.upsertQuestion(q.copyWith(isArchived: archived));
 
-  Future<void> save(Question q) async => _db.upsertQuestion(q);
+  /// U1-1：版本令牌（可选具名参数）。不传令牌时保持原有行为；
+  /// 传令牌时写入前在事务内比对行版本，不符抛 [SaveTokenMismatch]、
+  /// 零写入（见 [upsertQuestionIntoImpl]）。令牌取自表单加载时的
+  /// 模型（`q.contentVersion` 必须是加载时看到的版本，绝不能取
+  /// 保存时刚读到的行版本——刚读到的行若已被 OCR worker 等改过，
+  /// 用它的版本当令牌会把表单的旧题干整行覆盖回去）。
+  Future<void> save(Question q, {SaveToken? token}) async =>
+      _db.upsertQuestion(q, token: token);
 
   Future<void> delete(Question q) async => _db.deleteQuestion(q.id);
 
@@ -671,7 +678,16 @@ class QuestionRepository {
   Future<List<int>> exportBackupZip() => _db.exportBackupZip();
 
   /// 十四批 M2：带警告的 zip 备份（字节 + 可见警告列表）。
-  Future<({List<int> bytes, List<String> warnings})>
+  /// WP-C #8 U3-2：另含 `brokenFiles`（未进包的文件清单）与 `status`
+  ///（complete 仅当零警告且零 BROKEN 文件）。
+  Future<
+    ({
+      List<int> bytes,
+      List<String> warnings,
+      List<String> brokenFiles,
+      BackupExportStatus status,
+    })
+  >
   exportBackupZipWithReport() => _db.exportBackupZipWithReport();
 
   /// §2.3/P3：zip 备份恢复（JSON + 文件一起恢复）。

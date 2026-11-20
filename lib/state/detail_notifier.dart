@@ -529,10 +529,12 @@ class DetailNotifier extends Notifier<DetailState> {
           return;
         }
         await File(tmpAbs).parent.create(recursive: true);
-        await File(tmpAbs).writeAsBytes(crop.png);
+        // WP-C #8 U3-1：写盘持守门——备份复制与写盘串行化，不读半写文件。
+        await guard.withLock(() => File(tmpAbs).writeAsBytes(crop.png));
         guard.registerPending(targetRel);
         try {
-          await File(tmpAbs).rename(targetAbs);
+          // WP-C #8 U3-1：改名持守门（与备份复制串行化）。
+          await guard.withLock(() => File(tmpAbs).rename(targetAbs));
         } catch (_) {
           await guard.deleteFile(File(tmpAbs));
           return;
@@ -1124,7 +1126,8 @@ class DetailNotifier extends Notifier<DetailState> {
     guard.registerPending(tmpRel);
     try {
       await File(tmpAbs).parent.create(recursive: true);
-      await File(tmpAbs).writeAsBytes(crop.png);
+      // WP-C #8 U3-1：写盘持守门——备份复制与写盘串行化，不读半写文件。
+      await guard.withLock(() => File(tmpAbs).writeAsBytes(crop.png));
     } catch (_) {
       await guard.deleteFile(File(tmpAbs));
       guard.unregisterPending(tmpRel);
@@ -1153,7 +1156,8 @@ class DetailNotifier extends Notifier<DetailState> {
     // 文件当成新图重新解码，虽无数据丢失但缓存语义是错的）。
     guard.registerPending(sliceRel);
     try {
-      await File(tmpAbs).rename(sliceAbs);
+      // WP-C #8 U3-1：改名持守门（与备份复制串行化）。
+      await guard.withLock(() => File(tmpAbs).rename(sliceAbs));
     } catch (_) {
       await guard.deleteFile(File(tmpAbs));
       guard.unregisterPending(tmpRel);

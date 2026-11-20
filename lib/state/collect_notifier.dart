@@ -1085,6 +1085,9 @@ class CollectNotifier extends Notifier<CollectState> {
     // 失败即按清单删（只删本次新建的，不碰原任务页图——rotation == 0
     // 时 bakedRel 就是原页图，不记）。先记后写：写一半失败的残文件
     // 也一并清掉（delete 时文件不存在也无妨）。
+    // WP-C #8 U3-1：以下烘焙页图与切片写盘都持守门（与备份复制串行化，
+    // 不读半写文件）；裁剪/解码等耗时计算在锁外，只包住写盘调用。
+    final guard = FileLifecycleGuard.instance;
     final writtenRels = <String>[];
     try {
       for (final p in pages) {
@@ -1110,7 +1113,7 @@ class CollectNotifier extends Notifier<CollectState> {
           final bakedAbs = AppDatabase.resolveDataPath(bakedRel)!;
           writtenRels.add(bakedRel);
           await File(bakedAbs).parent.create(recursive: true);
-          await File(bakedAbs).writeAsBytes(bakedBytes);
+          await guard.withLock(() => File(bakedAbs).writeAsBytes(bakedBytes));
         } else {
           bakedBytes = pageBytes;
           bakedRel = pageRel;
@@ -1124,7 +1127,7 @@ class CollectNotifier extends Notifier<CollectState> {
           final sliceAbs = AppDatabase.resolveDataPath(sliceRel)!;
           writtenRels.add(sliceRel);
           await File(sliceAbs).parent.create(recursive: true);
-          await File(sliceAbs).writeAsBytes(slice.png);
+          await guard.withLock(() => File(sliceAbs).writeAsBytes(slice.png));
           questions.add(
             Question(
               id: qid,

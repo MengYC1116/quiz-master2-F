@@ -1767,7 +1767,13 @@ class _StepAnswer extends ConsumerWidget {
     final isTF = type == 'true_false';
     final isMulti =
         type == 'choice_multi' || type == 'choice_variable';
-    final labelsConfirmed = question.optionLabelsConfirmed;
+    // WP-A #1 收尾：门禁不再读 optionLabelsConfirmed 列（REV5 R1-3，
+    // 该列保留但停止读写）。单选按 objectiveGradingAvailable（配置
+    // 有效且未待重新核对才可判分）；多选永不判分，只需标签齐全
+    // （≥2 位）即可点选记录。
+    final canGrade = objectiveGradingAvailable(question);
+    final hasMultiLabels =
+        (question.optionLabels ?? const []).length >= 2;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -1779,7 +1785,7 @@ class _StepAnswer extends ConsumerWidget {
               showQuestionZoomDialog(context, question, returnLabel: '复习'),
         ),
         SizedBox(height: 12 * scale),
-        if (isSingle && labelsConfirmed) ...[
+        if (isSingle && canGrade) ...[
           _OptionButtons(question: question, sq: sq),
           SizedBox(height: 12 * scale),
           _ConfidencePicker(sq: sq),
@@ -1835,7 +1841,7 @@ class _StepAnswer extends ConsumerWidget {
                 ),
               ),
             ),
-        ] else if (isMulti && labelsConfirmed) ...[
+        ] else if (isMulti && hasMultiLabels) ...[
           _OptionButtons(question: question, sq: sq, multi: true),
           SizedBox(height: 12 * scale),
           Text(
@@ -1856,14 +1862,16 @@ class _StepAnswer extends ConsumerWidget {
                 ref.read(reviewProvider.notifier).skipCurrent(),
           ),
         ] else ...[
-          // 纸上作答：标签未确认的选择题 / 多选未确认 / 填空/计算/证明等。
+          // 纸上作答：判分不可用的单选题 / 选项不足的多选题 / 填空/计算/证明等。
           _DetailBox(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  isSingle || isMulti
-                      ? '选项标签尚未确认，不显示选项按钮。请在纸上作答，或先补全标签。'
+                  isSingle
+                      ? '未配置有效答案，不显示选项按钮。请在纸上作答，或先补全答案。'
+                      : isMulti
+                      ? '选项不足两个，不显示选项按钮。请在纸上作答，或先补全答案。'
                       : '请在纸上演算/作答，完成后点“我已完成作答”。',
                   style: TextStyle(
                     fontSize: DesignTokens.bodySmallFontSize,
@@ -1888,7 +1896,7 @@ class _StepAnswer extends ConsumerWidget {
             primaryLabel: '我已完成作答',
             onPrimary: () =>
                 ref.read(reviewProvider.notifier).completePaperAnswer(),
-            secondaryLabel: (isSingle || isMulti) ? '补全标签' : '跳过',
+            secondaryLabel: (isSingle || isMulti) ? '补全答案' : '跳过',
             onSecondary: (isSingle || isMulti)
                 ? () async {
                     final st = ref.read(reviewProvider);

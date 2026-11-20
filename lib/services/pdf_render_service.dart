@@ -25,6 +25,8 @@ import 'dart:ui' as ui;
 import 'package:flutter/foundation.dart';
 import 'package:pdfrx_engine/pdfrx_engine.dart' as pdfrx;
 
+import '../data/file_lifecycle_guard.dart';
+
 /// 加密 PDF：带密码，打不开（调用方提示“这个 PDF 带密码，解开密码再导”）。
 class PdfEncryptedException implements Exception {
   const PdfEncryptedException([this.message = '这个 PDF 带密码']);
@@ -223,7 +225,12 @@ class PdfRenderService {
       for (var page = 1; page <= total; page++) {
         final rendered =
             await doc.renderPage(page, targetLongEdge: targetLongEdge);
-        await File('$outDir/${nameOf(page)}').writeAsBytes(rendered.png);
+        // WP-C #8 U3-1：页图写盘持守门——导入重试会重写同一确定性路径
+        // （`page-001.png`），备份复制与写盘串行化，不读半写文件；
+        // 渲染本身在锁外，只包住写盘调用。
+        await FileLifecycleGuard.instance.withLock(
+          () => File('$outDir/${nameOf(page)}').writeAsBytes(rendered.png),
+        );
         await onProgress?.call(page, total);
       }
       return total;

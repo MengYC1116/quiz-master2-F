@@ -363,8 +363,9 @@ class Question {
     // 只保护背景标签，与主题型来源分离；ocrFigures 是图块 JSON（M2 写，
     // M1 只建列，默认 '[]'）；correctOption 只用于单选/判断，多选/
     // 不定项恒为 NULL；optionLabels 是 JSON 选项标签数组，NULL = 未确认；
-    // optionLabelsConfirmed 须点“确认选项”才置 1（M3 用）；answerVersion
-    // 是答案版本，改答案/解析/correct_option/option_labels 时 +1。
+    // optionLabelsConfirmed 是历史确认列（WP-A #1 REV5 起保留列、
+    // 停止读写：判分不再读它，编辑器不再写它，旧值不再产生任何效果）；
+    // answerVersion 是答案版本，改答案/解析/correct_option/option_labels 时 +1。
     this.questionType,
     this.questionTypeSource = 'unclassified',
     this.questionBackgroundTags = '',
@@ -459,6 +460,39 @@ class Question {
       return correctOption != null && correctOption!.isNotEmpty;
     }
     return answer != null && answer!.trim().isNotEmpty;
+  }
+
+  /// 答案配置是否结构完整、内部一致（WP-A #1，REV5 R1-3/R1-4）。
+  /// 只读派生，不持久化；与判分无关——待重新核对（answerPendingRecheck）
+  /// 不在这里判断，由 [objectiveGradingAvailable] 另行叠加。
+  /// - 单选：标签 ≥2 且 correctOption ∈ 标签。
+  /// - 判断：correctOption ∈ {正确，错误}。
+  /// - 多选/不定项：标签 ≥2 且 answer 去空白后非空。answer 是自由文本，
+  ///   无结构化存储、无解析路径（R1-4），不得解析为标签子集。
+  /// - 其他题型：沿用现有口径（[hasValidStandardAnswer]），不由本 getter
+  ///   另立规则（该口径含待核对判断，是既有行为）。
+  bool get answerConfigValid {
+    switch (questionType) {
+      case 'choice_single':
+        final labels = optionLabels;
+        final correct = correctOption;
+        return labels != null &&
+            labels.length >= 2 &&
+            correct != null &&
+            correct.isNotEmpty &&
+            labels.contains(correct);
+      case 'true_false':
+        return correctOption == '正确' || correctOption == '错误';
+      case 'choice_multi':
+      case 'choice_variable':
+        final labels = optionLabels;
+        return labels != null &&
+            labels.length >= 2 &&
+            answer != null &&
+            answer!.trim().isNotEmpty;
+      default:
+        return hasValidStandardAnswer;
+    }
   }
 
   /// 背景标签列表（逗号分隔存；空串 = 无标签）。

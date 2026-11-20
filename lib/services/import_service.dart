@@ -691,7 +691,11 @@ class ImportService {
             final normAbs = AppDatabase.resolveDataPath(
               normalizedPageRelative(id),
             )!;
-            await File(normAbs).writeAsBytes(normalized.bytes);
+            // WP-C #8 U3-1：归一化副本写盘持守门——导入重试会重写同一
+            // 确定性路径（`page-normalized.png`），备份复制与写盘串行化。
+            await FileLifecycleGuard.instance.withLock(
+              () => File(normAbs).writeAsBytes(normalized.bytes),
+            );
           }
         }
       } catch (_) {

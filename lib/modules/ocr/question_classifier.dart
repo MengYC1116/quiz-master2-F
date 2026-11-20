@@ -578,20 +578,30 @@ class _SingleOutcome {
 
 _SingleOutcome _classifySingle(String md, StemSplitResult split) {
   final candidates = <String, String>{};
-  // A–E 选项序列（autoSplit，高）。
+  // §2.2 步骤 4（REV5）：先算选择候选，再算填空候选。
+  // 选择判定成立 → 判选择题，空括号 ( ) 不再触发填空。
   if (split.status == StemSplitStatus.autoSplit) {
     candidates[_choiceType(md, split.stemText)] = '自动切分检出 A–E 选项序列';
   }
   // ①②③④ 选项序列（中；小问路径已排除小问情形，到这里就是选项）。
+  // 带圈数字在代码块/公式内时不计（与 splitStem 同一词法优先级，S3-1）。
   if (_hasCircledOptionSequence(md)) {
     candidates.putIfAbsent(
       _choiceType(md, md),
       () => '检测到 ①②③④ 选项序列',
     );
   }
-  // 空白（中；须无选项序列才定——下划线也可能是正文强调）。
-  if (candidates.isEmpty && _hasBlank(md)) {
-    candidates['fill_blank'] = '检测到填空空白';
+  final blankKind = _blankKind(md);
+  if (candidates.isEmpty) {
+    if (blankKind == _BlankKind.strong) {
+      candidates['fill_blank'] = '检测到填空空白';
+    } else if (blankKind == _BlankKind.bare) {
+      // 选择不成立、填空候选只有裸空括号 ( ) → 不自动定型（返回 null，不硬猜）。
+      return const _SingleOutcome(
+        type: null,
+        reason: '仅有空括号，无选择/强填空结构，不自动定型',
+      );
+    }
   }
   // 判断（中）。
   if (_hasJudgeSignal(md)) {
@@ -651,12 +661,21 @@ String _choiceType(String md, String stemText) {
 /// ①②③④ 选项序列：① 起连续、同格式、强边界、后有实内容。
 /// （小问路径已先行：判为小问或判不准时本信号不成立——调用方须先走
 /// _trySubQuestionPath；单题路径里出现 ①② 且未进小问路径时才是选项。）
+/// 代码块/公式内的带圈数字不计（与 splitStem 同一词法优先级，S3-1：
+/// 代码保护 → 公式识别 → HTML/选项扫描）。
 bool _hasCircledOptionSequence(String md) {
   const circled = '①②③④⑤';
+  final excluded = optionScanExcludedRanges(md);
+  bool isExcluded(int i) =>
+      excluded.any((r) => i >= r.start && i < r.end);
   var expected = 0;
   var found = 0;
   var i = 0;
   while (i < md.length) {
+    if (isExcluded(i)) {
+      i++;
+      continue;
+    }
     final at = circled.indexOf(md[i]);
     if (at == expected) {
       if (!_isStrongBoundary(md, i) || !_hasRealContentAfter(md, i + 1)) {
@@ -705,13 +724,16 @@ bool _isBlank(int c) =>
 bool _isSpace(int c) =>
     c == 0x20 || c == 0x09 || c == 0x0A || c == 0x0D || c == 0x3000;
 
-/// 空白：连续 3 个以上下划线，或空括号（空括号须无选项序列才定，
-/// 调用方已保证 candidates 为空时才查本信号）。
-bool _hasBlank(String md) {
-  if (RegExp(r'_{3,}').hasMatch(md)) return true;
-  if (RegExp(r'[（(]\s*[)）]').hasMatch(md)) return true;
-  if (RegExp(r'[［\[]\s*[］\]]').hasMatch(md)) return true;
-  return false;
+/// 填空候选分级（§2.2 步骤 4）：强填空结构 = 连续 3 个以上下划线，
+/// 或“填空”关键词；裸空括号/空方括号只有其一时为 bare，不自动定型。
+enum _BlankKind { none, bare, strong }
+
+_BlankKind _blankKind(String md) {
+  if (RegExp(r'_{3,}').hasMatch(md)) return _BlankKind.strong;
+  if (md.contains('填空')) return _BlankKind.strong;
+  if (RegExp(r'[（(]\s*[)）]').hasMatch(md)) return _BlankKind.bare;
+  if (RegExp(r'[［\[]\s*[］\]]').hasMatch(md)) return _BlankKind.bare;
+  return _BlankKind.none;
 }
 
 /// 判断：判断关键词 + √×/T·F 标记。

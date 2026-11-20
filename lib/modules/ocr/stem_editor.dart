@@ -197,18 +197,35 @@ class _StemEditorState extends State<StemEditor> {
       mdResults: mdResults,
     );
     final byId = {for (final f in figures) f.id: f};
-    return blocks.map((block) {
-      return switch (block) {
-        TextBlock(:final text) => _DraftText(text),
-        CodeBlock(:final code, :final language) =>
-          _DraftCode(code, language: language),
-        FormulaBlock(:final latex, :final displayMode) =>
-          _DraftFormula(latex, displayMode: displayMode),
-        ImageFallbackBlock() => _DraftText(''),
-        FigureBlock(:final figureId) =>
-          _DraftFigure(byId[figureId] ?? _placeholderFigure(figureId)),
-      };
-    }).toList();
+    final drafts = <_DraftBlock>[];
+    for (final block in blocks) {
+      // WP-D #7 收尾：跳过「未关联图片」区标题块——它只是渲染用的分隔
+      // 标记（ocr_figures.dart 的 [unassociatedFiguresHeader]），不是题干
+      // 内容；进草稿会在保存时把标题文字写进 ocr_stem。
+      // 已知局限：用户题干原文恰好一字不差就是这句标题时也会被跳过，
+      // 概率可忽略，记为已知局限（不做内容嗅探区分）。
+      if (block is TextBlock && block.text == unassociatedFiguresHeader) {
+        continue;
+      }
+      drafts.add(
+        switch (block) {
+          TextBlock(:final text) => _DraftText(text),
+          CodeBlock(:final code, :final language) =>
+            _DraftCode(code, language: language),
+          FormulaBlock(:final latex, :final displayMode) =>
+            _DraftFormula(latex, displayMode: displayMode),
+          ImageFallbackBlock() => _DraftText(''),
+          FigureBlock(:final figureId) =>
+            _DraftFigure(byId[figureId] ?? _placeholderFigure(figureId)),
+          // WP-C #6：表格/标题在纠错编辑器里以可再解析的文本形式进草稿
+          // （表格拼回 HTML、标题拼回 `#` 行），保存时重新解析，不丢内容。
+          TableBlock() => _DraftText(blocksToMarkdown([block])),
+          HeadingBlock(:final text, :final level) =>
+            _DraftText('${'#' * level} $text'),
+        },
+      );
+    }
+    return drafts;
   }
 
   /// 图块 id 在 figures 里找不到时的占位（不应发生：调用方传的

@@ -678,7 +678,62 @@ Future<void> rejoinCauseIntoImpl(
 /// toggleFavorite / archive / save 会把自查刚加到 6 的库内值打回 5。
 /// 已存在的行只 UPDATE 其它列（标题、文件夹、标签、收藏/归档等编辑
 /// 内容照常写回）；不存在时才整行 INSERT（快照值即新题初始值）。
-Future<void> upsertQuestionIntoImpl(QuizDatabase db, Question q) async {
+/// U1-1 版本令牌（REV5）：一次保存携带的“新鲜度断言”，取自表单加载
+/// 时的模型（`contentVersion` 随模型携带，无需新列、无 schema 变化）。
+/// 不带令牌时保持原有行为；带令牌时写入前在事务内比对版本。
+class SaveToken {
+  const SaveToken({
+    required this.questionId,
+    required this.expectedContentVersion,
+  });
+  final String questionId;
+  final int expectedContentVersion;
+}
+
+/// U1-2：令牌版本不符（或行已消失、令牌与题目不符）时拒绝写入的信号。
+/// 在事务内、任何写语句之前抛出，事务自动回滚，本次调用零写入。
+/// 调用方（整理页保存）接住它即视为“已有更新的保存先落库，本次表单
+/// 是旧的”，刷新队列与表单后由用户重新保存；不带令牌的调用方永远
+/// 不会见到它（失败通道用异常而不用 bool 返回值，是为了不改
+/// `repo.save` 的 `Future<void>` 返回类型——改成 `Future<bool>`
+/// 会让全部现有 `save` 覆盖的返回类型失效）。
+class SaveTokenMismatch implements Exception {
+  const SaveTokenMismatch(
+    this.questionId,
+    this.expectedContentVersion,
+    this.actualContentVersion,
+  );
+  final String questionId;
+  final int expectedContentVersion;
+
+  /// 行内实际版本；null = 行已消失，或令牌与题目不符（未比对行版本）。
+  final int? actualContentVersion;
+
+  @override
+  String toString() =>
+      'SaveTokenMismatch($questionId: expected $expectedContentVersion, '
+      'actual $actualContentVersion)';
+}
+
+/// U1-2 / T1-2：题目行写入的唯一漏斗。整个“读旧行 → 版本计算 → 写”
+/// 包进同一个 `db.transaction`（新增包裹；原代码无此包裹，读与写
+/// 之间有 await 间隙，并发写可插进来）。Drift 事务按调用顺序执行、
+/// 同一事务内的语句互不交错，校验读与写入之间任何其他数据库写操作
+/// 都无法插入。调用方若传进来的是 Transaction 句柄，`db.transaction`
+/// 加入外层事务（Drift 嵌套事务语义），不另开事务。
+Future<void> upsertQuestionIntoImpl(
+  QuizDatabase db,
+  Question q, {
+  SaveToken? token,
+}) async {
+  await db.transaction(() => _upsertQuestionIntoTxn(db, q, token: token));
+}
+
+Future<void> _upsertQuestionIntoTxn(
+  QuizDatabase db,
+  Question q, {
+  SaveToken? token,
+}) async {
   // 十四批 M2：版本权威——全部 UI 保存路径汇合于此，content_version /
   // answer_version 在这里按“实际内容是否变化”统一计算一次（同一逻辑
   // 保存事务无论改几个相关字段只递增一次；实际内容无变化时不因重新
@@ -702,6 +757,26 @@ Future<void> upsertQuestionIntoImpl(QuizDatabase db, Question q) async {
   final old = await (db.select(
     db.questions,
   )..where((t) => t.id.equals(q.id))).getSingleOrNull();
+  // U1-2：带令牌时先比对版本——行已消失、令牌与题目不符或版本不符 →
+  // 抛 SaveTokenMismatch、零写入（抛在任何写语句之前）。不带令牌时
+  // 本段不执行，保持原有行为（不存在的行按旧口径整行插入）。
+  if (token != null) {
+    if (token.questionId != q.id) {
+      throw SaveTokenMismatch(
+        token.questionId,
+        token.expectedContentVersion,
+        old?.contentVersion,
+      );
+    }
+    if (old == null ||
+        old.contentVersion != token.expectedContentVersion) {
+      throw SaveTokenMismatch(
+        token.questionId,
+        token.expectedContentVersion,
+        old?.contentVersion,
+      );
+    }
+  }
   // B11-10 今日小结计数：先读旧行，判断是不是未整理→已整理的跃迁
   // （读在写之前；写成功后才 +1，写失败不计）。只在旧行存在且未整理
   // 时才计：新行直接以已整理入库（种子/恢复路径）不是一次整理动作，
@@ -925,10 +1000,21 @@ Question _applyOptionLabelChangeRules(DbQuestion old, Question q) {
 Future<void> deleteQuestionFromImpl(QuizDatabase db, String id) async {
   final slice = await _slicePathOf(db, id);
   final figureCrops = await _figureCropPathsOf(db, id);
+  // WP-C #8 U3-2：事务前快照被删题的 ocrFigures 是否未知（行删后
+  // 全库扫描已查不到它，见 [_ocrFiguresUnknownOf]）。
+  final unknownBefore = await _ocrFiguresUnknownOf(db, id);
   await db.transaction(() => _deleteQuestionTxn(db, id));
-  await _deleteDataFileIfUnreferenced(db, slice);
+  await _deleteDataFileIfUnreferenced(
+    db,
+    slice,
+    unknownFigureRefsBeforeDelete: unknownBefore,
+  );
   for (final crop in figureCrops) {
-    await _deleteDataFileIfUnreferenced(db, crop);
+    await _deleteDataFileIfUnreferenced(
+      db,
+      crop,
+      unknownFigureRefsBeforeDelete: unknownBefore,
+    );
   }
 }
 
@@ -951,9 +1037,12 @@ Future<void> deleteQuestionsBatchFromImpl(
 ) async {
   final slices = <String?>[];
   final figureCrops = <String>[];
+  // WP-C #8 U3-2：事务前快照被删题的 ocrFigures 是否未知（行删后查不到）。
+  var unknownBefore = false;
   for (final id in ids) {
     slices.add(await _slicePathOf(db, id));
     figureCrops.addAll(await _figureCropPathsOf(db, id));
+    if (await _ocrFiguresUnknownOf(db, id)) unknownBefore = true;
   }
   await db.transaction(() async {
     for (final id in ids) {
@@ -961,10 +1050,18 @@ Future<void> deleteQuestionsBatchFromImpl(
     }
   });
   for (final slice in slices) {
-    await _deleteDataFileIfUnreferenced(db, slice);
+    await _deleteDataFileIfUnreferenced(
+      db,
+      slice,
+      unknownFigureRefsBeforeDelete: unknownBefore,
+    );
   }
   for (final crop in figureCrops) {
-    await _deleteDataFileIfUnreferenced(db, crop);
+    await _deleteDataFileIfUnreferenced(
+      db,
+      crop,
+      unknownFigureRefsBeforeDelete: unknownBefore,
+    );
   }
 }
 
@@ -1345,9 +1442,13 @@ extension AppDatabaseQuestions on AppDatabase {
     await (d.delete(d.reviewState)..where((t) => t.id.equals(1))).go();
   }
 
-  Future<void> upsertQuestion(Question q) async {
+  /// U1-1：可选令牌直通 [upsertQuestionIntoImpl]。直接调 impl 而不经
+  /// `AppDatabase.upsertQuestionInto`（后者在 database.dart 里，无令牌
+  /// 参数；无令牌调用方仍走它，行为不变）。令牌不符时 impl 抛
+  /// [SaveTokenMismatch]，事件不发（什么都没写）。
+  Future<void> upsertQuestion(Question q, {SaveToken? token}) async {
     final d = await db;
-    await AppDatabase.upsertQuestionInto(d, q);
+    await upsertQuestionIntoImpl(d, q, token: token);
     DataChangeBus.instance.emit(
       DataChangeEvent(
         kinds: const {DataChangeKind.badges, DataChangeKind.questions},

@@ -392,6 +392,12 @@ class AppDatabase {
       _db = await openAt(dbPath);
     }
     dbPathUsed = dbPath;
+    // WP-C #8 U3-2：启动清扫回收站（只删移入超过 7 天且重查无引用
+    // 的条目）。清扫要读库重查引用，故放在开库后（暂存区清理在开库前、
+    // 无库句柄，不放同一处）；任何失败都不阻断开库，留待下次启动再清。
+    try {
+      await sweepTrashImpl(_db!, dataDir: p.dirname(dbPath));
+    } catch (_) {}
     return _db!;
   }
 
@@ -685,6 +691,14 @@ class AppDatabase {
     // 数据库实时引用；无 DB 检查的删除路径已封闭。
     required QuizDatabase db,
   }) => deleteOrphanFilesImpl(relativePaths, dataDir: dataDir, db: db);
+
+  /// WP-C #8 U3-2：启动清扫回收站（只删移入超过 7 天且重查无引用
+  /// 的条目；仍有引用 / 引用未知 / 清单损坏 → 留下并记日志）。
+  /// 生产调用在 `_openDb` 开库后（best-effort，失败不阻断开库）。
+  static Future<TrashSweepResult> sweepTrashFrom(
+    QuizDatabase db, {
+    String? dataDir,
+  }) => sweepTrashImpl(db, dataDir: dataDir);
   // -- db_collect.dart --
 
   static Future<void> insertQuestionBoxInto(QuizDatabase db, QuestionBox b) =>
@@ -918,7 +932,16 @@ class AppDatabase {
   /// 保留给不需要警告的调用方（警告丢弃）。
   /// [onStagedForTest] 仅测试用：透传给 Impl 的故障注入钩子（见
   /// exportBackupZipFromWithReportImpl 的参数注释），生产调用不传。
-  static Future<({List<int> bytes, List<String> warnings})>
+  /// WP-C #8 U3-2：返回另含 `brokenFiles`（未进包的文件相对路径
+  /// 清单）与 `status`（complete 仅当零警告且零 BROKEN 文件）。
+  static Future<
+    ({
+      List<int> bytes,
+      List<String> warnings,
+      List<String> brokenFiles,
+      BackupExportStatus status,
+    })
+  >
   exportBackupZipFromWithReport(
     QuizDatabase db, {
     String? dataDir,

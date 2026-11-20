@@ -13,6 +13,7 @@
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/widgets.dart' as fw;
 import 'package:flutter_math_fork/flutter_math.dart';
 
 import '../../data/database.dart';
@@ -171,6 +172,12 @@ class FormulaView extends StatelessWidget {
 ///   行内公式用 WidgetSpan（PlaceholderAlignment.middle）与中文对齐。
 /// - 独立公式（displayMode）单独成行，横向可滚动，防长公式溢出。
 /// - CodeBlock 按等宽文本显示；ImageFallbackBlock 显示原图占位。
+/// - TableBlock（WP-C #6）：Flutter Table 绘制，横向空间不足时横向滚动；
+///   单元格文本自动换行；列宽按内容自适应（IntrinsicColumnWidth，单列最宽
+///   [_kMaxTableColumnWidth]，超出横向滚动；定稿未决事项 1，实施方定一版，
+///   截图验收时确认）；单元格垂直居中对齐；居中表格包在 Center 里。
+/// - HeadingBlock（WP-C #6）：1 级 20 / 2 级 18 / 3 级 16，加粗
+///   （标题字号在页面标题 24 与正文 15 之间，按现有标题字号取档）。
 class QuestionContentRenderer extends StatelessWidget {
   const QuestionContentRenderer({
     super.key,
@@ -181,6 +188,10 @@ class QuestionContentRenderer extends StatelessWidget {
     this.onFormulaFallback,
   });
 
+  /// 单列表格列宽上限（逻辑像素）。单元格内容超宽时换行，列不再加宽，
+  /// 整表超宽时横向滚动（见 [_buildTableBlock]）。
+  static const double kMaxTableColumnWidth = 220;
+
   final List<QuestionContentBlock> blocks;
   final TextStyle? textStyle;
   final TextStyle? formulaTextStyle;
@@ -190,6 +201,89 @@ class QuestionContentRenderer extends StatelessWidget {
 
   /// 任一公式回退展示后回调（仅成败计数用，不含公式内容）。
   final VoidCallback? onFormulaFallback;
+
+  /// 把一段行内 run 转成 InlineSpan：普通 run 出 TextSpan；
+  /// 上下标 run（字号约 70%）出 WidgetSpan + 基线偏移（S7-2）。
+  InlineSpan _runSpan(TextRun run, TextStyle base) {
+    final style = base.copyWith(
+      fontWeight: run.bold ? FontWeight.bold : null,
+      fontStyle: run.italic ? FontStyle.italic : null,
+    );
+    if (run.script == 0) {
+      return TextSpan(text: run.text, style: style);
+    }
+    final baseSize = base.fontSize ?? 14.0;
+    return WidgetSpan(
+      alignment: PlaceholderAlignment.middle,
+      child: Transform.translate(
+        offset: Offset(
+          0,
+          run.script == 1 ? -baseSize * 0.35 : baseSize * 0.2,
+        ),
+        child: Text(
+          run.text,
+          style: style.copyWith(fontSize: baseSize * 0.7),
+        ),
+      ),
+    );
+  }
+
+  /// 表格块：横向滚动 + 内容自适应列宽 + 单元格垂直居中。
+  /// 空表（零行，或全部行零列）渲染为空，不建 Table。
+  Widget _buildTableBlock(BuildContext context, TableBlock block) {
+    if (block.rows.isEmpty || block.rows.first.isEmpty) {
+      return const SizedBox.shrink();
+    }
+    final table = Table(
+      border: TableBorder.all(color: Theme.of(context).colorScheme.outline),
+      defaultColumnWidth: const IntrinsicColumnWidth(),
+      children: [
+        for (final row in block.rows)
+          TableRow(
+            children: [
+              for (final cell in row)
+                // 注意：Flutter 自带的 TableCell widget 与模型 TableCell
+                // （question_content.dart，R4-1 定名）重名，此处用 fw 前缀
+                // 明确指 widget；模型类型不加前缀。
+                fw.TableCell(
+                  verticalAlignment: TableCellVerticalAlignment.middle,
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 8,
+                      vertical: 6,
+                    ),
+                    child: ConstrainedBox(
+                      constraints: const BoxConstraints(
+                        maxWidth: kMaxTableColumnWidth,
+                      ),
+                      child: QuestionContentRenderer(
+                        blocks: cell.children,
+                        textStyle: textStyle,
+                        formulaTextStyle: formulaTextStyle,
+                        fallbackImage: fallbackImage,
+                        onFormulaFallback: onFormulaFallback,
+                      ),
+                    ),
+                  ),
+                ),
+            ],
+          ),
+      ],
+    );
+    final scrolled = SingleChildScrollView(
+      scrollDirection: Axis.horizontal,
+      child: table,
+    );
+    if (!block.centered) return scrolled;
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        return SizedBox(
+          width: constraints.maxWidth.isFinite ? constraints.maxWidth : null,
+          child: Center(child: scrolled),
+        );
+      },
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -210,8 +304,15 @@ class QuestionContentRenderer extends StatelessWidget {
 
     for (final block in blocks) {
       switch (block) {
-        case TextBlock(:final text):
-          inlineSpans.add(TextSpan(text: text));
+        case TextBlock(:final text, :final runs):
+          // 有样式 run 时按 run 出 span；无 run 时是纯文本段（旧行为）。
+          if (runs == null) {
+            inlineSpans.add(TextSpan(text: text));
+          } else {
+            for (final run in runs) {
+              inlineSpans.add(_runSpan(run, effectiveTextStyle));
+            }
+          }
         case FormulaBlock(:final latex, :final displayMode):
           if (displayMode) {
             flushInline();
@@ -281,6 +382,36 @@ class QuestionContentRenderer extends StatelessWidget {
               child: FigureImageView(
                 cropPath: cropPath,
                 unconfirmed: unconfirmed,
+              ),
+            ),
+          );
+        case TableBlock():
+          // WP-C #6：表格块（单元格内按 Column 依次渲染 children，
+          // 见 [_buildTableBlock]；嵌套表格已在解析层展平，不会到这里）。
+          flushInline();
+          children.add(
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 4),
+              child: _buildTableBlock(context, block),
+            ),
+          );
+        case HeadingBlock(:final text, :final level):
+          // WP-C #6：标题块，1 级 20 / 2 级 18 / 3 级 16，加粗。
+          flushInline();
+          final size = switch (level) {
+            1 => 20.0,
+            2 => 18.0,
+            _ => 16.0,
+          };
+          children.add(
+            Padding(
+              padding: const EdgeInsets.only(top: 8, bottom: 4),
+              child: Text(
+                text,
+                style: effectiveTextStyle.copyWith(
+                  fontSize: size,
+                  fontWeight: FontWeight.bold,
+                ),
               ),
             ),
           );

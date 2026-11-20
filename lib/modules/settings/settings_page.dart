@@ -272,13 +272,14 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
     final ok = await _showConfirmDialog(
       title: '清理无用文件，确定吗？',
       detail:
-          '将删掉 ${scan.count} 个没人用的文件（共约 ${ImportService.formatBytes(scan.totalBytes)}），题目和数据不动，删了找不回来。确定清理吗？',
+          '将把 ${scan.count} 个没人用的文件（共约 ${ImportService.formatBytes(scan.totalBytes)}）移入回收站，题目和数据不动，7 天后彻底删除。确定清理吗？',
       confirmLabel: '确认清理',
     );
     if (ok && mounted) await _clearOrphans();
   }
 
-  /// P3 §4.5：孤儿清理——确认后执行，只删预览里列出的无引用文件。
+  /// P3 §4.5：孤儿清理——确认后执行，只移预览里列出的无引用文件
+  /// （WP-C #8 U3-2：移入回收站，物理删除只在启动清扫时执行）。
   Future<void> _clearOrphans() async {
     final scan = _orphanScan;
     if (scan == null || scan.files.isEmpty) return;
@@ -292,8 +293,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
       _snack(
         result.deletedCount == 0
             ? '没有可清理的无用文件'
-            : '已清理 ${result.deletedCount} 个无用文件，'
-                  '释放 ${ImportService.formatBytes(result.freedBytes)}',
+            : '已把 ${result.deletedCount} 个无用文件移入回收站，7 天后彻底删除',
       );
     } catch (_) {
       _snack('清理失败，稍后再试');
@@ -366,9 +366,10 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
           await _controller.clearBackupFailedFlag();
         } catch (_) {}
         _snack(
-          report.warnings.isEmpty
+          // WP-C #8 U3-2：部分完成的备份必须明示，不静默记“已保存”。
+          report.status == BackupExportStatus.complete
               ? '备份已保存（含题目图片，此备份仅新版可恢复）'
-              : '备份已保存（${report.warnings.join('；')}）',
+              : '备份已保存（部分完成：${report.brokenFiles.length} 个文件未包含在备份中；${report.warnings.join('；')}）',
         );
       } catch (_) {
         // 待定3：写文件失败 = 本次备份失败，记标志（首页出红横幅）；

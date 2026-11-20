@@ -979,13 +979,18 @@ class _OrganizeViewState extends ConsumerState<_OrganizeView> {
         _typeRow(q, st),
         SizedBox(height: DesignTokens.organizeSectionGap * scale),
         // 十四批 M3：选项标签确认编辑器（题型区；只在选择/判断题型渲染）。
-        OptionLabelsEditor(
+        // WP-A #1 收尾：detectedOptionLabels 把切分器检测到的选项序列
+        // 作初始值（optionLabels 为空时才算，编辑器内永不覆盖已有值）；
+        // onMultiSelectionChanged 把多选点选结果写进答案文本框。
+        AnswerOptionEditor(
           key: ValueKey(q.id),
           questionId: q.id,
           questionType: st.questionType,
           optionLabels: st.optionLabels,
           storedOptionLabels: q.optionLabels,
-          optionLabelsConfirmed: st.optionLabelsConfirmed,
+          detectedOptionLabels: st.optionLabels == null
+              ? _detectedOptionLabels(q)
+              : null,
           correctOption: st.correctOption,
           storedCorrectOption: q.correctOption,
           answerPendingRecheck: q.answerPendingRecheck,
@@ -998,6 +1003,9 @@ class _OrganizeViewState extends ConsumerState<_OrganizeView> {
               _notifier.setCorrectOption(value),
           onAnswerReconfirmedChanged: (v) =>
               _notifier.setAnswerReconfirmed(v),
+          onMultiSelectionChanged: (value) {
+            _answerCtrl.text = value;
+          },
           onConfirm: ({
             required List<String>? labels,
             required String? correctOption,
@@ -1146,6 +1154,16 @@ class _OrganizeViewState extends ConsumerState<_OrganizeView> {
     if (raw == null) return null;
     final c = classifyQuestion(raw: raw, split: splitStem(raw.mdResults));
     return c.suggestSplit ? '本题含多种作答形式，请拆框或人工指定' : null;
+  }
+
+  /// WP-A #1 收尾：切分器检测到的选项字母序列（见
+  /// [StemSplitResult.optionLabels]），只作 [AnswerOptionEditor]
+  /// 的初始值；无 OCR 原文或未切出序列时返回 null（编辑器走 A–D
+  /// 兜底）。纯函数，不持久化。
+  List<String>? _detectedOptionLabels(Question q) {
+    final raw = GlmOcrRawData.tryParse(q.ocrRaw);
+    if (raw == null) return null;
+    return splitStem(raw.mdResults).optionLabels;
   }
 
   Future<void> _pickQuestionType() async {

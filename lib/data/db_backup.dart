@@ -1405,7 +1405,13 @@ typedef _BackupIllegalRef = ({
   String reason,
 });
 
-Future<({List<int> bytes, List<String> warnings})>
+/// WP-C #8 U3-2：备份完整性状态。
+/// [complete] 仅当零警告且零 BROKEN 文件；任一文件未进包即 [partial]，
+/// 永不静默记 COMPLETE。库行直接引用缺失/不可读时整单抛错、不生成
+/// 备份（D-155 fail-closed），那种情况没有备份可记状态，不在此枚举。
+enum BackupExportStatus { complete, partial }
+
+Future<({List<int> bytes, List<String> warnings, List<String> brokenFiles, BackupExportStatus status})>
 exportBackupZipFromWithReportImpl(
   QuizDatabase db, {
   String? dataDir,
@@ -1419,6 +1425,9 @@ exportBackupZipFromWithReportImpl(
   final dir = dataDir ?? AppDatabase.dataDirectoryPath();
   final guard = FileLifecycleGuard.instance;
   final warnings = <String>[];
+  // WP-C #8 U3-2：未进包的文件清单（BROKEN）——函数作用域（与
+  // warnings 同级），锁内复制循环与释锁后 ZIP 组装循环都要往里记。
+  final brokenFiles = <String>{};
   final stagedRels = <String>[];
   var stagingDir = Directory('');
   // 同一逻辑时点的快照结果（JSON + 引用集合 + 图块→题目映射），
@@ -1515,7 +1524,16 @@ exportBackupZipFromWithReportImpl(
           if (rel != null) assetOwners.putIfAbsent(rel, () => label);
         }
 
+        // WP-C #8 U3-2：本快照内任一题的 ocrFigures JSON 是否无法解析
+        // （引用未知）。与图块映射同一时点判定，见 questions 循环内。
+        var unknownFigureRefs = false;
         for (final row in await db.select(db.questions).get()) {
+          // WP-C #8 U3-2：与快照同一时点判定引用是否未知——有题的
+          // ocrFigures JSON 无法解析时，图块可能未进备份，只记警告
+          // （不阻断）、状态记 PARTIAL。
+          if (_ocrFiguresJsonIsUnknown(row.ocrFigures)) {
+            unknownFigureRefs = true;
+          }
           for (final crop in _figureCropPathsFromJson(row.ocrFigures)) {
             figureQuestions.putIfAbsent(crop, () => row.title);
             assetOwners.putIfAbsent(crop, () => '题目「${row.id}」');
@@ -1600,6 +1618,7 @@ exportBackupZipFromWithReportImpl(
           figureQuestions: figureQuestions,
           assetOwners: assetOwners,
           illegalRefs: illegalRefs,
+          unknownFigureRefs: unknownFigureRefs,
         );
       });
       json = snapshot.json;
@@ -1608,6 +1627,10 @@ exportBackupZipFromWithReportImpl(
       figureQuestions = snapshot.figureQuestions;
       assetOwners = snapshot.assetOwners;
       illegalRefs = snapshot.illegalRefs;
+      // WP-C #8 U3-2：引用未知 → 图块可能未进备份，只记警告、不阻断。
+      if (snapshot.unknownFigureRefs) {
+        warnings.add('有题目的配图引用无法解析（配图数据损坏），配图可能未包含在备份中');
+      }
       // 十四批 M5 修复轮 5（D-162）：非法引用完整性检查——在复制
       // 循环前、锁内执行，失败发生在建暂存区之前，不产生待复制文件，
       // finally 只需清空登记（暂存区尚未创建）。
@@ -1633,11 +1656,13 @@ exportBackupZipFromWithReportImpl(
         warnings.add(
           '题目「${bad.figureTitle ?? bad.owner}」的配图路径非法（${bad.raw}），未包含在备份中',
         );
+        brokenFiles.add(bad.raw);
       }
       for (final bad in illegalRefs.where(
         (r) => r.kind == _BackupIllegalRefKind.derived,
       )) {
         warnings.add('${bad.owner}的派生文件 ${bad.raw} 路径非法，未包含在备份中');
+        brokenFiles.add(bad.raw);
       }
       final sorted = refs.toList()..sort();
       // 暂存区名取毫秒时间戳；同毫秒已存在时 +1（仍是纯数字，
@@ -1670,6 +1695,7 @@ exportBackupZipFromWithReportImpl(
         if (abs == null) {
           if (isFigure) {
             warnings.add('题目「${figureQuestions[rel]}」的配图路径非法，未包含在备份中');
+            brokenFiles.add(rel);
             continue;
           }
           if (isDirect) {
@@ -1681,12 +1707,14 @@ exportBackupZipFromWithReportImpl(
           // 无法解析也不再静默跳过，记 warning、继续导出（文案与
           // “派生文件 $rel 缺失/无法读取，未包含在备份中”体系统一）。
           warnings.add('派生文件 $rel 路径非法，未包含在备份中');
+          brokenFiles.add(rel);
           continue;
         }
         final f = File(abs);
         if (!f.existsSync()) {
           if (isFigure) {
             warnings.add('题目「${figureQuestions[rel]}」的配图缺失，未包含在备份中');
+            brokenFiles.add(rel);
             continue;
           }
           if (isDirect) {
@@ -1695,6 +1723,7 @@ exportBackupZipFromWithReportImpl(
             );
           }
           warnings.add('派生文件 $rel 缺失，未包含在备份中');
+          brokenFiles.add(rel);
           continue;
         }
         List<int> bytes;
@@ -1703,6 +1732,7 @@ exportBackupZipFromWithReportImpl(
         } catch (_) {
           if (isFigure) {
             warnings.add('题目「${figureQuestions[rel]}」的配图无法读取，未包含在备份中');
+            brokenFiles.add(rel);
             continue;
           }
           if (isDirect) {
@@ -1711,10 +1741,12 @@ exportBackupZipFromWithReportImpl(
             );
           }
           warnings.add('派生文件 $rel 无法读取，未包含在备份中');
+          brokenFiles.add(rel);
           continue;
         }
         if (isFigure && !_decodableFigureBytes(bytes)) {
           warnings.add('题目「${figureQuestions[rel]}」的配图已损坏，未包含在备份中');
+          brokenFiles.add(rel);
           continue;
         }
         final dest = File(p.join(stagingDir.path, rel));
@@ -1744,6 +1776,7 @@ exportBackupZipFromWithReportImpl(
       if (!staged.existsSync()) {
         if (isFigure) {
           warnings.add('题目「${figureQuestions[rel]}」的配图暂存区文件缺失，未包含在备份中');
+          brokenFiles.add(rel);
           continue;
         }
         if (isDirect) {
@@ -1752,6 +1785,7 @@ exportBackupZipFromWithReportImpl(
           );
         }
         warnings.add('派生文件 $rel 暂存区文件缺失，未包含在备份中');
+        brokenFiles.add(rel);
         continue;
       }
       List<int> bytes;
@@ -1760,6 +1794,7 @@ exportBackupZipFromWithReportImpl(
       } catch (_) {
         if (isFigure) {
           warnings.add('题目「${figureQuestions[rel]}」的配图暂存区文件无法读取，未包含在备份中');
+          brokenFiles.add(rel);
           continue;
         }
         if (isDirect) {
@@ -1768,11 +1803,23 @@ exportBackupZipFromWithReportImpl(
           );
         }
         warnings.add('派生文件 $rel 暂存区文件无法读取，未包含在备份中');
+        brokenFiles.add(rel);
         continue;
       }
       entries.add(ZipEntryData(rel, bytes));
     }
-    return (bytes: buildZip(entries), warnings: warnings);
+    // WP-C #8 U3-2：BROKEN 清单去重排序；状态永不静默记 COMPLETE——
+    // 任一警告或任一 BROKEN 文件即 PARTIAL。
+    final broken = brokenFiles.toList()..sort();
+    final status = (warnings.isEmpty && broken.isEmpty)
+        ? BackupExportStatus.complete
+        : BackupExportStatus.partial;
+    return (
+      bytes: buildZip(entries),
+      warnings: warnings,
+      brokenFiles: broken,
+      status: status,
+    );
   } finally {
     // 成功/失败后都删暂存区并解除占用（崩溃残留由启动清理处理）。
     // 十四批 M2（P2-2）：暂存区删除也经统一文件操作锁。
@@ -2792,7 +2839,16 @@ extension AppDatabaseBackup on AppDatabase {
 
   /// 十四批 M2：带警告的 zip 备份（实例版）——字节 + 可见警告列表
   /// （缺失/不可读图块的题目）。设置页走这条。
-  Future<({List<int> bytes, List<String> warnings})>
+  /// WP-C #8 U3-2：另含 `brokenFiles`（未进包的文件清单）与 `status`
+  ///（complete 仅当零警告且零 BROKEN 文件）。
+  Future<
+    ({
+      List<int> bytes,
+      List<String> warnings,
+      List<String> brokenFiles,
+      BackupExportStatus status,
+    })
+  >
   exportBackupZipWithReport() async =>
       AppDatabase.exportBackupZipFromWithReport(await db);
 

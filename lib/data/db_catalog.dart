@@ -32,6 +32,10 @@ Future<void> deleteSubjectFromImpl(QuizDatabase db, String id) async {
   for (final row in sliceRows) {
     figureCrops.addAll(_figureCropPathsFromJson(row.ocrFigures));
   }
+  // WP-C #8 U3-2：事务前快照被删题的 ocrFigures 是否未知（行删后查不到）。
+  final unknownBefore = sliceRows.any(
+    (r) => _ocrFiguresJsonIsUnknown(r.ocrFigures),
+  );
   final taskRows = await (db.select(
     db.collectTasks,
   )..where((t) => t.subjectId.equals(id))).get();
@@ -68,10 +72,18 @@ Future<void> deleteSubjectFromImpl(QuizDatabase db, String id) async {
     await (db.delete(db.subjects)..where((t) => t.id.equals(id))).go();
   });
   for (final slice in slices) {
-    await _deleteDataFileIfUnreferenced(db, slice);
+    await _deleteDataFileIfUnreferenced(
+      db,
+      slice,
+      unknownFigureRefsBeforeDelete: unknownBefore,
+    );
   }
   for (final crop in figureCrops) {
-    await _deleteDataFileIfUnreferenced(db, crop);
+    await _deleteDataFileIfUnreferenced(
+      db,
+      crop,
+      unknownFigureRefsBeforeDelete: unknownBefore,
+    );
   }
   for (final taskId in taskIds) {
     await _deleteTaskDirIfUnreferenced(db, taskId);
@@ -91,12 +103,24 @@ Future<int> deleteFolderFromImpl(QuizDatabase db, Folder f) async {
   });
   final remaining = await db.select(db.questions).get();
   final remainingIds = {for (final r in remaining) r.id};
+  // WP-C #8 U3-2：事务前快照被删题的 ocrFigures 是否未知（行删后查不到）。
+  final unknownBefore = before.any(
+    (r) => _ocrFiguresJsonIsUnknown(r.ocrFigures),
+  );
   for (final row in before) {
     if (!remainingIds.contains(row.id)) {
-      await _deleteDataFileIfUnreferenced(db, row.slicePath);
+      await _deleteDataFileIfUnreferenced(
+        db,
+        row.slicePath,
+        unknownFigureRefsBeforeDelete: unknownBefore,
+      );
       // 十四批 M2：被删题的图块裁图同样逐个重查引用再删。
       for (final crop in _figureCropPathsFromJson(row.ocrFigures)) {
-        await _deleteDataFileIfUnreferenced(db, crop);
+        await _deleteDataFileIfUnreferenced(
+          db,
+          crop,
+          unknownFigureRefsBeforeDelete: unknownBefore,
+        );
       }
     }
   }
