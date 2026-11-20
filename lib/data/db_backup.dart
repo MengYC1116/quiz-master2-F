@@ -94,10 +94,14 @@ void validateBackupDataImpl(Map<String, dynamic> data) {
   // questions 行缺 5 个 OCR 列走 DDL 默认值；v3 的表清单是 14 张。
   // 十四批 M2：v4 备份仍可恢复（迁移进 v5）：attempts 缺键视为 empty；
   // v4 的表清单是 15 张（backupTablesV4），v5 是 16 张。
+  // Win11 反馈包 5：v5 备份仍可恢复（迁移进 v6）：questions 行缺
+  // option_contents / option_contents_parser_version 两列走 NULL
+  // 默认值；v5 的表清单也是 16 张（backupTablesV5）。
   final requiredTables = switch (sv) {
     2 => AppDatabase.backupTablesV2,
     3 => AppDatabase.backupTablesV3,
     4 => AppDatabase.backupTablesV4,
+    5 => AppDatabase.backupTablesV5,
     _ => AppDatabase.backupTables,
   };
   for (final t in requiredTables) {
@@ -291,6 +295,24 @@ void _validateBackupRowJsonColumns(String table, Map row) {
       if (!validStringList(row[col])) {
         reject(col, '字符串数组', row[col]);
       }
+    }
+  }
+  // Win11 反馈包 5：questions.option_contents 是标签到选项文字的
+  // JSON 对象（不是字符串数组）：键缺失放行（v5 备份走 NULL 默认值）；
+  // 键在但为 null 放行（未解析）；非字符串或非法 JSON 对象一律拒绝。
+  if (table == 'questions' && row.containsKey('option_contents')) {
+    final value = row['option_contents'];
+    if (value != null &&
+        (value is! String || !isValidOptionContentsJson(value))) {
+      reject('option_contents', '标签到选项文字的 JSON 对象', value);
+    }
+  }
+  // Win11 反馈包 5：option_contents_parser_version 是可空整数（≥0）。
+  if (table == 'questions' &&
+      row.containsKey('option_contents_parser_version')) {
+    final value = row['option_contents_parser_version'];
+    if (value != null && (value is! int || value < 0)) {
+      reject('option_contents_parser_version', '≥0 的整数版本号', value);
     }
   }
   // review_state.queue：含 q/c 字符串的对象数组。
@@ -657,6 +679,9 @@ Future<void> _backupInsertRowTyped(
       'answer_version',
       // 十四批 M3（P1-A）：答案待重新核对标记。
       'answer_pending_recheck',
+      // Win11 反馈包 5：选项内容（标签映射 JSON）与解析器版本。
+      'option_contents',
+      'option_contents_parser_version',
     },
     'question_boxes': {
       'id',
@@ -870,6 +895,23 @@ Future<void> _backupInsertRowTyped(
               answerVersion: _vIntDef(row, 'answer_version'),
               // 十四批 M3（P1-A）：缺键走 DDL 默认值 0（v4/旧 v5 备份同口径）。
               answerPendingRecheck: _vIntDef(row, 'answer_pending_recheck'),
+              // Win11 反馈包 5：选项内容原样写回（不经 decode：备份里的
+              // JSON 文本就是存储表示；键缺失走 Value.absent() 落 DDL
+              // 默认值 NULL，v5 备份同口径；键在但值为 null 写 NULL）。
+              // 解析器版本缺键/NULL 都写 NULL。
+              optionContents: row.containsKey('option_contents')
+                  ? Value(
+                      row['option_contents'] == null
+                          ? null
+                          : _rs(row, 'option_contents'),
+                    )
+                  : const Value.absent(),
+              optionContentsParserVersion:
+                  row.containsKey('option_contents_parser_version')
+                  ? Value(
+                      _riN(row, 'option_contents_parser_version'),
+                    )
+                  : const Value.absent(),
             ),
             mode: InsertMode.insertOrReplace,
           );

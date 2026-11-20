@@ -798,6 +798,12 @@ Future<void> _upsertQuestionIntoTxn(
         old.sliceWidth != effective.sliceWidth ||
         old.sliceHeight != effective.sliceHeight ||
         old.questionType != effective.questionType ||
+        // Win11 反馈包 5：选项文字是内容（不是答案）：改文字 →
+        // content_version +1；键序不同不算变（按映射比较）。
+        !_optionContentsEqual(
+          decodeOptionContents(old.optionContents),
+          effective.optionContents,
+        ) ||
         _candidateStatusOf(old.ocrRaw) != _candidateStatusOf(effective.ocrRaw);
     final answerChanged =
         old.answer != effective.answer ||
@@ -908,6 +914,21 @@ bool _optionLabelsEqual(List<String>? a, List<String>? b) {
   return true;
 }
 
+/// Win11 反馈包 5：选项内容按标签映射比较（键序不同不算变；
+/// Dart 的 Map == 是同一性，不能直接比）。
+bool _optionContentsEqual(
+  Map<String, String>? a,
+  Map<String, String>? b,
+) {
+  if (identical(a, b)) return true;
+  if (a == null || b == null) return false;
+  if (a.length != b.length) return false;
+  for (final e in a.entries) {
+    if (b[e.key] != e.value) return false;
+  }
+  return true;
+}
+
 /// 十四批 M3（P1-A + 标签确认清零）：改标签保存的集中处理，在
 /// [upsertQuestionIntoImpl] 的版本计算之前跑，返回调整后的模型。
 /// 只在旧行存在且标签有序列表确实变化时触发（首次设标签、旧标签为
@@ -935,6 +956,20 @@ Question _applyOptionLabelChangeRules(DbQuestion old, Question q) {
       (old.answer != null && old.answer!.trim().isNotEmpty) ||
       (old.explanation != null && old.explanation!.trim().isNotEmpty);
   if (labelsChanged) {
+    // Win11 反馈包 5：标签删/改只动对应键——新标签集之外的选项内容键
+    // 删掉，存活键的文字原样保留（标签映射按标签取，删 B 不会让 C
+    // 串位）；标签全清时选项内容一并清空。
+    if (q.optionContents != null) {
+      if (newLabels == null) {
+        out = out.copyWith(clearOptionContents: true);
+      } else {
+        final pruned = Map<String, String>.of(q.optionContents!)
+          ..removeWhere((k, _) => !newLabels.contains(k));
+        if (pruned.length != q.optionContents!.length) {
+          out = out.copyWith(optionContents: pruned);
+        }
+      }
+    }
     // 改标签/数量 → 确认清零（除非本次就是确认保存）。
     if (!q.optionLabelsJustConfirmed) {
       out = out.copyWith(optionLabelsConfirmed: false);
@@ -1544,6 +1579,10 @@ Question _questionFromDb(DbQuestion r) => Question(
   optionLabels: r.optionLabels,
   optionLabelsConfirmed: r.optionLabelsConfirmed == 1,
   answerVersion: r.answerVersion,
+  // Win11 反馈包 5：选项内容（标签映射 JSON；非法 JSON 读侧按 null 计，
+  // 备份校验层已拦非法值入库）与解析器版本。
+  optionContents: decodeOptionContents(r.optionContents),
+  optionContentsParserVersion: r.optionContentsParserVersion,
   // 十四批 M3（P1-A）：答案待重新核对标记。
   answerPendingRecheck: r.answerPendingRecheck == 1,
 );
@@ -1600,6 +1639,9 @@ QuestionsCompanion _questionCompanion(
   optionLabels: Value(q.optionLabels),
   optionLabelsConfirmed: Value(q.optionLabelsConfirmed ? 1 : 0),
   answerVersion: Value(q.answerVersion),
+  // Win11 反馈包 5：选项内容按标签映射 JSON 原样写回；NULL = 未解析。
+  optionContents: Value(encodeOptionContents(q.optionContents)),
+  optionContentsParserVersion: Value(q.optionContentsParserVersion),
   // 十四批 M3（P1-A）：答案待重新核对标记（answerReconfirmed 是保存时
   // 信号，不持久化、不进 Companion）。
   answerPendingRecheck: Value(q.answerPendingRecheck ? 1 : 0),

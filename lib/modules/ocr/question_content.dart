@@ -91,7 +91,8 @@ class CodeBlock extends QuestionContentBlock {
 
 /// 配图图块段（十四批 M2）：OCR 识别出的题目插图，按阅读顺序插在
 /// 内容序列里。[cropPath] 是图块裁图相对路径；[unconfirmed] 为 true
-/// 时位置未确认，界面必须明确标注（绝不静默当成已确认顺序展示）。
+/// 时位置未确认（数据层诊断用；界面不再作任何未确认标注，见 Win11
+/// 反馈包 3）。
 class FigureBlock extends QuestionContentBlock {
   const FigureBlock({
     required this.figureId,

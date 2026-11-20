@@ -375,6 +375,15 @@ class Question {
     this.optionLabels,
     this.optionLabelsConfirmed = false,
     this.answerVersion = 1,
+    // Win11 反馈包 5（识别全部）：选项内容是标签映射 JSON
+    // `{"A":"偶函数","B":"奇函数",...}`（不用平行数组，删 B 不会
+    // 让 C 串位）；NULL = 未解析/无选项内容；{} = 已解析但无内容。
+    // optionContentsParserVersion 是产出这份内容的解析器版本
+    //（见 services/option_contents.dart），NULL = 未经解析器
+    // 解析（如人工填写）；人工改选项文字不清空版本（版本只说明
+    // 最初解析用的规则，内容以库里值为准）。
+    this.optionContents,
+    this.optionContentsParserVersion,
     // 十四批 M3（P1-A）：答案待重新核对标记。改标签后未在同一次保存中
     // 重新确认答案/正确选项时置 1：旧 answer/explanation/correctOption
     // 不得再作为有效标准答案展示（各处显示“标准答案待重新核对”/
@@ -439,6 +448,9 @@ class Question {
   final List<String>? optionLabels;
   final bool optionLabelsConfirmed;
   final int answerVersion;
+  // Win11 反馈包 5：选项内容（标签映射，NULL = 未解析）。
+  final Map<String, String>? optionContents;
+  final int? optionContentsParserVersion;
   final bool answerPendingRecheck;
   final bool answerReconfirmed;
   final bool optionLabelsJustConfirmed;
@@ -551,6 +563,9 @@ class Question {
     List<String>? optionLabels,
     bool? optionLabelsConfirmed,
     int? answerVersion,
+    // Win11 反馈包 5：选项内容与解析器版本。
+    Map<String, String>? optionContents,
+    int? optionContentsParserVersion,
     bool? answerPendingRecheck,
     bool? answerReconfirmed,
     bool? optionLabelsJustConfirmed,
@@ -560,6 +575,7 @@ class Question {
     bool clearAnswer = false,
     bool clearExplanation = false,
     bool clearNotes = false,
+    bool clearOptionContents = false,
     bool clearSourcePath = false,
     bool clearPageImagePath = false,
     bool clearSlicePath = false,
@@ -619,6 +635,13 @@ class Question {
       optionLabelsConfirmed:
           optionLabelsConfirmed ?? this.optionLabelsConfirmed,
       answerVersion: answerVersion ?? this.answerVersion,
+      optionContents: clearOptionContents
+          ? null
+          : (optionContents ?? this.optionContents),
+      optionContentsParserVersion: clearOptionContents
+          ? null
+          : (optionContentsParserVersion ??
+                this.optionContentsParserVersion),
       answerPendingRecheck: answerPendingRecheck ?? this.answerPendingRecheck,
       answerReconfirmed: answerReconfirmed ?? this.answerReconfirmed,
       optionLabelsJustConfirmed:
@@ -712,7 +735,10 @@ class CollectTask {
 
 /// 十三批 M2：OCR 任务状态（存 ocr_jobs.status，TEXT，存枚举名）。
 /// pending 待处理 / running 进行中 / completed 已完成 / failed 失败。
-enum OcrJobStatus { pending, running, completed, failed }
+/// Win11 反馈包 2：cancelled 已取消——用户主动取消识别后，任务行标
+/// cancelled（终态，不再被领走、不再写回）；最新任务为 cancelled 时
+/// 状态推导为“未识别，仅保留图片”。TEXT 列无 CHECK 约束，加值不需迁移。
+enum OcrJobStatus { pending, running, completed, failed, cancelled }
 
 extension OcrJobStatusLabel on OcrJobStatus {
   String get label => switch (this) {
@@ -720,6 +746,7 @@ extension OcrJobStatusLabel on OcrJobStatus {
     OcrJobStatus.running => '进行中',
     OcrJobStatus.completed => '已完成',
     OcrJobStatus.failed => '失败',
+    OcrJobStatus.cancelled => '已取消',
   };
 }
 

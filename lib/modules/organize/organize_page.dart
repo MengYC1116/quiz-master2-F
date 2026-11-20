@@ -15,6 +15,7 @@ import '../../modules/ocr/option_labels_editor.dart';
 import '../../modules/ocr/question_classifier.dart';
 import '../../modules/ocr/question_type_picker.dart';
 import '../../services/glm_ocr_client.dart';
+import '../../services/option_contents.dart';
 import '../../services/stem_splitter.dart';
 import '../../state/organize_notifier.dart';
 import '../../state/subject_sort.dart';
@@ -235,11 +236,22 @@ class _OrganizeViewState extends ConsumerState<_OrganizeView> {
 
   // 十三批 P1-1：接受的题干一律从库里 ocr_raw 包取（接受时重验证），
   // 这里收到的 candidateStem 只是预览字符串，不再传给 Notifier。
+  // Win11 反馈尾巴 1：接受时有手动图块没匹配上（已保留在末尾），只弹
+  // 一句提示，不再另弹“已用新的识别结果替换”（一次接受只提示一次，
+  // 不刷屏）；全部匹配上时仍是原来的成功提示。
   Future<bool> _acceptOcrCandidate(String candidateStem) async {
-    final reason = await _notifier.acceptOcrCandidateWithReason();
-    if (!mounted) return reason == null;
-    _snack(reason == null ? '已用新的识别结果替换' : candidateRejectionMessage(reason));
-    return reason == null;
+    final outcome = await _notifier.acceptOcrCandidateOutcome();
+    if (!mounted) return outcome.accepted;
+    if (outcome.reason != null) {
+      _snack(candidateRejectionMessage(outcome.reason!));
+    } else if (outcome.unmatchedManualIds.isNotEmpty) {
+      _snack(
+        '有 ${outcome.unmatchedManualIds.length} 张手动放置的图块未匹配上，已保留在末尾',
+      );
+    } else {
+      _snack('已用新的识别结果替换');
+    }
+    return outcome.accepted;
   }
 
   Future<void> _dismissOcrCandidate() async {
@@ -256,6 +268,23 @@ class _OrganizeViewState extends ConsumerState<_OrganizeView> {
     return ok;
   }
 
+  /// Win11 反馈包 3：图块换位（编辑器里拖图块落下即保存）。
+  /// 成功不弹提示（每次落下都弹会刷屏）；失败时提示，编辑器回滚。
+  Future<bool> _reorderFigure(
+    List<String> orderedFigureIds,
+    String movedFigureId,
+    int movedTextAt,
+  ) async {
+    final ok = await _notifier.reorderFigure(
+      orderedFigureIds,
+      movedFigureId,
+      movedTextAt,
+    );
+    if (!mounted) return ok;
+    if (!ok) _snack('保存失败，请重试');
+    return ok;
+  }
+
   Future<void> _rerecognizeStem() async {
     final ok = await _notifier.rerecognizeCurrent();
     if (!mounted) return;
@@ -264,6 +293,20 @@ class _OrganizeViewState extends ConsumerState<_OrganizeView> {
     } else {
       _snack('重新识别失败：没有可识别的切片');
     }
+  }
+
+  /// Win11 反馈包 2：取消识别。成功提示一次；无事可取消时静默成功
+  /// （按钮平时已隐藏，走到这里只是竞态）；失败提示重试。
+  Future<bool> _cancelOcr() async {
+    final code = await _notifier.cancelOcrCurrent();
+    if (!mounted) return code == 'cancelled' || code == 'nothing_to_cancel';
+    if (code == 'cancelled') {
+      _snack('已取消识别，只保留题目图片');
+      return true;
+    }
+    if (code == 'nothing_to_cancel') return true;
+    _snack('取消失败，请重试');
+    return false;
   }
 
   @override
@@ -825,7 +868,9 @@ class _OrganizeViewState extends ConsumerState<_OrganizeView> {
           onAcceptCandidate: _acceptOcrCandidate,
           onDismissCandidate: _dismissOcrCandidate,
           onRerecognize: _rerecognizeStem,
+          onCancelOcr: _cancelOcr,
           onDeleteFigure: _deleteFigure,
+          onReorderFigure: _reorderFigure,
           onEditingChanged: (open) {
             setState(() {
               _stemEditorOpen = open;
@@ -978,53 +1023,8 @@ class _OrganizeViewState extends ConsumerState<_OrganizeView> {
         SizedBox(height: DesignTokens.organizeSectionGap * scale),
         _typeRow(q, st),
         SizedBox(height: DesignTokens.organizeSectionGap * scale),
-        // 十四批 M3：选项标签确认编辑器（题型区；只在选择/判断题型渲染）。
-        // WP-A #1 收尾：detectedOptionLabels 把切分器检测到的选项序列
-        // 作初始值（optionLabels 为空时才算，编辑器内永不覆盖已有值）；
-        // onMultiSelectionChanged 把多选点选结果写进答案文本框。
-        AnswerOptionEditor(
-          key: ValueKey(q.id),
-          questionId: q.id,
-          questionType: st.questionType,
-          optionLabels: st.optionLabels,
-          storedOptionLabels: q.optionLabels,
-          detectedOptionLabels: st.optionLabels == null
-              ? _detectedOptionLabels(q)
-              : null,
-          correctOption: st.correctOption,
-          storedCorrectOption: q.correctOption,
-          answerPendingRecheck: q.answerPendingRecheck,
-          hadOldAnswer:
-              (q.answer ?? '').trim().isNotEmpty ||
-              (q.explanation ?? '').trim().isNotEmpty,
-          answerReconfirmed: st.answerReconfirmed,
-          onLabelsChanged: (labels) => _notifier.setOptionLabels(labels),
-          onCorrectOptionChanged: (value) =>
-              _notifier.setCorrectOption(value),
-          onAnswerReconfirmedChanged: (v) =>
-              _notifier.setAnswerReconfirmed(v),
-          onMultiSelectionChanged: (value) {
-            _answerCtrl.text = value;
-          },
-          onConfirm: ({
-            required List<String>? labels,
-            required String? correctOption,
-            required bool answerReconfirmed,
-            required bool confirmLabels,
-          }) async {
-            // 表单值已由 onLabelsChanged/onCorrectOptionChanged 同步进
-            // notifier state；这里只触发确认保存（忽略草稿参数）。
-            final ok = await _notifier.confirmOptionLabels(
-              answer: _answerCtrl.text,
-              explanation: _explanationCtrl.text,
-              notes: _notesCtrl.text,
-            );
-            if (mounted) {
-              _snack(ok ? '选项已确认，可客观判分' : '保存失败，请重试');
-            }
-          },
-        ),
-        SizedBox(height: DesignTokens.organizeSectionGap * scale),
+        // Win11 反馈包 1：正确答案选择器已移进「答案 · 解析 · 笔记」
+        // 区内（见 _answerSection，按题型分流），不再是题型区独立区块。
         QmFoldSection(
           key: _folderSectionKey,
           title: '文件夹（归类）',
@@ -1058,7 +1058,7 @@ class _OrganizeViewState extends ConsumerState<_OrganizeView> {
           expanded: _answerOpen,
           onToggle: () => _toggleRightSection(_RightSection.answer),
           variant: QmFoldVariant.form,
-          child: _answerSection(q),
+          child: _answerSection(q, st),
         ),
         _workActs(st),
         _confirmBar(),
@@ -1134,17 +1134,58 @@ class _OrganizeViewState extends ConsumerState<_OrganizeView> {
   /// 题型为待确认且分类器提示多小问结构时，显示拆框提示。
   Widget _typeRow(Question q, OrganizeState st) {
     final hint = st.questionType == null ? _splitHint(q) : null;
+    final splitReason = st.questionType == null ? _splitReason(q) : null;
+    final showReclassify =
+        q.questionTypeSource != 'manual' &&
+        GlmOcrRawData.tryParse(q.ocrRaw) != null;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         _fieldLabel('题型', hint: '点芯片可改 · 改后不再自动分类'),
-        questionTypeChip(
-          type: st.questionType,
-          onTap: _pickQuestionType,
+        Row(
+          children: [
+            questionTypeChip(
+              type: st.questionType,
+              onTap: _pickQuestionType,
+            ),
+            if (showReclassify) ...[
+              const SizedBox(width: 8),
+              TextButton(
+                onPressed: _onReclassify,
+                child: const Text('重新分类'),
+              ),
+            ],
+          ],
         ),
         if (hint != null) _helperText(hint),
+        if (splitReason != null) _helperText(splitReason),
       ],
     );
+  }
+
+  /// Win11 包 4：切分诊断——题型待确认时，把 splitStem 的 reason
+  /// 以小字显示（为什么没自动定型）。纯函数，不持久化。
+  String? _splitReason(Question q) {
+    final raw = GlmOcrRawData.tryParse(q.ocrRaw);
+    if (raw == null) return null;
+    return '切分：${splitStem(raw.mdResults).reason}';
+  }
+
+  /// Win11 包 4：点“重新分类”——强制重算当前题的题型（人工指定
+  /// 的题不显示按钮，见 _typeRow），按返回码提示结果。
+  Future<void> _onReclassify() async {
+    final code = await _notifier.reclassifyCurrent(force: true);
+    if (!mounted) return;
+    final message = switch (code) {
+      'updated' =>
+        '已重新分类为${questionTypeDisplay(ref.read(organizeProvider).questionType)}',
+      'unchanged' => '仍无法自动定型，请人工指定',
+      'manual' => '题型为人工指定，不自动分类',
+      'no_raw' => '本题还没有识别结果，无法分类',
+      'save_failed' => '保存失败，请重试',
+      _ => '仍无法自动定型，请人工指定',
+    };
+    _snack(message);
   }
 
   /// 多小问提示：按当前 OCR 原文重算分类（纯函数），只有分类器
@@ -1164,6 +1205,32 @@ class _OrganizeViewState extends ConsumerState<_OrganizeView> {
     final raw = GlmOcrRawData.tryParse(q.ocrRaw);
     if (raw == null) return null;
     return splitStem(raw.mdResults).optionLabels;
+  }
+
+  /// Win11 反馈包 5：切分器检测到的选项文字（统一解析器，与回填
+  /// 同一份规则），只作 [AnswerOptionEditor] 的初始值。切分失败、
+  /// 判断题、无 OCR 原文时返回 null（不显示、不硬猜）。纯函数，
+  /// 不持久化。
+  Map<String, String>? _detectedOptionContents(Question q) {
+    if (q.questionType == 'true_false') return null;
+    final raw = GlmOcrRawData.tryParse(q.ocrRaw);
+    if (raw == null) return null;
+    final split = splitStem(raw.mdResults);
+    if (split.status != StemSplitStatus.autoSplit) return null;
+    final parsed = parseOptionContents(raw.mdResults, split);
+    return parsed.contents.isEmpty ? null : parsed.contents;
+  }
+
+  /// Win11 反馈包 5：选项文字显示门——只有切分成功（自动切分）时
+  /// 才显示已存的选项文字；切分失败时传 null（选项文字已在题干里，
+  /// 选项区不重复显示）；判断题不显示。
+  Map<String, String>? _optionContentsForDisplay(
+    Question q,
+    Map<String, String>? formContents,
+  ) {
+    if (q.questionType == 'true_false') return null;
+    if (q.ocrSplitStatus != OcrSplitStatus.autoSegmented) return null;
+    return formContents;
   }
 
   Future<void> _pickQuestionType() async {
@@ -1758,7 +1825,68 @@ class _OrganizeViewState extends ConsumerState<_OrganizeView> {
     );
   }
 
-  Widget _answerSection(Question q) {
+  /// Win11 反馈包 1：答案区按题型分流——
+  /// - 选择题（单选/多选/不定项）与判断题：只留字母按钮
+  ///   （[AnswerOptionEditor]，已移进本区内），不显示文字答案框；
+  /// - 其他题型与“待确认”：只留文字答案框（多行 maxLines 5，
+  ///   超高出滚动条、有高度上限不无限撑高页面），不显示字母按钮。
+  /// - 题型切换不删除已有答案：旧值保留在本次编辑中（表单值与
+  ///   控制器都不清），只提示不兼容、改回原题型可恢复。
+  ///   （单选/判断保留的文字答案、非选择题保留的正确答案各有提示。）
+  Widget _answerSection(Question q, OrganizeState st) {
+    final isChoice = isChoiceQuestionType(st.questionType);
+    // 十四批 M3：选项标签确认编辑器（答案区内；只在选择/判断题型渲染）。
+    // WP-A #1 收尾：detectedOptionLabels 把切分器检测到的选项序列
+    // 作初始值（optionLabels 为空时才算，编辑器内永不覆盖已有值）；
+    // onMultiSelectionChanged 把多选点选结果写进答案文本框。
+    final optionEditor = AnswerOptionEditor(
+      key: ValueKey(q.id),
+      questionId: q.id,
+      questionType: st.questionType,
+      optionLabels: st.optionLabels,
+      storedOptionLabels: q.optionLabels,
+      detectedOptionLabels: st.optionLabels == null
+          ? _detectedOptionLabels(q)
+          : null,
+      // Win11 反馈包 5：选项文字（仅切分成功时显示；切分失败时
+      // 传 null，选项文字已在题干里，不重复显示）。
+      optionContents: _optionContentsForDisplay(q, st.optionContents),
+      detectedOptionContents: st.optionContents == null
+          ? _detectedOptionContents(q)
+          : null,
+      onOptionContentsChanged: (contents) =>
+          _notifier.setOptionContents(contents),
+      correctOption: st.correctOption,
+      storedCorrectOption: q.correctOption,
+      answerPendingRecheck: q.answerPendingRecheck,
+      hadOldAnswer:
+          (q.answer ?? '').trim().isNotEmpty ||
+          (q.explanation ?? '').trim().isNotEmpty,
+      answerReconfirmed: st.answerReconfirmed,
+      onLabelsChanged: (labels) => _notifier.setOptionLabels(labels),
+      onCorrectOptionChanged: (value) => _notifier.setCorrectOption(value),
+      onAnswerReconfirmedChanged: (v) => _notifier.setAnswerReconfirmed(v),
+      onMultiSelectionChanged: (value) {
+        _answerCtrl.text = value;
+      },
+      onConfirm: ({
+        required List<String>? labels,
+        required String? correctOption,
+        required bool answerReconfirmed,
+        required bool confirmLabels,
+      }) async {
+        // 表单值已由 onLabelsChanged/onCorrectOptionChanged 同步进
+        // notifier state；这里只触发确认保存（忽略草稿参数）。
+        final ok = await _notifier.confirmOptionLabels(
+          answer: _answerCtrl.text,
+          explanation: _explanationCtrl.text,
+          notes: _notesCtrl.text,
+        );
+        if (mounted) {
+          _snack(ok ? '选项已确认，可客观判分' : '保存失败，请重试');
+        }
+      },
+    );
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -1768,16 +1896,42 @@ class _OrganizeViewState extends ConsumerState<_OrganizeView> {
           Padding(
             padding: const EdgeInsets.only(bottom: 8),
             child: _helperText(
-              '标准答案/解析待重新核对：改过选项标签后需重新确认——多选请在答案框重新填写（改标签后未确认就保存会清空旧答案）；单选请在上方题型区重新选定正确答案并点「确认选项」。',
+              '标准答案/解析待重新核对：改过选项标签后需重新确认——多选请重新点选字母并勾选确认（改标签后未确认就保存会清空旧答案）；单选请在下方重新选定正确答案。',
             ),
           ),
-        _fieldLabel('答案', hint: '可选 · 与解析分开 · 固定在上'),
-        TextField(
-          controller: _answerCtrl,
-          maxLines: 1,
-          decoration: const InputDecoration(hintText: '还没想好可留空'),
-        ),
-        _optionalEmptyNote(_answerCtrl),
+        if (isChoice) ...[
+          optionEditor,
+          // 单选/判断：控制器里若还有文字答案（之前填的或多选切过来
+          // 的），保留并提示——当前题型答案以字母按钮为准，改回其
+          // 他题型可继续用。多选不提示：点选结果本身就是答案文本。
+          if (st.questionType == 'choice_single' ||
+              st.questionType == 'true_false')
+            ListenableBuilder(
+              listenable: _answerCtrl,
+              builder: (context, _) {
+                final retained = _answerCtrl.text.trim();
+                if (retained.isEmpty) return const SizedBox.shrink();
+                return _helperText(
+                  '文字答案“$retained”已保留：当前题型答案以字母按钮为准，改回其他题型可继续用。',
+                );
+              },
+            ),
+        ] else ...[
+          _fieldLabel('答案', hint: '可选 · 与解析分开 · 固定在上'),
+          TextField(
+            controller: _answerCtrl,
+            maxLines: 5,
+            minLines: 1,
+            decoration: const InputDecoration(hintText: '还没想好可留空'),
+          ),
+          _optionalEmptyNote(_answerCtrl),
+          // 非选择题/待确认：表单里若还有之前选定的正确答案，保留
+          // 并提示——改回单选/判断可恢复，保存后按新题型处理。
+          if (st.correctOption != null && st.correctOption!.isNotEmpty)
+            _helperText(
+              '题型已改：之前选定的正确答案（${st.correctOption}）已保留在本次编辑中，改回单选/判断可恢复；保存后按新题型处理。',
+            ),
+        ],
         const SizedBox(height: 12),
         _fieldLabel('解析', hint: '可选 · 可以空，与答案分开 · 固定在答案下方'),
         TextField(

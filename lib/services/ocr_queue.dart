@@ -69,6 +69,7 @@ import '../modules/ocr/question_classifier.dart';
 import 'glm_ocr_client.dart';
 import 'import_guess.dart';
 import 'ocr_key_store.dart';
+import 'option_contents.dart';
 import 'stem_splitter.dart';
 
 /// 租约时长：worker 领走任务后 5 分钟内须完成；超时未完成视为旧 worker
@@ -261,6 +262,109 @@ class OcrWorker {
       }
     }
     return jobs;
+  }
+
+  /// 取消识别（Win11 反馈包 2）：取消/丢弃该题的 OCR 任务，只保留题目
+  /// 切片图。同一事务内：(1) 该题全部任务行标 cancelled + 清租约
+  /// （排队中移除、识别中打取消标记、已完成/失败的任务行同样标掉，
+  /// 否则状态推导仍会把已取消的题判成“识别完成”）；(2) 题目 OCR
+  /// 字段清空（ocr_raw / 题干 / 图块 / 切分状态 / 选项内容 / 自动
+  /// 分类；人工指定题型与文件夹/标签/错因/答案保留，人工改过的题干
+  /// 随内容一起清掉——调用方在 manualEdited 时先弹确认，见
+  /// ocr_stem_section.dart 的 [_cancelOcr]）。
+  /// 切片（slicePath）与答案/解析/笔记不动；content_version 只在题目
+  /// 内容确实变了时 +1（光标任务行不碰版本——在途 worker 靠任务行
+  /// 守门丢弃，不靠版本）。
+  /// 返回码：'cancelled' / 'nothing_to_cancel' / 'no_question'。
+  /// 事务提交后：旧图块裁图走孤儿清理（先改库、再清文件，不先删文件；
+  /// 清理失败不回滚取消，残留文件由启动/设置清理兜底）；发事件。
+  Future<String> cancelOcrForQuestion(String questionId) async {
+    final now = _now();
+    final d = await database.db;
+    var outcome = 'nothing_to_cancel';
+    var oldFigurePaths = const <String>[];
+    await d.transaction(() async {
+      final row = await (d.select(
+        d.questions,
+      )..where((t) => t.id.equals(questionId))).getSingleOrNull();
+      if (row == null) {
+        outcome = 'no_question';
+        return;
+      }
+      final jobs = await (d.select(
+        d.ocrJobs,
+      )..where((t) => t.questionId.equals(questionId))).get();
+      final hasLiveJobs = jobs.any(
+        (j) => j.status != OcrJobStatus.cancelled.name,
+      );
+      final figures = parseOcrFigures(row.ocrFigures);
+      final hasOcrContent =
+          row.ocrRaw != null ||
+          (row.ocrStem ?? '').trim().isNotEmpty ||
+          figures.isNotEmpty ||
+          row.optionContents != null ||
+          row.questionTypeSource == 'auto' ||
+          row.questionBackgroundTagsSource == 'auto';
+      if (!hasLiveJobs && !hasOcrContent) return;
+      oldFigurePaths = [
+        for (final f in figures)
+          if (f.cropPath.isNotEmpty) f.cropPath,
+      ];
+      await cancelOcrJobsForQuestionIntoImpl(d, questionId, now: now);
+      // 只有题目 OCR 内容确实要清时才写题目行（content_version 只跟
+      // 踪 OCR 内容：光标任务行——如取消一个排队中任务——不碰版本，
+      // 否则表单保存的版本令牌会被无故顶掉；在途 worker 靠任务行守门
+      // 丢弃，不靠版本）。
+      if (!hasOcrContent) {
+        outcome = 'cancelled';
+        return;
+      }
+      final setParts = <String>[
+        'ocr_raw = NULL',
+        'ocr_stem = NULL',
+        'ocr_split_status = ?',
+        'ocr_figures = ?',
+        'option_contents = NULL',
+        'option_contents_parser_version = NULL',
+        'ocr_manual_edited = 0',
+      ];
+      final variables = <Variable<Object>>[
+        Variable<String>(OcrSplitStatus.unsegmented),
+        Variable<String>('[]'),
+      ];
+      if (row.questionTypeSource != 'manual') {
+        setParts.add('question_type = NULL');
+        setParts.add('question_type_source = ?');
+        variables.add(Variable<String>('unclassified'));
+      }
+      if (row.questionBackgroundTagsSource != 'manual') {
+        setParts.add('question_background_tags = ?');
+        setParts.add('question_background_tags_source = ?');
+        variables.addAll([
+          Variable<String>(''),
+          Variable<String>('unclassified'),
+        ]);
+      }
+      setParts.add('content_version = content_version + 1');
+      variables.add(Variable<String>(questionId));
+      await d.customUpdate(
+        'UPDATE questions SET ${setParts.join(', ')} WHERE id = ?',
+        variables: variables,
+        updates: {d.questions},
+      );
+      outcome = 'cancelled';
+    });
+    if (outcome != 'cancelled') return outcome;
+    if (oldFigurePaths.isNotEmpty) {
+      try {
+        await database.cleanOrphans(oldFigurePaths);
+      } catch (e) {
+        // 孤儿清理失败不回滚取消：裁图残留由启动/设置清理兜底。
+        debugPrint('Win11 包 2：取消识别后孤儿清理失败（题 $questionId）：$e');
+      }
+    }
+    _emit(questionId);
+    return outcome;
   }
 
   /// 单步处理：领一条可跑任务并走完它。返回 true = 处理了一条任务
@@ -524,6 +628,19 @@ class OcrWorker {
           );
           return;
         }
+        // Win11 反馈包 2：迟到结果守门——任务已取消 / 租约已丢时直接丢弃，
+        // 不写题目（GPT 评审包 2 条件：回写须在同一事务内校验“任务仍
+        // 有效 + 代次一致 + 未取消”）。代次身份就是租约 token：取消时
+        // 清掉 token，旧 worker 凭旧 token 再写即不匹配；任务被回收重
+        // 领后 token 也变了，同样丢弃。任务行不存在时同样丢弃。
+        final jobRow = await (d.select(
+          d.ocrJobs,
+        )..where((t) => t.id.equals(job.id))).getSingleOrNull();
+        if (jobRow == null ||
+            jobRow.status == OcrJobStatus.cancelled.name ||
+            jobRow.leaseToken != job.leaseToken) {
+          return;
+        }
         // 把题目上已有的 pending 候选标 stale（同一事务里写）：
         // 只当能算出当前 hash、且候选的 input_hash 与之不同时标——
         // content_version 不一致时不同（只改题干、切片没变时候选仍可
@@ -687,10 +804,46 @@ class OcrWorker {
             inputHash: job.inputHash,
           );
           final oldFigures = parseOcrFigures(row.ocrFigures);
+          // Win11 反馈包 3：重识别产生新图块 ID 时，用 mergeManualFigures
+          // 保留已有 manual 图块（按裁图区域匹配；匹配不上的保留在末尾并
+          // 上报，绝不静默丢弃——见 ocr_figures.dart）。
+          final merged = mergeManualFigures(
+            oldFigures: oldFigures,
+            newFigures: derivedFigures,
+          );
+          final mergedFigures = merged.figures;
+          if (merged.unmatchedManualIds.isNotEmpty) {
+            debugPrint(
+              'Win11 包 3：自动应用时 ${merged.unmatchedManualIds.length} 张'
+              '手动排过的图块在新识别里没找到，已保留在末尾：'
+              '${merged.unmatchedManualIds.join(', ')}（题 ${job.questionId}）',
+            );
+          }
           final figuresSame = sameFiguresIgnoringCrop(
             oldFigures,
-            derivedFigures,
+            mergedFigures,
           );
+          // Win11 反馈包 5：选项内容与题干同一事务写回（统一解析器，
+          // 与回填同一份规则）。判断题固定“正确/错误”，不走选项解析
+          // （手动指定的题型也守门：写回的类型以手动为准）；切分失败
+          // 时不存选项内容（NULL；选项文字已在题干文本里，选项区不
+          // 重复显示）；切分成功时存标签映射 JSON + 解析器版本。
+          // 人工改过（manualEdited）的分支只写 ocr_raw 作候选，不动
+          // 已存选项内容；LaTeX 不平衡分支同样只写 raw。
+          final effectiveType =
+              plan.writeType ? plan.questionType : row.questionType;
+          final parsedOptions = effectiveType == 'true_false'
+              ? null
+              : parseOptionContents(markdown, split);
+          final optionContentsToStore =
+              split.status == StemSplitStatus.autoSplit &&
+                      parsedOptions != null
+                  ? encodeOptionContents(parsedOptions.contents)
+                  : null;
+          final optionContentsVersionToStore =
+              optionContentsToStore == null
+                  ? null
+                  : optionContentsParserVersion;
           // M2 版本比对口径：只比较用户可见内容字段集合 + 来源身份
           // （题干文本、切分状态、图块列表与顺序、题型、背景标签），
           // 不比较 ocr_raw 技术元数据。仅技术元数据变化、不改变用户
@@ -699,6 +852,7 @@ class OcrWorker {
               row.ocrStem != split.stemText ||
               row.ocrSplitStatus != split.status.label ||
               !figuresSame ||
+              row.optionContents != optionContentsToStore ||
               (plan.writeType &&
                   row.questionType != plan.questionType) ||
               (plan.writeTags &&
@@ -708,23 +862,41 @@ class OcrWorker {
               : claimedVersion;
           var figuresToStore = oldFigures;
           if (!figuresSame) {
-            if (derivedFigures.isEmpty) {
+            if (mergedFigures.isEmpty) {
               figuresToStore = const [];
             } else {
-              try {
-                final sliceBytes = await cropFile!.readAsBytes();
-                final figureWrite = await writeFigureFiles(
-                  dataDir: AppDatabase.dataDirectoryPath(),
-                  questionId: job.questionId,
-                  sliceBytes: sliceBytes,
-                  figures: derivedFigures,
-                );
-                pendingFigureWrite = figureWrite;
-                figuresToStore = figureWrite.figures;
-              } on FigureWriteException {
-                // 图块写失败不阻断题干写回：图块降级为 []（见
-                // figure_files.dart 文件头），识别结果本身照常落库。
-                figuresToStore = const [];
+              // 已带裁图文件的图块（保留下来的 manual 图块）直接复用；
+              // 只有 cropPath 为空的才需要新裁图——writeFigureFiles 会给
+              // 每个传入图块重新裁图并分配新路径，旧裁图传进去会被重裁、
+              // 旧文件变孤儿。
+              final toWrite = mergedFigures
+                  .where((f) => f.cropPath.isEmpty)
+                  .toList();
+              // 裁图失败时的底线：只丢弃本次没裁出来的新图块，已带裁图
+              // 文件的 manual 图块保留（旧口径整批 [] 会连带丢掉它们）。
+              figuresToStore = mergedFigures
+                  .where((f) => f.cropPath.isNotEmpty)
+                  .toList();
+              if (toWrite.isNotEmpty) {
+                try {
+                  final sliceBytes = await cropFile!.readAsBytes();
+                  final figureWrite = await writeFigureFiles(
+                    dataDir: AppDatabase.dataDirectoryPath(),
+                    questionId: job.questionId,
+                    sliceBytes: sliceBytes,
+                    figures: toWrite,
+                  );
+                  pendingFigureWrite = figureWrite;
+                  final writtenById = {
+                    for (final f in figureWrite.figures) f.id: f,
+                  };
+                  figuresToStore = [
+                    for (final f in mergedFigures) writtenById[f.id] ?? f,
+                  ];
+                } on FigureWriteException {
+                  // 保留上面算好的已带裁图子集；图块写失败不阻断题干写回
+                  // （见 figure_files.dart 文件头），识别结果本身照常落库。
+                }
               }
             }
           }
@@ -733,12 +905,17 @@ class OcrWorker {
             'ocr_stem = ?',
             'ocr_split_status = ?',
             'ocr_figures = ?',
+            // Win11 反馈包 5：选项内容与解析器版本同批写回。
+            'option_contents = ?',
+            'option_contents_parser_version = ?',
           ];
           final variables = <Variable<Object>>[
             Variable<String>(rawJson),
             Variable<String>(split.stemText),
             Variable<String>(split.status.label),
             Variable<String>(encodeOcrFigures(figuresToStore)),
+            Variable<String>(optionContentsToStore),
+            Variable<int>(optionContentsVersionToStore),
           ];
           if (plan.writeType) {
             setParts.add('question_type = ?');
@@ -881,6 +1058,15 @@ class OcrWorker {
       ),
     );
   }
+}
+
+/// 取消识别的调用方入口（与 stem_correction.dart 的 enqueueOcrForQuestion
+/// 同款）：用已启动的 worker 单例（没有时就地建一个）。返回码见
+/// [OcrWorker.cancelOcrForQuestion]。失败抛错，调用方须处理
+/// （Notifier 接住返回 'failed'，不得静默吞掉）。
+Future<String> cancelOcrForQuestion(AppDatabase db, String questionId) async {
+  final worker = OcrWorker.instanceOrNull ?? OcrWorker(database: db);
+  return worker.cancelOcrForQuestion(questionId);
 }
 
 /// 租约已丢：应用事务内抛它回滚整笔写回（任务已被回收重领，

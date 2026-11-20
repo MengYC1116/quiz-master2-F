@@ -525,6 +525,7 @@ class QmChip extends StatelessWidget {
     this.selected = false,
     this.onTap,
     this.onDelete,
+    this.deleteTooltip,
     this.subjectId,
     this.storedColor,
     this.focusNode,
@@ -543,6 +544,10 @@ class QmChip extends StatelessWidget {
 
   /// 非空表示可删除芯片（`.err-sel-chip` 形态）。
   final VoidCallback? onDelete;
+
+  /// × 删除区的提示（可删除 + 可点双区时用，如“删除选项 B”）；
+  /// null 则 × 区无提示。只影响无障碍提示，不改变外观与手势。
+  final String? deleteTooltip;
 
   /// 学科 id（`math` / `english` / `politics`）：选中态用学科色填充。
   /// 不传则选中态用 accent 填充。
@@ -699,12 +704,22 @@ class QmChip extends StatelessWidget {
                               DesignTokens.deletableChipPaddingH * scale,
                               DesignTokens.deletableChipPaddingV * scale,
                             ),
-                            child: QmGlyph(
-                              QmGlyphs.close,
-                              size: DesignTokens.captionFontSize,
-                              color: fg,
-                              fontWeight: FontWeight.w700,
-                            ),
+                            child: deleteTooltip == null
+                                ? QmGlyph(
+                                    QmGlyphs.close,
+                                    size: DesignTokens.captionFontSize,
+                                    color: fg,
+                                    fontWeight: FontWeight.w700,
+                                  )
+                                : Tooltip(
+                                    message: deleteTooltip!,
+                                    child: QmGlyph(
+                                      QmGlyphs.close,
+                                      size: DesignTokens.captionFontSize,
+                                      color: fg,
+                                      fontWeight: FontWeight.w700,
+                                    ),
+                                  ),
                           ),
                         ),
                       ],

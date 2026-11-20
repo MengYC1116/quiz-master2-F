@@ -26,6 +26,14 @@ Widget questionTypeChip({
   );
 }
 
+/// Win11 反馈包 1：选择/判断题型——答案区只留字母按钮，不显示
+/// 文字答案框；其他题型与“待确认”只留文字答案框。
+bool isChoiceQuestionType(String? type) =>
+    type == 'choice_single' ||
+    type == 'choice_multi' ||
+    type == 'choice_variable' ||
+    type == 'true_false';
+
 /// 选择题型弹窗。
 /// 返回：选中的题型值；'' 表示用户选了“待确认”；null 表示取消未选。
 Future<String?> showQuestionTypePicker(

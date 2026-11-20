@@ -3,7 +3,9 @@
 // 位置：整理页在每道题的切片图正下方；详情页在题目图下方，长期可用。
 // 结构（GPT 评审 §3.6）：
 //   原题切片（页面上方的图，永远保留）
-//   识别后的题干（渲染好的公式）［编辑题干］［重新识别］
+//   识别题干标题行：标题 + 状态 chip +［编辑题干］［重新识别］
+//   （Win11 反馈包 3：两按钮从题干区底部移到标题行旁）
+//   识别后的题干（渲染好的公式）
 //   点“编辑题干”后在切片下方原地展开 [StemEditor]，不跳页面。
 //
 // 状态行只读 [deriveOcrStemStatus]（见 ocr_stem_status.dart）：
@@ -72,8 +74,10 @@ class OcrStemSection extends StatefulWidget {
     required this.onAcceptCandidate,
     required this.onDismissCandidate,
     required this.onRerecognize,
+    this.onCancelOcr,
     this.onEditingChanged,
     this.onDeleteFigure,
+    this.onReorderFigure,
   });
 
   final Question question;
@@ -95,12 +99,27 @@ class OcrStemSection extends StatefulWidget {
   /// 重新识别：调用方入队（已手动改过时本组件先弹确认再调）。
   final Future<void> Function() onRerecognize;
 
+  /// 取消识别（Win11 反馈包 2）：调用方取消该题的 OCR 任务并清空 OCR
+  /// 结果（只留切片）。返回 true = 已取消，false = 失败；调用方按
+  /// 返回值提示。本组件在题干已手动改过时先弹确认（取消会连人工改的
+  /// 题干一起清掉）。为 null 时不显示取消按钮（旧调用方不用改）。
+  final Future<bool> Function()? onCancelOcr;
+
   /// 编辑器开合变化（页面用它做活页内刷新守门：编辑中不刷新该题）。
   final ValueChanged<bool>? onEditingChanged;
 
   /// 删除单个图块（十四批 M2）：调用方调 deleteFigureFromQuestion +
   /// repo.save 落库；返回 true = 已删除。编辑器里用。
   final Future<bool> Function(String figureId)? onDeleteFigure;
+
+  /// 图块换位（Win11 反馈包 3）：与 [StemEditor.onReorderFigure] 同款
+  /// 契约，透传给编辑器（调用方用 [reorderFigures] 重排 + 落库）。
+  final Future<bool> Function(
+    List<String> orderedFigureIds,
+    String movedFigureId,
+    int movedTextAt,
+  )?
+  onReorderFigure;
 
   @override
   State<OcrStemSection> createState() => _OcrStemSectionState();
@@ -203,6 +222,39 @@ class _OcrStemSectionState extends State<OcrStemSection> {
     await widget.onRerecognize();
   }
 
+  /// 取消识别（Win11 反馈包 2）：题干已手动改过时先弹确认——取消会把
+  /// 人工改的题干连同识别结果一起清掉，只留切片。其余直接调回调；
+  /// 回调返回 false 时调用方自己提示，本组件不弹。
+  Future<void> _cancelOcr() async {
+    final onCancel = widget.onCancelOcr;
+    if (onCancel == null) return;
+    if (widget.question.ocrManualEdited) {
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('取消识别'),
+          content: const Text(
+            '这道题干已手动修改过。取消识别会清除题干、图块与识别结果，'
+            '只保留题目切片图。',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(false),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              key: const Key('cancel-ocr-confirm'),
+              onPressed: () => Navigator.of(context).pop(true),
+              child: const Text('取消识别'),
+            ),
+          ],
+        ),
+      );
+      if (confirmed != true) return;
+    }
+    await onCancel();
+  }
+
   @override
   Widget build(BuildContext context) {
     final question = widget.question;
@@ -230,6 +282,15 @@ class _OcrStemSectionState extends State<OcrStemSection> {
       figures: display.figures,
       mdResults: mdResults,
     );
+    // Win11 反馈包 2：有可取消的东西（未取消的任务行，或已存 OCR 结果）
+    // 且调用方给了回调时，才显示“取消识别”。取消后任务行全是
+    // cancelled、OCR 字段已清，按钮自动消失，只留“重新识别”。
+    final hasSomethingToCancel =
+        widget.onCancelOcr != null &&
+        (widget.jobs.any((j) => j.status != OcrJobStatus.cancelled) ||
+            widget.question.ocrRaw != null ||
+            stem.isNotEmpty);
+    final sliceImage = _sliceImageWidget();
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -258,6 +319,30 @@ class _OcrStemSectionState extends State<OcrStemSection> {
                   color: theme.colorScheme.onSurfaceVariant,
                 ),
               ),
+            ],
+            // Win11 反馈包 3：编辑题干 / 重新识别按钮从题干区底部移到
+            // “识别题干”标题行旁（与状态 chip 同一行），方便操作。
+            // 编辑态时隐藏（编辑器自带保存/取消）。
+            if (!_editing) ...[
+              const Spacer(),
+              FilledButton(
+                onPressed: () => _setEditing(true),
+                child: const Text('编辑题干'),
+              ),
+              const SizedBox(width: 8),
+              OutlinedButton(
+                onPressed: _rerecognize,
+                child: Text(status == OcrStemStatus.failed ? '重试' : '重新识别'),
+              ),
+              // Win11 反馈包 2：取消识别放在“重新识别”旁边。
+              if (hasSomethingToCancel) ...[
+                const SizedBox(width: 8),
+                OutlinedButton(
+                  key: const Key('cancel-ocr-button'),
+                  onPressed: _cancelOcr,
+                  child: const Text('取消识别'),
+                ),
+              ],
             ],
           ],
         ),
@@ -288,6 +373,7 @@ class _OcrStemSectionState extends State<OcrStemSection> {
             figures: display.figures,
             mdResults: mdResults,
             onDeleteFigure: widget.onDeleteFigure,
+            onReorderFigure: widget.onReorderFigure,
             onSave: (newStem) async {
               final ok = await widget.onSaveEdited(newStem);
               if (ok && mounted) _setEditing(false);
@@ -303,7 +389,7 @@ class _OcrStemSectionState extends State<OcrStemSection> {
           if (stem.isNotEmpty)
             QuestionContentRenderer(
               blocks: blocks,
-              fallbackImage: _sliceImageWidget(),
+              fallbackImage: sliceImage,
             )
           else if (question.ocrRaw != null)
             const Text(
@@ -311,27 +397,17 @@ class _OcrStemSectionState extends State<OcrStemSection> {
               style: TextStyle(fontSize: 13),
             )
           else if (status == OcrStemStatus.failed)
-            const Text('识别失败，可手动重试', style: TextStyle(fontSize: 13)),
+            const Text('识别失败，可手动重试', style: TextStyle(fontSize: 13))
+          // Win11 反馈包 2：已取消识别——只留切片图（状态 chip 已显示
+          // “未识别，仅保留图片”，这里只放图，不重复文案）。
+          else if (status == OcrStemStatus.notRecognized && sliceImage != null)
+            sliceImage,
           if (candidateStem != null) ...[
             const SizedBox(height: 8),
             _candidateBanner(
               onView: () => _setEditing(true, showCandidate: true),
             ),
           ],
-          const SizedBox(height: 8),
-          Row(
-            children: [
-              FilledButton(
-                onPressed: () => _setEditing(true),
-                child: const Text('编辑题干'),
-              ),
-              const SizedBox(width: 8),
-              OutlinedButton(
-                onPressed: _rerecognize,
-                child: Text(status == OcrStemStatus.failed ? '重试' : '重新识别'),
-              ),
-            ],
-          ),
         ],
       ],
     );

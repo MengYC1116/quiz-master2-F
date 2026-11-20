@@ -77,42 +77,39 @@ class QuizDatabase extends _$QuizDatabase {
   final Future<void> Function(QuizDatabase db)? onBeforeOpen;
 
   @override
-  int get schemaVersion => 5;
+  int get schemaVersion => 6;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
     onCreate: (m) async {
       await onCreateTables?.call(this);
     },
-    // Drift 2.35 的 MigrationStrategy 没有独立的 onDowngrade 槽位：
-    // 升版与降版都走 onUpgrade（from < to 为升版，from > to 为降版）。
-    // 十二批 D-91：v2 → v3 是本项目第一次真正的迁移——建
-    // recently_viewed_questions 表 + collect_tasks 加 source_hash 列，
-    // 数据全保留。十三批 M2：v3 → v4——questions 加 5 个 OCR 列 +
-    // 新建 ocr_jobs 表，数据全保留；v2 → v4 走 2→3 再 3→4 两步链式。
-    // 十四批 M1：v4 → v5——questions 加 10 列（题型两维 + 图块 +
-    // correct_option / option_labels / answer_version /
-    // answer_pending_recheck；content_version
-    // 不新增，v4 已有）+ cause_records 加 2 个锚点列 + review_history
-    // 加 8 列 + 新建 attempts 表 + review_state 加 4 列 +
-    // question_type 索引；旧 solved_count 按保守方案迁移（见
-    // _upgrade4To5）。其它 from/to 一律抛错：v1 及更老由打开前的
+    // Win11 反馈包 5：v5 → v6——questions 加 option_contents +
+    // option_contents_parser_version 两列，数据全保留；v2 → v6 走
+    // 2→3→4→5→6 四步链式。其它 from/to 一律抛错：v1 及更老由打开前的
     // deleteLegacyDatabaseIfPresent 预检删掉；from > to（新版库用旧版
     // 打开）请用新版打开。
     onUpgrade: (m, from, to) async {
-      if (from == 2 && to == 5) {
+      if (from == 2 && to == 6) {
         await _upgrade2To3(m);
         await _upgrade3To4(m);
         await _upgrade4To5(m);
+        await _upgrade5To6(m);
         return;
       }
-      if (from == 3 && to == 5) {
+      if (from == 3 && to == 6) {
         await _upgrade3To4(m);
         await _upgrade4To5(m);
+        await _upgrade5To6(m);
         return;
       }
-      if (from == 4 && to == 5) {
+      if (from == 4 && to == 6) {
         await _upgrade4To5(m);
+        await _upgrade5To6(m);
+        return;
+      }
+      if (from == 5 && to == 6) {
+        await _upgrade5To6(m);
         return;
       }
       if (from > to) {
@@ -328,6 +325,36 @@ Future<void> _upgrade4To5(Migrator m) async {
   final db = m.database as QuizDatabase;
   await db.into(db.settings).insert(
     SettingsCompanion.insert(key: 'schemaVersion', value: '5'),
+    mode: InsertMode.insertOrReplace,
+  );
+}
+
+/// Win11 反馈包 5 的 v5 → v6 迁移步：questions 加 2 列——
+/// option_contents（选项内容，标签映射 JSON，NULL = 未解析）+
+/// option_contents_parser_version（解析器版本，NULL = 未经解析器解析）。
+/// 迁移 DDL 必须与 createTablesImpl 的手写字面量一字不差（十二批
+/// D-91 的教训：迁移后库与全新 v6 库 sqlite_master 逐字一致——
+/// ALTER TABLE ADD COLUMN 的列定义文本与建表字面量的列定义逐词相同，
+/// SQLite 会把它们拼进同一份 CREATE TABLE 文本；两列都在 questions
+/// 表末尾，追加顺序与建表顺序一致）。
+/// 旧行两列均为 NULL（未解析），由开库回填（backfillOptionContentsIntoImpl）
+/// 从 ocr_raw 重解析补齐；迁移本身不读不写题目内容，不抬 content_version。
+/// 重复迁移不重复加字段：Drift 只在 from==5 时跑本步，user_version
+/// 已是 6 的库不再进 onUpgrade；迁移中途失败时 SQLite/Drift 回滚
+/// 本步（onUpgrade 在事务内跑），不留半迁移状态。
+Future<void> _upgrade5To6(Migrator m) async {
+  await m.database.customStatement(
+    'ALTER TABLE questions ADD COLUMN option_contents TEXT',
+  );
+  await m.database.customStatement(
+    'ALTER TABLE questions ADD COLUMN option_contents_parser_version INTEGER',
+  );
+  // settings 里的 schemaVersion 写回 6，与 user_version 一致
+  // （真实 v5 库的 settings 本来就有这行；手造夹具库若缺这行，
+  // insertOrReplace 会补一行）。
+  final db = m.database as QuizDatabase;
+  await db.into(db.settings).insert(
+    SettingsCompanion.insert(key: 'schemaVersion', value: '6'),
     mode: InsertMode.insertOrReplace,
   );
 }

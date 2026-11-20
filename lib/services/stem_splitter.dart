@@ -291,7 +291,7 @@ StemSplitResult splitStem(String ocrText) {
   final validSeqs = <List<_Candidate>>[];
   String? firstFailure;
   for (final a in candidates.where((c) => c.letter == 'A')) {
-    final outcome = _validateSequence(candidates, a);
+    final outcome = _validateSequence(candidates, a, working);
     if (outcome.$1 != null) {
       validSeqs.add(outcome.$1!);
     } else {
@@ -853,6 +853,7 @@ enum _CandidateKind {
 class _Candidate {
   _Candidate({
     required this.letter,
+    required this.format,
     required this.strong,
     required this.start,
     required this.orderKey,
@@ -865,6 +866,10 @@ class _Candidate {
   });
 
   final String letter;
+
+  /// 标记格式（见 [_MarkerFormat]；Win11 包 4：跨段组装的格式门用它——
+  /// 裸字母（`bare`）是题干引用还是选项分不清，不得借空行拼成选项）。
+  final _MarkerFormat format;
 
   /// 结构强度：强（2 分）/ 弱（0 分）。
   final bool strong;
@@ -1122,9 +1127,11 @@ List<_Candidate> _tableCandidates(String working, _HtmlNode root) {
       int markerPos;
       int contentStart;
       int contentEnd;
+      _MarkerFormat format;
       final exact = RegExp(r'^([A-EＡ-Ｅ])$').firstMatch(first);
       if (exact != null) {
         letter = _normalizeLetter(exact.group(1)!);
+        format = _MarkerFormat.bare;
         content = cells.length > 1 ? _flattenText(cells[1]).trim() : '';
         markerPos = _findLetterOffsetInSpan(
           working,
@@ -1146,6 +1153,7 @@ List<_Candidate> _tableCandidates(String working, _HtmlNode root) {
         final flatStart = _flattenText(cells[0]).trimLeft();
         if (!_markerAtStart(flatStart, marker)) continue;
         letter = marker.letter;
+        format = marker.format;
         content = flatStart.substring(marker.text.length).trim();
         markerPos = marker.start;
         contentStart = marker.end;
@@ -1154,6 +1162,7 @@ List<_Candidate> _tableCandidates(String working, _HtmlNode root) {
       out.add(
         _Candidate(
           letter: letter,
+          format: format,
           strong: true,
           start: table.start,
           orderKey: markerPos,
@@ -1164,6 +1173,39 @@ List<_Candidate> _tableCandidates(String working, _HtmlNode root) {
           hasContent: _textHasContent(content),
         ),
       );
+      // Win11 包 4：两列表格的第二列也是选项（`<tr><td>A. 甲</td>
+      // <td>B. 乙</td></tr>`）。仅当首列不是单字母格（`| A | 内容 |`
+      // 形）时扫描——单字母格的第二列是内容，不是选项。
+      // 单元格须以标记开头，且标记后有实际内容。
+      if (exact == null) {
+        for (var i = 1; i < cells.length; i++) {
+          final flat = _flattenText(cells[i]).trimLeft();
+          if (flat.isEmpty) continue;
+          final extra = _firstMarkerInSpan(
+            working,
+            cells[i].start,
+            cells[i].end,
+          );
+          if (extra == null) continue;
+          if (!_markerAtStart(flat, extra)) continue;
+          final after = flat.substring(extra.text.length).trim();
+          if (!_textHasContent(after)) continue;
+          out.add(
+            _Candidate(
+              letter: extra.letter,
+              format: extra.format,
+              strong: true,
+              start: table.start,
+              orderKey: extra.start,
+              markerEnd: extra.start + 1,
+              kind: _CandidateKind.table,
+              contentStart: extra.end,
+              contentEnd: cells[i].end,
+              hasContent: true,
+            ),
+          );
+        }
+      }
     }
   }
   return out;
@@ -1227,6 +1269,7 @@ List<_Candidate> _blockCandidates(
         out.add(
           _Candidate(
             letter: marker.letter,
+            format: marker.format,
             strong: true,
             start: el.start,
             orderKey: marker.start,
@@ -1289,6 +1332,7 @@ List<_Candidate> _scanTextCandidates(
     out.add(
       _Candidate(
         letter: marker.letter,
+        format: marker.format,
         strong: _isStrongMarker(text, marker),
         start: marker.start,
         orderKey: marker.start,
@@ -1318,6 +1362,7 @@ List<_Candidate> _scanTextCandidates(
     out.add(
       _Candidate(
         letter: _normalizeLetter(text[start]),
+        format: _MarkerFormat.bare,
         strong: false, // 裸字母恒为弱；完整 A–D 序列由结构分第二条放行
         start: start,
         orderKey: start,
@@ -1497,8 +1542,20 @@ void _computeContentIntervals(
     if (c.kind != _CandidateKind.text) continue;
     final blockEnd = allSpans[c.blockId]?.end ?? c.markerEnd;
     var end = blockEnd;
-    if (i + 1 < sorted.length && sorted[i + 1].orderKey < end) {
-      end = sorted[i + 1].orderKey;
+    // 内容边界取块内下一个真正的选项标记：文本裸字母是题干噪声
+    // （`A∩B` 里的 B 是句中文字），不是选项边界——跳过它找下一个
+    // 标记；否则前一候选的内容区间会被句中裸字母提前截断（Win11 包 4：
+    // 守门用例里 B 的内容区间因此在 `A∩B` 处断掉，跨段门误判 gap 有
+    // 实质文字）。非裸候选仍按原规则截断。
+    for (var k = i + 1; k < sorted.length; k++) {
+      final nxt = sorted[k];
+      if (nxt.orderKey >= end) break;
+      if (nxt.kind == _CandidateKind.text &&
+          nxt.format == _MarkerFormat.bare) {
+        continue;
+      }
+      end = nxt.orderKey;
+      break;
     }
     for (final nLine in structuralNLines) {
       if (nLine > c.markerEnd && nLine < end) {
@@ -1662,14 +1719,43 @@ int? _subQuestionNumber(String? arabic, String? circledRaw) {
 // 序列组装与判定（§2.2 步骤 2–3；R2-1/R2-4）
 // ---------------------------------------------------------------------------
 
+/// 跨段接续门（Win11 包 4）：判断 [prev] 与 [next] 两个候选能否在一条
+/// 选项序列里前后相邻。返回 null 表示可以接续，否则返回阻断原因（供
+/// [_validateSequence] 汇总进 [StemSplitResult.reason] 诊断）。
+///
+/// * 同段（同一逻辑块，即中间无空行/题号行）→ 直接放行；
+/// * 不同段、中间只有空白（空行）→ 仅当两边都是显式格式（非 `bare`）
+///   标记时放行——裸字母（`A 甲`）是题干引用还是选项分不清，不得借空
+///   行拼成选项（守门：图九 `A、B` 题干引用 + 空行 + 只有 `C、D` 时
+///   不切分）；
+/// * 不同段、中间有实质文字 → 一律阻断（选项序列被逻辑块隔开）。
+String? _crossingBlockReason(
+  String working,
+  _Candidate prev,
+  _Candidate next,
+) {
+  if (prev.blockId == next.blockId) return null;
+  final gap = working.substring(prev.contentEnd, next.orderKey);
+  if (gap.trim().isNotEmpty) return '选项序列被逻辑块隔开，不切分';
+  if (prev.format == _MarkerFormat.bare ||
+      next.format == _MarkerFormat.bare) {
+    return '跨段选项序列含裸字母标记，不切分';
+  }
+  return null;
+}
+
 /// 从 A 候选起按文本顺序组装序列：字母严格连续，不跳号、不重复、
 /// 不倒序；标记形式归一化，混用不扣分；E 只允许紧跟 D 之后（R2-4）；
-/// B 必须与 A 在同一逻辑块内（其余字母亦然，块边界即停止）。
-/// 组装不到 B 时返回 null；序列紧后的同块候选若不是新题的 A，
+/// 跨段接续走 [_crossingBlockReason] 门（Win11 包 4：空行分隔的双栏
+/// 选项可跨段组装，裸字母或有实质文字隔开时阻断）。
+/// 组装不到 B 时返回 null run；序列紧后的同块候选若不是新题的 A，
 /// 说明缺号/重复，序列作废（R2-4：A/B/C/E 缺 D → 拒绝）。
-List<_Candidate>? _assembleSequence(
+/// 返回的 `blockedReason` 记录组装中遇到的第一条跨段阻断原因，供
+/// [_validateSequence] 在结构门未过时汇总进诊断。
+({List<_Candidate>? run, String? blockedReason}) _assembleSequence(
   List<_Candidate> candidates,
   _Candidate a,
+  String working,
 ) {
   const order = ['A', 'B', 'C', 'D', 'E'];
   final sorted = [...candidates]..sort((x, y) => x.orderKey.compareTo(y.orderKey));
@@ -1678,30 +1764,49 @@ List<_Candidate>? _assembleSequence(
   var expected = 1; // 下一个期望字母在 order 中的下标
   var j = aIndex + 1;
   _Candidate? breaker;
+  String? blockedReason;
   while (j < sorted.length) {
     final next = sorted[j];
-    if (next.blockId != a.blockId) break;
     if (expected >= order.length) break;
     if (next.letter == order[expected]) {
+      final reason = _crossingBlockReason(working, run.last, next);
+      if (reason != null) {
+        blockedReason = reason;
+        break;
+      }
       run.add(next);
       expected++;
       j++;
       continue;
     }
+    // 非期望字母：文本裸字母是题干噪声（`A∩B` 里的 B、句首的 `B teacher…`），
+    // 不是选项——跳过继续找期望字母，不作废序列、也不停止；其余
+    // （显式格式标记、表格单字母格）才是缺号/重复的 breaker（仅当
+    // 与序列尾同块时；跨块的候选不属于本序列，直接停止，原行为）。
+    if (next.kind == _CandidateKind.text &&
+        next.format == _MarkerFormat.bare) {
+      j++;
+      continue;
+    }
+    if (next.blockId != run.last.blockId) break;
     breaker = next;
     break;
   }
-  if (run.length < 2) return null;
+  if (run.length < 2) return (run: null, blockedReason: blockedReason);
   // 缺号/重复作废：序列紧后的同块候选若不是新题的 A，则序列作废。
-  if (breaker != null && breaker.letter != 'A') return null;
-  return run;
+  if (breaker != null && breaker.letter != 'A') {
+    return (run: null, blockedReason: blockedReason);
+  }
+  return (run: run, blockedReason: blockedReason);
 }
 
 /// 验证一个 A 候选：返回（组装出的有效序列，失败原因）。
 /// 失败原因供 notSplit 的 reason 使用；成功时原因为 null。
+/// [working] 为工作文本，供跨段接续门判断两段之间的间隔。
 (List<_Candidate>?, String?) _validateSequence(
   List<_Candidate> candidates,
   _Candidate a,
+  String working,
 ) {
   if (!a.hasContent) {
     return (null, 'A 标记后无实际选项内容，不切分');
@@ -1709,7 +1814,7 @@ List<_Candidate>? _assembleSequence(
   final sorted = [...candidates]..sort((x, y) => x.orderKey.compareTo(y.orderKey));
   final aIndex = sorted.indexOf(a);
   final next = aIndex + 1 < sorted.length ? sorted[aIndex + 1] : null;
-  if (next == null || next.blockId != a.blockId) {
+  if (next == null) {
     return (null, '仅发现 A 标记，未见 B，不切分');
   }
   if (next.letter == 'A') {
@@ -1718,9 +1823,17 @@ List<_Candidate>? _assembleSequence(
   if (next.letter != 'B') {
     return (null, '选项序列缺号/重复，不切分');
   }
-  final seq = _assembleSequence(candidates, a);
+  // B 接续门（Win11 包 4）：B 与 A 跨段时走跨段规则——空行 + 双边
+  // 显式格式才放行，裸字母或中间有实质文字时阻断（原“同块”要求
+  // 放宽为空行分隔的双栏选项服务）。
+  final crossing = _crossingBlockReason(working, a, next);
+  if (crossing != null) {
+    return (null, crossing);
+  }
+  final assembled = _assembleSequence(candidates, a, working);
+  final seq = assembled.run;
   if (seq == null) {
-    return (null, '选项序列缺号/重复，不切分');
+    return (null, assembled.blockedReason ?? '选项序列缺号/重复，不切分');
   }
   for (final c in seq) {
     if (!c.hasContent) {
@@ -1737,7 +1850,10 @@ List<_Candidate>? _assembleSequence(
       seq[2].letter == 'C' &&
       seq[3].letter == 'D';
   if (strongCount < 2 && !completeAD) {
-    return (null, '结构分不足（强标记少于 2 个且序列非完整 A–D），不切分');
+    return (
+      null,
+      assembled.blockedReason ?? '结构分不足（强标记少于 2 个且序列非完整 A–D），不切分',
+    );
   }
   return (seq, null);
 }

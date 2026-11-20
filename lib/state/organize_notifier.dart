@@ -47,6 +47,7 @@ import '../data/repository.dart';
 import '../models/models.dart';
 import '../modules/ocr/question_classifier.dart';
 import '../modules/ocr/stem_correction.dart';
+import '../services/glm_ocr_client.dart';
 import '../services/ocr_queue.dart';
 import 'repository_provider.dart';
 import 'subject_sort.dart';
@@ -98,6 +99,8 @@ class OrganizeState {
     this.correctOption,
     this.answerReconfirmed = false,
     this.optionLabelsJustConfirmed = false,
+    // Win11 反馈包 5：表单里的选项文字（标签映射；loadForm 时从当前题读）。
+    this.optionContents,
     this.formResetKey = 0,
     // 十三批 M5：当前题的 OCR 任务行与 key 有无（识别题干状态推导用）。
     this.ocrJobs = const [],
@@ -163,6 +166,10 @@ class OrganizeState {
   final bool answerReconfirmed;
   final bool optionLabelsJustConfirmed;
 
+  /// Win11 反馈包 5：表单里的选项文字（标签 → 文字；null = 未解析/
+  /// 不显示）。loadForm 时从当前题读（仅切分成功时显示，见页面）。
+  final Map<String, String>? optionContents;
+
   /// 表单重置代次：每次 `_loadForm` 加一，页面按它变化、下一帧把
   /// 控制器文本按当前题重建并收起内联新建框（原 `_loadForm` 里
   /// 设控制器文本 + 收框的部分）。
@@ -227,6 +234,10 @@ class OrganizeState {
             questionType == 'true_false')
         ? correctOption
         : null;
+    // Win11 反馈包 5：题型改成判断题时选项文字清空（判断题固定
+    // “正确/错误”，不走选项解析）。
+    final effectiveContents =
+        questionType == 'true_false' ? null : optionContents;
     // SR-P2-27：保存兜底——表单里万一还有与固定枚举同名的自定义项
     //（如别处入口带进来的旧数据），合并进固定项再写库，不丢、不重复。
     final fixedTypes = {
@@ -263,6 +274,13 @@ class OrganizeState {
       correctOption: effectiveCorrect,
       clearCorrectOption:
           effectiveCorrect == null && q.correctOption != null,
+      // Win11 反馈包 5：选项文字表单值（copyWith 里传 null 表示
+      // “保持原值”，清空要走 clear 标志；删标签的键剪枝由数据层
+      // _applyOptionLabelChangeRules 再做一遍）。题型改成判断题时
+      // 选项文字清空（判断题固定“正确/错误”，不走选项解析）。
+      optionContents: effectiveContents,
+      clearOptionContents:
+          effectiveContents == null && q.optionContents != null,
       answerReconfirmed: answerReconfirmed,
       optionLabelsJustConfirmed: optionLabelsJustConfirmed,
     );
@@ -301,6 +319,7 @@ class OrganizeState {
     Object? correctOption = _unset,
     bool? answerReconfirmed,
     bool? optionLabelsJustConfirmed,
+    Object? optionContents = _unset,
     int? formResetKey,
     List<OcrJob>? ocrJobs,
     bool? hasOcrApiKey,
@@ -347,6 +366,9 @@ class OrganizeState {
       answerReconfirmed: answerReconfirmed ?? this.answerReconfirmed,
       optionLabelsJustConfirmed:
           optionLabelsJustConfirmed ?? this.optionLabelsJustConfirmed,
+      optionContents: optionContents == _unset
+          ? this.optionContents
+          : optionContents as Map<String, String>?,
       formResetKey: formResetKey ?? this.formResetKey,
       ocrJobs: ocrJobs ?? this.ocrJobs,
       hasOcrApiKey: hasOcrApiKey ?? this.hasOcrApiKey,
@@ -406,6 +428,12 @@ class OrganizeNotifier extends Notifier<OrganizeState> {
   /// WP-B #3/#4/#5：每题的单题刷新请求版本号（不进 State、不参与
   /// UI 重建）。同一题两次刷新逆序完成时，旧版本号的任务作废。
   final Map<String, int> _ocrRefreshVersions = {};
+
+  /// Win11 包 4：自动重算已尝试过的输入版本（`classification_input_hash`
+  /// 概念的落地：复用现有 `contentVersion` 作输入版本键，`(questionId,
+  /// contentVersion)` 一对即一版输入）。同一版本只自动算一次，算过
+  /// 就记键——不管结果是 updated 还是 unchanged；强制重算不受此门限。
+  final Set<(String, int)> _reclassifiedKeys = {};
 
   /// S1-1 通用守门：方法入口、第一个 await 之前捕获的三样
   /// （`gen` / `q` / `formId`）在每次 await 返回之后、任何一次
@@ -543,6 +571,9 @@ class OrganizeNotifier extends Notifier<OrganizeState> {
     // 不 await：它是装饰性 best-effort 加载，失败/挂起都不能挡
     // loadForm() 之后的流程；读到了再更新 state（见 _refreshOcrStatus）。
     unawaited(_refreshOcrStatus());
+    // Win11 包 4：题型待确认且非人工指定时，自动重算一次（best-effort，
+    // 不挡导航；同一输入版本只算一次，见 reclassifyCurrent）。
+    unawaited(reclassifyCurrent());
   }
 
   /// 十三批 M5：只刷新当前题的 OCR 状态（任务行 + key 有无）。
@@ -599,9 +630,18 @@ class OrganizeNotifier extends Notifier<OrganizeState> {
       final queue = [...state.queue];
       final i = queue.indexWhere((x) => x.id == questionId);
       if (i < 0) return; // 题已不在队列（已确认离开），不重新插入。
+      final oldRow = queue[i];
       queue[i] = fresh;
       if (stale()) return;
       state = state.copyWith(queue: queue);
+      // Win11 包 4 任务 5：当前题 OCR 完成时，若表单题型仍等于旧行
+      // 的题型（用户没改过表单），把表单同步到新行题型——否则下次
+      // 保存时 formQuestionWithType 会把旧表单题型当人工改动写回，
+      // 覆盖自动分类。用户改过表单题型时不动（他们的选择胜出）。
+      if (state.current?.id == questionId &&
+          state.questionType == oldRow.questionType) {
+        state = state.copyWith(questionType: fresh.questionType);
+      }
       // 当前题才刷新 OCR 任务信息；不调 loadForm()，不动表单。
       if (state.current?.id == questionId) {
         final jobs = await repo.ocrJobsForQuestion(questionId);
@@ -618,6 +658,57 @@ class OrganizeNotifier extends Notifier<OrganizeState> {
   /// 十三批 M5：读一道题的候选题干（守门分支用，不改任何状态）。
   Future<String?> candidateStemFor(String questionId) =>
       candidateStemForQuestion(_repo, questionId);
+
+  /// Win11 包 4：自动 / 强制重算当前题的题型（见 [reclassifiedQuestion]）。
+  ///
+  /// 自动（`force` 为 false）：仅当题型待确认（`questionType == null`）
+  /// 且来源非 manual 时重算；同一输入版本只算一次（`_reclassifiedKeys`
+  /// 以 `(questionId, contentVersion)` 守门，计算前先记键——结果是
+  /// unchanged 也记，下次同版本不再算）。
+  /// 强制（`force` 为 true）：忽略“已定型 / 已算过”守门（“重新分类”
+  /// 按钮用），manual 与无原文仍拒绝。
+  /// 返回码：'updated' / 'unchanged' / 'already_typed' /
+  /// 'already_attempted' / 'manual' / 'no_raw' / 'no_question' /
+  /// 'save_failed'。写库用 SaveToken（期望版本取自重算前模型），
+  /// 版本冲突即失败不覆盖；成功后换队列行、同步表单题型。
+  Future<String> reclassifyCurrent({bool force = false}) async {
+    final q = state.current;
+    if (q == null) return 'no_question';
+    if (q.questionTypeSource == 'manual') return 'manual';
+    if (q.ocrRaw == null || GlmOcrRawData.tryParse(q.ocrRaw) == null) {
+      return 'no_raw';
+    }
+    if (!force && q.questionType != null) return 'already_typed';
+    final key = (q.id, q.contentVersion);
+    if (!force && _reclassifiedKeys.contains(key)) {
+      return 'already_attempted';
+    }
+    _reclassifiedKeys.add(key);
+    final updated = reclassifiedQuestion(q);
+    if (updated == null) return 'unchanged';
+    try {
+      if (!state.queue.any((x) => x.id == q.id)) return 'save_failed';
+      await _repo.save(
+        updated,
+        token: SaveToken(
+          questionId: q.id,
+          expectedContentVersion: q.contentVersion,
+        ),
+      );
+    } catch (_) {
+      return 'save_failed';
+    }
+    if (_disposed) return 'updated';
+    _replaceQueueRow(updated);
+    // 表单同步：表单题型仍等于重算前的库里题型（用户没改过表单）
+    // 或强制重算时，同步到新题型；用户改过表单题型时不动——他们的
+    // 选择在保存时胜出（见 refreshOcrForQuestion 任务 5 同款规则）。
+    if (state.current?.id == q.id &&
+        (state.questionType == q.questionType || force)) {
+      state = state.copyWith(questionType: updated.questionType);
+    }
+    return 'updated';
+  }
 
   // ---------- 十三批 M5：纠错保存（见 stem_correction.dart 的规则） ----------
 
@@ -658,14 +749,17 @@ class OrganizeNotifier extends Notifier<OrganizeState> {
   /// 人工标记保持 1、版本 +1、raw 候选状态写 accepted。
   /// 失败返回 false，编辑器不收起。
   Future<bool> acceptOcrCandidate() async =>
-      await acceptOcrCandidateWithReason() == null;
+      (await acceptOcrCandidateOutcome()).accepted;
 
-  /// 接受候选并返回失败原因（十三批 P1-2 任务 e，与 DetailNotifier
-  /// 同款）：成功返回 null；失败返回 [CandidateRejection.reason]
+  /// 接受候选并返回结果（十三批 P1-2 任务 e，与 DetailNotifier
+  /// 同款；Win11 反馈尾巴 1：成功时 [AcceptCandidateOutcome.reason]
+  /// 为 null，[AcceptCandidateOutcome.unmatchedManualIds] 是接受时
+  /// 没匹配上的手动图块 ID——已保留在末尾，页面据此提示用户一次）：
+  /// 失败时 reason 是 [CandidateRejection.reason]
   ///（question_deleted / no_candidate / not_pending / hash_mismatch /
   /// slice_missing），其余失败返回 'save_failed'，无当前题返回
-  /// 'no_question'。页面按 reason 给明确文案（见 ocr_stem_section.dart
-  /// 的 [candidateRejectionMessage]）。
+  /// 'no_question'，此时 unmatchedManualIds 为空。页面按 reason 给
+  /// 明确文案（见 ocr_stem_section.dart 的 [candidateRejectionMessage]）。
   // U1-3 界限（明确写出，不假装全原子）：队列成员关系是 Notifier
   // 内存状态，不在库里，事务无法校验它。成员检查在调用前同步完成
   //（与调用之间零 await，T1-1）；事务内的版本校验是防止写错题的
@@ -673,30 +767,40 @@ class OrganizeNotifier extends Notifier<OrganizeState> {
   // 一个已离队的题目执行一次带版本校验的写入——写入内容仍是用户对
   // 该题的真实编辑，且版本校验保证不覆盖更新的保存。这是有意接受
   // 的界限，不是未发现的漏洞。
-  Future<String?> acceptOcrCandidateWithReason() async {
+  Future<AcceptCandidateOutcome> acceptOcrCandidateOutcome() async {
     final q = state.current;
-    if (q == null) return 'no_question';
+    if (q == null) return const AcceptCandidateOutcome(reason: 'no_question');
     final repo = _repo;
     // S1-3：紧贴写操作之前重查该题仍在队列中（与调用之间零 await）。
     // 行已不在队列 → 返回失败并触发队列刷新。
     if (!state.queue.any((x) => x.id == q.id)) {
       await refresh();
-      return 'question_deleted';
+      return const AcceptCandidateOutcome(reason: 'question_deleted');
     }
     try {
       // 十三批 P1 第二轮：acceptCandidateStem 在事务内原子校验并落库，
       // 返回的就是已保存的题，不再另行 repo.save。版本条件由它内部
       // 的事务校验负责（stem_correction.dart，不在本次范围）。
-      final updated = await acceptCandidateStem(repo, q);
-      if (_disposed) return null; // 已落库；队列写回跳过。
-      _replaceQueueRow(updated);
-      return null;
+      final accepted = await acceptCandidateStem(repo, q);
+      // 已落库；队列写回跳过。未匹配信息仍带回（页面按 mounted 判断，
+      // 不会给已销毁的页面弹提示）。
+      if (_disposed) {
+        return AcceptCandidateOutcome(
+          reason: null,
+          unmatchedManualIds: accepted.unmatchedManualIds,
+        );
+      }
+      _replaceQueueRow(accepted.question);
+      return AcceptCandidateOutcome(
+        reason: null,
+        unmatchedManualIds: accepted.unmatchedManualIds,
+      );
     } on CandidateRejection catch (e) {
       // 行已消失或版本不符 → 触发队列刷新（S1-3），再把原因交回页面。
       await refresh();
-      return e.reason;
+      return AcceptCandidateOutcome(reason: e.reason);
     } catch (_) {
-      return 'save_failed';
+      return const AcceptCandidateOutcome(reason: 'save_failed');
     }
   }
 
@@ -766,6 +870,51 @@ class OrganizeNotifier extends Notifier<OrganizeState> {
     }
   }
 
+  /// 图块换位（Win11 反馈包 3）：只更新数据库引用（ocr_figures 按新
+  /// 顺序重排，被拖图块记 anchorSource='manual' + 落点），
+  /// content_version +1（图块变化；版本由 upsert 的版本权威
+  /// 按实际内容变化统一计算，只 +1 一次）；裁图文件不动。
+  /// 顺序非法（不是原集合的排列）时 [reorderFiguresInQuestion] 抛错 →
+  /// 返回 false，编辑器回滚到原顺序。无当前题时返回 false。
+  /// 其余与 [deleteFigure] 同款（成员重查 + 版本令牌 + 失败刷新）。
+  Future<bool> reorderFigure(
+    List<String> orderedFigureIds,
+    String movedFigureId,
+    int movedTextAt,
+  ) async {
+    final q = state.current;
+    if (q == null) return false;
+    final repo = _repo;
+    try {
+      final updated = reorderFiguresInQuestion(
+        q,
+        orderedFigureIds,
+        movedFigureId,
+        movedTextAt,
+      );
+      // S1-3：同 deleteFigure（成员重查 + 版本令牌 + 失败刷新）。
+      if (!state.queue.any((x) => x.id == q.id)) {
+        await refresh();
+        return false;
+      }
+      await repo.save(
+        updated,
+        token: SaveToken(
+          questionId: q.id,
+          expectedContentVersion: q.contentVersion,
+        ),
+      );
+      if (_disposed) return true;
+      _replaceQueueRow(updated);
+      return true;
+    } on SaveTokenMismatch {
+      await refresh();
+      return false;
+    } catch (_) {
+      return false;
+    }
+  }
+
   /// 手动“重新识别”：为当前题建 OCR 任务（调 M3 入队接口），
   /// 入队后刷新任务行。入队失败（无切片等）返回 false，页面提示；
   /// 入队本身绝不拦整理流程。
@@ -784,6 +933,27 @@ class OrganizeNotifier extends Notifier<OrganizeState> {
     // 任务行刷新不 await（best-effort：读到了再更新 state，见上）。
     unawaited(_refreshOcrStatus());
     return true;
+  }
+
+  /// Win11 反馈包 2：取消当前题的识别（任务标 cancelled + OCR 字段
+  /// 清空，只留切片；见 [OcrWorker.cancelOcrForQuestion]）。
+  /// 返回码：'cancelled' / 'nothing_to_cancel' / 'no_question' /
+  /// 'failed'。成功后换行 + 刷新任务行（同 refreshOcrForQuestion 的
+  /// 收尾：表单题型随新行同步——取消清掉了 auto 题型，用户没改过
+  /// 表单时表单跟到 null；用户改过表单题型时不动，见任务 5 规则）。
+  Future<String> cancelOcrCurrent() async {
+    final q = state.current;
+    if (q == null) return 'no_question';
+    String code;
+    try {
+      code = await cancelOcrForQuestion(_repo.db, q.id);
+    } catch (_) {
+      return 'failed';
+    }
+    if (code == 'cancelled') {
+      await refreshOcrForQuestion(q.id);
+    }
+    return code;
   }
 
   void _replaceQueueRow(Question updated) {
@@ -844,6 +1014,11 @@ class OrganizeNotifier extends Notifier<OrganizeState> {
       correctOption: q.correctOption,
       answerReconfirmed: false,
       optionLabelsJustConfirmed: false,
+      // Win11 反馈包 5：选项文字表单值从当前题读（仅切分成功时显示，
+      // 见页面 _optionContentsForDisplay 的守门）。
+      optionContents: q.optionContents == null
+          ? null
+          : Map<String, String>.of(q.optionContents!),
       formResetKey: state.formResetKey + 1,
       // WP-B：表单绑定到当前题（R3-4）；copyWith 遇空队列会强制 null。
       loadedQuestionId: q.id,
@@ -933,6 +1108,13 @@ class OrganizeNotifier extends Notifier<OrganizeState> {
       optionLabelsConfirmed:
           labels == null ? false : state.optionLabelsConfirmed,
     );
+  }
+
+  /// Win11 反馈包 5：表单里的选项文字改动（只改表单值，不写库；
+  /// 保存时 formQuestion 落盘）。删标签的键由编辑器与数据层剪枝，
+  /// 这里只接编辑器上报的完整映射。
+  void setOptionContents(Map<String, String>? contents) {
+    state = state.copyWith(optionContents: contents);
   }
 
   /// 十四批 M3：表单里的正确选项改动（只改表单值，不写库）。
@@ -1109,6 +1291,9 @@ class OrganizeNotifier extends Notifier<OrganizeState> {
     // 先判 _disposed 与代次，旧切题的 loadForm 不得落地。
     if (_disposed || gen != state.generation) return;
     loadForm();
+    // Win11 包 4：切到新题后，题型待确认且非人工指定时自动重算一次
+    //（best-effort，不挡切题；见 reclassifyCurrent）。
+    unawaited(reclassifyCurrent());
   }
 
   /// 确认整理当前题（原 `_confirmCurrent`）：文件夹必填由页面先校验
@@ -1202,6 +1387,9 @@ class OrganizeNotifier extends Notifier<OrganizeState> {
     // F1 + S1-2：同 goTo，旧跳转的 loadForm 不得落地。
     if (_disposed || gen != state.generation) return;
     loadForm();
+    // Win11 包 4：跳到新题后，题型待确认且非人工指定时自动重算一次
+    //（best-effort，不挡跳转；见 reclassifyCurrent）。
+    unawaited(reclassifyCurrent());
   }
 
   /// 队列里改排序（原 `_applyQueueSort` 里保存之后的部分）：

@@ -19,20 +19,21 @@ bool shouldFallbackAfterOpenFailureImpl(String dbPath) {
   }
 }
 
-/// §2.2：删老库（v1）+ 建 v5 新库的唯一打开入口（§8.1 的测试工厂）：
-/// - 文件不存在 → 全新安装，直接建 v5 新库；
-/// - 文件是 v5（user_version == 5）→ 正常打开；
-/// - 文件是 v4（user_version == 4）→ 保留，Drift onUpgrade 迁到 v5
-///   （十四批 M1：questions 加 9 列 + cause_records 加 2 列 +
-///   review_history 加 8 列 + 新建 attempts 表 + review_state 加 4 列 +
-///   question_type 索引，数据全保留，不再删除）；
+/// §2.2：删老库（v1）+ 建 v6 新库的唯一打开入口（§8.1 的测试工厂）：
+/// - 文件不存在 → 全新安装，直接建 v6 新库；
+/// - 文件是 v6（user_version == 6）→ 正常打开；
+/// - 文件是 v5（user_version == 5）→ 保留，Drift onUpgrade 迁到 v6
+///   （Win11 反馈包 5：questions 加 option_contents +
+///   option_contents_parser_version 两列，数据全保留，不再删除）；
+/// - 文件是 v4（user_version == 4）→ 保留，Drift onUpgrade 先迁到 v5
+///   再迁到 v6（两步链式，数据全保留）；
 /// - 文件是 v3（user_version == 3）→ 保留，Drift onUpgrade 先迁到 v4
-///   再迁到 v5（两步链式，数据全保留）；
+///   再迁到 v5 再迁到 v6（三步链式，数据全保留）；
 /// - 文件是 v2（user_version == 2）→ 保留，Drift onUpgrade 先迁到 v3
-///   再迁到 v4 再迁到 v5（三步链式，数据全保留）；
+///   再迁到 v4 再迁到 v5 再迁到 v6（四步链式，数据全保留）；
 /// - 文件是老版本（v1，user_version < 2）→ 删除库文件（含 -wal / -shm），
-///   再建 v5 新库；无 v1 迁移；
-/// - 文件是更新的版本（user_version > 5）→ 预检不动它，Drift onUpgrade
+///   再建 v6 新库；无 v1 迁移；
+/// - 文件是更新的版本（user_version > 6）→ 预检不动它，Drift onUpgrade
 ///   按 from > to 抛“请用新版打开”，不静默删掉新版库；
 /// - 删除失败 → 抛错、拒绝打开（不许在老库尚在的情况下建新库，
 ///   避免新旧库并存、读写串库），下次启动重试删除。
@@ -54,6 +55,9 @@ Future<QuizDatabase> openAtImpl(String dbPath) async {
     onBeforeOpen: (db) async {
       await backfillCollectDoneIntoImpl(db);
       await backfillInterruptedImportsIntoImpl(db);
+      // Win11 反馈包 5：老数据回填选项内容（读 ocr_raw 重解析，
+      // 不调接口、不覆盖人工改过的选项；见 db_option_contents.dart）。
+      await backfillOptionContentsIntoImpl(db);
     },
   );
   // B1-Drift：Drift 是懒打开——不发查询就不建文件、不跑 onCreate /
@@ -67,10 +71,10 @@ Future<QuizDatabase> openAtImpl(String dbPath) async {
   return db;
 }
 
-/// §2.2：删老库（可单测版）：文件不存在或版本 >= 2（v2 待迁移、v3/v4/v5
+/// §2.2：删老库（可单测版）：文件不存在或版本 >= 2（v2 待迁移、v3/v4/v5/v6
 /// 已是当前版或待迁移）时什么都不做，返回 false；删掉老库文件（含 -wal / -shm）
 /// 时返回 true。十二批 D-91：只删 user_version < 2 的 v1 老库；v2
-/// 不再删（走 Drift 迁移到 v3），更新的版本（> 5）也不删（交给
+/// 不再删（走 Drift 迁移到 v3），更新的版本（> 6）也不删（交给
 /// Drift onUpgrade 按 from > to 抛“请用新版打开”）。
 /// 删除失败抛 StateError（调用方拒绝打开、不建新库）。
 /// B1-Drift：只读探针改走 `package:sqlite3` 的 `open(mode: readOnly)` +
@@ -121,9 +125,9 @@ Future<bool> deleteLegacyDatabaseIfPresentImpl(String dbPath) async {
 
 /// 测试用：在已打开的空库上建全部表（不播种演示数据）。
 /// 与 openAtImpl 的 onCreateTables 回调共用同一份建表语句，测试库与真实库结构一致。
-/// 十四批 M1：v5 建表（含 attempts 新表 + question_type 索引 +
-/// review_history.submission_id 唯一索引；DDL 字面量须与
-/// quiz_database.dart 的 _upgrade4To5 迁移字面量一字不差，见该函数注释）。
+/// Win11 反馈包 5：v6 建表（questions 末尾加 option_contents +
+/// option_contents_parser_version；DDL 字面量须与
+/// quiz_database.dart 的 _upgrade5To6 迁移字面量一字不差，见该函数注释）。
 Future<void> createTablesImpl(QuizDatabase db) async {
   await db.customStatement('''
     CREATE TABLE subjects(
@@ -161,7 +165,8 @@ Future<void> createTablesImpl(QuizDatabase db) async {
       correct_option TEXT, option_labels TEXT,
       option_labels_confirmed INTEGER NOT NULL DEFAULT 0,
       answer_version INTEGER NOT NULL DEFAULT 1,
-      answer_pending_recheck INTEGER NOT NULL DEFAULT 0)''');
+      answer_pending_recheck INTEGER NOT NULL DEFAULT 0,
+      option_contents TEXT, option_contents_parser_version INTEGER)''');
   await db.customStatement('''
     CREATE TABLE folders(
       id TEXT PRIMARY KEY, name TEXT NOT NULL, subject_id TEXT NOT NULL,
@@ -373,8 +378,8 @@ Future<void> _seed(QuizDatabase db) async {
           ),
         );
   }
-  // §2.1：settings 表写 schemaVersion = '5'（与备份 _meta 同一口径；
+  // §2.1：settings 表写 schemaVersion = '6'（与备份 _meta 同一口径；
   // 与 PRAGMA user_version 是两回事）。新库从空开始，不预置演示
   // 数据（§6 第 1 条）：演示题、演示解决记录、演示 recent_tasks 一律不建。
-  await _upsertSettingInto(db, 'schemaVersion', '5');
+  await _upsertSettingInto(db, 'schemaVersion', '6');
 }

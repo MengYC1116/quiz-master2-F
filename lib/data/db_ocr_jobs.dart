@@ -304,6 +304,43 @@ Future<OcrJob?> completeOcrJobIntoImpl(
   );
 }
 
+/// Win11 反馈包 2：取消识别（可单测版）：该题全部未取消的任务行标
+/// `cancelled`（终态）+ completed_at，清 started_at/lease_until/
+/// lease_token（租约已交还——在途 worker 凭旧 token 再写库时校验失败，
+/// 迟到结果进不了库；过期租约回收只认 running，已取消的行不会被复活）。
+/// pending / running / completed / failed 都标——completed 行不标的话，
+/// 状态推导会把已取消的题仍判成“识别完成”。lastErrorCode 不动
+/// （取消不是失败，诊断只看状态）。
+/// 返回标掉的行数。调用方（OcrWorker.cancelOcrForQuestion）在同一
+/// 事务内接着清题目 OCR 字段；本函数本身不包事务，以便合进那笔事务。
+Future<int> cancelOcrJobsForQuestionIntoImpl(
+  QuizDatabase db,
+  String questionId, {
+  DateTime? now,
+}) async {
+  final nowMs = (now ?? DateTime.now()).millisecondsSinceEpoch;
+  return (db.update(db.ocrJobs)..where(
+        (t) =>
+            t.questionId.equals(questionId) &
+            t.status.isIn([
+              OcrJobStatus.pending.name,
+              OcrJobStatus.running.name,
+              OcrJobStatus.completed.name,
+              OcrJobStatus.failed.name,
+            ]),
+      ))
+      .write(
+        OcrJobsCompanion(
+          status: Value(OcrJobStatus.cancelled.name),
+          startedAt: const Value<int?>(null),
+          leaseUntil: const Value<int?>(null),
+          leaseToken: const Value<String?>(null),
+          completedAt: Value(nowMs),
+          updatedAt: Value(nowMs),
+        ),
+      );
+}
+
 /// 按 id 读一条任务（可单测版），不存在返回 null。
 Future<OcrJob?> ocrJobByIdIntoImpl(QuizDatabase db, String id) async {
   final row = await (db.select(
@@ -437,6 +474,12 @@ extension AppDatabaseOcrJobs on AppDatabase {
     now: now,
     leaseToken: leaseToken,
   );
+
+  /// 取消识别（实例版）：该题全部未取消的任务行标 cancelled。返回行数。
+  Future<int> cancelOcrJobsForQuestion(
+    String questionId, {
+    DateTime? now,
+  }) async => cancelOcrJobsForQuestionIntoImpl(await db, questionId, now: now);
 
   /// 按 id 读一条任务。
   Future<OcrJob?> ocrJobById(String id) async =>

@@ -32,8 +32,10 @@ import '../../data/repository.dart';
 import '../../models/models.dart';
 import '../../modules/ocr/ocr_stem_section.dart';
 import '../../modules/ocr/option_labels_editor.dart';
+import '../../modules/ocr/question_classifier.dart';
 import '../../modules/ocr/question_type_picker.dart';
 import '../../services/glm_ocr_client.dart';
+import '../../services/option_contents.dart';
 import '../../services/question_export_service.dart';
 import '../../services/stem_splitter.dart';
 import '../../services/yolo_onnx_service.dart';
@@ -165,6 +167,12 @@ class _DetailViewState extends ConsumerState<_DetailView> {
   bool _dirty = false;
   bool _answerVisible = false;
 
+  /// Win11 反馈包 5：查看态编辑器上报的选项文字暂存（只存值不落盘，
+  /// 随下一次 [_saveViewOptionBlock] 一并保存）。[_pendingContentsQuestionId]
+  /// 守门：只对上报时的那道题有效，串题不用（切题后旧值不带过去）。
+  Map<String, String>? _pendingViewOptionContents;
+  String? _pendingContentsQuestionId;
+
   /// B11-8：导出服务（构造注入的优先）与分享卡片的 RepaintBoundary key。
   final _shareCardKey = GlobalKey();
 
@@ -260,11 +268,22 @@ class _DetailViewState extends ConsumerState<_DetailView> {
   // 十三批 P1-2 任务 e：失败时按 CandidateRejection.reason 给明确文案
   //（见 ocr_stem_section.dart 的 candidateRejectionMessage），
   // 不再一律显示通用“保存失败，请重试”。
+  // Win11 反馈尾巴 1：接受时有手动图块没匹配上（已保留在末尾），只弹
+  // 一句提示，不再另弹“已用新的识别结果替换”（一次接受只提示一次，
+  // 不刷屏）；全部匹配上时仍是原来的成功提示。
   Future<bool> _acceptOcrCandidate(String candidateStem) async {
-    final reason = await _notifier.acceptOcrCandidateWithReason();
-    if (!mounted) return reason == null;
-    _snack(reason == null ? '已用新的识别结果替换' : candidateRejectionMessage(reason));
-    return reason == null;
+    final outcome = await _notifier.acceptOcrCandidateOutcome();
+    if (!mounted) return outcome.accepted;
+    if (outcome.reason != null) {
+      _snack(candidateRejectionMessage(outcome.reason!));
+    } else if (outcome.unmatchedManualIds.isNotEmpty) {
+      _snack(
+        '有 ${outcome.unmatchedManualIds.length} 张手动放置的图块未匹配上，已保留在末尾',
+      );
+    } else {
+      _snack('已用新的识别结果替换');
+    }
+    return outcome.accepted;
   }
 
   /// 十三批 P1-2 任务 a：重框入队失败横幅上的“重新入队”——走同一入队
@@ -290,6 +309,23 @@ class _DetailViewState extends ConsumerState<_DetailView> {
     return ok;
   }
 
+  /// Win11 反馈包 3：图块换位（编辑器里拖图块落下即保存）。
+  /// 成功不弹提示（每次落下都弹会刷屏）；失败时提示，编辑器回滚。
+  Future<bool> _reorderFigure(
+    List<String> orderedFigureIds,
+    String movedFigureId,
+    int movedTextAt,
+  ) async {
+    final ok = await _notifier.reorderFigure(
+      orderedFigureIds,
+      movedFigureId,
+      movedTextAt,
+    );
+    if (!mounted) return ok;
+    if (!ok) _snack('保存失败，请重试');
+    return ok;
+  }
+
   Future<void> _rerecognizeStem() async {
     final ok = await _notifier.rerecognizeCurrent();
     if (!mounted) return;
@@ -298,6 +334,19 @@ class _DetailViewState extends ConsumerState<_DetailView> {
     } else {
       _snack('重新识别失败：没有可识别的切片');
     }
+  }
+
+  /// Win11 反馈包 2：取消识别（同整理页 _cancelOcr）。
+  Future<bool> _cancelOcr() async {
+    final code = await _notifier.cancelOcrCurrent();
+    if (!mounted) return code == 'cancelled' || code == 'nothing_to_cancel';
+    if (code == 'cancelled') {
+      _snack('已取消识别，只保留题目图片');
+      return true;
+    }
+    if (code == 'nothing_to_cancel') return true;
+    _snack('取消失败，请重试');
+    return false;
   }
 
   @override
@@ -376,26 +425,106 @@ class _DetailViewState extends ConsumerState<_DetailView> {
     if (!_dirty) setState(() => _dirty = true);
   }
 
-  Future<void> _saveEdit() async {
-    if (_st.editBase == null) return;
-    await _notifier.saveEdit(
+  /// Win11 反馈尾巴 2：保存时底稿过期（进编辑后自动重算 / 取消识别
+  /// 改了底下内容）不直接保存，弹框让用户选：保留我的编辑（按旧底稿
+  /// 强制保存）或用新内容（丢弃表单编辑、重新加载新内容）。
+  /// 返回编辑是否已结束（false 时留在编辑态：框被点掉或保存失败）。
+  Future<bool> _saveEdit() async {
+    if (_st.editBase == null) return false;
+    final outcome = await _notifier.saveEdit(
       title: _titleCtrl.text,
       answer: _answerCtrl.text,
       explanation: _explanationCtrl.text,
       notes: _notesCtrl.text,
     );
-    if (!mounted) return;
+    if (!mounted) return false;
+    // Stage 4：保存已发变更事件，角标由 badgeCountsProvider 刷新，
+    // 本页不再回调外壳手动刷角标（onChanged 已删）。
+    switch (outcome) {
+      case SaveEditOutcome.saved:
+        _exitEdit();
+        return true;
+      case SaveEditOutcome.stale:
+        return _askStaleSave();
+      case SaveEditOutcome.noQuestion:
+        _snack('这道题不存在了');
+        _exitEdit();
+        return true;
+      case SaveEditOutcome.failed:
+        _snack('保存失败，请重试');
+        return false;
+      case SaveEditOutcome.noBase:
+        return false;
+    }
+  }
+
+  void _exitEdit() {
     setState(() {
       _editing = false;
       _dirty = false;
       _cancelAsk = false;
     });
-    // Stage 4：保存已发变更事件，角标由 badgeCountsProvider 刷新，
-    // 本页不再回调外壳手动刷角标（onChanged 已删）。
+  }
+
+  /// 底稿过期确认框。返回编辑是否已结束：选“保留我的编辑”且强制保存
+  /// 成功、或选“用新内容”时为 true；框外点掉或强制保存失败时为 false。
+  Future<bool> _askStaleSave() async {
+    final choice = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('内容已更新'),
+        content: const Text(
+          '这道题在你编辑期间变了，可能是自动重新分类或取消了识别。保留你的编辑会覆盖新内容。',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop('new'),
+            child: const Text('用新内容'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop('keep'),
+            child: const Text('保留我的编辑'),
+          ),
+        ],
+      ),
+    );
+    if (!mounted) return false;
+    if (choice == 'keep') {
+      final outcome = await _notifier.saveEdit(
+        title: _titleCtrl.text,
+        answer: _answerCtrl.text,
+        explanation: _explanationCtrl.text,
+        notes: _notesCtrl.text,
+        force: true,
+      );
+      if (!mounted) return false;
+      if (outcome == SaveEditOutcome.saved) {
+        _exitEdit();
+        return true;
+      }
+      if (outcome == SaveEditOutcome.noQuestion) {
+        _snack('这道题不存在了');
+        _exitEdit();
+        return true;
+      }
+      _snack('保存失败，请重试');
+      return false;
+    }
+    if (choice == 'new') {
+      // 丢弃表单编辑：退出编辑态并重读新行；题型归属按新行原样保留。
+      _exitEdit();
+      await _notifier.load();
+      return true;
+    }
+    // choice == null（框外点掉）：留在编辑态，什么都不做。
+    return false;
   }
 
   /// 十四批 M3：查看态直接改选项标签块（「确认选项」或正确选项即时保存
   /// 时调；与题型 chip 的即时保存口径一致）。
+  /// Win11 反馈包 5：选项文字随本次保存一起落盘——取编辑器上报的
+  /// 最新文字（[_pendingViewOptionContents]，按题 id 守门，串题不用）；
+  /// 没改过文字时取库里值，不动它。
   Future<void> _saveViewOptionBlock({
     required List<String>? labels,
     required String? correctOption,
@@ -403,11 +532,16 @@ class _DetailViewState extends ConsumerState<_DetailView> {
     required bool confirmLabels,
   }) async {
     try {
+      final q = _st.question;
+      final contents = _pendingContentsQuestionId == q?.id
+          ? _pendingViewOptionContents
+          : q?.optionContents;
       await _notifier.saveOptionBlock(
         labels: labels,
         correctOption: correctOption,
         confirmLabels: confirmLabels,
         answerReconfirmed: answerReconfirmed,
+        optionContents: contents,
       );
       if (mounted) {
         _snack(confirmLabels ? '选项已确认，可客观判分' : '已保存');
@@ -448,6 +582,74 @@ class _DetailViewState extends ConsumerState<_DetailView> {
     if (picked == null) return; // 取消未选
     _notifier.setEditQuestionType(picked.isEmpty ? null : picked);
     _markDirty();
+  }
+
+  /// Win11 包 4：切分诊断——题型待确认时，把 splitStem 的 reason
+  /// 以小字显示（为什么没自动定型）。纯函数，不持久化。
+  String? _splitReason(Question q) {
+    final raw = GlmOcrRawData.tryParse(q.ocrRaw);
+    if (raw == null) return null;
+    return '切分：${splitStem(raw.mdResults).reason}';
+  }
+
+  /// Win11 包 4：题型字段内容——芯片行（芯片 + 重新分类按钮）+
+  /// 切分诊断小字。查看态与编辑态共用；[displayedType] 为当前显示
+  /// 的题型值（查看态用库里题型，编辑态用编辑表单值），null 时显示
+  /// 切分诊断。人工指定的题不显示重新分类按钮。
+  Widget _typeFieldChild(Question q, Widget chip, String? displayedType) {
+    final reason = displayedType == null ? _splitReason(q) : null;
+    final showReclassify =
+        q.questionTypeSource != 'manual' &&
+        GlmOcrRawData.tryParse(q.ocrRaw) != null;
+    final palette = DesignTokens.of(Theme.of(context).brightness);
+    final scale = qmScaleOf(context);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            chip,
+            if (showReclassify) ...[
+              const SizedBox(width: 8),
+              TextButton(
+                onPressed: _onReclassify,
+                child: const Text('重新分类'),
+              ),
+            ],
+          ],
+        ),
+        if (reason != null) ...[
+          SizedBox(height: 4 * scale),
+          Text(
+            reason,
+            style: TextStyle(
+              fontSize: DesignTokens.detailFieldLabelFontSize,
+              color: palette.muted,
+              height: DesignTokens.bodyLineHeight,
+            ),
+          ),
+        ],
+      ],
+    );
+  }
+
+  /// Win11 包 4：点“重新分类”——强制重算当前题的题型，按返回码
+  /// 提示结果。查看态与编辑态共用（编辑态重算后同步编辑表单的题型值）。
+  Future<void> _onReclassify() async {
+    final code = await _notifier.reclassifyCurrent(force: true);
+    if (!mounted) return;
+    final st = _st;
+    final newType =
+        st.editBase != null ? st.editQuestionType : st.question?.questionType;
+    final message = switch (code) {
+      'updated' => '已重新分类为${questionTypeDisplay(newType)}',
+      'unchanged' => '仍无法自动定型，请人工指定',
+      'manual' => '题型为人工指定，不自动分类',
+      'no_raw' => '本题还没有识别结果，无法分类',
+      'save_failed' => '保存失败，请重试',
+      _ => '仍无法自动定型，请人工指定',
+    };
+    _snack(message);
   }
 
   Future<void> _reworkBoxes() async {
@@ -529,7 +731,8 @@ class _DetailViewState extends ConsumerState<_DetailView> {
 
   Future<void> _resolveCancelAsk(String choice) async {
     if (choice == 'save') {
-      await _saveEdit();
+      // 底稿过期框被点掉 / 保存失败时留在编辑态，不清确认框、不退页。
+      if (!await _saveEdit()) return;
     } else if (choice == 'discard') {
       setState(() {
         _editing = false;
@@ -1019,7 +1222,9 @@ class _DetailViewState extends ConsumerState<_DetailView> {
                     onAcceptCandidate: _acceptOcrCandidate,
                     onDismissCandidate: _dismissOcrCandidate,
                     onRerecognize: _rerecognizeStem,
+                    onCancelOcr: _cancelOcr,
                     onDeleteFigure: _deleteFigure,
+                    onReorderFigure: _reorderFigure,
                     onEditingChanged: (open) {
                       setState(() {
                         _stemEditorOpen = open;
@@ -1651,6 +1856,32 @@ class _DetailViewState extends ConsumerState<_DetailView> {
     return splitStem(raw.mdResults).optionLabels;
   }
 
+  /// Win11 反馈包 5：切分器检测到的选项文字（统一解析器，与回填
+  /// 同一份规则），只作 [AnswerOptionEditor] 的初始值。切分失败、
+  /// 判断题、无 OCR 原文时返回 null（不显示、不硬猜）。纯函数，
+  /// 不持久化。
+  Map<String, String>? _detectedOptionContents(Question q) {
+    if (q.questionType == 'true_false') return null;
+    final raw = GlmOcrRawData.tryParse(q.ocrRaw);
+    if (raw == null) return null;
+    final split = splitStem(raw.mdResults);
+    if (split.status != StemSplitStatus.autoSplit) return null;
+    final parsed = parseOptionContents(raw.mdResults, split);
+    return parsed.contents.isEmpty ? null : parsed.contents;
+  }
+
+  /// Win11 反馈包 5：选项文字显示门——只有切分成功（自动切分）时
+  /// 才显示已存的选项文字；切分失败时传 null（选项文字已在题干里，
+  /// 选项区不重复显示）；判断题不显示。
+  Map<String, String>? _optionContentsForDisplay(
+    Question q,
+    Map<String, String>? formContents,
+  ) {
+    if (q.questionType == 'true_false') return null;
+    if (q.ocrSplitStatus != OcrSplitStatus.autoSegmented) return null;
+    return formContents;
+  }
+
   Widget _buildInfoSection(Question q) {
     if (_editing) return _buildInfoEdit(q);
     final exam = q.examId == null
@@ -1675,9 +1906,14 @@ class _DetailViewState extends ConsumerState<_DetailView> {
             : _valueText(folders.map((f) => f.name).join('、')),
       ),
       // 十四批 M1：题型 chip（查看态点开直接改，立即保存）。
+      // Win11 包 4：芯片行 + 重新分类按钮 + 切分诊断小字。
       _Field(
         '题型',
-        questionTypeChip(type: q.questionType, onTap: _pickQuestionType),
+        _typeFieldChild(
+          q,
+          questionTypeChip(type: q.questionType, onTap: _pickQuestionType),
+          q.questionType,
+        ),
         hint: '点芯片可改 · 改后不再自动分类',
       ),
       _Field(
@@ -1769,6 +2005,17 @@ class _DetailViewState extends ConsumerState<_DetailView> {
               (q.answer ?? '').trim().isNotEmpty ||
               (q.explanation ?? '').trim().isNotEmpty,
           answerReconfirmed: false,
+          // Win11 反馈包 5：选项文字（仅切分成功时显示；切分失败时
+          // 传 null，选项文字已在题干里，不重复显示）。上报的文字
+          // 只暂存，随下一次即时保存一并落盘。
+          optionContents: _optionContentsForDisplay(q, q.optionContents),
+          detectedOptionContents: q.optionContents == null
+              ? _detectedOptionContents(q)
+              : null,
+          onOptionContentsChanged: (contents) {
+            _pendingViewOptionContents = contents;
+            _pendingContentsQuestionId = q.id;
+          },
           onLabelsChanged: (_) {},
           onCorrectOptionChanged: (_) {},
           onAnswerReconfirmedChanged: (_) {},
@@ -1792,6 +2039,10 @@ class _DetailViewState extends ConsumerState<_DetailView> {
 
   Widget _buildInfoEdit(Question q) {
     final scale = qmScaleOf(context);
+    // Win11 反馈包 1：编辑态答案区与整理页同套分流（见下「答案」字段
+    // 与答案区编辑器）：选择/判断题只留字母按钮，其他题型与待确认
+    // 只留文字答案框；题型切换不删已有答案，只提示。
+    final isChoiceEditType = isChoiceQuestionType(_st.editQuestionType);
     final subjectKps = _st.kps
         .where((k) => k.subjectId == q.subjectId)
         .toList();
@@ -1856,11 +2107,16 @@ class _DetailViewState extends ConsumerState<_DetailView> {
             ),
           ),
           // 十四批 M1：题型 chip（编辑态改表单值，点「保存」才落盘）。
+          // Win11 包 4：芯片行 + 重新分类按钮 + 切分诊断小字。
           _Field(
             '题型',
-            questionTypeChip(
-              type: _st.editQuestionType,
-              onTap: _pickEditQuestionType,
+            _typeFieldChild(
+              q,
+              questionTypeChip(
+                type: _st.editQuestionType,
+                onTap: _pickEditQuestionType,
+              ),
+              _st.editQuestionType,
             ),
             hint: '点芯片可改 · 改后不再自动分类',
           ),
@@ -2005,19 +2261,45 @@ class _DetailViewState extends ConsumerState<_DetailView> {
             ),
             full: true,
           ),
-          _Field(
-            '答案（与解析分开）',
-            TextField(
-              controller: _answerCtrl,
-              focusNode: _answerFocus,
-              decoration: const InputDecoration(
-                labelText: '答案',
-                hintText: '留空保存后显示“待补充”',
+          // Win11 反馈包 1：答案区按题型分流（与整理页同套）——
+          // 选择/判断题只留字母按钮（下方编辑器），不显示文字答案框；
+          // 其他题型与待确认只留文字答案框。题型切换不删除已有答案：
+          // 旧值保留在本次编辑中，只提示、改回原题型可恢复。
+          if (!isChoiceEditType)
+            _Field(
+              '答案（与解析分开）',
+              TextField(
+                controller: _answerCtrl,
+                focusNode: _answerFocus,
+                decoration: const InputDecoration(
+                  labelText: '答案',
+                  hintText: '留空保存后显示“待补充”',
+                ),
+                maxLines: 3,
+                onChanged: (_) => _markDirty(),
               ),
-              maxLines: 3,
-              onChanged: (_) => _markDirty(),
             ),
-          ),
+          if (isChoiceEditType &&
+              (_st.editQuestionType == 'choice_single' ||
+                  _st.editQuestionType == 'true_false') &&
+              (q.answer ?? '').trim().isNotEmpty)
+            _Field(
+              '答案（已保留）',
+              _valueText(
+                '文字答案“${q.answer!.trim()}”已保留：当前题型答案以字母按钮为准，改回其他题型可继续用。',
+              ),
+              full: true,
+            ),
+          if (!isChoiceEditType &&
+              _st.editCorrectOption != null &&
+              _st.editCorrectOption!.isNotEmpty)
+            _Field(
+              '答案（已保留）',
+              _valueText(
+                '题型已改：之前选定的正确答案（${_st.editCorrectOption}）已保留在本次编辑中，改回单选/判断可恢复；保存后按新题型处理。',
+              ),
+              full: true,
+            ),
           _Field(
             '解析（可以空）',
             TextField(
@@ -2048,6 +2330,8 @@ class _DetailViewState extends ConsumerState<_DetailView> {
         ]),
         // 十四批 M3：选项标签确认编辑器（编辑态；随「保存」落盘——
         // 「确认选项」只改编辑态确认值，不单独写库）。
+        // Win11 反馈包 1：选择/判断题时它是答案区的唯一答案入口
+        // （文字答案框已隐藏）；其他题型与待确认时不渲染。
         // WP-A #1 收尾：detectedOptionLabels 同查看态；多选点选结果
         // 经 onMultiSelectionChanged 写进答案文本框。
         SizedBox(height: 12 * scale),
@@ -2067,6 +2351,16 @@ class _DetailViewState extends ConsumerState<_DetailView> {
               (q.answer ?? '').trim().isNotEmpty ||
               (q.explanation ?? '').trim().isNotEmpty,
           answerReconfirmed: _st.editAnswerReconfirmed,
+          // Win11 反馈包 5：选项文字走编辑表单值（保存时落盘）。
+          optionContents:
+              _optionContentsForDisplay(q, _st.editOptionContents),
+          detectedOptionContents: _st.editOptionContents == null
+              ? _detectedOptionContents(q)
+              : null,
+          onOptionContentsChanged: (contents) {
+            _notifier.setEditOptionContents(contents);
+            _markDirty();
+          },
           onLabelsChanged: (labels) {
             _notifier.setEditOptionLabels(labels);
             _markDirty();

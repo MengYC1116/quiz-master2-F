@@ -27,10 +27,9 @@
 // 阅读顺序（P1-3，不只按 y1 猜）：首选 GLM Markdown 图引用位置；
 // 备用文本块坐标映射；双栏先分区（横向中线、无块跨中线时才分栏）、
 // 栏内 y1、栏间左→右，不做全局 y1 排序；单栏栏内 y1。锚定失败 →
-// 图块进题干末尾的独立「未关联图片」区（WP-D #7：标题块
-// [unassociatedFiguresHeader] + 图块，图块强制标未确认），绝不把
-// 位置未确认的图块静默当成已确认顺序展示，也不再默认堆到末尾冒充
-// 正常内容（旧 `at = blocks.length` 默认值已删）。
+// 图块默认放序列末尾（Win11 反馈包 3：不再设独立「未关联图片」区、
+// 不再标“位置未确认”，用户自己拖到正确位置；人工拖过的图块记
+// anchorSource='manual'，位置由用户定，见 [reorderFigures]）。
 //
 // 选项归属（WP-D #7，定稿 §7 + 附录 R5/S4/U2）：每个图块带
 // [OcrFigure.optionLabel]（A–E 或 null），按 P1（md 结构明确关联）
@@ -53,8 +52,10 @@
 // 按 md 引用在全文中的字符位置插入到相邻题干段之间；text 锚定的题干图
 // 按其在页内的纵向相对位置插入；有 optionLabel 的图块插在其选项标号
 // 所在段内（R5-4：md 锚点可靠时保留原始锚点顺序，否则插标号块紧后方）；
-// 无法可靠放置的图块进「未关联图片」区。本文件只给排序、锚点与归属，
-// 插入实现见 [buildContentBlocks]；逐图诊断记录见 [diagnoseFigures]。
+// 人工拖过的图块（anchorSource='manual'）按 anchorRef（落点前的文字
+// 段数）直接插到指定位置；无法可靠放置的图块默认放序列末尾。本文件只
+// 给排序、锚点与归属，插入实现见 [buildContentBlocks]；逐图诊断记录
+// 见 [diagnoseFigures]。
 
 import 'dart:convert';
 import 'dart:math' as math;
@@ -211,12 +212,13 @@ class OcrFigure {
   /// id + 锚定方式 md/text/fallback）。
   final int sequenceIndex;
 
-  /// 锚定方式：'md' | 'text' | 'fallback'。
+  /// 锚定方式：'md' | 'text' | 'fallback' | 'manual'（manual 是用户
+  /// 在编辑器里拖出来的，位置由用户定，见 [reorderFigures]）。
   final String anchorSource;
 
   /// 锚点引用：md 锚定时为 md 引用序号（字符串化的整数）；
   /// text 锚定时为最近文本块 id（`text-<layout index>`）；
-  /// fallback 时为 ''。
+  /// fallback 时为 ''；manual 时为落点前的文字段数（字符串化的整数）。
   final String anchorRef;
 
   /// 坐标来源：bbox_2d 原值 + 该块所在坐标空间尺寸。
@@ -241,7 +243,9 @@ class OcrFigure {
   /// JSON 列里的一个键，不动数据库 schema（v5 不变）。
   final String? optionLabel;
 
-  /// 是否位置未确认（锚定失败的图块，界面必须明确标注）。
+  /// 是否位置未确认（锚定失败的图块）。数据层诊断用；界面不再作任何
+  /// “位置未确认”标注（Win11 反馈包 3：全部关闭，未锚定图块默认放
+  /// 序列末尾，用户自己拖到正确位置）。
   bool get unconfirmed => anchorSource == 'fallback';
 
   /// 该图块是否属于当前切片（展示层按 input_hash 与当前切片 hash
@@ -254,6 +258,8 @@ class OcrFigure {
 
   OcrFigure copyWith({
     int? sequenceIndex,
+    String? anchorSource,
+    String? anchorRef,
     String? cropPath,
     String? optionLabel,
   }) => OcrFigure(
@@ -261,8 +267,8 @@ class OcrFigure {
     slicePath: slicePath,
     inputHash: inputHash,
     sequenceIndex: sequenceIndex ?? this.sequenceIndex,
-    anchorSource: anchorSource,
-    anchorRef: anchorRef,
+    anchorSource: anchorSource ?? this.anchorSource,
+    anchorRef: anchorRef ?? this.anchorRef,
     bbox2d: bbox2d,
     spaceWidth: spaceWidth,
     spaceHeight: spaceHeight,
@@ -372,6 +378,145 @@ String encodeOcrFigures(List<OcrFigure> figures) =>
 /// 图块列表里的全部裁图相对路径（孤儿清理引用集合与备份清单用）。
 Set<String> figureCropPaths(List<OcrFigure> figures) =>
     {for (final f in figures) f.cropPath};
+
+/// Win11 反馈包 3：按用户拖出的新顺序重排图块（纯函数，不原地改）。
+///
+/// - [orderedIds] 必须是原集合的一个排列（不多不少、不丢图块），
+///   否则抛 [ArgumentError]；
+/// - 按新顺序重编 `sequence_index`（0..n-1）；
+/// - 被拖的图块（[movedFigureId]）记 `anchorSource='manual'`，落点
+///   [manualTextAt]（落点前的文字段数，见 [buildContentBlocks] 的
+///   manual 分支）写进 `anchor_ref`；没动的图块锚定来源不动；
+/// - 只改顺序与锚定，不改裁图文件本身（`crop_path` 原样保留）。
+List<OcrFigure> reorderFigures(
+  List<OcrFigure> figures, {
+  required List<String> orderedIds,
+  required String movedFigureId,
+  int? manualTextAt,
+}) {
+  if (orderedIds.length != figures.length ||
+      orderedIds.toSet().length != figures.length) {
+    throw ArgumentError('orderedIds 必须是图块集合的一个排列（不多不少）');
+  }
+  final byId = {for (final f in figures) f.id: f};
+  if (!byId.containsKey(movedFigureId) ||
+      orderedIds.any((id) => !byId.containsKey(id))) {
+    throw ArgumentError('orderedIds / movedFigureId 含未知图块 ID');
+  }
+  return [
+    for (var i = 0; i < orderedIds.length; i++)
+      byId[orderedIds[i]]!.copyWith(
+        sequenceIndex: i,
+        anchorSource: orderedIds[i] == movedFigureId
+            ? 'manual'
+            : null,
+        anchorRef: orderedIds[i] == movedFigureId && manualTextAt != null
+            ? '$manualTextAt'
+            : null,
+      ),
+  ];
+}
+
+/// Win11 反馈包 3：重识别产生新图块 ID 时，尽量保留已有的 manual 图块
+/// （纯函数，不原地改）。
+///
+/// 匹配口径是裁图区域（`slice_path` + `srcRect` 相同即同一张图，
+/// 不比 ID——新派生的 ID 是按派生顺序编的 index，同一张图重识别后
+/// ID 会变；也不比 bbox 原值，白边变化时 bbox 会动而裁图区域不变）。
+///
+/// - 匹配上的 manual 图块：取新派生图块的 ID（防 ID 撞车）与位置，
+///   保留旧裁图文件（`crop_path` 不变，不重裁）与 manual 落点
+///  （`anchorSource='manual'` + 旧 `anchor_ref`），以后重识别也不动它；
+/// - 匹配不上的 manual 图块：保留在序列末尾（不静默丢弃），ID 加
+///   `-manual` 后缀防与新派生 ID 撞车，并在 [unmatchedManualIds]
+///   里上报——调用方据此提示用户（而不是静默丢图）；
+/// - 非 manual 的旧图块一律由新派生结果替换；没有 manual 图块时原样
+///   返回新派生结果。
+/// 返回 `(figures, unmatchedManualIds)`；`sequence_index` 按合并后
+/// 顺序重编。
+///
+/// 注意（调用方责任）：合并后只有 `crop_path` 为空的图块才需要走
+/// [writeFigureFiles] 写新裁图；保留下来的 manual 图块已有旧裁图
+/// 文件，直接复用，不重裁（`writeFigureFiles` 会给每个传入图块重
+/// 新裁图并分配新路径）。
+({List<OcrFigure> figures, List<String> unmatchedManualIds})
+mergeManualFigures({
+  required List<OcrFigure> oldFigures,
+  required List<OcrFigure> newFigures,
+}) {
+  final manualOld = oldFigures
+      .where((f) => f.anchorSource == 'manual')
+      .toList();
+  if (manualOld.isEmpty) {
+    return (
+      figures: [
+        for (var i = 0; i < newFigures.length; i++)
+          newFigures[i].copyWith(sequenceIndex: i),
+      ],
+      unmatchedManualIds: const [],
+    );
+  }
+  final usedManualIds = <String>{};
+  final merged = <OcrFigure>[];
+  for (final nf in newFigures) {
+    OcrFigure? match;
+    for (final mf in manualOld) {
+      if (usedManualIds.contains(mf.id)) continue;
+      if (mf.slicePath == nf.slicePath && mf.srcRect == nf.srcRect) {
+        match = mf;
+        break;
+      }
+    }
+    if (match != null) {
+      usedManualIds.add(match.id);
+      merged.add(
+        nf.copyWith(
+          anchorSource: 'manual',
+          anchorRef: match.anchorRef,
+          cropPath: match.cropPath,
+        ),
+      );
+    } else {
+      merged.add(nf);
+    }
+  }
+  final unmatchedIds = <String>[];
+  final usedIds = {for (final f in merged) f.id};
+  for (final mf in manualOld) {
+    if (usedManualIds.contains(mf.id)) continue;
+    // 旧 ID 可能已被新派生图块占用：加后缀保证唯一（多次合并时
+    // 循环加，直到不撞车为止）。
+    var newId = '${mf.id}-manual';
+    while (usedIds.contains(newId)) {
+      newId = '$newId-manual';
+    }
+    usedIds.add(newId);
+    // 保留旧图块的裁图文件、落点与归属，只换一个不撞车的 ID。
+    merged.add(
+      OcrFigure(
+        id: newId,
+        slicePath: mf.slicePath,
+        inputHash: mf.inputHash,
+        sequenceIndex: merged.length,
+        anchorSource: 'manual',
+        anchorRef: mf.anchorRef,
+        bbox2d: mf.bbox2d,
+        spaceWidth: mf.spaceWidth,
+        spaceHeight: mf.spaceHeight,
+        transform: mf.transform,
+        srcRect: mf.srcRect,
+        cropPath: mf.cropPath,
+        optionLabel: mf.optionLabel,
+      ),
+    );
+    unmatchedIds.add(newId);
+  }
+  final out = [
+    for (var i = 0; i < merged.length; i++)
+      merged[i].copyWith(sequenceIndex: i),
+  ];
+  return (figures: out, unmatchedManualIds: unmatchedIds);
+}
 
 /// 两组图块是否相同（比较内容身份，不比较 crop_path——每次写图块
 /// 文件名都带新时间戳，路径必然不同；只比较 bbox/换算坐标/顺序/锚点）。
@@ -1294,10 +1439,6 @@ Uint8List? cropFigurePng({
   return (figures: current, hasStale: current.isEmpty);
 }
 
-/// 未关联图片区的标题文本（WP-D #7 §7.2.2）：无可靠归属/位置的图块
-/// 改入题干末尾的独立区，此标题块与正常内容分隔、明确标出。
-const String unassociatedFiguresHeader = '以下图片未确认属于哪个选项';
-
 /// 一个图块的放置结果（[buildContentBlocks] 与 [diagnoseFigures] 共用）。
 class _FigurePlacement {
   const _FigurePlacement({
@@ -1445,6 +1586,17 @@ List<_FigurePlacement> _computePlacements({
   final firstLabelOffset = mdLabels.isEmpty ? null : mdLabels.first.offset;
   final placements = <_FigurePlacement>[];
   for (final fig in figures) {
+    // Win11 反馈包 3：人工拖过的图块（anchorSource='manual'）位置由用户
+    // 定：anchorRef 是落点前的文字段数（拖动时记，见 reorderFigures），
+    // 直接插到该文字段之后，不走 md/text/选项锚定；解析不出或越界时
+    // 钳制到序列末尾，不丢图。
+    if (fig.anchorSource == 'manual') {
+      final at =
+          int.tryParse(fig.anchorRef)?.clamp(0, blocks.length) ??
+          blocks.length;
+      placements.add(_FigurePlacement(figure: fig, at: at, zone: false));
+      continue;
+    }
     // 有归属：找标号块。
     if (fig.optionLabel != null) {
       final labelAt = labelBlockIndex[fig.optionLabel!];
@@ -1533,9 +1685,12 @@ List<_FigurePlacement> _computePlacements({
 /// - 有 optionLabel 的图块：插在其选项标号所在段内（R5-4：md 锚点可靠
 ///   时保留原始锚点顺序，否则插标号块紧后方；标号块不在题干里时进
 ///   未关联区）；
-/// - 无法可靠放置的图块：不再默认插到末尾，改入题干末尾的独立
-///   「未关联图片」区（标题块 [unassociatedFiguresHeader] + 图块，
-///   图块强制标未确认），与正常内容分隔。
+/// - 人工拖过的图块（anchorSource='manual'）：按 anchorRef（落点前的
+///   文字段数）直接插到指定位置，不走任何自动锚定；
+/// - 无法可靠放置的图块：默认放序列末尾（Win11 反馈包 3：不再设独立
+///   「未关联图片」区、不再标“位置未确认”，用户自己拖到正确位置）。
+/// 只读渲染与纠错编辑器读同一份持久化顺序（ocr_figures 的 JSON 顺序
+/// 即 sequence_index 顺序）。
 List<QuestionContentBlock> buildContentBlocks({
   required String stemMarkdown,
   required List<OcrFigure> figures,
@@ -1578,7 +1733,8 @@ List<QuestionContentBlock> buildContentBlocks({
     if (i < blocks.length) out.add(blocks[i]);
   }
   if (zoned.isNotEmpty) {
-    out.add(const TextBlock(unassociatedFiguresHeader));
+    // Win11 反馈包 3：未关联图块默认放序列末尾，不再插区标题、不再标
+    // “位置未确认”；顺序按 sequence_index，用户自己拖到正确位置。
     for (final z in zoned) {
       // 进未关联区本身即位置未确认：强制标未确认，不论原 anchorSource。
       out.add(
@@ -1618,6 +1774,16 @@ List<Map<String, Object?>> diagnoseFigures({
     figures: figures,
     mdResults: mdResults,
   );
+  // 未关联区判定改走 placements（Win11 反馈包 3：渲染里已不再插区标题块，
+  // 再按标题块扫描永远判不出在区内）。
+  final placements = _computePlacements(
+    blocks: blocks,
+    blockTextLengths: _blockTextLengths(blocks),
+    figures: figures,
+    mdResults: mdResults,
+    stemStartInMd: stemStart,
+  );
+  final zoneIds = {for (final p in placements) if (p.zone) p.figure.id};
   // md 引用 bbox 在图块列表中无对应者（疑似裁切偏移/缩放错误）。
   final refs = mdResults == null ? const <_MdFigureRef>[] : _mdFigureRefs(mdResults);
   final unmatchedRefCount = refs
@@ -1637,16 +1803,10 @@ List<Map<String, Object?>> diagnoseFigures({
         insertionIndex = i;
       }
     }
-    // 未关联区判定：插入位置之前是否有区标题块。
+    // 未关联区判定：placements 里 zone 为 true 的图块。
     final insertionIdx = insertionIndex;
     if (insertionIdx != null) {
-      for (var i = 0; i < insertionIdx; i++) {
-        final b = rendered[i];
-        if (b is TextBlock && b.text == unassociatedFiguresHeader) {
-          inZone = true;
-          break;
-        }
-      }
+      inZone = zoneIds.contains(fig.id);
     }
     String? mdRefRaw;
     int? mdRefOffset;

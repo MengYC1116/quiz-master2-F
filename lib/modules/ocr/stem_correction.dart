@@ -16,7 +16,8 @@
 //   OCR 领取时的版本（用户人工改过题干但切片没变时，正是需要比较并
 //   主动接受的情形）。接受的题干一律从 ocr_raw 包里取，不用调用方传的
 //   预览字符串——调用方传什么都不影响最终写入内容。接受在函数内直接
-//   落库并返回已保存的题，调用方不再另行 repo.save。
+//   落库并返回 AcceptedCandidate（已保存的题 + 未匹配上的手动图块 ID，
+//   Win11 反馈尾巴 1），调用方不再另行 repo.save。
 // - 忽略候选：只把 raw 里的候选状态写 ignored，contentVersion +1；
 //   已接受/已忽略/stale/无候选时原样返回，不动版本（重复忽略是空操作）。
 // - 其他保存（整理表单、详情编辑改答案/文件夹等）不碰 content_version——
@@ -30,6 +31,7 @@
 import 'dart:io';
 
 import 'package:drift/drift.dart';
+import 'package:flutter/foundation.dart';
 
 import '../../data/data_change_events.dart';
 import '../../data/database.dart';
@@ -59,6 +61,38 @@ class CandidateRejection implements Exception {
 
   @override
   String toString() => 'CandidateRejection($reason): $message';
+}
+
+/// 接受候选的返回值（Win11 反馈尾巴 1）：已保存的题 + 接受时没匹配
+/// 上的手动图块 ID（[mergeManualFigures] 的 unmatchedManualIds，
+/// 是加 `-manual` 后缀后的新 ID，已保留在图块序列末尾）。
+/// 调用方（Notifier）把 [unmatchedManualIds] 经
+/// [AcceptCandidateOutcome] 带到页面提示用户，不静默丢图。
+class AcceptedCandidate {
+  const AcceptedCandidate({
+    required this.question,
+    this.unmatchedManualIds = const [],
+  });
+
+  final Question question;
+  final List<String> unmatchedManualIds;
+}
+
+/// Notifier 接受候选的结果（Win11 反馈尾巴 1）：成功时 [reason] 为
+/// null，[unmatchedManualIds] 是接受时没匹配上的手动图块 ID（已保留
+/// 在末尾，页面据此提示用户一次）；失败时 [reason] 是
+/// [CandidateRejection.reason] 或 'save_failed' / 'no_question'，
+/// [unmatchedManualIds] 为空。
+class AcceptCandidateOutcome {
+  const AcceptCandidateOutcome({
+    required this.reason,
+    this.unmatchedManualIds = const [],
+  });
+
+  final String? reason;
+  final List<String> unmatchedManualIds;
+
+  bool get accepted => reason == null;
 }
 
 /// 人工编辑保存：把编辑器拼出的新题干写进题（见文件头规则）。
@@ -91,14 +125,16 @@ Question applyManualStemEdit(Question question, String newStem) {
 /// 库里候选标 stale 再拒绝——标 stale 也是同一事务内的条件更新，
 /// 只当库里仍是验过的那个 pending 包时才写（行数 1 才算标上了），
 /// 迟到的新候选已写回时行数为 0，绝不误标新候选；标完事务正常提交，
-/// 事务完成后再抛拒绝。成功时直接在事务内落库并返回已保存的题
-/// （调用方不再另行 repo.save）：候选题干从 raw 包里取
+/// 事务完成后再抛拒绝。成功时直接在事务内落库并返回 [AcceptedCandidate]
+///（已保存的题 + 未匹配上的手动图块 ID，见 [mergeManualFigures]；
+/// 调用方不再另行 repo.save）：
+/// 候选题干从 raw 包里取
 /// （[pendingCandidateStem] 的同款推导），ocr_manual_edited 保持
 /// 原值，contentVersion +1，raw 候选状态写 accepted。
 /// 条件更新行数不是 1 时抛 [StateError] 回滚整笔（调用方按
 /// save_failed 处理）。写库成功后发一次变更事件（与旧流程里
 /// repo.save 发的事件同口径：写后发，见 data_change_events.dart）。
-Future<Question> acceptCandidateStem(
+Future<AcceptedCandidate> acceptCandidateStem(
   QuestionRepository repo,
   Question question,
 ) async {
@@ -106,6 +142,9 @@ Future<Question> acceptCandidateStem(
   Question? accepted;
   CandidateRejection? rejection;
   var wrote = false;
+  // Win11 反馈尾巴 1：接受时没匹配上的手动图块 ID（已保留在末尾），
+  // 事务提交后随返回值带给调用方提示用户；拒绝路径下为空。
+  var unmatchedManualIds = const <String>[];
   // 十四批 M2：接受候选时新图块随候选包一起写回（同一 customUpdate 写
   // ocr_stem + ocr_split_status + ocr_figures + ocr_raw（accepted）+
   // content_version+1）。裁图在事务外先做（写文件协议），事务失败
@@ -201,27 +240,61 @@ Future<Question> acceptCandidateStem(
       inputHash: raw.inputHash,
     );
     final oldFigures = parseOcrFigures(row.ocrFigures);
+    // Win11 反馈包 3：重识别产生新图块 ID 时，用 mergeManualFigures
+    // 保留已有 manual 图块（按裁图区域匹配；匹配不上的保留在末尾并
+    // 上报，绝不静默丢弃——见 ocr_figures.dart）。
+    final merged = mergeManualFigures(
+      oldFigures: oldFigures,
+      newFigures: derivedFigures,
+    );
+    final mergedFigures = merged.figures;
+    unmatchedManualIds = merged.unmatchedManualIds;
+    if (merged.unmatchedManualIds.isNotEmpty) {
+      debugPrint(
+        'Win11 包 3：接受候选时 ${merged.unmatchedManualIds.length} 张'
+        '手动排过的图块在新识别里没找到，已保留在末尾：'
+        '${merged.unmatchedManualIds.join(', ')}（题 ${question.id}）',
+      );
+    }
     List<OcrFigure> figuresToStore;
-    if (sameFiguresIgnoringCrop(oldFigures, derivedFigures)) {
+    if (sameFiguresIgnoringCrop(oldFigures, mergedFigures)) {
       figuresToStore = oldFigures;
-    } else if (derivedFigures.isEmpty) {
+    } else if (mergedFigures.isEmpty) {
       figuresToStore = const [];
     } else {
-      figuresToStore = const [];
-      final sliceAbs = AppDatabase.resolveDataPath(row.slicePath ?? '');
-      if (sliceAbs != null) {
-        try {
-          final sliceBytes = await File(sliceAbs).readAsBytes();
-          final figureWrite = await writeFigureFiles(
-            dataDir: AppDatabase.dataDirectoryPath(),
-            questionId: question.id,
-            sliceBytes: sliceBytes,
-            figures: derivedFigures,
-          );
-          pendingFigureWrite = figureWrite;
-          figuresToStore = figureWrite.figures;
-        } on FigureWriteException {
-          figuresToStore = const [];
+      // 已带裁图文件的图块（保留下来的 manual 图块）直接复用；
+      // 只有 cropPath 为空的才需要新裁图——writeFigureFiles 会给
+      // 每个传入图块重新裁图并分配新路径，旧裁图传进去会被重裁、
+      // 旧文件变孤儿。
+      final toWrite = mergedFigures
+          .where((f) => f.cropPath.isEmpty)
+          .toList();
+      // 裁图失败时的底线：只丢弃本次没裁出来的新图块，已带裁图文件
+      // 的 manual 图块保留——裁图失败绝不能连带丢掉用户手动排过的图块。
+      figuresToStore = mergedFigures
+          .where((f) => f.cropPath.isNotEmpty)
+          .toList();
+      if (toWrite.isNotEmpty) {
+        final sliceAbs = AppDatabase.resolveDataPath(row.slicePath ?? '');
+        if (sliceAbs != null) {
+          try {
+            final sliceBytes = await File(sliceAbs).readAsBytes();
+            final figureWrite = await writeFigureFiles(
+              dataDir: AppDatabase.dataDirectoryPath(),
+              questionId: question.id,
+              sliceBytes: sliceBytes,
+              figures: toWrite,
+            );
+            pendingFigureWrite = figureWrite;
+            final writtenById = {
+              for (final f in figureWrite.figures) f.id: f,
+            };
+            figuresToStore = [
+              for (final f in mergedFigures) writtenById[f.id] ?? f,
+            ];
+          } on FigureWriteException {
+            // 保留上面算好的已带裁图子集，不动。
+          }
         }
       }
     }
@@ -331,7 +404,10 @@ Future<Question> acceptCandidateStem(
     commitFigureFiles(pendingFigureWrite!.registeredPaths);
   }
   _emitQuestionChanged(question.id);
-  return accepted!;
+  return AcceptedCandidate(
+    question: accepted!,
+    unmatchedManualIds: unmatchedManualIds,
+  );
 }
 
 /// Drift 行 → 模型（与 db_questions.dart 的 _questionFromDb 同口径；
@@ -405,6 +481,31 @@ Question deleteFigureFromQuestion(Question question, String figureId) {
   if (kept.length == figures.length) return question;
   return question.copyWith(
     ocrFigures: encodeOcrFigures(kept),
+    contentVersion: question.contentVersion + 1,
+  );
+}
+
+/// 图块换位（Win11 反馈包 3，整理页/详情页共用）：按调用方给的新顺序
+/// 重排图块（[reorderFigures]，被拖图块记 manual + 落点），只更新
+/// ocr_figures 引用，content_version +1；裁图文件不动。顺序非法
+/// （不是原集合的排列 / 含未知 ID）时抛 [ArgumentError]，调用方按
+/// 保存失败处理、编辑器回滚到原顺序。调用方经 repo.save 落库——
+/// 版本由 upsert 的版本权威按实际内容变化统一计算（只 +1 一次，
+/// 与 [deleteFigureFromQuestion] 同款）。
+Question reorderFiguresInQuestion(
+  Question question,
+  List<String> orderedFigureIds,
+  String movedFigureId,
+  int movedTextAt,
+) {
+  final reordered = reorderFigures(
+    parseOcrFigures(question.ocrFigures),
+    orderedIds: orderedFigureIds,
+    movedFigureId: movedFigureId,
+    manualTextAt: movedTextAt,
+  );
+  return question.copyWith(
+    ocrFigures: encodeOcrFigures(reordered),
     contentVersion: question.contentVersion + 1,
   );
 }

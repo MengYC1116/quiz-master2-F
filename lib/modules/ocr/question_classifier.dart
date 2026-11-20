@@ -25,6 +25,7 @@
 
 import '../../models/models.dart';
 import '../../services/glm_ocr_client.dart';
+import '../../services/option_contents.dart';
 import '../../services/stem_splitter.dart';
 
 /// 主题型枚举值（存储值），按展示顺序。
@@ -174,6 +175,64 @@ Question withManualQuestionType(Question question, String? newType) {
   if (changed) {
     updated = updated.copyWith(contentVersion: question.contentVersion + 1);
   }
+  return updated;
+}
+
+/// 自动重算题型（Win11 包 4）：对一道题用其 OCR 原文重新跑分类，返回
+/// 应写入库的新题；无需写库时返回 null（调用方不写库，防循环）。
+///
+/// 返回 null 的情形：
+/// * 题型来源为 manual（人工指定永不覆盖）；
+/// * 无 OCR 原文或原文解析失败；
+/// * 重算结果与库里已存的题型/来源/背景标签/标签来源全等（同一输入
+///   版本只自动算一次，写库无意义——[planClassificationWrite] 的
+///   per-field 门保证 manual 字段不动）。
+/// 否则返回 copyWith：题型/标签按 per-field 门写，contentVersion +1
+///（与 [withManualQuestionType] 同口径；调用方用 SaveToken 以旧版本
+/// 写库，版本冲突即失败不覆盖）。
+Question? reclassifiedQuestion(Question question) {
+  if (question.questionTypeSource == 'manual') return null;
+  final rawText = question.ocrRaw;
+  if (rawText == null) return null;
+  final raw = GlmOcrRawData.tryParse(rawText);
+  if (raw == null) return null;
+  final classification = classifyQuestion(
+    raw: raw,
+    split: splitStem(raw.mdResults),
+  );
+  final plan = planClassificationWrite(
+    currentTypeSource: question.questionTypeSource,
+    currentTagsSource: question.questionBackgroundTagsSource,
+    classification: classification,
+  );
+  final newType = plan.writeType ? plan.questionType : question.questionType;
+  final newTypeSource = plan.writeType
+      ? plan.questionTypeSource
+      : question.questionTypeSource;
+  final newTags = plan.writeTags
+      ? plan.backgroundTags
+      : question.questionBackgroundTags;
+  final newTagsSource = plan.writeTags
+      ? plan.backgroundTagsSource
+      : question.questionBackgroundTagsSource;
+  if (newType == question.questionType &&
+      newTypeSource == question.questionTypeSource &&
+      newTags == question.questionBackgroundTags &&
+      newTagsSource == question.questionBackgroundTagsSource) {
+    return null;
+  }
+  var updated = question.copyWith(
+    questionTypeSource: newTypeSource,
+    questionBackgroundTagsSource: newTagsSource,
+    clearQuestionType: newType == null,
+  );
+  if (newType != null) {
+    updated = updated.copyWith(questionType: newType);
+  }
+  updated = updated.copyWith(
+    questionBackgroundTags: newTags,
+    contentVersion: question.contentVersion + 1,
+  );
   return updated;
 }
 
@@ -582,6 +641,17 @@ _SingleOutcome _classifySingle(String md, StemSplitResult split) {
   // 选择判定成立 → 判选择题，空括号 ( ) 不再触发填空。
   if (split.status == StemSplitStatus.autoSplit) {
     candidates[_choiceType(md, split.stemText)] = '自动切分检出 A–E 选项序列';
+  }
+  // Win11 反馈包 5：结构化选项内容信号，与切分信号互补——切分失败
+  // （如双栏选项未过强边界）但统一解析器仍能按顺序解析出 ≥2 个有文字
+  // 的选项槽时，也作选择候选；与切分信号是同一候选（putIfAbsent，
+  // 不产生两个选择候选）。判断题固定“正确/错误”，不走选项解析：
+  // 判断信号若同时成立，按既有冲突规则判待确认。
+  if (parseOptionContents(md, split).hasStructuredOptions) {
+    candidates.putIfAbsent(
+      _choiceType(md, split.stemText),
+      () => '结构化选项内容 ≥2 槽有文字',
+    );
   }
   // ①②③④ 选项序列（中；小问路径已排除小问情形，到这里就是选项）。
   // 带圈数字在代码块/公式内时不计（与 splitStem 同一词法优先级，S3-1）。

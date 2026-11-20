@@ -8,6 +8,14 @@
 //   （D-105：计算机题干里的程序不当公式解析）；公式块可看、可删、
 //   可恢复为原图（按 ocr_raw 里 layout_details 的 bbox 裁公式小图，
 //   裁不到用整张切片）；十三批不做可视化公式编辑器。
+// - 图块自由拖动（Win11 反馈包 3）：每个图块左上角有拖动柄（⋮⋮），
+//   按住柄拖动，块间出现插入线指示落点，松手落位；拖到滚动区上下边缘
+//   自动滚动；鼠标直接拖、触屏从柄上拖（柄是独立响应区，不抢滚动手势
+//   的地盘——柄之外仍可正常滚动）；只有图块可拖，文字块不动、只作落点
+//   间隔槽；图块不能拆开文字块、不能拖出题干区。落下即保存（与“删图块
+//   即时落库”一致，见 [StemEditor.onReorderFigure]），顺序写进
+//   ocr_figures 的 JSON 顺序，记 anchorSource='manual'；拖动取消
+//   恢复原顺序、不写库；保存失败同样回滚，不假装已保存。
 // - 重新识别产生新候选时不直接替换：用户预览新旧再确认（[candidateStem]
 //   非空时显“有新的识别结果”，[查看新旧对比] 后 [用新结果替换] / [忽略]）。
 // - 正在编辑时 OCR 回来了不许强行刷掉编辑器：草稿只在题目 id 变了时
@@ -98,6 +106,7 @@ class StemEditor extends StatefulWidget {
     required this.onDismissCandidate,
     required this.onCancel,
     this.onDeleteFigure,
+    this.onReorderFigure,
   });
 
   final Question question;
@@ -123,6 +132,22 @@ class StemEditor extends StatefulWidget {
   /// repo.save 落库；返回 true = 已删除，编辑器把该段换成整题原图；
   /// false = 删除失败，该段保持原样、调用方已提示。
   final Future<bool> Function(String figureId)? onDeleteFigure;
+
+  /// 图块换位（Win11 反馈包 3）：落下即保存。调用方用
+  /// [reorderFigures] 重排 + repo.save 落库（顺序写进 ocr_figures
+  /// 的 JSON 顺序，被拖图块记 anchorSource='manual'）；返回 true =
+  /// 已保存，编辑器保持新顺序；false = 保存失败，编辑器回滚到原顺序。
+  /// [orderedFigureIds] 是换位后全部图块按显示顺序的 ID；
+  /// [movedFigureId] 是被拖的图块 ID；[movedTextAt] 是落点前的文字
+  /// 段数（manual 落点，见 ocr_figures.dart）。
+  /// 为 null 时拖动不生效（落下即回滚，不假装已保存）——调用方未接线
+  /// 前拖了也白拖，不如明确回滚。
+  final Future<bool> Function(
+    List<String> orderedFigureIds,
+    String movedFigureId,
+    int movedTextAt,
+  )?
+  onReorderFigure;
 
   @override
   State<StemEditor> createState() => _StemEditorState();
@@ -199,14 +224,6 @@ class _StemEditorState extends State<StemEditor> {
     final byId = {for (final f in figures) f.id: f};
     final drafts = <_DraftBlock>[];
     for (final block in blocks) {
-      // WP-D #7 收尾：跳过「未关联图片」区标题块——它只是渲染用的分隔
-      // 标记（ocr_figures.dart 的 [unassociatedFiguresHeader]），不是题干
-      // 内容；进草稿会在保存时把标题文字写进 ocr_stem。
-      // 已知局限：用户题干原文恰好一字不差就是这句标题时也会被跳过，
-      // 概率可忽略，记为已知局限（不做内容嗅探区分）。
-      if (block is TextBlock && block.text == unassociatedFiguresHeader) {
-        continue;
-      }
       drafts.add(
         switch (block) {
           TextBlock(:final text) => _DraftText(text),
@@ -292,6 +309,153 @@ class _StemEditorState extends State<StemEditor> {
     return index;
   }
 
+  /// Win11 反馈包 3：块间隔槽（落点）。
+  ///
+  /// [gap] 是插入下标（插到 `_drafts[gap]` 之前；gap == 长度时插末尾）。
+  /// 槽高固定 10px（命中范围稳定，显不显线都不改布局）；拖到槽上时
+  /// 槽内显一条 3px 主色插入线。只接受当前草稿里有的图块 ID。
+  Widget _dropGap(int gap) {
+    return DragTarget<String>(
+      key: Key('figure-drop-gap-$gap'),
+      onWillAcceptWithDetails: (details) =>
+          _drafts.any((d) => d is _DraftFigure && d.figure.id == details.data),
+      onAcceptWithDetails: (details) => _moveFigureToGap(details.data, gap),
+      builder: (context, candidateData, rejectedData) {
+        final active = candidateData.isNotEmpty;
+        return SizedBox(
+          height: 10,
+          child: Center(
+            child: Container(
+              height: active ? 3 : 2,
+              decoration: BoxDecoration(
+                color: active
+                    ? Theme.of(context).colorScheme.primary
+                    : Colors.transparent,
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  /// Win11 反馈包 3：图块左上角的拖动柄（⋮⋮）。
+  ///
+  /// 柄是独立响应区：只有按住柄才能拖图块（整个图块不响应拖动，
+  /// 避免被父级滚动手势抢走；柄之外仍可正常滚动）。鼠标直接拖；
+  /// 触屏从柄上拖起（柄只有 20px，不占滚动地盘）。拖动中原位置的柄
+  /// 变淡，指针旁跟一张小卡片；拖到滚动区上下边缘时自动滚动。
+  Widget _dragHandle(OcrFigure figure) {
+    return Draggable<String>(
+      key: Key('figure-drag-handle-${figure.id}'),
+      data: figure.id,
+      feedback: Material(
+        elevation: 4,
+        borderRadius: BorderRadius.circular(8),
+        child: Container(
+          width: 160,
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+          decoration: BoxDecoration(
+            color: Theme.of(context).colorScheme.surface,
+            border: Border.all(color: Theme.of(context).colorScheme.outline),
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.drag_indicator, size: 18),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text(
+                  '配图 ${figure.id}',
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontSize: 13),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+      childWhenDragging: const Opacity(
+        opacity: 0.4,
+        child: Icon(Icons.drag_indicator, size: 20),
+      ),
+      onDragUpdate: (details) => _maybeAutoScroll(details.globalPosition),
+      child: const MouseRegion(
+        cursor: SystemMouseCursors.grab,
+        child: Icon(Icons.drag_indicator, size: 20),
+      ),
+    );
+  }
+
+  /// Win11 反馈包 3：拖到滚动区上下边缘时自动滚动（题干再长也能拖过去）。
+  /// 滚速固定一小步（每收到一次拖动更新滚 24px），到顶/底即停；
+  /// 外层没有可滚容器时静默不做（不抛、不拦拖动）。
+  void _maybeAutoScroll(Offset globalPosition) {
+    final scrollable = Scrollable.maybeOf(context);
+    if (scrollable == null) return;
+    final position = scrollable.position;
+    if (!position.hasContentDimensions) return;
+    final renderBox =
+        scrollable.context.findRenderObject() as RenderBox?;
+    if (renderBox == null || !renderBox.hasSize) return;
+    final viewportTop = renderBox.localToGlobal(Offset.zero).dy;
+    final viewportBottom = viewportTop + renderBox.size.height;
+    const edgeDistance = 64.0;
+    const step = 24.0;
+    if (globalPosition.dy < viewportTop + edgeDistance) {
+      final target = (position.pixels - step).clamp(
+        position.minScrollExtent,
+        position.maxScrollExtent,
+      );
+      if (target != position.pixels) position.jumpTo(target);
+    } else if (globalPosition.dy > viewportBottom - edgeDistance) {
+      final target = (position.pixels + step).clamp(
+        position.minScrollExtent,
+        position.maxScrollExtent,
+      );
+      if (target != position.pixels) position.jumpTo(target);
+    }
+  }
+
+  /// Win11 反馈包 3：图块落到间隔槽 [gap]（插到 `_drafts[gap]` 之前）。
+  ///
+  /// 落点前的文字段数（manual 落点）按落点前的非图块草稿段计——
+  /// 与 [buildContentBlocks] 的 manual 分支是同一口径（文字段在
+  /// parseQuestionContent 里 1:1 对应非图块草稿段）。
+  /// 原位（gap 紧贴图块自身两侧）不调保存；取消拖动时本函数根本
+  /// 不被调用（拖动中不改草稿，取消即恢复原顺序、不写库）；保存
+  /// 失败（回调返回 false / 未接线）时回滚到原顺序，不假装已保存。
+  Future<void> _moveFigureToGap(String figureId, int gap) async {
+    final from = _drafts.indexWhere(
+      (d) => d is _DraftFigure && d.figure.id == figureId,
+    );
+    if (from < 0) return;
+    var to = gap > from ? gap - 1 : gap;
+    if (to == from) return;
+    final previous = [..._drafts];
+    final drafts = [..._drafts];
+    final moved = drafts.removeAt(from);
+    drafts.insert(to, moved);
+    final movedTextAt = drafts
+        .take(to)
+        .where((d) => d is! _DraftFigure)
+        .length;
+    final orderedIds = [
+      for (final d in drafts)
+        if (d is _DraftFigure) d.figure.id,
+    ];
+    setState(() => _drafts = drafts);
+    final persist = widget.onReorderFigure;
+    if (persist == null) {
+      setState(() => _drafts = previous);
+      return;
+    }
+    final ok = await persist(orderedIds, figureId, movedTextAt);
+    if (!ok && mounted) setState(() => _drafts = previous);
+  }
+
   void _restoreFormulaAsImage(_DraftFormula formula) {
     final bytes = cropFormulaImageBytes(
       sliceBytes: widget.sliceBytes ?? Uint8List(0),
@@ -320,7 +484,7 @@ class _StemEditorState extends State<StemEditor> {
           _candidatePanel(candidateStem),
         const SizedBox(height: 8),
         const Text(
-          '普通文字直接改；公式可看、可删、可恢复为原图；配图可删除',
+          '普通文字直接改；公式可看、可删、可恢复为原图；配图可删除，按住配图左上角 ⋮⋮ 可拖动换位',
           style: TextStyle(fontSize: 12, color: Colors.grey),
         ),
         const SizedBox(height: 8),
@@ -329,9 +493,13 @@ class _StemEditorState extends State<StemEditor> {
             '还没有识别出的题干，可以直接输入',
             style: TextStyle(fontSize: 13),
           ),
-        for (var i = 0; i < _drafts.length; i++) ...[
-          _draftBlockWidget(_drafts[i]),
-          const SizedBox(height: 8),
+        // Win11 反馈包 3：每两个相邻段之间一条间隔槽（DragTarget）。
+        // 间隔槽平时是 10px 的空白（代替原来的 SizedBox 间距），拖图块
+        // 时经过的槽显插入线；图块只能落在槽里——文字块是原子段，不会
+        // 被图块拆开，也拖不出题干区。
+        for (var i = 0; i <= _drafts.length; i++) ...[
+          _dropGap(i),
+          if (i < _drafts.length) _draftBlockWidget(_drafts[i]),
         ],
         const SizedBox(height: 4),
         Row(
@@ -456,9 +624,10 @@ class _StemEditorState extends State<StemEditor> {
     }
   }
 
-  /// 十四批 M2：图块段——裁图 + “位置未确认”标注 + 删除按钮。
+  /// Win11 反馈包 3：图块段——左上角拖动柄 + 裁图 + 删除按钮。
   /// 删除是即时落库动作（不等“保存修改”）；删除成功后本段换成
   /// 整题原图（“删除后回退整题原图”），不直接消失。
+  /// 不再显示“位置未确认”标注（全部关闭，见 question_content_renderer.dart）。
   Widget _figureBlockWidget(
     _DraftFigure draft,
     OcrFigure figure,
@@ -493,10 +662,9 @@ class _StemEditorState extends State<StemEditor> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          FigureImageView(
-            cropPath: figure.cropPath,
-            unconfirmed: figure.unconfirmed,
-          ),
+          Row(children: [_dragHandle(figure)]),
+          const SizedBox(height: 4),
+          FigureImageView(cropPath: figure.cropPath),
           const SizedBox(height: 6),
           Row(
             children: [

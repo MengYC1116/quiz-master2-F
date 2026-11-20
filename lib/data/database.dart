@@ -10,6 +10,9 @@ import 'package:sqlite3/sqlite3.dart' as sqlite3;
 
 import '../models/exam_event.dart';
 import '../models/models.dart';
+import '../services/glm_ocr_client.dart';
+import '../services/option_contents.dart';
+import '../services/stem_splitter.dart';
 import '../services/zip_archive.dart';
 import 'data_change_events.dart';
 import 'demo_data.dart';
@@ -26,6 +29,7 @@ part 'db_schema.dart';
 part 'db_storage.dart';
 part 'db_codec.dart';
 part 'db_questions.dart';
+part 'db_option_contents.dart';
 part 'db_catalog.dart';
 part 'db_collect.dart';
 part 'db_orphans.dart';
@@ -124,21 +128,44 @@ class AppDatabase {
   /// §2：备份/恢复与 settings 表共用的 schema 版本号（与
   /// `PRAGMA user_version` 是两回事，别混用——后者是打开时驱动的，
   /// 前者是给备份/恢复与排障看的）。
-  /// 十四批 M1：v5（questions 加 9 列 + cause_records 加 2 列 +
-  /// review_history 加 8 列 + 新建 attempts 表 + review_state 加 4 列 +
-  /// question_type 索引；v4 库走 Drift 迁移到 v5，不再删除）。
-  static const int schemaVersion = 5;
+  /// Win11 反馈包 5：v6（questions 加 option_contents +
+  /// option_contents_parser_version 两列；v5 库走 Drift 迁移到 v6，
+  /// 不再删除）。
+  static const int schemaVersion = 6;
 
   /// §2.3：备份里的应用版本号（与 pubspec.yaml 的 version 一致）。
   static const String appVersion = '0.1.0+1';
 
   /// B4.2：备份表清单（导出与恢复共用；恢复只插这里的表）。
-  /// v5 库共 16 张表，备份表清单也是 16 张。
+  /// v6 库共 16 张表，备份表清单也是 16 张。
   /// 十四批 M2（P1-6）：attempts 全表纳入备份和恢复；review_state
   /// 仍在清单里（恢复时清表、但不插备份里的行——备份不含未完成会话，
   /// 见 importBackupJsonIntoImpl；导出时 review_state 写 `[]`）。
   /// `_meta` 不是表，不在这里；导出时另加，恢复时跳过。
   static const List<String> backupTables = [
+    'subjects',
+    'questions',
+    'question_boxes',
+    'folders',
+    'tags',
+    'exams',
+    'knowledge_points',
+    'cause_records',
+    'collect_tasks',
+    'review_state',
+    'review_history',
+    'recent_tasks',
+    'recently_viewed_questions',
+    'ocr_jobs',
+    'settings',
+    'attempts',
+  ];
+
+  /// Win11 反馈包 5：v5 备份的表清单（v5 也是 16 张表，与 v6 同名；
+  /// questions 行没有 option_contents / option_contents_parser_version
+  /// 两列）。v5 备份恢复时按这份清单校验，两列缺失走 NULL 默认值，
+  /// 不拒绝（见 validateBackupDataImpl 与 _backupInsertRowTyped）。
+  static const List<String> backupTablesV5 = [
     'subjects',
     'questions',
     'question_boxes',
@@ -671,6 +698,12 @@ class AppDatabase {
   /// [backfillCollectDoneIntoImpl]。
   static Future<int> backfillCollectDoneFrom(QuizDatabase db) =>
       backfillCollectDoneIntoImpl(db);
+
+  /// Win11 反馈包 5 回填（可单测版）：读 ocr_raw 重解析出选项内容
+  /// 回填进 option_contents，返回回填的题数。见
+  /// [backfillOptionContentsIntoImpl]。
+  static Future<int> backfillOptionContentsInto(QuizDatabase db) =>
+      backfillOptionContentsIntoImpl(db);
 
   static Future<void> deleteCollectTaskFrom(QuizDatabase db, String id) =>
       deleteCollectTaskFromImpl(db, id);

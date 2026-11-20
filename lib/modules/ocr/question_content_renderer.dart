@@ -20,17 +20,13 @@ import '../../data/database.dart';
 import 'question_content.dart';
 
 /// 十四批 M2：配图图块的图片展示。按 [cropPath]（数据目录相对路径）
-/// 读裁图；文件不存在或读不到时显示占位，不抛异常。位置未确认时
-/// 在图下方明确标注“位置未确认”。
+/// 读裁图；文件不存在或读不到时显示占位，不抛异常。
+/// Win11 反馈包 3：不再显示“位置未确认”标注（全部关闭，未锚定图块
+/// 默认放序列末尾，用户自己拖到正确位置）。
 class FigureImageView extends StatelessWidget {
-  const FigureImageView({
-    super.key,
-    required this.cropPath,
-    this.unconfirmed = false,
-  });
+  const FigureImageView({super.key, required this.cropPath});
 
   final String cropPath;
-  final bool unconfirmed;
 
   @override
   Widget build(BuildContext context) {
@@ -58,14 +54,6 @@ class FigureImageView extends StatelessWidget {
                 SizedBox(width: 6),
                 Text('题目配图（图片缺失）'),
               ],
-            ),
-          if (unconfirmed)
-            const Padding(
-              padding: EdgeInsets.only(top: 4),
-              child: Text(
-                '位置未确认',
-                style: TextStyle(fontSize: 12, color: Colors.grey),
-              ),
             ),
         ],
       ),
@@ -371,18 +359,15 @@ class QuestionContentRenderer extends StatelessWidget {
               ),
             ),
           );
-        case FigureBlock(:final cropPath, :final unconfirmed):
+        case FigureBlock(:final cropPath):
           // 十四批 M2：配图图块段。裁图按相对路径从数据目录读；读不到
-          // 时显示占位（不留空白、不阻断其余段落显示）。位置未确认的
-          // 图块必须明确标注，绝不静默当成已确认顺序展示。
+          // 时显示占位（不留空白、不阻断其余段落显示）。
+          // Win11 反馈包 3：不再标“位置未确认”（全部关闭）。
           flushInline();
           children.add(
             Padding(
               padding: const EdgeInsets.symmetric(vertical: 4),
-              child: FigureImageView(
-                cropPath: cropPath,
-                unconfirmed: unconfirmed,
-              ),
+              child: FigureImageView(cropPath: cropPath),
             ),
           );
         case TableBlock():

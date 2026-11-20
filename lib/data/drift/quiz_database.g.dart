@@ -6303,6 +6303,28 @@ class $QuestionsTable extends Questions
     requiredDuringInsert: false,
     defaultValue: const Constant(0),
   );
+  static const VerificationMeta _optionContentsMeta = const VerificationMeta(
+    'optionContents',
+  );
+  @override
+  late final GeneratedColumn<String> optionContents = GeneratedColumn<String>(
+    'option_contents',
+    aliasedName,
+    true,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+  );
+  static const VerificationMeta _optionContentsParserVersionMeta =
+      const VerificationMeta('optionContentsParserVersion');
+  @override
+  late final GeneratedColumn<int> optionContentsParserVersion =
+      GeneratedColumn<int>(
+        'option_contents_parser_version',
+        aliasedName,
+        true,
+        type: DriftSqlType.int,
+        requiredDuringInsert: false,
+      );
   @override
   List<GeneratedColumn> get $columns => [
     id,
@@ -6348,6 +6370,8 @@ class $QuestionsTable extends Questions
     optionLabelsConfirmed,
     answerVersion,
     answerPendingRecheck,
+    optionContents,
+    optionContentsParserVersion,
   ];
   @override
   String get aliasedName => _alias ?? actualTableName;
@@ -6639,6 +6663,24 @@ class $QuestionsTable extends Questions
         ),
       );
     }
+    if (data.containsKey('option_contents')) {
+      context.handle(
+        _optionContentsMeta,
+        optionContents.isAcceptableOrUnknown(
+          data['option_contents']!,
+          _optionContentsMeta,
+        ),
+      );
+    }
+    if (data.containsKey('option_contents_parser_version')) {
+      context.handle(
+        _optionContentsParserVersionMeta,
+        optionContentsParserVersion.isAcceptableOrUnknown(
+          data['option_contents_parser_version']!,
+          _optionContentsParserVersionMeta,
+        ),
+      );
+    }
     return context;
   }
 
@@ -6832,6 +6874,14 @@ class $QuestionsTable extends Questions
         DriftSqlType.int,
         data['${effectivePrefix}answer_pending_recheck'],
       )!,
+      optionContents: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}option_contents'],
+      ),
+      optionContentsParserVersion: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}option_contents_parser_version'],
+      ),
     );
   }
 
@@ -6915,6 +6965,14 @@ class DbQuestion extends DataClass implements Insertable<DbQuestion> {
 
   /// 十四批 M3（P1-A）：答案待重新核对标记（改标签后未重新确认时置 1）。
   final int answerPendingRecheck;
+
+  /// Win11 反馈包 5（v6）：选项内容是标签映射 JSON
+  /// `{"A":"偶函数",...}`（NULL = 未解析）；解析器版本见
+  /// services/option_contents.dart（NULL = 未经解析器解析）。
+  /// 两列都在 questions 表末尾（与 db_schema.dart 的 DDL 顺序一致，
+  /// 迁移后库与全新 v6 库 sqlite_master 逐字一致）。
+  final String? optionContents;
+  final int? optionContentsParserVersion;
   const DbQuestion({
     required this.id,
     required this.title,
@@ -6959,6 +7017,8 @@ class DbQuestion extends DataClass implements Insertable<DbQuestion> {
     required this.optionLabelsConfirmed,
     required this.answerVersion,
     required this.answerPendingRecheck,
+    this.optionContents,
+    this.optionContentsParserVersion,
   });
   @override
   Map<String, Expression> toColumns(bool nullToAbsent) {
@@ -7062,6 +7122,14 @@ class DbQuestion extends DataClass implements Insertable<DbQuestion> {
     map['option_labels_confirmed'] = Variable<int>(optionLabelsConfirmed);
     map['answer_version'] = Variable<int>(answerVersion);
     map['answer_pending_recheck'] = Variable<int>(answerPendingRecheck);
+    if (!nullToAbsent || optionContents != null) {
+      map['option_contents'] = Variable<String>(optionContents);
+    }
+    if (!nullToAbsent || optionContentsParserVersion != null) {
+      map['option_contents_parser_version'] = Variable<int>(
+        optionContentsParserVersion,
+      );
+    }
     return map;
   }
 
@@ -7142,6 +7210,13 @@ class DbQuestion extends DataClass implements Insertable<DbQuestion> {
       optionLabelsConfirmed: Value(optionLabelsConfirmed),
       answerVersion: Value(answerVersion),
       answerPendingRecheck: Value(answerPendingRecheck),
+      optionContents: optionContents == null && nullToAbsent
+          ? const Value.absent()
+          : Value(optionContents),
+      optionContentsParserVersion:
+          optionContentsParserVersion == null && nullToAbsent
+          ? const Value.absent()
+          : Value(optionContentsParserVersion),
     );
   }
 
@@ -7206,6 +7281,10 @@ class DbQuestion extends DataClass implements Insertable<DbQuestion> {
       answerPendingRecheck: serializer.fromJson<int>(
         json['answerPendingRecheck'],
       ),
+      optionContents: serializer.fromJson<String?>(json['optionContents']),
+      optionContentsParserVersion: serializer.fromJson<int?>(
+        json['optionContentsParserVersion'],
+      ),
     );
   }
   @override
@@ -7259,6 +7338,10 @@ class DbQuestion extends DataClass implements Insertable<DbQuestion> {
       'optionLabelsConfirmed': serializer.toJson<int>(optionLabelsConfirmed),
       'answerVersion': serializer.toJson<int>(answerVersion),
       'answerPendingRecheck': serializer.toJson<int>(answerPendingRecheck),
+      'optionContents': serializer.toJson<String?>(optionContents),
+      'optionContentsParserVersion': serializer.toJson<int?>(
+        optionContentsParserVersion,
+      ),
     };
   }
 
@@ -7306,6 +7389,8 @@ class DbQuestion extends DataClass implements Insertable<DbQuestion> {
     int? optionLabelsConfirmed,
     int? answerVersion,
     int? answerPendingRecheck,
+    Value<String?> optionContents = const Value.absent(),
+    Value<int?> optionContentsParserVersion = const Value.absent(),
   }) => DbQuestion(
     id: id ?? this.id,
     title: title ?? this.title,
@@ -7356,6 +7441,12 @@ class DbQuestion extends DataClass implements Insertable<DbQuestion> {
     optionLabelsConfirmed: optionLabelsConfirmed ?? this.optionLabelsConfirmed,
     answerVersion: answerVersion ?? this.answerVersion,
     answerPendingRecheck: answerPendingRecheck ?? this.answerPendingRecheck,
+    optionContents: optionContents.present
+        ? optionContents.value
+        : this.optionContents,
+    optionContentsParserVersion: optionContentsParserVersion.present
+        ? optionContentsParserVersion.value
+        : this.optionContentsParserVersion,
   );
   DbQuestion copyWithCompanion(QuestionsCompanion data) {
     return DbQuestion(
@@ -7458,6 +7549,12 @@ class DbQuestion extends DataClass implements Insertable<DbQuestion> {
       answerPendingRecheck: data.answerPendingRecheck.present
           ? data.answerPendingRecheck.value
           : this.answerPendingRecheck,
+      optionContents: data.optionContents.present
+          ? data.optionContents.value
+          : this.optionContents,
+      optionContentsParserVersion: data.optionContentsParserVersion.present
+          ? data.optionContentsParserVersion.value
+          : this.optionContentsParserVersion,
     );
   }
 
@@ -7508,7 +7605,9 @@ class DbQuestion extends DataClass implements Insertable<DbQuestion> {
           ..write('optionLabels: $optionLabels, ')
           ..write('optionLabelsConfirmed: $optionLabelsConfirmed, ')
           ..write('answerVersion: $answerVersion, ')
-          ..write('answerPendingRecheck: $answerPendingRecheck')
+          ..write('answerPendingRecheck: $answerPendingRecheck, ')
+          ..write('optionContents: $optionContents, ')
+          ..write('optionContentsParserVersion: $optionContentsParserVersion')
           ..write(')'))
         .toString();
   }
@@ -7558,6 +7657,8 @@ class DbQuestion extends DataClass implements Insertable<DbQuestion> {
     optionLabelsConfirmed,
     answerVersion,
     answerPendingRecheck,
+    optionContents,
+    optionContentsParserVersion,
   ]);
   @override
   bool operator ==(Object other) =>
@@ -7606,7 +7707,10 @@ class DbQuestion extends DataClass implements Insertable<DbQuestion> {
           other.optionLabels == this.optionLabels &&
           other.optionLabelsConfirmed == this.optionLabelsConfirmed &&
           other.answerVersion == this.answerVersion &&
-          other.answerPendingRecheck == this.answerPendingRecheck);
+          other.answerPendingRecheck == this.answerPendingRecheck &&
+          other.optionContents == this.optionContents &&
+          other.optionContentsParserVersion ==
+              this.optionContentsParserVersion);
 }
 
 class QuestionsCompanion extends UpdateCompanion<DbQuestion> {
@@ -7653,6 +7757,8 @@ class QuestionsCompanion extends UpdateCompanion<DbQuestion> {
   final Value<int> optionLabelsConfirmed;
   final Value<int> answerVersion;
   final Value<int> answerPendingRecheck;
+  final Value<String?> optionContents;
+  final Value<int?> optionContentsParserVersion;
   final Value<int> rowid;
   const QuestionsCompanion({
     this.id = const Value.absent(),
@@ -7698,6 +7804,8 @@ class QuestionsCompanion extends UpdateCompanion<DbQuestion> {
     this.optionLabelsConfirmed = const Value.absent(),
     this.answerVersion = const Value.absent(),
     this.answerPendingRecheck = const Value.absent(),
+    this.optionContents = const Value.absent(),
+    this.optionContentsParserVersion = const Value.absent(),
     this.rowid = const Value.absent(),
   });
   QuestionsCompanion.insert({
@@ -7744,6 +7852,8 @@ class QuestionsCompanion extends UpdateCompanion<DbQuestion> {
     this.optionLabelsConfirmed = const Value.absent(),
     this.answerVersion = const Value.absent(),
     this.answerPendingRecheck = const Value.absent(),
+    this.optionContents = const Value.absent(),
+    this.optionContentsParserVersion = const Value.absent(),
     this.rowid = const Value.absent(),
   }) : id = Value(id),
        title = Value(title),
@@ -7793,6 +7903,8 @@ class QuestionsCompanion extends UpdateCompanion<DbQuestion> {
     Expression<int>? optionLabelsConfirmed,
     Expression<int>? answerVersion,
     Expression<int>? answerPendingRecheck,
+    Expression<String>? optionContents,
+    Expression<int>? optionContentsParserVersion,
     Expression<int>? rowid,
   }) {
     return RawValuesInsertable({
@@ -7844,6 +7956,9 @@ class QuestionsCompanion extends UpdateCompanion<DbQuestion> {
       if (answerVersion != null) 'answer_version': answerVersion,
       if (answerPendingRecheck != null)
         'answer_pending_recheck': answerPendingRecheck,
+      if (optionContents != null) 'option_contents': optionContents,
+      if (optionContentsParserVersion != null)
+        'option_contents_parser_version': optionContentsParserVersion,
       if (rowid != null) 'rowid': rowid,
     });
   }
@@ -7892,6 +8007,8 @@ class QuestionsCompanion extends UpdateCompanion<DbQuestion> {
     Value<int>? optionLabelsConfirmed,
     Value<int>? answerVersion,
     Value<int>? answerPendingRecheck,
+    Value<String?>? optionContents,
+    Value<int?>? optionContentsParserVersion,
     Value<int>? rowid,
   }) {
     return QuestionsCompanion(
@@ -7941,6 +8058,9 @@ class QuestionsCompanion extends UpdateCompanion<DbQuestion> {
           optionLabelsConfirmed ?? this.optionLabelsConfirmed,
       answerVersion: answerVersion ?? this.answerVersion,
       answerPendingRecheck: answerPendingRecheck ?? this.answerPendingRecheck,
+      optionContents: optionContents ?? this.optionContents,
+      optionContentsParserVersion:
+          optionContentsParserVersion ?? this.optionContentsParserVersion,
       rowid: rowid ?? this.rowid,
     );
   }
@@ -8097,6 +8217,14 @@ class QuestionsCompanion extends UpdateCompanion<DbQuestion> {
     if (answerPendingRecheck.present) {
       map['answer_pending_recheck'] = Variable<int>(answerPendingRecheck.value);
     }
+    if (optionContents.present) {
+      map['option_contents'] = Variable<String>(optionContents.value);
+    }
+    if (optionContentsParserVersion.present) {
+      map['option_contents_parser_version'] = Variable<int>(
+        optionContentsParserVersion.value,
+      );
+    }
     if (rowid.present) {
       map['rowid'] = Variable<int>(rowid.value);
     }
@@ -8151,6 +8279,8 @@ class QuestionsCompanion extends UpdateCompanion<DbQuestion> {
           ..write('optionLabelsConfirmed: $optionLabelsConfirmed, ')
           ..write('answerVersion: $answerVersion, ')
           ..write('answerPendingRecheck: $answerPendingRecheck, ')
+          ..write('optionContents: $optionContents, ')
+          ..write('optionContentsParserVersion: $optionContentsParserVersion, ')
           ..write('rowid: $rowid')
           ..write(')'))
         .toString();
@@ -13126,6 +13256,8 @@ typedef $$QuestionsTableCreateCompanionBuilder = QuestionsCompanion Function({
   Value<int> optionLabelsConfirmed,
   Value<int> answerVersion,
   Value<int> answerPendingRecheck,
+  Value<String?> optionContents,
+  Value<int?> optionContentsParserVersion,
   Value<int> rowid,
 });
 typedef $$QuestionsTableUpdateCompanionBuilder = QuestionsCompanion Function({
@@ -13172,6 +13304,8 @@ typedef $$QuestionsTableUpdateCompanionBuilder = QuestionsCompanion Function({
   Value<int> optionLabelsConfirmed,
   Value<int> answerVersion,
   Value<int> answerPendingRecheck,
+  Value<String?> optionContents,
+  Value<int?> optionContentsParserVersion,
   Value<int> rowid,
 });
 
@@ -13404,6 +13538,16 @@ class $$QuestionsTableFilterComposer
     column: $table.answerPendingRecheck,
     builder: (column) => ColumnFilters(column),
   );
+
+  ColumnFilters<String> get optionContents => $composableBuilder(
+    column: $table.optionContents,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<int> get optionContentsParserVersion => $composableBuilder(
+    column: $table.optionContentsParserVersion,
+    builder: (column) => ColumnFilters(column),
+  );
 }
 
 class $$QuestionsTableOrderingComposer
@@ -13630,6 +13774,16 @@ class $$QuestionsTableOrderingComposer
     column: $table.answerPendingRecheck,
     builder: (column) => ColumnOrderings(column),
   );
+
+  ColumnOrderings<String> get optionContents => $composableBuilder(
+    column: $table.optionContents,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<int> get optionContentsParserVersion => $composableBuilder(
+    column: $table.optionContentsParserVersion,
+    builder: (column) => ColumnOrderings(column),
+  );
 }
 
 class $$QuestionsTableAnnotationComposer
@@ -13830,6 +13984,16 @@ class $$QuestionsTableAnnotationComposer
     column: $table.answerPendingRecheck,
     builder: (column) => column,
   );
+
+  GeneratedColumn<String> get optionContents => $composableBuilder(
+    column: $table.optionContents,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<int> get optionContentsParserVersion => $composableBuilder(
+    column: $table.optionContentsParserVersion,
+    builder: (column) => column,
+  );
 }
 
 class $$QuestionsTableTableManager
@@ -13907,6 +14071,8 @@ class $$QuestionsTableTableManager
                 Value<int> optionLabelsConfirmed = const Value.absent(),
                 Value<int> answerVersion = const Value.absent(),
                 Value<int> answerPendingRecheck = const Value.absent(),
+                Value<String?> optionContents = const Value.absent(),
+                Value<int?> optionContentsParserVersion = const Value.absent(),
                 Value<int> rowid = const Value.absent(),
               }) => QuestionsCompanion(
                 id: id,
@@ -13952,6 +14118,8 @@ class $$QuestionsTableTableManager
                 optionLabelsConfirmed: optionLabelsConfirmed,
                 answerVersion: answerVersion,
                 answerPendingRecheck: answerPendingRecheck,
+                optionContents: optionContents,
+                optionContentsParserVersion: optionContentsParserVersion,
                 rowid: rowid,
               ),
           createCompanionCallback:
@@ -14000,6 +14168,8 @@ class $$QuestionsTableTableManager
                 Value<int> optionLabelsConfirmed = const Value.absent(),
                 Value<int> answerVersion = const Value.absent(),
                 Value<int> answerPendingRecheck = const Value.absent(),
+                Value<String?> optionContents = const Value.absent(),
+                Value<int?> optionContentsParserVersion = const Value.absent(),
                 Value<int> rowid = const Value.absent(),
               }) => QuestionsCompanion.insert(
                 id: id,
@@ -14045,6 +14215,8 @@ class $$QuestionsTableTableManager
                 optionLabelsConfirmed: optionLabelsConfirmed,
                 answerVersion: answerVersion,
                 answerPendingRecheck: answerPendingRecheck,
+                optionContents: optionContents,
+                optionContentsParserVersion: optionContentsParserVersion,
                 rowid: rowid,
               ),
           withReferenceMapper: (p0) => p0

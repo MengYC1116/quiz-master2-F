@@ -85,4 +85,12 @@ class Questions extends Table {
   /// 十四批 M3（P1-A）：答案待重新核对标记（改标签后未重新确认时置 1）。
   IntColumn get answerPendingRecheck =>
       integer().withDefault(const Constant(0))();
+
+  /// Win11 反馈包 5（v6）：选项内容是标签映射 JSON
+  /// `{"A":"偶函数",...}`（NULL = 未解析）；解析器版本见
+  /// services/option_contents.dart（NULL = 未经解析器解析）。
+  /// 两列都在 questions 表末尾（与 db_schema.dart 的 DDL 顺序一致，
+  /// 迁移后库与全新 v6 库 sqlite_master 逐字一致）。
+  TextColumn get optionContents => text().nullable()();
+  IntColumn get optionContentsParserVersion => integer().nullable()();
 }

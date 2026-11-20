@@ -38,6 +38,10 @@ enum OcrStemStatus {
 
   /// 用户手动改过题干（ocr_manual_edited=1）：自动结果不再直接覆盖。
   manuallyEdited,
+
+  /// 已取消识别（Win11 反馈包 2）：最新任务 cancelled、OCR 字段已清，
+  /// 只留切片。不是失败——用户主动取消，可随时重新识别。
+  notRecognized,
 }
 
 /// [OcrStemStatus] 的中文显示名（界面直接用，不另写文案）。
@@ -50,6 +54,7 @@ extension OcrStemStatusLabel on OcrStemStatus {
     OcrStemStatus.completed => '识别完成',
     OcrStemStatus.failed => '识别失败',
     OcrStemStatus.manuallyEdited => '已手动修改',
+    OcrStemStatus.notRecognized => '未识别，仅保留图片',
   };
 }
 
@@ -70,6 +75,10 @@ extension OcrStemStatusLabel on OcrStemStatus {
 /// 5. 最新任务 completed → “识别完成”。
 /// 6. 无任务：有题干或有原始结果 → “识别完成”；无 key → “等待设置 API Key”；
 ///    否则“等待识别”。
+/// 7. 最新任务 cancelled（Win11 反馈包 2）→ “未识别，仅保留图片”：
+///    取消后任务行标 cancelled、OCR 字段已清，只留切片；不是失败，
+///    重新识别入口仍在。重新识别建新任务后，最新任务不再是 cancelled，
+///    按新任务推导。
 OcrStemStatus deriveOcrStemStatus(
   Question question, {
   required List<OcrJob> jobs,
@@ -109,6 +118,10 @@ OcrStemStatus deriveOcrStemStatus(
         return OcrStemStatus.failed;
       case OcrJobStatus.completed:
         return OcrStemStatus.completed;
+      case OcrJobStatus.cancelled:
+        // Win11 反馈包 2：用户主动取消识别——不是失败，显示
+        // “未识别，仅保留图片”，重新识别入口仍在。
+        return OcrStemStatus.notRecognized;
     }
   }
 
