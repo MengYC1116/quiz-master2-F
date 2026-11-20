@@ -1821,3 +1821,11 @@ unavailable），kill -9 后新进程可取锁——与实现依据一致。
 - 分类器：有结构化选项内容（≥2 个选项槽有文字）即可作选择候选，与切分信号互补。
 - 迁移与备份：旧库自动升 v6、新库默认空、v6 备份完整恢复、v5 备份缺字段用空值兼容、迁移中断不留半迁移状态、重复迁移不重复加字段、非法 JSON 可识别；v6 备份被旧版本恢复时明确报错而非静默丢选项。
 - 证据：新测试 `test/b14_win11_pkg5_option_contents_test.dart` 36/36、`test/b14_win11_pkg5_option_editor_test.dart` 6/6（解析器、编解码、分类器信号、迁移 v5→v6、备份 v5→v6 与 v6→v6、回填幂等、模型往返、编辑器交互）。
+
+## D-172 — Win11 备份校验：ocr_jobs.status 白名单漏了 cancelled（2026-11-20，Win11 真机反馈，Meng 批准修）
+
+- 问题：Win11 上备份读/校验报“这份备份文件已损坏：ocr_jobs 表 ocr-1795139221723-ad9c3bd5 行的 status 不是合法的任务状态（应为 pending / running / completed / failed）：cancelled”。备份文件本身没坏、数据都在，是校验误判，恢复与预览都被拦住。
+- 根因：取消识别包 2 给 `OcrJobStatus` 加了 `cancelled`（`lib/models/models.dart:741`，取消时写库 `lib/data/db_ocr_jobs.dart:334`），数据库列无 CHECK 约束、行正常入库；但备份校验 `_validateBackupRowDomains`（`lib/data/db_backup.dart:502`）的白名单仍是十三批 M2 手写的旧 4 值，包 2 漏改。校验在恢复（`importBackupJsonIntoImpl`）与备份读/预览（`_decodeBackupJson`）两处都跑，所以导出的备份一读就报损坏。
+- 修法（`lib/data/db_backup.dart`）：白名单改成直接取 `OcrJobStatus.values`（枚举是唯一事实来源，`db_backup.dart` 与 `database.dart` 同库、`models.dart` 已导入，无循环），以后枚举再加新状态不再脱节；报错文案里的合法值列表也由枚举生成。3 处仍写旧 4 值的注释同步改掉（`db_backup.dart:59-63` 与 `:502`、`lib/data/drift/tables/ocr_jobs.dart:5`、`lib/data/db_ocr_jobs.dart:18`）。
+- 同类风险（未改）：同一函数里 `attempts` 的 mode/status/confidence 白名单也是手写字符串（注释写明“M3 若改枚举，两处一起改”），但这三列没有对应的 Dart 枚举、无法直接取枚举，现状未出问题，这次不动；若以后给 attempts 立枚举，应同款改成取枚举。
+- 证据：新测试 `test/b14_win11_d172_backup_cancelled_status_test.dart`（含 cancelled 行的备份校验通过且完整恢复、枚举全部值逐一过校验、非法值仍拒绝）。
