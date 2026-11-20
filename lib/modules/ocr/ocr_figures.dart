@@ -218,7 +218,9 @@ class OcrFigure {
 
   /// 锚点引用：md 锚定时为 md 引用序号（字符串化的整数）；
   /// text 锚定时为最近文本块 id（`text-<layout index>`）；
-  /// fallback 时为 ''；manual 时为落点前的文字段数（字符串化的整数）。
+  /// fallback 时为 ''；manual 时为落点（Q2 REV2 §5.1：`"h"` = 原块
+  /// `h` 之前，`"h:s"` = 原块 `h` 的第 `s` 段之前；旧的纯整数值
+  /// 全兼容，含义不变）。
   final String anchorRef;
 
   /// 坐标来源：bbox_2d 原值 + 该块所在坐标空间尺寸。
@@ -385,14 +387,15 @@ Set<String> figureCropPaths(List<OcrFigure> figures) =>
 ///   否则抛 [ArgumentError]；
 /// - 按新顺序重编 `sequence_index`（0..n-1）；
 /// - 被拖的图块（[movedFigureId]）记 `anchorSource='manual'`，落点
-///   [manualTextAt]（落点前的文字段数，见 [buildContentBlocks] 的
-///   manual 分支）写进 `anchor_ref`；没动的图块锚定来源不动；
+///   [manualTextAt]（manual 落点字符串：`"h"` = 原块 `h` 之前，
+///   `"h:s"` = 原块 `h` 的第 `s` 段之前，见 Q2 REV2 §5.1）写进
+///   `anchor_ref`；没动的图块锚定来源不动；
 /// - 只改顺序与锚定，不改裁图文件本身（`crop_path` 原样保留）。
 List<OcrFigure> reorderFigures(
   List<OcrFigure> figures, {
   required List<String> orderedIds,
   required String movedFigureId,
-  int? manualTextAt,
+  String? manualTextAt,
 }) {
   if (orderedIds.length != figures.length ||
       orderedIds.toSet().length != figures.length) {
@@ -411,7 +414,7 @@ List<OcrFigure> reorderFigures(
             ? 'manual'
             : null,
         anchorRef: orderedIds[i] == movedFigureId && manualTextAt != null
-            ? '$manualTextAt'
+            ? manualTextAt
             : null,
       ),
   ];
@@ -1445,15 +1448,38 @@ class _FigurePlacement {
     required this.figure,
     required this.at,
     required this.zone,
+    this.slotPart = 0,
+    this.rule = 'zone',
+    this.splitBlock,
+    this.splitOffset,
+    this.epsilon = 0,
   });
 
   final OcrFigure figure;
 
-  /// 插入下标（插入到该下标的段之前）；进未关联区时为 null。
+  /// 插入下标（插入到该下标的原块之前；进未关联区时为 null）。
+  /// 块内切分时为切分块下标，分槽由 [splitOffset] 定；
+  /// manual `"h:s"` 时为 `h`，段序号见 [slotPart]。
   final int? at;
 
   /// 是否进未关联区。
   final bool zone;
+
+  /// manual `"h:s"` 的段序号（块内落点）；其余分支为 0。
+  /// 在 [buildContentBlocks] 里按该块实际切分段数再钳制一次。
+  final int slotPart;
+
+  /// 放置规则（诊断用，见 §9.4）：'segment' | 'fallback_no_boundary' |
+  /// 'zone' | 'manual' | 'text' | 'option'。
+  final String rule;
+
+  /// 块内切分点（仅 md 题干图的段解析切分时有值）：原块下标与
+  /// 块内切分字符偏移；其余为 null。
+  final int? splitBlock;
+  final int? splitOffset;
+
+  /// 本图所用的 ε（§3.2；非 md 题干图为 0）。
+  final int epsilon;
 }
 
 /// 题干首段在 md 全文中的位置（-1 表示未找到）。
@@ -1557,14 +1583,361 @@ int _optionPositionFromMd({
   return at.clamp(labelAt + 1, spanEnd);
 }
 
-/// 计算每个图块的放置位置（WP-D #7 §7.2.2 + R5-4）。
+// ---------------------------------------------------------------------------
+// Q2 REV2：段落段尾放置（Win11 反馈后续修复）。
+//
+// 题干图的 md 引用偏移 rel 所属的段落段，图插到该段的段尾。段落段 =
+// 一段连续的行内内容（TextBlock + 行内 FormulaBlock），以段落分隔符
+// （\n\n+）或块级边界（独立公式 / 代码 / 表格 / 标题 / 原图回退块）
+// 为界。只在放置层实现：不动 parseQuestionContent / 块模型 / schema /
+// ocr_figures JSON 格式（只新增 anchorRef 的 "h:s" 取值，旧值全兼容）。
+// 全部偏移都是 Dart String 字符下标（UTF-16 码元），不是字节偏移。
+// ---------------------------------------------------------------------------
+
+/// 段落分隔符：两个及以上换行（`\r\n` 按一个换行计，只在扫描时识别，
+/// 绝不改动原文；OQ1：2026-11-20 备份 28 份 md_results 与题干里均无
+/// `\r`，正则保留 `\r?` 作防御，不简化）。
+final _paragraphSeparatorPattern = RegExp(r'(?:\r?\n){2,}');
+
+/// 一个 TextBlock 内的段落分隔符行程（块内偏移 + 全局块坐标偏移）。
+class _SeparatorRun {
+  const _SeparatorRun({
+    required this.blockIndex,
+    required this.startInBlock,
+    required this.endInBlock,
+    required this.globalStart,
+    required this.globalEnd,
+  });
+
+  final int blockIndex;
+  final int startInBlock;
+  final int endInBlock;
+  final int globalStart;
+  final int globalEnd;
+}
+
+/// 是否块级边界（段划分里结束当前段，自身不属于任何段）。
+bool _isBlockLevelBoundary(QuestionContentBlock b) => switch (b) {
+  TextBlock() => false,
+  FormulaBlock(:final displayMode) => displayMode,
+  _ => true,
+};
+
+/// 各 TextBlock 内的段落分隔符行程（按块顺序、块内偏移升序）。
+/// 纯分隔符块（整块只有一个分隔符行程）：解析器一般已丢弃纯空白段落，
+/// 此处防御性跳过，不把它当作段边界。
+List<_SeparatorRun> _separatorRuns(
+  List<QuestionContentBlock> blocks,
+  List<int> starts,
+) {
+  final runs = <_SeparatorRun>[];
+  for (var i = 0; i < blocks.length; i++) {
+    final b = blocks[i];
+    if (b is! TextBlock) continue;
+    for (final m in _paragraphSeparatorPattern.allMatches(b.text)) {
+      if (m.start == 0 && m.end == b.text.length) continue;
+      runs.add(
+        _SeparatorRun(
+          blockIndex: i,
+          startInBlock: m.start,
+          endInBlock: m.end,
+          globalStart: starts[i] + m.start,
+          globalEnd: starts[i] + m.end,
+        ),
+      );
+    }
+  }
+  return runs;
+}
+
+/// md 题干图解析到的一处落点：块内切分，或原块边界。
+class _SegmentPlacement {
+  const _SegmentPlacement.boundary({
+    required this.at,
+    required this.rule,
+    required this.epsilon,
+  }) : blockIndex = null,
+       offset = null;
+
+  const _SegmentPlacement.cut({
+    required this.blockIndex,
+    required this.offset,
+    required this.rule,
+    required this.epsilon,
+  }) : at = null;
+
+  /// 边界落点：插到原块 [at] 之前（0..n）。
+  final int? at;
+
+  /// 切分落点：切分原块 [blockIndex]，分隔符归属前一段，
+  /// 切分偏移 [offset] = 分隔符行程末尾（块内字符偏移）。
+  final int? blockIndex;
+  final int? offset;
+
+  /// 'segment'（落在某段落段尾）或 'fallback_no_boundary'（段内无
+  /// 分隔符，退到段尾的块尾放置）。
+  final String rule;
+
+  /// 本图所用的 ε（§3.2）。
+  final int epsilon;
+
+  bool get isCut => blockIndex != null;
+}
+
+/// 分隔符行程定义的边界：行程在块首 → 块首边界；行程在块尾 → 块尾
+/// 边界；其余 → 块内切分（分隔符归属前一段）。三者是同一边界、同一
+/// 分槽，不产生两个切分点（§3.1）。
+_SegmentPlacement _boundaryForRun(
+  _SeparatorRun run,
+  List<QuestionContentBlock> blocks,
+  int epsilon,
+) {
+  final textLen = (blocks[run.blockIndex] as TextBlock).text.length;
+  if (run.startInBlock == 0) {
+    return _SegmentPlacement.boundary(
+      at: run.blockIndex,
+      rule: 'segment',
+      epsilon: epsilon,
+    );
+  }
+  if (run.endInBlock == textLen) {
+    return _SegmentPlacement.boundary(
+      at: run.blockIndex + 1,
+      rule: 'segment',
+      epsilon: epsilon,
+    );
+  }
+  return _SegmentPlacement.cut(
+    blockIndex: run.blockIndex,
+    offset: run.endInBlock,
+    rule: 'segment',
+    epsilon: epsilon,
+  );
+}
+
+/// ε（§3.2）：`2 × rel 之前已完整出现的 FormulaBlock 数`。
+/// 公式长度只会低估（每公式 0–2 字），误差单向偏右。
+int _epsilonForRel(
+  List<QuestionContentBlock> blocks,
+  List<int> starts,
+  int rel,
+) {
+  var n = 0;
+  for (var i = 0; i < blocks.length; i++) {
+    if (blocks[i] is FormulaBlock && starts[i + 1] <= rel) n++;
+  }
+  return 2 * n;
+}
+
+/// 文本是否以段落分隔符行程结尾（§6.4 的 rule 判定用）。
+bool _endsWithSeparator(String text) {
+  var found = false;
+  for (final m in _paragraphSeparatorPattern.allMatches(text)) {
+    if (m.end == text.length) found = true;
+  }
+  return found;
+}
+
+/// 把 md 题干图的相对偏移 [rel] 解析到一段的段尾（§1–§4、§6）。
+///
+/// - [starts]：各块在块坐标轴上的起点（长度 n+1，starts[n] 为总长）；
+/// - [host]：`rel <= acc` 的首次命中块（§6 立约，调用方算好传入）；
+/// - 顺序：rel<0（§6.1）→ 块级宿主（§4.1）→ ε 吸附（§3.2）→
+///   宿主块尾 tie（§6.4）→ 沿本段向前找段尾（§2.1/§4.1）→ 兜底（§7）。
+/// 吸附（§6.9）优先于块尾 tie（§6.4）：rel 恰在块边界、且其前 ε 内
+/// 有分隔符时，真实位置极可能就是该分隔符本身。
+_SegmentPlacement _resolveMdStemPlacement({
+  required List<QuestionContentBlock> blocks,
+  required List<int> starts,
+  required int host,
+  required int rel,
+  required int epsilon,
+}) {
+  final n = blocks.length;
+  // §6.1：引用在题干起点之前（模型外），按今天行为放第一块之后。
+  if (rel < 0) {
+    return _SegmentPlacement.boundary(
+      at: 1.clamp(0, n),
+      rule: 'fallback_no_boundary',
+      epsilon: epsilon,
+    );
+  }
+  final hostBlock = blocks[host];
+  // §4.1：块级宿主（独立公式 / 代码 / 表格 / 标题 / 原图回退块）
+  // 保持今天的行为 at = h+1，不为其发明段语义。
+  if (_isBlockLevelBoundary(hostBlock)) {
+    return _SegmentPlacement.boundary(
+      at: host + 1,
+      rule: 'fallback_no_boundary',
+      epsilon: epsilon,
+    );
+  }
+  final runs = _separatorRuns(blocks, starts);
+  // §3.2 ε 吸附：窗口 [rel−ε, rel] 内最晚相交的分隔符行程。
+  // 只向后看（误差单向偏右，真实位置不可能在 rel 之后）。
+  // 相交判定：行程的起点、终点（行程末尾偏移，即末字符之后的位置）
+  // 或中间落在窗口内均算（§3.1：rel 恰在行程起点 / 行程内 / 行程
+  // 终点三者同一边界）——行程末尾偏移落在窗口内即相交。
+  _SeparatorRun? adsorbed;
+  for (final r in runs) {
+    if (r.globalStart <= rel && r.globalEnd >= rel - epsilon) {
+      if (adsorbed == null || r.globalStart > adsorbed.globalStart) {
+        adsorbed = r;
+      }
+    }
+  }
+  if (adsorbed != null) return _boundaryForRun(adsorbed, blocks, epsilon);
+  // §6.4：rel 恰在宿主 TextBlock 末尾 → 块尾，不切分、不向前找段。
+  // 行内公式宿主不走这条（§6.10：span 末尾仍归入包含该公式的段）。
+  if (hostBlock is TextBlock && rel == starts[host + 1]) {
+    return _SegmentPlacement.boundary(
+      at: host + 1,
+      rule: _endsWithSeparator(hostBlock.text)
+          ? 'segment'
+          : 'fallback_no_boundary',
+      epsilon: epsilon,
+    );
+  }
+  // 宿主 TextBlock 内 rel 之后的第一个分隔符。
+  if (hostBlock is TextBlock) {
+    final inBlockPos = rel - starts[host];
+    for (final r in runs) {
+      if (r.blockIndex != host) continue;
+      if (r.startInBlock >= inBlockPos) {
+        return _boundaryForRun(r, blocks, epsilon);
+      }
+    }
+  }
+  // 沿本段向后找：行内公式与后续 TextBlock 同属一段，直到分隔符
+  // 或块级边界 / 题干末尾为止（§4.1 的段延伸）。
+  for (var j = host + 1; j < n; j++) {
+    final b = blocks[j];
+    if (b is TextBlock) {
+      for (final r in runs) {
+        if (r.blockIndex == j) return _boundaryForRun(r, blocks, epsilon);
+      }
+      continue;
+    }
+    if (b is FormulaBlock && !b.displayMode) continue;
+    // 块级边界：段在此结束，图插到该段最后一个块之后（§7 兜底）。
+    return _SegmentPlacement.boundary(
+      at: j,
+      rule: 'fallback_no_boundary',
+      epsilon: epsilon,
+    );
+  }
+  return _SegmentPlacement.boundary(
+    at: n,
+    rule: 'fallback_no_boundary',
+    epsilon: epsilon,
+  );
+}
+
+/// 按切分点切分一个 TextBlock（§2.4）：runs 沿累计字符长度切分，
+/// 横跨切分点的 run 一分为二；切分点恰在 run 边界时不切 run。
+/// [cuts] 须去重升序、均在 (0, text.length) 内（调用方保证，
+// 此处防御性过滤）。两半拼接逐字等于原文（§3.3）。
+List<TextBlock> _splitTextBlockAt(TextBlock block, List<int> cuts) {
+  final valid = cuts
+      .where((c) => c > 0 && c < block.text.length)
+      .toList();
+  if (valid.isEmpty) return [block];
+  final parts = <TextBlock>[];
+  var start = 0;
+  for (final cut in [...valid, block.text.length]) {
+    final text = block.text.substring(start, cut);
+    if (text.isEmpty) {
+      start = cut;
+      continue;
+    }
+    parts.add(
+      TextBlock(
+        text,
+        runs: block.runs == null
+            ? null
+            : _sliceRuns(block.runs!, start, cut),
+      ),
+    );
+    start = cut;
+  }
+  return parts.isEmpty ? [block] : parts;
+}
+
+/// 取 runs 在 [start, end) 区间内的切片（横跨的 run 一分为二）。
+/// 切片内无样式 run 时返回 null（与解析器建 TextBlock 的口径一致：
+/// 无样式则 runs 为 null）。
+List<TextRun>? _sliceRuns(List<TextRun> runs, int start, int end) {
+  final out = <TextRun>[];
+  var pos = 0;
+  for (final r in runs) {
+    final rs = pos;
+    final re = pos + r.text.length;
+    if (re > start && rs < end) {
+      final s = start > rs ? start - rs : 0;
+      final e = end < re ? end - rs : r.text.length;
+      out.add(
+        TextRun(
+          r.text.substring(s, e),
+          bold: r.bold,
+          italic: r.italic,
+          script: r.script,
+        ),
+      );
+    }
+    pos = re;
+  }
+  if (out.isEmpty) return null;
+  final hasStyle = out.any((r) => r.bold || r.italic || r.script != 0);
+  return hasStyle ? out : null;
+}
+
+/// manual anchorRef 解析（Q2 REV2 §5.1）：`"h"` = 原块 `h` 之前，
+/// `"h:s"` = 原块 `h` 的第 `s` 段之前（`s = 0` 等价于 `"h"`）。
+/// 非法值钳制到最近的合法落点，不丢图、不抛错（与今天
+/// `int.tryParse(...) ?? blocks.length` 的容错口径一致）。
+/// `s` 的上限是该块切分后的段数，在 buildContentBlocks 里按实际
+/// 切分结果再钳制一次（此处只钳 `s >= 0`）。
+({int at, int part}) _parseManualAnchor(String ref, int blockCount) {
+  final colon = ref.indexOf(':');
+  if (colon < 0) {
+    final at = int.tryParse(ref)?.clamp(0, blockCount) ?? blockCount;
+    return (at: at, part: 0);
+  }
+  final h = int.tryParse(ref.substring(0, colon));
+  final s = int.tryParse(ref.substring(colon + 1));
+  if (h == null || s == null) return (at: blockCount, part: 0);
+  if (h < 0) return (at: 0, part: 0);
+  if (h >= blockCount) return (at: blockCount, part: 0);
+  return (at: h, part: s < 0 ? 0 : s);
+}
+
+/// md 引用偏移 → 题干坐标（Q2 REV2 §1 的坐标换算补遗）。
+///
+/// 题干里没有图引用：md 坐标减去该引用之前、题干起点之后全部 md 图
+/// 引用的字符长度，才是题干坐标。不减则第 2 个起的 md 图整体右偏
+/// 约 31 字/个（一个 `![](page=…,bbox=[…])` 的长度），段归属全错、
+/// 甚至进未关联区——§9.1 案例 5（同一块内两图）不用它过不了。
+/// 只修正引用长度，不做逐公式源码跨度映射（§13 仍不做）；公式两侧
+/// 空格的 ±2 误差仍由 ε 吸附兜底。首个引用不受影响（twin2 fig-0
+/// 的 rel=101 不变）。
+int _relInStemCoords(String mdResults, int refOffset, int stemStartInMd) {
+  var preceding = 0;
+  for (final r in _mdFigureRefs(mdResults)) {
+    if (r.offset < stemStartInMd || r.offset >= refOffset) continue;
+    preceding += _mdRefEnd(mdResults, r.offset) - r.offset;
+  }
+  return refOffset - stemStartInMd - preceding;
+}
+
+/// 计算每个图块的放置位置（WP-D #7 §7.2.2 + R5-4 + Q2 REV2 §5）。
 ///
 /// - 有 optionLabel 且题干块里有唯一标号块 → 插在该选项段内
 ///   （md 锚点可靠时按 R5-4 保留原始锚点顺序，否则插标号块紧后方）；
 /// - 有 optionLabel 但题干块里无标号块（如 autoSplit 已把选项切出题干）
 ///   → 未关联区（归属已知但无处可插，不冒充位置）；
 /// - 无 optionLabel 且是选项区图（md 引用在首个选项标号之后）→ 未关联区；
-/// - 无 optionLabel 的题干图 → 原逻辑（md 偏移 / 文本纵向比例）；
+/// - 无 optionLabel 的题干图 → md 偏移按段落段尾放置（Q2 REV2 §1–§4）
+///   或文本纵向比例；
 /// - 无 optionLabel 且锚点不可靠（fallback，或 md/text 锚点算不出位置）
 ///   → 未关联区。
 /// 注意：此处已无 `at = blocks.length` 的默认 fallback——算不出位置的
@@ -1584,17 +1957,28 @@ List<_FigurePlacement> _computePlacements({
       ? const <_OptionLabelOccurrence>[]
       : _optionLabelOccurrences(mdResults);
   final firstLabelOffset = mdLabels.isEmpty ? null : mdLabels.first.offset;
+  // 块坐标轴起点：starts[i] 为块 i 的起点，starts[n] 为题干总长。
+  final starts = <int>[0];
+  for (final len in blockTextLengths) {
+    starts.add(starts.last + len);
+  }
   final placements = <_FigurePlacement>[];
   for (final fig in figures) {
-    // Win11 反馈包 3：人工拖过的图块（anchorSource='manual'）位置由用户
-    // 定：anchorRef 是落点前的文字段数（拖动时记，见 reorderFigures），
-    // 直接插到该文字段之后，不走 md/text/选项锚定；解析不出或越界时
-    // 钳制到序列末尾，不丢图。
+    // Win11 反馈包 3 + Q2 REV2 §5.1：人工拖过的图块（anchorSource='manual'）
+    // 位置由用户定：anchorRef 是原块坐标（`"h"` = 原块 `h` 之前，
+    // `"h:s"` = 原块 `h` 的第 `s` 段之前），直接按分槽插到指定位置，
+    // 不走 md/text/选项锚定；解析不出或越界时钳制到最近合法落点，不丢图。
     if (fig.anchorSource == 'manual') {
-      final at =
-          int.tryParse(fig.anchorRef)?.clamp(0, blocks.length) ??
-          blocks.length;
-      placements.add(_FigurePlacement(figure: fig, at: at, zone: false));
+      final parsed = _parseManualAnchor(fig.anchorRef, blocks.length);
+      placements.add(
+        _FigurePlacement(
+          figure: fig,
+          at: parsed.at,
+          zone: false,
+          slotPart: parsed.part,
+          rule: 'manual',
+        ),
+      );
       continue;
     }
     // 有归属：找标号块。
@@ -1624,7 +2008,14 @@ List<_FigurePlacement> _computePlacements({
             spanEnd: spanEnd,
           );
         }
-        placements.add(_FigurePlacement(figure: fig, at: at, zone: false));
+        placements.add(
+          _FigurePlacement(
+            figure: fig,
+            at: at,
+            zone: false,
+            rule: 'option',
+          ),
+        );
       } else {
         placements.add(_FigurePlacement(figure: fig, at: null, zone: true));
       }
@@ -1640,24 +2031,60 @@ List<_FigurePlacement> _computePlacements({
       placements.add(_FigurePlacement(figure: fig, at: null, zone: true));
       continue;
     }
-    // 题干图原逻辑：md 偏移映射。
+    // 题干图：md 偏移按段落段尾放置（Q2 REV2 §1–§4、§6）。
     if (fig.anchorSource == 'md' && refOffset != null && stemStartInMd >= 0) {
-      final rel = refOffset - stemStartInMd;
-      var acc = 0;
-      int? at;
+      final rel = _relInStemCoords(mdResults!, refOffset, stemStartInMd);
+      final epsilon = _epsilonForRel(blocks, starts, rel);
+      // §6 立约：宿主 h = min{ i | rel <= acc[i] }；不存在则无宿主。
+      int? host;
       for (var i = 0; i < blocks.length; i++) {
-        acc += blockTextLengths[i];
-        if (rel <= acc) {
-          at = i + 1;
+        if (rel <= starts[i + 1]) {
+          host = i;
           break;
         }
       }
-      if (at != null) {
-        placements.add(_FigurePlacement(figure: fig, at: at, zone: false));
+      if (host == null) {
+        // 引用超出题干范围 → 位置不可靠，进未关联区。
+        placements.add(
+          _FigurePlacement(
+            figure: fig,
+            at: null,
+            zone: true,
+            epsilon: epsilon,
+          ),
+        );
         continue;
       }
-      // 引用超出题干范围 → 位置不可靠，进未关联区。
-      placements.add(_FigurePlacement(figure: fig, at: null, zone: true));
+      final resolved = _resolveMdStemPlacement(
+        blocks: blocks,
+        starts: starts,
+        host: host,
+        rel: rel,
+        epsilon: epsilon,
+      );
+      if (resolved.isCut) {
+        placements.add(
+          _FigurePlacement(
+            figure: fig,
+            at: resolved.blockIndex,
+            zone: false,
+            rule: resolved.rule,
+            splitBlock: resolved.blockIndex,
+            splitOffset: resolved.offset,
+            epsilon: epsilon,
+          ),
+        );
+      } else {
+        placements.add(
+          _FigurePlacement(
+            figure: fig,
+            at: resolved.at,
+            zone: false,
+            rule: resolved.rule,
+            epsilon: epsilon,
+          ),
+        );
+      }
       continue;
     }
     // 题干图原逻辑：文本纵向比例。
@@ -1666,7 +2093,14 @@ List<_FigurePlacement> _computePlacements({
       if (pageH > 0 && blocks.isNotEmpty) {
         final ratio = (fig.srcRect.y + fig.srcRect.height / 2) / pageH;
         final at = (ratio * blocks.length).floor().clamp(0, blocks.length);
-        placements.add(_FigurePlacement(figure: fig, at: at, zone: false));
+        placements.add(
+          _FigurePlacement(
+            figure: fig,
+            at: at,
+            zone: false,
+            rule: 'text',
+          ),
+        );
         continue;
       }
     }
@@ -1676,28 +2110,24 @@ List<_FigurePlacement> _computePlacements({
   return placements;
 }
 
-/// 把图块按阅读顺序插入题干内容段（渲染用；见文件头“渲染插入口径”）。
-///
-/// - md 锚定的题干图：按 md 引用在全文中的字符位置，插入到相邻题干段
-///   之间（题干文本在 md 全文中的起始位置由题干首段定位）；
-/// - text 锚定的题干图：按其在页内的纵向相对位置插入（图块中心 y /
-///   页高 × 段数，钳制在段范围内）；
-/// - 有 optionLabel 的图块：插在其选项标号所在段内（R5-4：md 锚点可靠
-///   时保留原始锚点顺序，否则插标号块紧后方；标号块不在题干里时进
-///   未关联区）；
-/// - 人工拖过的图块（anchorSource='manual'）：按 anchorRef（落点前的
-///   文字段数）直接插到指定位置，不走任何自动锚定；
-/// - 无法可靠放置的图块：默认放序列末尾（Win11 反馈包 3：不再设独立
-///   「未关联图片」区、不再标“位置未确认”，用户自己拖到正确位置）。
-/// 只读渲染与纠错编辑器读同一份持久化顺序（ocr_figures 的 JSON 顺序
-/// 即 sequence_index 顺序）。
-List<QuestionContentBlock> buildContentBlocks({
+/// 放置层展开：解析 → 放置（含段切分）→ 展开序列 + 起源表。
+/// [origins] 与返回块一一对应：内容段为（原块下标，段序号），
+/// 图块为 null。分槽模型（Q2 REV2 §2.3）：每个已放置的图获得分槽
+/// (i, j)——原块 i 内的第 j 段之前；排序键为（展开序号，sequenceIndex）。
+/// 切分只发生在渲染时构造的序列里，保存拼回时两半按原文接回。
+({List<QuestionContentBlock> blocks, List<({int orig, int part})?> origins})
+_expandContentBlocks({
   required String stemMarkdown,
   required List<OcrFigure> figures,
   required String? mdResults,
 }) {
   final blocks = parseQuestionContent(stemMarkdown);
-  if (figures.isEmpty) return blocks;
+  if (figures.isEmpty) {
+    return (
+      blocks: blocks,
+      origins: [for (var i = 0; i < blocks.length; i++) (orig: i, part: 0)],
+    );
+  }
   final blockTextLengths = _blockTextLengths(blocks);
   final stemStart = _stemStartInMd(blocks, mdResults);
   final placements = _computePlacements(
@@ -1707,46 +2137,147 @@ List<QuestionContentBlock> buildContentBlocks({
     mdResults: mdResults,
     stemStartInMd: stemStart,
   );
-  // 同一位置的多个图块保持 sequence_index 顺序。
+  // 同一原块的切分点（去重、升序）：只由 md 题干图的段解析产生；
+  // 同一源块只切一次，产出全部切分点（§2.2）。
+  final cutsByBlock = <int, List<int>>{};
+  for (final p in placements) {
+    if (!p.zone && p.splitBlock != null && p.splitOffset != null) {
+      (cutsByBlock[p.splitBlock!] ??= []).add(p.splitOffset!);
+    }
+  }
+  for (final entry in cutsByBlock.entries) {
+    entry.value.sort();
+    var w = 0;
+    for (var r = 0; r < entry.value.length; r++) {
+      if (r == 0 || entry.value[r] != entry.value[r - 1]) {
+        entry.value[w++] = entry.value[r];
+      }
+    }
+    entry.value.length = w;
+  }
+  // 按切分点切分原块（只切 TextBlock；其余块型不切分）。
+  final splitParts = <List<QuestionContentBlock>>[];
+  for (var i = 0; i < blocks.length; i++) {
+    final cuts = cutsByBlock[i];
+    final b = blocks[i];
+    if (cuts == null || cuts.isEmpty || b is! TextBlock) {
+      splitParts.add([b]);
+    } else {
+      splitParts.add(_splitTextBlockAt(b, cuts));
+    }
+  }
+  final numParts = [for (final p in splitParts) p.length];
+  final prefix = <int>[0];
+  for (final c in numParts) {
+    prefix.add(prefix.last + c);
+  }
+  final totalParts = prefix.last;
+  // 每个已放置图块的展开序号（切分块内按切分点排位；其余按分槽）。
+  // 分槽 (i, numParts[i]) 与 (i+1, 0) 是同一展开位置（§2.3）。
+  int expandedIndexOf(_FigurePlacement p) {
+    if (p.splitBlock != null && p.splitOffset != null) {
+      final cuts = cutsByBlock[p.splitBlock!]!;
+      final rank = cuts.indexOf(p.splitOffset!) + 1;
+      return prefix[p.splitBlock!] + rank;
+    }
+    final at = p.at!;
+    if (at >= blocks.length) return totalParts;
+    final part = p.slotPart.clamp(0, numParts[at]);
+    return prefix[at] + part;
+  }
+
+  FigureBlock figureBlockFor(OcrFigure fig, bool zone) => FigureBlock(
+    figureId: fig.id,
+    cropPath: fig.cropPath,
+    unconfirmed: zone ? true : fig.unconfirmed,
+  );
+  // 同一展开位置的多个图块保持 sequence_index 顺序。
   final placed = placements.where((p) => !p.zone).toList()
     ..sort((a, b) {
-      final cmp = a.at!.compareTo(b.at!);
+      final cmp = expandedIndexOf(a).compareTo(expandedIndexOf(b));
       if (cmp != 0) return cmp;
       return a.figure.sequenceIndex.compareTo(b.figure.sequenceIndex);
     });
   final zoned = placements.where((p) => p.zone).toList()
     ..sort((a, b) => a.figure.sequenceIndex.compareTo(b.figure.sequenceIndex));
   final out = <QuestionContentBlock>[];
+  final origins = <({int orig, int part})?>[];
   var nextInsert = 0;
-  for (var i = 0; i <= blocks.length; i++) {
-    while (nextInsert < placed.length && placed[nextInsert].at == i) {
-      final fig = placed[nextInsert].figure;
-      out.add(
-        FigureBlock(
-          figureId: fig.id,
-          cropPath: fig.cropPath,
-          unconfirmed: fig.unconfirmed,
-        ),
-      );
-      nextInsert++;
+  var partCursor = 0;
+  for (var i = 0; i < blocks.length; i++) {
+    for (var j = 0; j < splitParts[i].length; j++) {
+      while (nextInsert < placed.length &&
+          expandedIndexOf(placed[nextInsert]) == partCursor) {
+        final fig = placed[nextInsert].figure;
+        out.add(figureBlockFor(fig, false));
+        origins.add(null);
+        nextInsert++;
+      }
+      out.add(splitParts[i][j]);
+      origins.add((orig: i, part: j));
+      partCursor++;
     }
-    if (i < blocks.length) out.add(blocks[i]);
+  }
+  while (nextInsert < placed.length) {
+    final fig = placed[nextInsert].figure;
+    out.add(figureBlockFor(fig, false));
+    origins.add(null);
+    nextInsert++;
   }
   if (zoned.isNotEmpty) {
     // Win11 反馈包 3：未关联图块默认放序列末尾，不再插区标题、不再标
     // “位置未确认”；顺序按 sequence_index，用户自己拖到正确位置。
     for (final z in zoned) {
       // 进未关联区本身即位置未确认：强制标未确认，不论原 anchorSource。
-      out.add(
-        FigureBlock(
-          figureId: z.figure.id,
-          cropPath: z.figure.cropPath,
-          unconfirmed: true,
-        ),
-      );
+      out.add(figureBlockFor(z.figure, true));
+      origins.add(null);
     }
   }
-  return out;
+  return (blocks: out, origins: origins);
+}
+
+/// 把图块按阅读顺序插入题干内容段（渲染用；见文件头“渲染插入口径”）。
+///
+/// - md 锚定的题干图：按 md 引用在全文中的字符位置，插入到所属段落段
+///   的段尾（Q2 REV2 §1：多段块在段落边界处切分后插入，单段块与今天
+///   一致落在块尾）；
+/// - text 锚定的题干图：按其在页内的纵向相对位置插入（图块中心 y /
+///   页高 × 段数，钳制在段范围内）；
+/// - 有 optionLabel 的图块：插在其选项标号所在段内（R5-4：md 锚点可靠
+///   时保留原始锚点顺序，否则插标号块紧后方；标号块不在题干里时进
+///   未关联区）；
+/// - 人工拖过的图块（anchorSource='manual'）：按 anchorRef（原块坐标
+///   `"h"` 或 `"h:s"`，见 §5.1）直接插到指定位置，不走任何自动锚定；
+/// - 无法可靠放置的图块：默认放序列末尾（Win11 反馈包 3：不再设独立
+///   「未关联图片」区、不再标“位置未确认”，用户自己拖到正确位置）。
+/// 只读渲染与纠错编辑器读同一份持久化顺序（ocr_figures 的 JSON 顺序
+/// 即 sequence_index 顺序）。
+List<QuestionContentBlock> buildContentBlocks({
+  required String stemMarkdown,
+  required List<OcrFigure> figures,
+  required String? mdResults,
+}) {
+  return _expandContentBlocks(
+    stemMarkdown: stemMarkdown,
+    figures: figures,
+    mdResults: mdResults,
+  ).blocks;
+}
+
+/// [buildContentBlocks] 的配套纯函数（Q2 REV2 §5.1(a)）：返回展开后
+/// 每块对应的（原块下标，段序号）；图块对应 null。编辑器拖动计数用：
+/// 切分出的两段共享同一原块下标，只计 1；落点在两段之间时记 `"h:s"`。
+/// 与 [buildContentBlocks] 同输入，起源表与展开块一一对应。
+List<({int orig, int part})?> expandedBlockOrigins({
+  required String stemMarkdown,
+  required List<OcrFigure> figures,
+  required String? mdResults,
+}) {
+  return _expandContentBlocks(
+    stemMarkdown: stemMarkdown,
+    figures: figures,
+    mdResults: mdResults,
+  ).origins;
 }
 
 /// R5-1 逐图诊断记录（结构化字段，供 Win11 真机补做 live 诊断复用）。
@@ -1784,6 +2315,7 @@ List<Map<String, Object?>> diagnoseFigures({
     stemStartInMd: stemStart,
   );
   final zoneIds = {for (final p in placements) if (p.zone) p.figure.id};
+  final placementById = {for (final p in placements) p.figure.id: p};
   // md 引用 bbox 在图块列表中无对应者（疑似裁切偏移/缩放错误）。
   final refs = mdResults == null ? const <_MdFigureRef>[] : _mdFigureRefs(mdResults);
   final unmatchedRefCount = refs
@@ -1858,6 +2390,16 @@ List<Map<String, Object?>> diagnoseFigures({
       'stem_start_in_md': stemStart,
       'insertion_index': insertionIndex,
       'in_unassociated_zone': inZone,
+      // Q2 REV2 §9.4（OQ5 已确认，只增键）：放置详情，供下一次 Win11
+      // 诊断验证新规则是否触发、语料度量统计兜底率。
+      // rule：'segment' | 'fallback_no_boundary' | 'zone' | 'manual' |
+      // 'text' | 'option'；split_block / split_offset 仅块内切分时有值。
+      'placement_detail': {
+        'rule': placementById[fig.id]?.rule ?? 'zone',
+        'split_block': placementById[fig.id]?.splitBlock,
+        'split_offset': placementById[fig.id]?.splitOffset,
+        'epsilon': placementById[fig.id]?.epsilon ?? 0,
+      },
       'coordinate_issue': coordinateIssue,
       'rotation_note': '页面旋转只在渲染时由 pdfrx 应用一次；逐图不做旋转处理（U2 显式假设）',
     });

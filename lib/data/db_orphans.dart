@@ -323,6 +323,10 @@ Future<TrashSweepResult> sweepTrashImpl(
       }
     } catch (_) {}
     var manifestChanged = false;
+    // Win11 后续修复 Round 3（Q4，§1.9）：清扫复查用的完整引用集
+    // （_referencedRelativePaths 口径，含派生构造路径），只在首次
+    // 需要时算一次；见下面文件条目分支。
+    Set<String>? sweepRefs;
     for (final entry in List.of(entries)) {
       final trashPath = p.join(trashDir.path, entry.trashName);
       final type = FileSystemEntity.typeSync(trashPath);
@@ -363,6 +367,16 @@ Future<TrashSweepResult> sweepTrashImpl(
           continue;
         }
         referenced = await _isFileReferenced(db, entry.originalRel);
+        // Q4（§1.9）：清扫的文件条目也走 _referencedRelativePaths
+        // 口径复查——_isFileReferenced 不含派生构造路径（如任务行仍
+        // 在时的 `imports/<taskId>/page-normalized.png`），只用它复
+        // 查会把已在回收站里、任务行仍在的归一化副本满 7 天即物理
+        // 删除（到达该状态的前提是它先被移入回收站；D2/D3 在行存在
+        // 时不会移它，行复活场景才碰得到，低严重度，顺手修掉）。
+        if (!referenced) {
+          final refs = sweepRefs ??= await _referencedRelativePaths(db, dir);
+          if (refs.contains(entry.originalRel)) referenced = true;
+        }
         if (!referenced &&
             (guard.isPending(entry.originalRel) ||
                 guard.isStaged(entry.originalRel))) {

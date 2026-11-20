@@ -1087,6 +1087,14 @@ class CollectNotifier extends Notifier<CollectState> {
     // 也一并清掉（delete 时文件不存在也无妨）。
     // WP-C #8 U3-1：以下烘焙页图与切片写盘都持守门（与备份复制串行化，
     // 不读半写文件）；裁剪/解码等耗时计算在锁外，只包住写盘调用。
+    // Win11 后续 Round 3 Stream C（Q4 §1.8 真实竞态）：写盘与事务提交
+    // 之间，新切片在盘上存在、库里无任何行引用它——孤儿清理若恰在该
+    // 窗口内确认删除，会把切片移入回收站，之后提交的题行 slice_path
+    // 便指向回收站文件。故每条新文件在写盘前先登记 pending（与
+    // figure_files.dart / detail_notifier.dart 同款协议），事务提交
+    // 成功后解除；失败路径先按清单删文件、再解除登记，不留泄漏。
+    // rotation == 0 时不写新文件，bakedRel 即原页图（已有父任务行
+    // 保护），不登记。
     final guard = FileLifecycleGuard.instance;
     final writtenRels = <String>[];
     try {
@@ -1112,6 +1120,8 @@ class CollectNotifier extends Notifier<CollectState> {
           bakedRel = ImportService.bakedPageRelative(task.id, p, rotation);
           final bakedAbs = AppDatabase.resolveDataPath(bakedRel)!;
           writtenRels.add(bakedRel);
+          // 写盘前登记：烘焙图落盘后、事务提交前，孤儿清理须跳过它。
+          guard.registerPending(bakedRel);
           await File(bakedAbs).parent.create(recursive: true);
           await guard.withLock(() => File(bakedAbs).writeAsBytes(bakedBytes));
         } else {
@@ -1126,6 +1136,8 @@ class CollectNotifier extends Notifier<CollectState> {
           final sliceRel = ImportService.sliceRelative(qid);
           final sliceAbs = AppDatabase.resolveDataPath(sliceRel)!;
           writtenRels.add(sliceRel);
+          // 写盘前登记：切片落盘后、事务提交前，孤儿清理须跳过它。
+          guard.registerPending(sliceRel);
           await File(sliceAbs).parent.create(recursive: true);
           await guard.withLock(() => File(sliceAbs).writeAsBytes(slice.png));
           questions.add(
@@ -1167,7 +1179,12 @@ class CollectNotifier extends Notifier<CollectState> {
     } catch (e) {
       // SR-P2-22：裁剪/写盘失败——前面已写的新文件按清单删掉再提示，
       // 不留孤儿切片与烘焙图；原任务页图不在清单里，不会误删。
+      // 先删文件、再解除登记（figure_files 回滚同款顺序）：删完才解，
+      // 登记不泄漏；删失败的残文件此时已无库引用，留给孤儿清理收尾。
       await _deleteWrittenFiles(writtenRels);
+      for (final rel in writtenRels) {
+        guard.unregisterPending(rel);
+      }
       await load();
       return ConfirmSplitOutcome.sliceFailed('拆题失败：切片写不进去（$e），请重试');
     }
@@ -1222,9 +1239,19 @@ class CollectNotifier extends Notifier<CollectState> {
     } catch (e) {
       // SR-P2-22：事务失败——库已回滚，本次新写的文件同样按清单删，
       // 不留孤儿切片与烘焙图；任务本身不动，用户可重试。
+      // 先删文件、再解除登记（与写盘失败路径同款顺序），登记不泄漏。
       await _deleteWrittenFiles(writtenRels);
+      for (final rel in writtenRels) {
+        guard.unregisterPending(rel);
+      }
       await load();
       return ConfirmSplitOutcome.saveFailed('拆题失败：保存失败（$e），请重试');
+    }
+    // 事务已提交：题行已引用本次新写的文件，解除待提交登记。
+    // 放在 saveRecentTask / load / OCR 入队之前——后续步骤失败
+    // 也不影响成功提示，登记绝不能因它们抛错而泄漏。
+    for (final rel in writtenRels) {
+      guard.unregisterPending(rel);
     }
     // SR2-25：收尾写最近任务失败也不影响成功提示与列表刷新——
     // 拆题已提交，记日志后继续。

@@ -492,11 +492,12 @@ Question deleteFigureFromQuestion(Question question, String figureId) {
 /// 保存失败处理、编辑器回滚到原顺序。调用方经 repo.save 落库——
 /// 版本由 upsert 的版本权威按实际内容变化统一计算（只 +1 一次，
 /// 与 [deleteFigureFromQuestion] 同款）。
+/// [movedTextAt] 是 manual 落点字符串（Q2 REV2 §5.1：`"h"` 或 `"h:s"`）。
 Question reorderFiguresInQuestion(
   Question question,
   List<String> orderedFigureIds,
   String movedFigureId,
-  int movedTextAt,
+  String movedTextAt,
 ) {
   final reordered = reorderFigures(
     parseOcrFigures(question.ocrFigures),

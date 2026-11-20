@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
 
+import 'package:crypto/crypto.dart';
 import 'package:drift/drift.dart';
 import 'package:flutter/material.dart';
 import 'package:image/image.dart' as img;
@@ -12,6 +13,7 @@ import '../models/exam_event.dart';
 import '../models/models.dart';
 import '../services/glm_ocr_client.dart';
 import '../services/option_contents.dart';
+import '../services/page_image_pipeline.dart';
 import '../services/stem_splitter.dart';
 import '../services/zip_archive.dart';
 import 'data_change_events.dart';

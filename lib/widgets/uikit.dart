@@ -517,6 +517,11 @@ class QmButton extends StatelessWidget {
 ///   accent 边 + accent-text 字，尾部带 ` ✕`；悬停变 err-bg / err-line /
 ///   err-ink。只传 [onDelete] 不传 [onTap] 时整片点按即删除；两者都传
 ///   时点片身切换、点 `×` 删除。
+/// - [selectionAwareDeletable]：默认 false（可删除分支空闲态恒为
+///   accent-soft，不读 [selected]）。传 true 时可删除分支的空闲态按
+///   [selected] 分支——未选 surface 白底 / ink-2 字 / line-strong 边，
+///   已选 accent 填充；悬停/按压的 err 色不变，`×` 删除区与选中独立。
+///   仅答案区（OptionLabelsEditor）传 true，其他调用点保持默认。
 /// - 预置标签：[presetTags]（易错 / 常考 / 需重做，HTML 整理台标签栏）。
 class QmChip extends StatelessWidget {
   const QmChip({
@@ -531,6 +536,7 @@ class QmChip extends StatelessWidget {
     this.focusNode,
     this.semanticLabel,
     this.displayOnly = false,
+    this.selectionAwareDeletable = false,
   });
 
   /// 预置标签（HTML 整理台标签栏：易错 / 常考 / 需重做）。
@@ -564,6 +570,15 @@ class QmChip extends StatelessWidget {
   /// 不包 `_QmPressable`——否则 `onTap == null` 会被当成 Disabled
   ///（opacity .45）。交互芯片不要传此参数。
   final bool displayOnly;
+
+  /// 可删除分支是否按 [selected] 画空闲态（Win11 反馈：答案区
+  /// A/B/C/D 没选时应为白色、选中才蓝色）。默认 false：可删除分支
+  /// 空闲态恒为 accent-soft 底（既有外观锁定，见
+  /// `test/uikit_test.dart`“可删除芯片：accent-soft 底 + ×”）。
+  /// 传 true 时空闲态：未选 surface / ink-2 / line-strong，已选
+  /// accent 填充 / accent-ink 字；悬停/按压仍走 err 色，`×` 区
+  /// 与选中相互独立。仅答案区传 true。
+  final bool selectionAwareDeletable;
 
   @override
   Widget build(BuildContext context) {
@@ -649,17 +664,37 @@ class QmChip extends StatelessWidget {
         focusNode: focusNode,
         semanticLabel: semanticLabel ?? label,
         builder: (context, state) {
+          // 开关关（默认）：空闲态恒为 accent-soft（既有外观）。
+          // 开关开：空闲态按 selected 分支，与不可删除分支的两态
+          // 一致（未选 surface 白底 / ink-2 / line-strong，已选
+          // accent 填充 / accent-ink）；悬停/按压的 err 色不动。
+          final Color idleBg;
+          final Color idleFg;
+          final Color idleBorder;
+          if (selectionAwareDeletable && selected) {
+            idleBg = fill;
+            idleFg = selectedFg;
+            idleBorder = fill;
+          } else if (selectionAwareDeletable) {
+            idleBg = palette.surface;
+            idleFg = palette.ink2;
+            idleBorder = palette.lineStrong;
+          } else {
+            idleBg = palette.accentSoft;
+            idleFg = palette.accentText;
+            idleBorder = palette.accent;
+          }
           final bg = state.pressed
               ? _mix(palette.errBg, palette.errInk, 0.18)
               : state.hovered
               ? palette.errBg
-              : palette.accentSoft;
+              : idleBg;
           final fg = state.hovered || state.pressed
               ? palette.errInk
-              : palette.accentText;
+              : idleFg;
           final border = state.hovered || state.pressed
               ? palette.errLine
-              : palette.accent;
+              : idleBorder;
           return Container(
             decoration: BoxDecoration(
               color: bg,

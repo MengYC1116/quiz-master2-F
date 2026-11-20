@@ -314,7 +314,7 @@ class _DetailViewState extends ConsumerState<_DetailView> {
   Future<bool> _reorderFigure(
     List<String> orderedFigureIds,
     String movedFigureId,
-    int movedTextAt,
+    String movedTextAt,
   ) async {
     final ok = await _notifier.reorderFigure(
       orderedFigureIds,

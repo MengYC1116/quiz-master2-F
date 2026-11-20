@@ -719,6 +719,8 @@ class _AnswerOptionEditorState extends State<AnswerOptionEditor> {
                 selected: _isMulti
                     ? _multiSelected.contains(letter)
                     : _draftCorrect == letter,
+                // Win11 反馈 Q3：答案芯片按选中画空闲态（未选白、已选蓝）。
+                selectionAwareDeletable: true,
                 onTap: () => _isMulti
                     ? _toggleMulti(letter)
                     : _pickCorrect(letter),

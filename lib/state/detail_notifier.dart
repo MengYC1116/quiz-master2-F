@@ -811,7 +811,7 @@ class DetailNotifier extends Notifier<DetailState> {
   Future<bool> reorderFigure(
     List<String> orderedFigureIds,
     String movedFigureId,
-    int movedTextAt,
+    String movedTextAt,
   ) async {
     final q = state.question;
     if (q == null) return false;

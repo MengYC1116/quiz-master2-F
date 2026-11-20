@@ -117,7 +117,7 @@ class OcrStemSection extends StatefulWidget {
   final Future<bool> Function(
     List<String> orderedFigureIds,
     String movedFigureId,
-    int movedTextAt,
+    String movedTextAt,
   )?
   onReorderFigure;
 

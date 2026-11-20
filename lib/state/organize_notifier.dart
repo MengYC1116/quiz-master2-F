@@ -880,7 +880,7 @@ class OrganizeNotifier extends Notifier<OrganizeState> {
   Future<bool> reorderFigure(
     List<String> orderedFigureIds,
     String movedFigureId,
-    int movedTextAt,
+    String movedTextAt,
   ) async {
     final q = state.current;
     if (q == null) return false;

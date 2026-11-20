@@ -8,6 +8,10 @@
 //   （D-105：计算机题干里的程序不当公式解析）；公式块可看、可删、
 //   可恢复为原图（按 ocr_raw 里 layout_details 的 bbox 裁公式小图，
 //   裁不到用整张切片）；十三批不做可视化公式编辑器。
+// - Win11 反馈后续修复 Q1：连续文字 + 行内公式并成一张段落卡
+//   （[_DraftParagraph]，卡内每段文字独立 TextField、公式只读），
+//   行间公式/表格/标题/图块/代码断开另起卡；底层块顺序不变，
+//   保存时按段内顺序展开拼回。
 // - 图块自由拖动（Win11 反馈包 3）：每个图块左上角有拖动柄（⋮⋮），
 //   按住柄拖动，块间出现插入线指示落点，松手落位；拖到滚动区上下边缘
 //   自动滚动；鼠标直接拖、触屏从柄上拖（柄是独立响应区，不抢滚动手势
@@ -47,27 +51,54 @@ sealed class _DraftBlock {
 }
 
 class _DraftText extends _DraftBlock {
-  _DraftText(String text) : controller = TextEditingController(text: text);
+  _DraftText(String text, {this.origin})
+    : controller = TextEditingController(text: text);
   final TextEditingController controller;
+
+  /// 该段在原块序列里的起源（原块下标，段序号）；Q2 切分出的两段
+  /// 共享同一原块下标（见 expandedBlockOrigins）。
+  final ({int orig, int part})? origin;
 }
 
 class _DraftCode extends _DraftBlock {
-  _DraftCode(String code, {this.language})
+  _DraftCode(String code, {this.language, this.origin})
     : controller = TextEditingController(text: code);
   final TextEditingController controller;
   final String? language;
+
+  /// 见 [_DraftText.origin]。
+  final ({int orig, int part})? origin;
 }
 
 class _DraftFormula extends _DraftBlock {
-  _DraftFormula(this.latex, {this.displayMode = false});
+  _DraftFormula(this.latex, {this.displayMode = false, this.origin});
   final String latex;
   final bool displayMode;
+
+  /// 见 [_DraftText.origin]（公式块是原子，不切分，段序号恒为 0）。
+  final ({int orig, int part})? origin;
 
   /// 已恢复为原图：保存时从题干里拿掉（以原图显示）。
   bool restoredAsImage = false;
 
   /// 恢复为原图时显示的裁图（裁不到时为 null，用整张切片）。
   Uint8List? restoredImage;
+}
+
+/// Win11 反馈后续修复 Q1（round 2）：复合段落草稿。
+///
+/// 一段连续的 TextBlock + 行内 FormulaBlock（displayMode=false）在
+/// 编辑器里只显示一张“段落卡”：卡内每段文字各持独立 TextEditingController
+/// （绝不合成一个带公式 widget 的大 TextField，跨公式连续选区接受做不到）、
+/// 每个行内公式仍是只读 FormulaView + 恢复为原图 / 删除按钮，点公式
+/// 不进文字编辑；底层块顺序不变，保存时按段展开拼回。
+/// 分组只在连续文本/行内公式处发生，遇到行间公式、表格、标题、图块、
+/// 代码、ImageFallback 就断开，各自另起草稿（见 [_buildDrafts]）。
+class _DraftParagraph extends _DraftBlock {
+  _DraftParagraph(this.segments);
+
+  /// 段内草稿，按原块顺序：只含 [_DraftText] 与行内 [_DraftFormula]。
+  final List<_DraftBlock> segments;
 }
 
 /// 十四批 M2：图块草稿（与 [FigureBlock] 一一对应）。
@@ -138,14 +169,15 @@ class StemEditor extends StatefulWidget {
   /// 的 JSON 顺序，被拖图块记 anchorSource='manual'）；返回 true =
   /// 已保存，编辑器保持新顺序；false = 保存失败，编辑器回滚到原顺序。
   /// [orderedFigureIds] 是换位后全部图块按显示顺序的 ID；
-  /// [movedFigureId] 是被拖的图块 ID；[movedTextAt] 是落点前的文字
-  /// 段数（manual 落点，见 ocr_figures.dart）。
+  /// [movedFigureId] 是被拖的图块 ID；[movedTextAt] 是 manual 落点
+  /// 字符串（Q2 REV2 §5.1：`"h"` = 原块 `h` 之前，`"h:s"` = 原块 `h`
+  /// 的第 `s` 段之前——落点恰在某切分块的两段之间时记后者，其余记前者）。
   /// 为 null 时拖动不生效（落下即回滚，不假装已保存）——调用方未接线
   /// 前拖了也白拖，不如明确回滚。
   final Future<bool> Function(
     List<String> orderedFigureIds,
     String movedFigureId,
-    int movedTextAt,
+    String movedTextAt,
   )?
   onReorderFigure;
 
@@ -203,6 +235,11 @@ class _StemEditorState extends State<StemEditor> {
           controller.dispose();
         case _DraftFormula():
           break;
+        case _DraftParagraph(:final segments):
+          // 段内每段文字各持独立 controller，各自释放。
+          for (final seg in segments) {
+            if (seg is _DraftText) seg.controller.dispose();
+          }
         case _DraftFigure():
           break;
       }
@@ -216,32 +253,77 @@ class _StemEditorState extends State<StemEditor> {
   }) {
     // 十四批 M2：草稿按“题干 + 图块”的合并内容序列建（与只读渲染
     // 同顺序，见 buildContentBlocks）；图块进草稿才能在编辑器里删。
+    //
+    // Win11 反馈后续修复 Q1：连续的 TextBlock + 行内 FormulaBlock
+    // （displayMode=false）归并成一个 [_DraftParagraph]（一张段落卡），
+    // 底层块顺序不变；分组在行间公式 / 表格 / 标题 / 图块 / 代码 /
+    // ImageFallback 处断开。解析器本身不动（M1-S1 锁死块模型），
+    // 只读渲染的归并口径见 QuestionContentRenderer.flushInline。
     final blocks = buildContentBlocks(
+      stemMarkdown: question.ocrStem ?? '',
+      figures: figures,
+      mdResults: mdResults,
+    );
+    // Q2 REV2 §5.1(a)：展开块的起源表（与 blocks 一一对应；图块为 null），
+    // 供拖动计数用（切分出的两段共享同一原块下标）。
+    final origins = expandedBlockOrigins(
       stemMarkdown: question.ocrStem ?? '',
       figures: figures,
       mdResults: mdResults,
     );
     final byId = {for (final f in figures) f.id: f};
     final drafts = <_DraftBlock>[];
-    for (final block in blocks) {
-      drafts.add(
-        switch (block) {
-          TextBlock(:final text) => _DraftText(text),
-          CodeBlock(:final code, :final language) =>
-            _DraftCode(code, language: language),
-          FormulaBlock(:final latex, :final displayMode) =>
-            _DraftFormula(latex, displayMode: displayMode),
-          ImageFallbackBlock() => _DraftText(''),
-          FigureBlock(:final figureId) =>
-            _DraftFigure(byId[figureId] ?? _placeholderFigure(figureId)),
-          // WP-C #6：表格/标题在纠错编辑器里以可再解析的文本形式进草稿
-          // （表格拼回 HTML、标题拼回 `#` 行），保存时重新解析，不丢内容。
-          TableBlock() => _DraftText(blocksToMarkdown([block])),
-          HeadingBlock(:final text, :final level) =>
-            _DraftText('${'#' * level} $text'),
-        },
-      );
+    var run = <_DraftBlock>[];
+    void flushRun() {
+      if (run.isEmpty) return;
+      drafts.add(_DraftParagraph(run));
+      run = <_DraftBlock>[];
     }
+
+    for (var bi = 0; bi < blocks.length; bi++) {
+      final block = blocks[bi];
+      final origin = origins[bi];
+      switch (block) {
+        case TextBlock(:final text):
+          run.add(_DraftText(text, origin: origin));
+        case FormulaBlock(:final latex, :final displayMode):
+          if (displayMode) {
+            flushRun();
+            drafts.add(
+              _DraftFormula(latex, displayMode: true, origin: origin),
+            );
+          } else {
+            run.add(_DraftFormula(latex, origin: origin));
+          }
+        case CodeBlock(:final code, :final language):
+          flushRun();
+          drafts.add(
+            _DraftCode(code, language: language, origin: origin),
+          );
+        case ImageFallbackBlock():
+          flushRun();
+          drafts.add(_DraftText('', origin: origin));
+        case FigureBlock(:final figureId):
+          flushRun();
+          drafts.add(
+            _DraftFigure(byId[figureId] ?? _placeholderFigure(figureId)),
+          );
+        // WP-C #6：表格/标题在纠错编辑器里以可再解析的文本形式进草稿
+        // （表格拼回 HTML、标题拼回 `#` 行），保存时重新解析，不丢内容。
+        // 它们各成独立草稿，不并进段落卡。
+        case TableBlock():
+          flushRun();
+          drafts.add(
+            _DraftText(blocksToMarkdown([block]), origin: origin),
+          );
+        case HeadingBlock(:final text, :final level):
+          flushRun();
+          drafts.add(
+            _DraftText('${'#' * level} $text', origin: origin),
+          );
+      }
+    }
+    flushRun();
     return drafts;
   }
 
@@ -273,9 +355,11 @@ class _StemEditorState extends State<StemEditor> {
   /// 草稿按块拼回题干（保存用）。空文字段跳过；恢复为原图的公式
   /// 从题干里拿掉（以原图显示，见文件头）；其余按 [blocksToMarkdown]。
   /// 图块不拼回题干（只存在 ocr_figures 里，见 question_content.dart）。
+  /// 段落卡按段内顺序展开成原块序列再拼回：绝不扁平成显示串，
+  /// 换行/空行原样保留，不做任何 trim 与空白规范化。
   String _draftsToMarkdown() {
     final blocks = <QuestionContentBlock>[];
-    for (final draft in _drafts) {
+    void addDraft(_DraftBlock draft) {
       switch (draft) {
         case _DraftText(:final controller):
           if (controller.text.isNotEmpty) {
@@ -291,20 +375,38 @@ class _StemEditorState extends State<StemEditor> {
           if (!restoredAsImage) {
             blocks.add(FormulaBlock(latex, displayMode: displayMode));
           }
+        case _DraftParagraph(:final segments):
+          for (final seg in segments) {
+            addDraft(seg);
+          }
         case _DraftFigure():
           break;
       }
+    }
+
+    for (final draft in _drafts) {
+      addDraft(draft);
     }
     return blocksToMarkdown(blocks);
   }
 
   /// 草稿里第 [formula] 个公式是第几个公式（裁图下标用，
-  /// 按题干里 FormulaBlock 的出现顺序计）。
+  /// 按题干里 FormulaBlock 的出现顺序计；段落卡内按段内顺序计）。
   int _formulaIndexOf(_DraftFormula formula) {
     var index = 0;
     for (final draft in _drafts) {
-      if (identical(draft, formula)) return index;
-      if (draft is _DraftFormula) index++;
+      switch (draft) {
+        case _DraftParagraph(:final segments):
+          for (final seg in segments) {
+            if (identical(seg, formula)) return index;
+            if (seg is _DraftFormula) index++;
+          }
+        case _DraftFormula():
+          if (identical(draft, formula)) return index;
+          index++;
+        default:
+          break;
+      }
     }
     return index;
   }
@@ -421,9 +523,11 @@ class _StemEditorState extends State<StemEditor> {
 
   /// Win11 反馈包 3：图块落到间隔槽 [gap]（插到 `_drafts[gap]` 之前）。
   ///
-  /// 落点前的文字段数（manual 落点）按落点前的非图块草稿段计——
-  /// 与 [buildContentBlocks] 的 manual 分支是同一口径（文字段在
-  /// parseQuestionContent 里 1:1 对应非图块草稿段）。
+  /// manual 落点（Q2 REV2 §5.1）：按去重后的原块下标计数——切分出的
+  /// 两段共享同一原块下标，只计 1；只有落点恰好在某切分块的两段之间
+  /// 时，才记 `"h:s"` 格式（`h` = 原块下标，`s` = 后一段的段序号），
+  /// 其余落点记 `"h"`（落点前有几个不同原块）。起源信息存在草稿段
+  /// 自身上（[_DraftText.origin] 等），删段时随段一起走，不会错位。
   /// 原位（gap 紧贴图块自身两侧）不调保存；取消拖动时本函数根本
   /// 不被调用（拖动中不改草稿，取消即恢复原顺序、不写库）；保存
   /// 失败（回调返回 false / 未接线）时回滚到原顺序，不假装已保存。
@@ -438,10 +542,7 @@ class _StemEditorState extends State<StemEditor> {
     final drafts = [..._drafts];
     final moved = drafts.removeAt(from);
     drafts.insert(to, moved);
-    final movedTextAt = drafts
-        .take(to)
-        .where((d) => d is! _DraftFigure)
-        .length;
+    final movedTextAt = _manualAnchorForGap(drafts, to);
     final orderedIds = [
       for (final d in drafts)
         if (d is _DraftFigure) d.figure.id,
@@ -454,6 +555,67 @@ class _StemEditorState extends State<StemEditor> {
     }
     final ok = await persist(orderedIds, figureId, movedTextAt);
     if (!ok && mounted) setState(() => _drafts = previous);
+  }
+
+  /// 草稿 [draft] 里的全部内容起源（按顺序；图块草稿为空）。
+  static List<({int orig, int part})> _contentOriginsOf(_DraftBlock draft) {
+    switch (draft) {
+      case _DraftParagraph(:final segments):
+        return [
+          for (final seg in segments)
+            if (_segmentOrigin(seg) != null) _segmentOrigin(seg)!,
+        ];
+      case _DraftText(:final origin):
+        return origin == null ? const [] : [origin];
+      case _DraftCode(:final origin):
+        return origin == null ? const [] : [origin];
+      case _DraftFormula(:final origin):
+        return origin == null ? const [] : [origin];
+      case _DraftFigure():
+        return const [];
+    }
+  }
+
+  /// 段落卡内一段的起源（文字段 / 行内公式段自带 origin）。
+  static ({int orig, int part})? _segmentOrigin(_DraftBlock segment) {
+    return switch (segment) {
+      _DraftText(:final origin) => origin,
+      _DraftFormula(:final origin) => origin,
+      _DraftCode(:final origin) => origin,
+      _ => null,
+    };
+  }
+
+  /// 落点 [to]（插到 `drafts[to]` 之前）的 manual 落点字符串。
+  /// 落点前后两段同属一个原块（即落点在切分块的两段之间）时记
+  /// `"h:s"`；否则记落点前不同原块的个数（`"h"`）。
+  static String _manualAnchorForGap(List<_DraftBlock> drafts, int to) {
+    ({int orig, int part})? prev;
+    for (var i = to - 1; i >= 0; i--) {
+      final origins = _contentOriginsOf(drafts[i]);
+      if (origins.isNotEmpty) {
+        prev = origins.last;
+        break;
+      }
+    }
+    ({int orig, int part})? next;
+    for (var i = to; i < drafts.length; i++) {
+      final origins = _contentOriginsOf(drafts[i]);
+      if (origins.isNotEmpty) {
+        next = origins.first;
+        break;
+      }
+    }
+    if (prev != null && next != null && prev.orig == next.orig) {
+      return '${next.orig}:${next.part}';
+    }
+    final seen = <int>{};
+    for (var i = 0; i < to; i++) {
+      for (final o in _contentOriginsOf(drafts[i])) {
+        seen.add(o.orig);
+      }
+    }
+    return '${seen.length}';
   }
 
   void _restoreFormulaAsImage(_DraftFormula formula) {
@@ -499,7 +661,7 @@ class _StemEditorState extends State<StemEditor> {
         // 被图块拆开，也拖不出题干区。
         for (var i = 0; i <= _drafts.length; i++) ...[
           _dropGap(i),
-          if (i < _drafts.length) _draftBlockWidget(_drafts[i]),
+          if (i < _drafts.length) _draftBlockWidget(_drafts[i], i),
         ],
         const SizedBox(height: 4),
         Row(
@@ -594,7 +756,7 @@ class _StemEditorState extends State<StemEditor> {
     return Image.memory(bytes, fit: BoxFit.contain);
   }
 
-  Widget _draftBlockWidget(_DraftBlock draft) {
+  Widget _draftBlockWidget(_DraftBlock draft, int index) {
     switch (draft) {
       case _DraftText(:final controller):
         return TextField(
@@ -619,9 +781,148 @@ class _StemEditorState extends State<StemEditor> {
         );
       case _DraftFormula(:final latex, :final displayMode):
         return _formulaBlockWidget(draft, latex, displayMode);
+      case _DraftParagraph():
+        return _paragraphWidget(draft, index);
       case _DraftFigure(:final figure, :final deleted):
         return _figureBlockWidget(draft, figure, deleted);
     }
+  }
+
+  /// Win11 反馈后续修复 Q1：复合段落卡。
+  ///
+  /// 一张卡装一段连续文本 + 行内公式（按原块顺序上下排列）：
+  /// 每段文字是独立的无边框 TextField（各持自己的 controller，
+  /// 改一段不碰相邻段）；每个行内公式是只读的 FormulaView + 恢复 /
+  /// 删除按钮（点公式本身不进文字编辑）。卡外只有一道边框，
+  /// 题干不再被行内公式切成多张卡。
+  Widget _paragraphWidget(_DraftParagraph paragraph, int index) {
+    return Container(
+      key: Key('stem-paragraph-card-$index'),
+      padding: const EdgeInsets.all(8),
+      decoration: BoxDecoration(
+        border: Border.all(color: Theme.of(context).colorScheme.outline),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          for (var s = 0; s < paragraph.segments.length; s++)
+            switch (paragraph.segments[s]) {
+              _DraftText(:final controller) => TextField(
+                key: Key('stem-paragraph-text-$index-$s'),
+                controller: controller,
+                maxLines: null,
+                keyboardType: TextInputType.multiline,
+                decoration: const InputDecoration(
+                  border: InputBorder.none,
+                  hintText: '题干文字',
+                  contentPadding: EdgeInsets.zero,
+                  isDense: true,
+                ),
+              ),
+              _DraftFormula(:final latex, :final displayMode) =>
+                _paragraphFormulaWidget(
+                  paragraph,
+                  paragraph.segments[s] as _DraftFormula,
+                  latex,
+                  displayMode,
+                  index,
+                  s,
+                ),
+              _ => const SizedBox.shrink(),
+            },
+        ],
+      ),
+    );
+  }
+
+  /// 段落卡内的行内公式段：只读渲染 + 恢复为原图 / 删除（与独立
+  /// 公式卡 [_formulaBlockWidget] 同款动作、同一份裁图下标逻辑，
+  /// 只是不另套卡边框）。删公式只摘掉本段：相邻文字段原样保留，
+  /// 不合并、不改字；段内删空时整张段落卡随之消失。
+  Widget _paragraphFormulaWidget(
+    _DraftParagraph paragraph,
+    _DraftFormula formula,
+    String latex,
+    bool displayMode,
+    int paragraphIndex,
+    int segmentIndex,
+  ) {
+    return Container(
+      key: Key('stem-paragraph-formula-$paragraphIndex-$segmentIndex'),
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (formula.restoredAsImage)
+            if (formula.restoredImage != null)
+              Image.memory(formula.restoredImage!, fit: BoxFit.contain)
+            else
+              const FormulaImageFallback()
+          else
+            FormulaView(
+              latex: latex,
+              displayMode: displayMode,
+              fallbackImage: _sliceImageWidget(),
+            ),
+          if (formula.restoredAsImage)
+            const Padding(
+              padding: EdgeInsets.only(top: 4),
+              child: Text(
+                '已恢复为原图：保存后该公式以原图显示，可重新识别恢复',
+                style: TextStyle(fontSize: 12, color: Colors.grey),
+              ),
+            ),
+          const SizedBox(height: 6),
+          Row(
+            children: [
+              if (formula.restoredAsImage)
+                OutlinedButton(
+                  key: Key(
+                    'stem-paragraph-formula-restore-render-$paragraphIndex-$segmentIndex',
+                  ),
+                  onPressed: () =>
+                      setState(() => formula.restoredAsImage = false),
+                  child: const Text('恢复渲染'),
+                )
+              else
+                OutlinedButton(
+                  key: Key(
+                    'stem-paragraph-formula-restore-image-$paragraphIndex-$segmentIndex',
+                  ),
+                  onPressed: () => _restoreFormulaAsImage(formula),
+                  child: const Text('恢复为原图'),
+                ),
+              const SizedBox(width: 8),
+              OutlinedButton(
+                key: Key(
+                  'stem-paragraph-formula-delete-$paragraphIndex-$segmentIndex',
+                ),
+                onPressed: () => _deleteFormulaFromParagraph(
+                  paragraph,
+                  formula,
+                ),
+                child: const Text('删除'),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 段内删公式：只摘掉该公式段，相邻文字段的 controller 与文字
+  /// 原样不动；段内删空时整张段落卡从草稿里移除（不留空卡）。
+  void _deleteFormulaFromParagraph(
+    _DraftParagraph paragraph,
+    _DraftFormula formula,
+  ) {
+    setState(() {
+      paragraph.segments.remove(formula);
+      if (paragraph.segments.isEmpty) _drafts.remove(paragraph);
+    });
   }
 
   /// Win11 反馈包 3：图块段——左上角拖动柄 + 裁图 + 删除按钮。
