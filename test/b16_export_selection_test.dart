@@ -181,8 +181,15 @@ Future<void> _openMathListCompact(WidgetTester tester) async {
   await tester.pumpAndSettle();
 }
 
-Future<void> _tapCheck(WidgetTester tester, String id) async {
-  final finder = find.byKey(ValueKey('export-check-$id'));
+/// 进导出模式（工具栏「导出」平时是进模式的入口）。
+Future<void> _enterExportMode(WidgetTester tester) async {
+  await tester.tap(find.byKey(const Key('export-selected-toolbar')));
+  await tester.pump();
+}
+
+/// 导出模式里点一行切换选中（紧凑行点行）。
+Future<void> _tapExportRow(WidgetTester tester, String id) async {
+  final finder = find.byKey(ValueKey('export-row-$id'));
   await tester.ensureVisible(finder);
   await tester.pump(const Duration(milliseconds: 100));
   await tester.tap(finder);
@@ -353,14 +360,15 @@ void main() {
         ),
       );
       await _openMathListCompact(tester);
-      await _tapCheck(tester, 'qIn');
-      await _tapCheck(tester, 'qOld');
-      await _tapCheck(tester, 'qMid');
-      await _tapCheck(tester, 'qNew');
+      await _enterExportMode(tester);
+      await _tapExportRow(tester, 'qIn');
+      await _tapExportRow(tester, 'qOld');
+      await _tapExportRow(tester, 'qMid');
+      await _tapExportRow(tester, 'qNew');
       // 搜一个只命中 qIn 的词，其余三道从当前筛选消失。
       await tester.enterText(find.byType(TextField).first, '求导数');
       await tester.pumpAndSettle();
-      expect(find.byKey(const ValueKey('export-check-qOld')), findsNothing);
+      expect(find.byKey(const ValueKey('export-row-qOld')), findsNothing);
       // 汇总清单题号即 _exportSelectedQuestions 的顺序。
       await tester.tap(find.byKey(const Key('export-summary-numbers')));
       await tester.pump();
@@ -395,9 +403,10 @@ void main() {
         ),
       );
       await _openMathListCompact(tester);
-      await _tapCheck(tester, 'qB');
-      await _tapCheck(tester, 'qA');
-      await _tapCheck(tester, 'qIn');
+      await _enterExportMode(tester);
+      await _tapExportRow(tester, 'qB');
+      await _tapExportRow(tester, 'qA');
+      await _tapExportRow(tester, 'qIn');
       await tester.enterText(find.byType(TextField).first, '求导数');
       await tester.pumpAndSettle();
       await tester.tap(find.byKey(const Key('export-summary-numbers')));

@@ -278,12 +278,15 @@ int _findInlineClose(String input, int from) {
 ///   写回属性）；单元格内多段直接拼接，多段落单元格拼回后成为一段
 ///   （段落边界丢失是已知局限，文字不丢）；
 /// - HeadingBlock：`#` × level + 空格 + 标题文字；拼回时若前一段
-///   未以换行结尾，补一个换行（标题必须位于行首才能再解析出来）。
+///   未以换行结尾，补一个换行（标题必须位于行首才能再解析出来）；
+///   标题文字后若还有后段，补一个换行（标题行读到行尾为止，后文
+///   须另起一行，否则后文会被标题吞掉，见 A3）。
 /// 拼回的文本再经 [parseQuestionContent] 应得到相同的段序列
 ///（首尾空白、围栏后的换行等排版细节除外，见测试锁定）。
 String blocksToMarkdown(List<QuestionContentBlock> blocks) {
   final buf = StringBuffer();
-  for (final block in blocks) {
+  for (var i = 0; i < blocks.length; i++) {
+    final block = blocks[i];
     switch (block) {
       case TextBlock(:final text):
         buf.write(text);
@@ -329,6 +332,10 @@ String blocksToMarkdown(List<QuestionContentBlock> blocks) {
         buf.write('#' * level);
         buf.write(' ');
         buf.write(text);
+        // A3：标题行读到行尾为止，后面还有段时须补换行，否则后文
+        // 会被标题吞掉（`'# 标题'` + `'正文 '` 存成 `'# 标题正文 …'`）。
+        // 标题在末尾时不补，不给拼回结果多加尾换行。
+        if (i + 1 < blocks.length) buf.write('\n');
     }
   }
   return buf.toString();

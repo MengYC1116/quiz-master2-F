@@ -708,7 +708,14 @@ class _FormulaRenderHostState extends State<_FormulaRenderHost> {
       request.latex,
       key: _mathKey,
       mathStyle: request.displayMode ? MathStyle.display : MathStyle.text,
-      textStyle: TextStyle(fontSize: request.fontSizePt),
+      textStyle: TextStyle(
+        fontSize: request.fontSizePt,
+        // 十七批 P1：离屏渲染无 Material 祖先，Math.tex 会继承
+        // MaterialApp 的红色错误兜底样式 0xD0FF0000（w900 超粗）；
+        // 写死黑色 + 常规字重，字号仍按请求 pin。
+        color: Colors.black,
+        fontWeight: FontWeight.normal,
+      ),
       // 失败信号只记标志，不含源码；回退 widget 为空盒（调用方按
       // 失败走降级链，不印失败占位）。
       onErrorFallback: (_) {

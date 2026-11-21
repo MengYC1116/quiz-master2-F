@@ -81,6 +81,7 @@ class WordExportResult {
     required this.actualGuard,
     required this.guardDeviation,
     required this.imageCount,
+    this.estimatedPageCount,
   });
 
   /// 已验证的 docx 字节（`exportToBytes` await 完成后的完整字节，
@@ -105,6 +106,11 @@ class WordExportResult {
 
   /// 本次嵌入的图片部件数（`word/media/*` 部件数，交付校验用）。
   final int imageCount;
+
+  /// 估计总页数（十七批 A4，D-207：内容高度贪心分页模拟，见
+  /// word_page_estimate.dart；只是估计，完成界面以「约 N 页
+  /// （估计值）」展示。null 表示未知，不展示估计行）。
+  final int? estimatedPageCount;
 }
 
 /// 编排服务：路由 → 盘点 → 快照 → 生成 → 报告。
@@ -1136,6 +1142,7 @@ class WordExportService {
         actualMpx: actualGuard.totalRasterMpx,
       ),
       imageCount: content.imageCount,
+      estimatedPageCount: content.estimatedPageCount,
     );
   }
 
@@ -1220,6 +1227,7 @@ class WordExportService {
         actualMpx: actualGuard.totalRasterMpx,
       ),
       imageCount: content.imageCount,
+      estimatedPageCount: content.estimatedPageCount,
     );
   }
 

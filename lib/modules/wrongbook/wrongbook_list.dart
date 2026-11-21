@@ -173,7 +173,7 @@ extension _WrongbookListBuild on _WrongbookViewState {
           if (_exportSummaryExpanded) ...[
             SizedBox(height: 8 * scale),
             if (selectedQs.isEmpty)
-              const Text('还没有勾选题目，去列表里勾选吧。')
+              const Text('还没有选题目，点工具栏「导出」进入导出模式后点一行即可选中。')
             else
               SizedBox(
                 height: 240 * scale,
@@ -441,27 +441,46 @@ extension _WrongbookListBuild on _WrongbookViewState {
             QmChip(
               label: '批量操作',
               selected: _s.batchMode,
-              onTap: () => _n.update(
-                (st) => st.copyWith(
-                  batchMode: !st.batchMode,
-                  selected: const <String>{},
-                ),
-              ),
+              // 十七批 P2（D-208）：与导出模式互斥，进批量时退导出模式。
+              onTap: _toggleBatchMode,
             ),
-          // 十六批 B（D-190）：导出入口——列表页工具栏。勾选为空时
-          // 置灰；有勾选时点开确认步（D-168/D-169 的向导入口已废）。
+          // 十七批 P2（D-208）：导出模式入口——平时列表无方框，点
+          // 工具栏「导出」进模式；模式里工具栏是「取消」+「导出（n）」，
+          // n = 0 时「导出（n）」置灰；点开确认步（D-168/D-169 的向导
+          // 入口已废，见 D-190）。
           if (!_s.inBookArchived)
-            QmButton(
-              key: const Key('export-selected-toolbar'),
-              label: _s.exportSelected.isEmpty
-                  ? '导出'
-                  : '导出（${_s.exportSelected.length}）',
-              variant: QmButtonVariant.secondary,
-              size: QmButtonSize.small,
-              onPressed: _s.exportSelected.isEmpty
-                  ? null
-                  : _openExportConfirm,
-            ),
+            if (_exportMode) ...[
+              QmButton(
+                key: const Key('export-mode-cancel'),
+                label: '取消',
+                variant: QmButtonVariant.plain,
+                size: QmButtonSize.small,
+                onPressed: _exitExportMode,
+              ),
+              QmButton(
+                key: const Key('export-selected-toolbar'),
+                label: _s.exportSelected.isEmpty
+                    ? '导出'
+                    : '导出（${_s.exportSelected.length}）',
+                variant: QmButtonVariant.secondary,
+                size: QmButtonSize.small,
+                onPressed: _s.exportSelected.isEmpty
+                    ? null
+                    : _openExportConfirm,
+              ),
+              Text(
+                '导出模式：点一行即选中，再点取消选中',
+                key: const Key('export-mode-hint'),
+                style: TextStyle(fontSize: 12.5, color: palette.muted),
+              ),
+            ] else
+              QmButton(
+                key: const Key('export-selected-toolbar'),
+                label: '导出',
+                variant: QmButtonVariant.secondary,
+                size: QmButtonSize.small,
+                onPressed: _enterExportMode,
+              ),
         ],
       ),
     );
@@ -1021,6 +1040,12 @@ extension _WrongbookListBuild on _WrongbookViewState {
           maxHeight: 160 * scale,
           fixedHeight: true,
           onTap: () async {
+            // 十七批 P2（D-208）：导出模式里点卡片即切换导出选中，
+            // 不进详情；模式外照常进详情。
+            if (_exportMode) {
+              _toggleExportSelected(q.id);
+              return;
+            }
             await widget.onOpenDetail(q, orderIds);
             await _n.load();
           },
@@ -1075,23 +1100,31 @@ extension _WrongbookListBuild on _WrongbookViewState {
               ),
             ),
           ),
-        // 十六批 B（D-190）：导出勾选框（右上角，与左上角序号圆盘、
-        // 批量勾选框不冲突；常驻，不依赖批量模式）。
-        Positioned(
-          top: 9 * scale,
-          right: 9 * scale,
-          child: Container(
-            decoration: BoxDecoration(
-              color: palette.surface,
-              borderRadius: BorderRadius.circular(5 * scale),
-            ),
-            child: Checkbox(
-              key: ValueKey('export-check-${q.id}'),
-              value: _s.exportSelected.contains(q.id),
-              onChanged: (_) => _toggleExportSelected(q.id),
+        // 十七批 P2（D-208）：常驻导出方框已废（平时列表无方框）；
+        // 选中的卡片右上角一个小 ✓（原来方框的位置附近），蓝底 +
+        // 主色加粗边框见外层容器（_buildLargeCards）。
+        if (_s.exportSelected.contains(q.id))
+          Positioned(
+            top: 9 * scale,
+            right: 9 * scale,
+            child: Container(
+              key: ValueKey('export-mark-${q.id}'),
+              padding: EdgeInsets.all(3 * scale),
+              decoration: BoxDecoration(
+                color: palette.accent,
+                shape: BoxShape.circle,
+              ),
+              child: Text(
+                '✓',
+                style: TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w800,
+                  color: palette.accentInk,
+                  height: 1,
+                ),
+              ),
             ),
           ),
-        ),
       ],
     );
   }
@@ -1118,6 +1151,12 @@ extension _WrongbookListBuild on _WrongbookViewState {
     final exportChecked = _s.exportSelected.contains(q.id);
     return InkWell(
       onTap: () async {
+        // 十七批 P2（D-208）：导出模式里点行即切换导出选中，不进
+        // 详情；模式外照常进详情。
+        if (_exportMode) {
+          _toggleExportSelected(q.id);
+          return;
+        }
         await widget.onOpenDetail(q, orderIds);
         await _n.load();
       },
@@ -1146,15 +1185,8 @@ extension _WrongbookListBuild on _WrongbookViewState {
                     onChanged: (v) => _n.toggleSelected(q.id, v == true),
                   ),
                 ),
-              // 十六批 B（D-190）：导出勾选框（常驻，不依赖批量模式）。
-              Padding(
-                padding: EdgeInsets.only(right: 8 * scale),
-                child: Checkbox(
-                  key: ValueKey('export-check-${q.id}'),
-                  value: exportChecked,
-                  onChanged: (_) => _toggleExportSelected(q.id),
-                ),
-              ),
+              // 十七批 P2（D-208）：常驻导出方框已废，紧凑行平时无
+              // 方框；选中行的 ✓ 在行右端（见行尾）。
               GestureDetector(
                 onTap: () => showQuestionZoomDialog(context, q),
                 child: CompactSliceThumb(
@@ -1211,6 +1243,20 @@ extension _WrongbookListBuild on _WrongbookViewState {
                 height: 1,
               ),
             ),
+            // 十七批 P2（D-208）：选中行的 ✓ 在行右端（蓝底见行容器）。
+            if (exportChecked) ...[
+              SizedBox(width: 4 * scale),
+              Text(
+                '✓',
+                key: ValueKey('export-mark-${q.id}'),
+                style: TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.w800,
+                  color: palette.accent,
+                  height: 1,
+                ),
+              ),
+            ],
           ],
         ),
       ),

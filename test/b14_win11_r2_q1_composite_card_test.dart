@@ -386,9 +386,9 @@ void main() {
       );
       expect(_paragraphCardCount(tester), 1);
       expect(_draftTexts(tester), ['# 标题', '正文 ', ' 尾']);
-      final saved = await _save(tester);
-      expect(saved.contains('# 标题'), isTrue);
-      expect(saved.contains('\$x\$'), isTrue);
+      // A3：标题草稿保存时须与后文断行，不得直接拼接。旧断言只查
+      // contains（`'# 标题正文 $x$ 尾'` 也能通过），现锁等值拼回。
+      expect(await _save(tester), stem);
     });
 
     testWidgets('表格断开分组：前后各一张卡，表格独立成段', (tester) async {

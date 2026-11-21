@@ -119,6 +119,53 @@ void main() {
     return drive(tester, () => rasterizer.rasterize(request, tempDir: tempDir));
   }
 
+  /// 十七批 P1：断言公式 PNG 的字形为黑色、不含红色错误兜底色。
+  ///
+  /// 背景透明（alpha ≈ 0）；字形像素为黑色、alpha 由抗锯齿决定。
+  /// (a) 不含 ARGB 0xD0FF0000 像素（MaterialApp 红色错误兜底）；
+  /// (b) 所有有墨像素（alpha > 10）的各通道均 < 60（抗锯齿边缘容差），
+  /// 且须存在不透明字形核心像素（避免空图假通过）。
+  void assertFormulaPngIsBlack(img.Image decoded) {
+    var redFallbackCount = 0;
+    var inkCount = 0;
+    var opaqueCoreCount = 0;
+    for (var y = 0; y < decoded.height; y++) {
+      for (var x = 0; x < decoded.width; x++) {
+        final pixel = decoded.getPixel(x, y);
+        final a = pixel.a.toInt();
+        final r = pixel.r.toInt();
+        final g = pixel.g.toInt();
+        final b = pixel.b.toInt();
+        if (a == 208 && r == 255 && g == 0 && b == 0) {
+          redFallbackCount++;
+        }
+        if (a > 10) {
+          inkCount++;
+          expect(r, lessThan(60), reason: '字形像素不应偏红（x=$x,y=$y）');
+          expect(g, lessThan(60), reason: '字形像素不应偏绿（x=$x,y=$y）');
+          expect(b, lessThan(60), reason: '字形像素不应偏蓝（x=$x,y=$y）');
+          if (a >= 250) opaqueCoreCount++;
+        }
+      }
+    }
+    expect(redFallbackCount, 0, reason: '公式 PNG 不得含红色错误兜底像素');
+    expect(inkCount, greaterThan(0), reason: '公式 PNG 须有字形像素');
+    expect(opaqueCoreCount, greaterThan(0), reason: '公式 PNG 须有不透明字形核心');
+  }
+
+  Future<img.Image> renderAndDecode(
+    WidgetTester tester,
+    FormulaRasterRequest request,
+    Directory tempDir,
+  ) async {
+    final result = await render(tester, request, tempDir);
+    final file = File('${tempDir.path}/${result.relativePath}');
+    expect(file.existsSync(), isTrue);
+    final decoded = img.decodeImage(file.readAsBytesSync());
+    expect(decoded, isNotNull);
+    return decoded!;
+  }
+
   group('300 DPI 映射', () {
     testWidgets('行内公式有效 DPI ≈ 300（±5%），文件可解码', (tester) async {
       await pumpAttached(tester);
@@ -177,6 +224,36 @@ void main() {
       expect(result.shrunk, isTrue);
       expect(result.logicalWidthPt, closeTo(510.2, 1.0));
       expect(result.effectiveDpi, inInclusiveRange(285, 315));
+    });
+  });
+
+  group('公式颜色回归（十七批 P1）', () {
+    testWidgets('行内公式栅格化后字形为黑色、不含红色错误兜底色', (tester) async {
+      await pumpAttached(tester);
+      final decoded = await renderAndDecode(
+        tester,
+        const FormulaRasterRequest(
+          formulaId: 'q0-f0',
+          latex: 'x^2+1',
+          displayMode: false,
+        ),
+        newTempDir('/p1-inline'),
+      );
+      assertFormulaPngIsBlack(decoded);
+    });
+
+    testWidgets('独立公式栅格化后字形为黑色、不含红色错误兜底色', (tester) async {
+      await pumpAttached(tester);
+      final decoded = await renderAndDecode(
+        tester,
+        const FormulaRasterRequest(
+          formulaId: 'q0-f0',
+          latex: 'x^2+1',
+          displayMode: true,
+        ),
+        newTempDir('/p1-display'),
+      );
+      assertFormulaPngIsBlack(decoded);
     });
   });
 

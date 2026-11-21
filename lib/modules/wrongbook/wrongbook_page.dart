@@ -176,6 +176,49 @@ class _WrongbookViewState extends ConsumerState<_WrongbookView> {
   /// 汇总条展开 / 收起（页面本地状态，不进 Provider）。
   bool _exportSummaryExpanded = false;
 
+  /// 十七批 P2（D-208）：导出模式（页面本地状态，不进 Provider；
+  /// 选择仍在 Notifier 的 exportSelected 里，不动其语义）。
+  /// 模式里点一行即切换导出选中、不进详情；模式外点行照常进详情。
+  bool _exportMode = false;
+
+  /// 进入导出模式：与批量模式互斥——进导出模式时退出批量模式
+  ///（批量勾选一并清空，与“退出批量”同款语义）；导出已选保留。
+  void _enterExportMode() {
+    if (_sr.batchMode) {
+      _n.update(
+        (st) => st.copyWith(batchMode: false, selected: const <String>{}),
+      );
+    }
+    setState(() {
+      _exportMode = true;
+    });
+  }
+
+  /// 退出导出模式：已选保留，再进模式还能看到（D-208 定）。
+  void _exitExportMode() {
+    setState(() {
+      _exportMode = false;
+    });
+  }
+
+  /// 批量模式开关（D-208：与导出模式互斥的另一半）：进批量时退出
+  /// 导出模式，已选保留；开关本身的语义（切换 batchMode 并清空批量
+  /// 勾选）与原来工具栏芯片一致。
+  void _toggleBatchMode() {
+    final entering = !_sr.batchMode;
+    if (entering && _exportMode) {
+      setState(() {
+        _exportMode = false;
+      });
+    }
+    _n.update(
+      (st) => st.copyWith(
+        batchMode: !st.batchMode,
+        selected: const <String>{},
+      ),
+    );
+  }
+
   /// 汇总条后台盘点的防抖定时器。
   Timer? _exportInventoryTimer;
 
@@ -260,7 +303,7 @@ class _WrongbookViewState extends ConsumerState<_WrongbookView> {
     return qs;
   }
 
-  /// 列表行勾选框 / 汇总清单取消钮共用：点选第 51 道时返回拒绝，
+  /// 列表行点选 / 汇总清单取消钮共用：点选第 51 道时返回拒绝，
   /// 页面弹 SnackBar；其余情况静默成功并刷新后台盘点。
   void _toggleExportSelected(String id) {
     final msg = _n.toggleExportSelected(id);
@@ -508,7 +551,7 @@ class _WrongbookViewState extends ConsumerState<_WrongbookView> {
     final st = _sr;
     final selectedQs = _exportSelectedQuestions(st);
     if (selectedQs.isEmpty) {
-      _snack('先在列表里勾选要导出的题目');
+      _snack('先选要导出的题目');
       return;
     }
     _exportRasterizer ??= FormulaRasterizer()..resetCancellation();
@@ -569,6 +612,13 @@ class _WrongbookViewState extends ConsumerState<_WrongbookView> {
           _n.clearExportSelected();
           _lastExportInventory = null;
           _lastExportInventoryIds = null;
+          // 十七批 P2（D-208）：导出成功后退出导出模式（现行清空
+          // 行为保留，另加退模式；确认步取消回来则留在模式里）。
+          if (_exportMode && mounted) {
+            setState(() {
+              _exportMode = false;
+            });
+          }
         }
         _exportRasterizer?.detach();
         _exportRasterizer = null;

@@ -352,18 +352,43 @@ class _StemEditorState extends State<StemEditor> {
     cropPath: '',
   );
 
+  /// 标题行末补换行（A3，仅保存时用，不动编辑器里的显示文本）。
+  ///
+  /// 标题行的语法是行首 `#{1,3}` + 空格/制表符、读到行尾为止
+  ///（与解析器 `_findNextHeading` 的判定一致）；草稿里的标题
+  /// 以 `'# 标题'` 形式存为纯文本、无尾换行，若其末行是标题行，
+  /// 保存时补一个 `'\n'`，否则后文直接拼在同一行、再解析时被
+  /// 标题吞掉。末行不是标题行、或已有尾换行时原样返回。
+  static String _terminateHeadingLine(String text) {
+    if (text.isEmpty || text.endsWith('\n')) return text;
+    final lastBreak = text.lastIndexOf('\n');
+    final lastLine = lastBreak < 0
+        ? text
+        : text.substring(lastBreak + 1);
+    if (RegExp(r'^#{1,3}[ \t]').hasMatch(lastLine)) return '$text\n';
+    return text;
+  }
+
   /// 草稿按块拼回题干（保存用）。空文字段跳过；恢复为原图的公式
   /// 从题干里拿掉（以原图显示，见文件头）；其余按 [blocksToMarkdown]。
   /// 图块不拼回题干（只存在 ocr_figures 里，见 question_content.dart）。
   /// 段落卡按段内顺序展开成原块序列再拼回：绝不扁平成显示串，
   /// 换行/空行原样保留，不做任何 trim 与空白规范化。
+  /// 标题草稿（`'# 标题'` 形式的纯文本）末行是标题行时补一个尾换行
+  ///（[_terminateHeadingLine]，A3）：标题行读到行尾为止，草稿里
+  /// 标题行无尾换行，后文直接拼在同一行会被标题吞掉。
   String _draftsToMarkdown() {
     final blocks = <QuestionContentBlock>[];
-    void addDraft(_DraftBlock draft) {
+    void addDraft(_DraftBlock draft, {required bool isLast}) {
       switch (draft) {
         case _DraftText(:final controller):
-          if (controller.text.isNotEmpty) {
-            blocks.add(TextBlock(controller.text));
+          // 只有后面还有草稿时才补标题行尾换行：标题在末尾时不补，
+          // 保存结果不给原题干多加尾换行（往返须原样）。
+          final text = isLast
+              ? controller.text
+              : _terminateHeadingLine(controller.text);
+          if (text.isNotEmpty) {
+            blocks.add(TextBlock(text));
           }
         case _DraftCode(:final controller, :final language):
           blocks.add(CodeBlock(controller.text, language: language));
@@ -376,16 +401,19 @@ class _StemEditorState extends State<StemEditor> {
             blocks.add(FormulaBlock(latex, displayMode: displayMode));
           }
         case _DraftParagraph(:final segments):
-          for (final seg in segments) {
-            addDraft(seg);
+          for (var j = 0; j < segments.length; j++) {
+            addDraft(
+              segments[j],
+              isLast: isLast && j + 1 == segments.length,
+            );
           }
         case _DraftFigure():
           break;
       }
     }
 
-    for (final draft in _drafts) {
-      addDraft(draft);
+    for (var i = 0; i < _drafts.length; i++) {
+      addDraft(_drafts[i], isLast: i + 1 == _drafts.length);
     }
     return blocksToMarkdown(blocks);
   }

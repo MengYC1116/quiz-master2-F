@@ -10,6 +10,7 @@ import 'package:docx_creator/docx_creator.dart';
 
 import '../pdf_export/answer_section.dart';
 import 'word_document_builder.dart';
+import 'word_page_estimate.dart';
 
 /// 答案区标题下方的答案来源说明行（10 pt，WORD-DESIGN.md §3.4）。
 ///
@@ -24,12 +25,17 @@ const String kWordAnswerSourceNote =
 /// [buildAnswerEntries] 产出）。条目为可跨页断开的纯文本段（与 PDF
 /// 答案区同款：不用不可拆分容器包整条，防止超一页抛错）；长答案/
 /// 长解析不断页硬锁，Word 自然分页，条目可跨页。
+///
+/// [pageEstimator] 非空时同步喂入估计器（十七批 A4，D-207：与段落
+/// 一一对应的高度，twips 折 pt 按 1 pt = 20 twips）。
 void addWordAnswerSection(
   DocxDocumentBuilder builder,
-  List<AnswerEntry> entries,
-) {
+  List<AnswerEntry> entries, {
+  WordPageEstimator? pageEstimator,
+}) {
   // 答案区另起一页（分页符，不是分节符）。
   builder.pageBreak();
+  pageEstimator?.addPageBreak();
   builder.paragraph(
     wordTextParagraph(
       kAnswerSectionTitle,
@@ -39,12 +45,23 @@ void addWordAnswerSection(
       spacingAfter: 120,
     ),
   );
+  pageEstimator?.addText(
+    text: kAnswerSectionTitle,
+    fontSize: WordTypography.answerTitlePt,
+    spacingBeforePt: 12,
+    spacingAfterPt: 6,
+  );
   builder.paragraph(
     wordTextParagraph(
       kWordAnswerSourceNote,
       fontSize: WordTypography.infoPt,
       spacingAfter: 240,
     ),
+  );
+  pageEstimator?.addText(
+    text: kWordAnswerSourceNote,
+    fontSize: WordTypography.infoPt,
+    spacingAfterPt: 12,
   );
   for (var i = 0; i < entries.length; i++) {
     final entry = entries[i];
@@ -57,12 +74,23 @@ void addWordAnswerSection(
         spacingAfter: 60,
       ),
     );
+    pageEstimator?.addText(
+      text: '第 ${entry.displayNumber} 题',
+      fontSize: WordTypography.bodyPt,
+      spacingBeforePt: i == 0 ? 0 : 6,
+      spacingAfterPt: 3,
+    );
     builder.paragraph(
       wordTextParagraph(
         '答案：${entry.answerDisplay}',
         fontSize: WordTypography.bodyPt,
         spacingAfter: 60,
       ),
+    );
+    pageEstimator?.addText(
+      text: '答案：${entry.answerDisplay}',
+      fontSize: WordTypography.bodyPt,
+      spacingAfterPt: 3,
     );
     builder.paragraph(
       wordTextParagraph(
@@ -71,8 +99,14 @@ void addWordAnswerSection(
         spacingAfter: 120,
       ),
     );
+    pageEstimator?.addText(
+      text: '解析：${entry.explanationDisplay}',
+      fontSize: WordTypography.bodyPt,
+      spacingAfterPt: 6,
+    );
     if (i < entries.length - 1) {
       builder.hr();
+      pageEstimator?.addSpacer(kWordEstimatedHrHeightPt);
     }
   }
 }

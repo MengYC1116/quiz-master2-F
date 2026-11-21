@@ -44,6 +44,7 @@ import '../pdf_export/slice_snapshot.dart' show readPngDimensions;
 import 'word_answer_section.dart';
 import 'word_document_builder.dart';
 import 'word_font.dart';
+import 'word_page_estimate.dart';
 
 /// A 路线逐题增强结果（服务侧准备，见 [WordAPreparedQuestion]）。
 ///
@@ -151,6 +152,7 @@ class WordContentResult {
     required this.questions,
     required this.displayNumbersById,
     required this.imageCount,
+    required this.estimatedPageCount,
   });
 
   /// 已含全部题目段落与答案区的文档（待 `exportToBytes`）。
@@ -165,6 +167,11 @@ class WordContentResult {
   /// 本次嵌入的图片部件数（交付校验 `defaultDocxFileValidator` 用：
   /// `word/media/*` 部件数须与此一致，防导出器静默丢图）。
   final int imageCount;
+
+  /// 估计总页数（十七批 A4，D-207：内容高度贪心分页模拟，见
+  /// word_page_estimate.dart；只是估计，完成界面以「约 N 页
+  /// （估计值）」展示，实际页数以 Word 打开为准）。
+  final int estimatedPageCount;
 
   /// 已印出题数。
   int get printedCount => questions.length;
@@ -192,6 +199,9 @@ WordContentResult buildWordContent({
       '${now.month.toString().padLeft(2, '0')}-'
       '${now.day.toString().padLeft(2, '0')}';
   final builder = DocxDocumentBuilder();
+  // 十七批 A4（D-207）：建文档的同时把每段的估计高度喂给分页模拟器
+  //（只做加法，不影响文档本身；估计值随 WordContentResult 返回）。
+  final pageEstimator = WordPageEstimator();
   applyWordSection(
     builder,
     header: wordHeader(
@@ -240,6 +250,11 @@ WordContentResult buildWordContent({
       spacingAfter: 120,
     ),
   );
+  pageEstimator.addText(
+    text: '错题本导出',
+    fontSize: WordTypography.titlePt,
+    spacingAfterPt: 6,
+  );
   for (final line in <String>[
     '筛选：${snapshot.filterText}',
     '题数：${planned.length} 道',
@@ -253,6 +268,11 @@ WordContentResult buildWordContent({
         fontSize: WordTypography.infoPt,
         spacingAfter: 60,
       ),
+    );
+    pageEstimator.addText(
+      text: line,
+      fontSize: WordTypography.infoPt,
+      spacingAfterPt: 3,
     );
   }
 
@@ -330,6 +350,12 @@ WordContentResult buildWordContent({
         spacingAfter: 60,
       ),
     );
+    pageEstimator.addText(
+      text: numberLine,
+      fontSize: WordTypography.questionNumberPt,
+      spacingBeforePt: pi == 0 ? 0 : 6,
+      spacingAfterPt: 3,
+    );
 
     var formulaOriginal = false;
     var figureMissing = false;
@@ -348,6 +374,7 @@ WordContentResult buildWordContent({
         builder: builder,
         addWarning: addWarning,
         onImageEmbedded: () => imageCount++,
+        pageEstimator: pageEstimator,
       );
       formulaOriginal = converted.hasOriginalFormula;
       figureMissing = converted.figureMissing;
@@ -364,6 +391,11 @@ WordContentResult buildWordContent({
             color: DocxColor.gray,
             spacingAfter: 60,
           ),
+        );
+        pageEstimator.addText(
+          text: sourceText,
+          fontSize: WordTypography.sourcePt,
+          spacingAfterPt: 3,
         );
       }
       built.add(
@@ -393,6 +425,11 @@ WordContentResult buildWordContent({
               spacingAfter: 60,
             ),
           );
+          pageEstimator.addText(
+            text: sourceText,
+            fontSize: WordTypography.sourcePt,
+            spacingAfterPt: 3,
+          );
         }
         builder.paragraph(
           wordTextParagraph(
@@ -400,6 +437,11 @@ WordContentResult buildWordContent({
             fontSize: WordTypography.bodyPt,
             spacingAfter: 60,
           ),
+        );
+        pageEstimator.addText(
+          text: '本题图片缺失，无法印出',
+          fontSize: WordTypography.bodyPt,
+          spacingAfterPt: 3,
         );
         final reason = prep.brokenReason ?? '源切片缺失';
         builder.paragraph(
@@ -409,6 +451,11 @@ WordContentResult buildWordContent({
             color: DocxColor.gray,
             spacingAfter: 60,
           ),
+        );
+        pageEstimator.addText(
+          text: reason.length > 40 ? '${reason.substring(0, 40)}…' : reason,
+          fontSize: WordTypography.bodyPt,
+          spacingAfterPt: 3,
         );
       } else {
         enhanceFallback = prep.enhanceFallback;
@@ -428,6 +475,11 @@ WordContentResult buildWordContent({
                 color: DocxColor.gray,
                 spacingAfter: 60,
               ),
+            );
+            pageEstimator.addText(
+              text: sourceText,
+              fontSize: WordTypography.sourcePt,
+              spacingAfterPt: 3,
             );
           }
           Uint8List png;
@@ -459,6 +511,7 @@ WordContentResult buildWordContent({
               heightPt: seg.displayHeightPt,
             ),
           );
+          pageEstimator.addAtomic(seg.displayHeightPt);
           imageCount++;
         }
       }
@@ -477,6 +530,7 @@ WordContentResult buildWordContent({
     // 题间分隔线；最后一题后不画分隔线；答案区之前用分页符，不用分隔线。
     if (pi < planned.length - 1) {
       builder.hr();
+      pageEstimator.addSpacer(kWordEstimatedHrHeightPt);
     }
   }
 
@@ -491,7 +545,7 @@ WordContentResult buildWordContent({
       displayNumbersById: displayNumbersById,
       sources: answerSources,
     );
-    addWordAnswerSection(builder, entries);
+    addWordAnswerSection(builder, entries, pageEstimator: pageEstimator);
   }
 
   return WordContentResult(
@@ -499,6 +553,7 @@ WordContentResult buildWordContent({
     questions: built,
     displayNumbersById: displayNumbersById,
     imageCount: imageCount,
+    estimatedPageCount: pageEstimator.estimatedPageCount,
   );
 }
 
@@ -548,6 +603,7 @@ _CConverted _convertCQuestion({
   required DocxDocumentBuilder builder,
   required void Function(String warning) addWarning,
   required void Function() onImageEmbedded,
+  required WordPageEstimator pageEstimator,
 }) {
   final ocr = entry.ocrContent!;
   final byId = {
@@ -567,6 +623,8 @@ _CConverted _convertCQuestion({
     builder.paragraph(
       wordMixedParagraph(List.of(paraInlines), spacingAfter: 60),
     );
+    // 十七批 A4（D-207）：混排段按行内图文折行估高（段后 60 twips = 3 pt）。
+    pageEstimator.addMixedParagraph(paraInlines, spacingAfterPt: 3);
     paraInlines = <DocxInline>[];
   }
 
@@ -620,6 +678,8 @@ _CConverted _convertCQuestion({
       }
     }
     builder.image(wordImageBlock(pngBytes, widthPt: w, heightPt: h));
+    // 十七批 A4（D-207）：独立图不可拆分，按最终显示高整段计入估计。
+    pageEstimator.addAtomic(h);
     onImageEmbedded();
   }
 

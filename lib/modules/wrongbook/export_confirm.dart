@@ -779,7 +779,23 @@ class ExportCompletionView extends StatelessWidget {
             // 十六批 C（W-11）：Word 总页数生成时未知，完成界面不得编造
             // 页数，写“以 Word 打开为准”。
             Text('共 ${row.questionCount ?? 0} 道题 · 页数以 Word 打开为准'),
+          // 十七批 A4（D-207）：Word 估计页数（内容高度贪心分页模拟，
+          // 只是估计，标「约」+「估计值」；实测页数仍未知，pageCount
+          // 保持 null；估计值缺失时不显示此行）。
+          if (row.isWordCombined && row.estimatedPageCount != null)
+            Text(
+              '约 ${row.estimatedPageCount} 页（估计值）',
+              key: const Key('export-word-estimated-pages'),
+            ),
           Text(statusText, key: Key('export-file-status-${row.version.name}')),
+          // 十七批 A5（D-208）：Word 页脚 PAGE/NUMPAGES 字段无缓存值，
+          // 不更新字段的查看器会显示空白；只在 Word 文件已交付时提示
+          // 用户在 Word 里按 Ctrl+A 再按 F9 更新页码。PDF 行不显示。
+          if (row.isWordCombined && row.isDelivered)
+            const Text(
+              '在 Word 里按 Ctrl+A 再按 F9 更新页码',
+              key: Key('export-word-refresh-fields-hint'),
+            ),
           if (row.deliveredPath != null) ...[
             const SizedBox(height: 4),
             Wrap(

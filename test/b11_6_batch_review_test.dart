@@ -353,7 +353,9 @@ void main() {
       await pumpWrongbook(tester, repo: repo);
       await openMathListCompact(tester);
       await openBatchBar(tester);
-      // 复选框顺序：全选、qa、qb、qc（按收集时间新→旧）。
+      // 复选框顺序：全选、qa 批量、qb 批量、qc 批量……
+      // （按收集时间新→旧；每行只剩批量框，十七批 P2：导出方框已废）。
+      // qb 的批量框是第 2 个。
       await tester.tap(find.byType(Checkbox).at(2));
       await tester.pumpAndSettle();
       expect(find.text('已选 1 道'), findsOneWidget);

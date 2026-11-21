@@ -122,6 +122,7 @@ class ExportCompletionRow {
     required this.version,
     required this.fileName,
     this.pageCount,
+    this.estimatedPageCount,
     this.questionCount,
     this.deliveredPath,
     this.generationError,
@@ -140,6 +141,11 @@ class ExportCompletionRow {
   /// 页数（已交付时为验证通过的页数；Word 为 null——页数只有 Word
   /// 打开后才知道，完成界面写“以 Word 打开为准”，不得编造）。
   final int? pageCount;
+
+  /// 估计页数（十七批 A4，D-207：仅 Word 行有值，内容高度贪心分页
+  /// 模拟的估计；完成界面以「约 N 页（估计值）」展示，不得当作实测
+  /// 页数。PDF 行为 null，PDF 行只用实测 [pageCount]）。
+  final int? estimatedPageCount;
 
   /// 题数（已生成时为该版题数）。
   final int? questionCount;
@@ -489,6 +495,7 @@ class ExportFlowController extends ChangeNotifier {
           version: ExportVersion.practice,
           fileName: delivered?.fileName ?? '',
           pageCount: null,
+          estimatedPageCount: word.estimatedPageCount,
           questionCount:
               word.report.completeCount + word.report.partialCount,
           deliveredPath: delivered?.isDelivered == true

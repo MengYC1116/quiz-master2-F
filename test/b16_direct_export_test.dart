@@ -1,8 +1,10 @@
-// 十六批 B（D-190）：错题本列表页直接勾选导出（widget 测试）。
+// 十六批 B（D-190）+ 十七批 P2（D-208）：错题本列表页导出模式＋
+// 点选高亮（widget 测试）。
 //
-// 覆盖：勾选 / 取消勾选与汇总数、勾过行高亮、汇总清单展开与逐个
-// 取消、学科 / 文件夹数、跳过信息（后台盘点）、翻页与换筛选不丢
-// 已选、50 道上限拒绝、工具栏导出入口与确认步全流程。
+// 覆盖：进模式 / 退模式、模式里点行切换选中与 ✓ / 蓝底、模式外点行
+// 进详情、汇总数与清单展开逐个取消、学科 / 文件夹数、跳过信息
+//（后台盘点）、翻页与换筛选不丢已选、50 道上限拒绝、工具栏导出
+// 入口与确认步全流程。两种模式下列表里都没有 Checkbox。
 // 导出流程控制器用桩（经 WrongbookPage.exportControllerFactory
 // 注入），不碰真实数据库。
 import 'dart:typed_data';
@@ -230,15 +232,31 @@ Future<void> openMathListCompact(WidgetTester tester) async {
   await tester.pumpAndSettle();
 }
 
-/// 点一个可能在滚动区外的勾选框（先滚到可见再点，只 pump 一帧，
-/// 不用 pumpAndSettle 等动画）。
-Future<void> tapCheck(WidgetTester tester, String id) async {
-  final finder = find.byKey(ValueKey('export-check-$id'));
+/// 进导出模式（工具栏「导出」平时是进模式的入口，不是直接确认）。
+Future<void> enterExportMode(WidgetTester tester) async {
+  await tester.tap(find.byKey(const Key('export-selected-toolbar')));
+  await tester.pump();
+}
+
+/// 导出模式里点一行切换选中（大卡片点卡片，紧凑行点行；先滚到可见
+/// 再点，只 pump 一帧，不用 pumpAndSettle 等动画）。
+Future<void> tapExportRow(
+  WidgetTester tester,
+  String id, {
+  bool large = false,
+}) async {
+  final finder = find.byKey(
+    ValueKey(large ? 'export-card-$id' : 'export-row-$id'),
+  );
   await tester.ensureVisible(finder);
   await tester.pump(const Duration(milliseconds: 100));
   await tester.tap(finder);
   await tester.pump();
 }
+
+/// 该题是否处于导出选中态（选中行右端的小 ✓ 在不在）。
+bool isExportSelected(WidgetTester tester, String id) =>
+    find.byKey(ValueKey('export-mark-$id')).evaluate().isNotEmpty;
 
 /// 点一个可能在滚动区外的文本按钮（分页器在列表底部，可能在折叠线下）。
 Future<void> tapVisibleText(WidgetTester tester, String label) async {
@@ -248,9 +266,6 @@ Future<void> tapVisibleText(WidgetTester tester, String label) async {
   await tester.tap(finder);
   await tester.pumpAndSettle();
 }
-
-Checkbox checkBox(WidgetTester tester, String id) =>
-    tester.widget<Checkbox>(find.byKey(ValueKey('export-check-$id')));
 
 /// 汇总条数字行文本（折叠态只剩数字；展开时仍在同一行）。
 String summaryNumbers(WidgetTester tester) {
@@ -277,14 +292,27 @@ void main() {
       );
       await openMathListCompact(tester);
       expect(summaryNumbers(tester), contains('已选 0 / 50 道'));
-      // 工具栏导出按钮空选时置灰。
+      // 平时列表里没有导出方框。
+      expect(find.byType(Checkbox), findsNothing);
+      // 工具栏「导出」平时是进模式的入口（空选也能进）。
       final toolbarBtn = tester.widget<QmButton>(
         find.byKey(const Key('export-selected-toolbar')),
       );
-      expect(toolbarBtn.onPressed, isNull);
+      expect(toolbarBtn.onPressed, isNotNull);
+      expect(toolbarBtn.label, '导出');
 
-      await tapCheck(tester, 'q1');
-      expect(checkBox(tester, 'q1').value, isTrue);
+      await enterExportMode(tester);
+      expect(find.byKey(const Key('export-mode-hint')), findsOneWidget);
+      // 模式里也没有方框；n = 0 时「导出」置灰。
+      expect(find.byType(Checkbox), findsNothing);
+      final toolbarBtnInMode = tester.widget<QmButton>(
+        find.byKey(const Key('export-selected-toolbar')),
+      );
+      expect(toolbarBtnInMode.onPressed, isNull);
+      expect(toolbarBtnInMode.label, '导出');
+
+      await tapExportRow(tester, 'q1');
+      expect(isExportSelected(tester, 'q1'), isTrue);
       expect(summaryNumbers(tester), contains('已选 1 / 50 道'));
       // 勾过行高亮：行容器的浅底色。
       final row = tester.widget<Container>(
@@ -294,7 +322,7 @@ void main() {
         (row.decoration as BoxDecoration?)?.color,
         DesignTokens.of(Brightness.light).accentSoft,
       );
-      // 未勾选的行不高亮。
+      // 未勾选的行不高亮、无 ✓。
       final row2 = tester.widget<Container>(
         find.byKey(const ValueKey('export-row-q2')),
       );
@@ -302,6 +330,7 @@ void main() {
         (row2.decoration as BoxDecoration?)?.color,
         Colors.transparent,
       );
+      expect(isExportSelected(tester, 'q2'), isFalse);
       // 工具栏导出按钮可用，带数量。
       final toolbarBtn2 = tester.widget<QmButton>(
         find.byKey(const Key('export-selected-toolbar')),
@@ -309,12 +338,12 @@ void main() {
       expect(toolbarBtn2.onPressed, isNotNull);
       expect(toolbarBtn2.label, '导出（1）');
 
-      await tapCheck(tester, 'q1');
-      expect(checkBox(tester, 'q1').value, isFalse);
+      await tapExportRow(tester, 'q1');
+      expect(isExportSelected(tester, 'q1'), isFalse);
       expect(summaryNumbers(tester), contains('已选 0 / 50 道'));
     });
 
-    testWidgets('大卡片也有勾选框，勾过卡片变色', (tester) async {
+    testWidgets('大卡片点选，勾过卡片变色＋出 ✓', (tester) async {
       await pumpDirect(
         tester,
         repo: DirectFakeRepo(
@@ -322,9 +351,12 @@ void main() {
         ),
       );
       await openMathList(tester);
-      // 默认大卡片视图。
-      await tapCheck(tester, 'q1');
-      expect(checkBox(tester, 'q1').value, isTrue);
+      // 默认大卡片视图；平时无方框。
+      expect(find.byType(Checkbox), findsNothing);
+      await enterExportMode(tester);
+      expect(find.byType(Checkbox), findsNothing);
+      await tapExportRow(tester, 'q1', large: true);
+      expect(isExportSelected(tester, 'q1'), isTrue);
       expect(summaryNumbers(tester), contains('已选 1 / 50 道'));
       final card = tester.widget<Container>(
         find.byKey(const ValueKey('export-card-q1')),
@@ -343,8 +375,9 @@ void main() {
         ),
       );
       await openMathListCompact(tester);
-      await tapCheck(tester, 'q1');
-      await tapCheck(tester, 'q3');
+      await enterExportMode(tester);
+      await tapExportRow(tester, 'q1');
+      await tapExportRow(tester, 'q3');
       expect(summaryNumbers(tester), contains('已选 2 / 50 道'));
       // 收起时清单不可见。
       expect(
@@ -373,7 +406,7 @@ void main() {
         find.byKey(const ValueKey('export-summary-item-q1')),
         findsNothing,
       );
-      expect(checkBox(tester, 'q1').value, isFalse);
+      expect(isExportSelected(tester, 'q1'), isFalse);
       // 收起后只剩数字。
       await tester.tap(find.byKey(const Key('export-summary-numbers')));
       await tester.pump();
@@ -396,10 +429,12 @@ void main() {
         ),
       );
       await openMathListCompact(tester);
-      // 当前在数学列表里：先勾 q1（数学 / f1）。
-      await tapCheck(tester, 'q1');
+      // 当前在数学列表里：进导出模式，先点 q1（数学 / f1）。
+      await enterExportMode(tester);
+      await tapExportRow(tester, 'q1');
       expect(summaryNumbers(tester), contains('1 个学科 · 1 个文件夹'));
-      // 回书架进英语列表勾 q2（跨科勾选不丢 q1）。
+      // 回书架进英语列表点 q2（导出模式随页面状态保留，不用重进；
+      // 跨科点选不丢 q1）。
       await tester.tap(find.text('合上 ✕'));
       await tester.pumpAndSettle();
       await tester.tap(find.text('英语'));
@@ -408,7 +443,7 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(find.text('紧凑列表'));
       await tester.pumpAndSettle();
-      await tapCheck(tester, 'q2');
+      await tapExportRow(tester, 'q2');
       expect(summaryNumbers(tester), contains('已选 2 / 50 道'));
       expect(summaryNumbers(tester), contains('2 个学科 · 2 个文件夹'));
     });
@@ -439,8 +474,9 @@ void main() {
         controller: controller,
       );
       await openMathListCompact(tester);
-      await tapCheck(tester, 'q1');
-      await tapCheck(tester, 'q2');
+      await enterExportMode(tester);
+      await tapExportRow(tester, 'q1');
+      await tapExportRow(tester, 'q2');
       // 盘点前显示“正在盘点…”。
       expect(summaryNumbers(tester), contains('正在盘点是否会被跳过…'));
       await waitForInventory(tester);
@@ -455,7 +491,8 @@ void main() {
         ),
       );
       await openMathListCompact(tester);
-      await tapCheck(tester, 'q1');
+      await enterExportMode(tester);
+      await tapExportRow(tester, 'q1');
       await waitForInventory(tester);
       expect(summaryNumbers(tester), contains('全部可印，无跳过'));
     });
@@ -470,13 +507,14 @@ void main() {
         ),
       );
       await openMathListCompact(tester);
-      await tapCheck(tester, 'q0');
+      await enterExportMode(tester);
+      await tapExportRow(tester, 'q0');
       expect(summaryNumbers(tester), contains('已选 1 / 50 道'));
       await tapVisibleText(tester, '下一页');
       expect(summaryNumbers(tester), contains('已选 1 / 50 道'));
-      expect(find.byKey(const ValueKey('export-check-q0')), findsNothing);
+      expect(find.byKey(const ValueKey('export-row-q0')), findsNothing);
       await tapVisibleText(tester, '上一页');
-      expect(checkBox(tester, 'q0').value, isTrue);
+      expect(isExportSelected(tester, 'q0'), isTrue);
       expect(summaryNumbers(tester), contains('已选 1 / 50 道'));
     });
 
@@ -491,19 +529,20 @@ void main() {
         ),
       );
       await openMathListCompact(tester);
-      await tapCheck(tester, 'q1');
+      await enterExportMode(tester);
+      await tapExportRow(tester, 'q1');
       // 搜一个只命中 q2 的词，q1 从列表消失。
       await tester.enterText(
         find.byType(TextField).first,
         '求导数',
       );
       await tester.pumpAndSettle();
-      expect(find.byKey(const ValueKey('export-check-q1')), findsNothing);
+      expect(find.byKey(const ValueKey('export-row-q1')), findsNothing);
       expect(summaryNumbers(tester), contains('已选 1 / 50 道'));
       // 清空搜索，q1 回来，勾选仍在。
       await tester.enterText(find.byType(TextField).first, '');
       await tester.pumpAndSettle();
-      expect(checkBox(tester, 'q1').value, isTrue);
+      expect(isExportSelected(tester, 'q1'), isTrue);
     });
   });
 
@@ -542,16 +581,17 @@ void main() {
         controller: controller,
       );
       await openMathListCompact(tester);
+      await enterExportMode(tester);
       // 筛选 A（只命中 a1）下选 a1。
       await tester.enterText(find.byType(TextField).first, '求极限');
       await tester.pumpAndSettle();
-      await tapCheck(tester, 'a1');
+      await tapExportRow(tester, 'a1');
       expect(summaryNumbers(tester), contains('已选 1 / 50 道'));
       // 切筛选 B（只命中 b1）选 b1；a1 已不在当前列表。
       await tester.enterText(find.byType(TextField).first, '求导数');
       await tester.pumpAndSettle();
-      expect(find.byKey(const ValueKey('export-check-a1')), findsNothing);
-      await tapCheck(tester, 'b1');
+      expect(find.byKey(const ValueKey('export-row-a1')), findsNothing);
+      await tapExportRow(tester, 'b1');
       expect(summaryNumbers(tester), contains('已选 2 / 50 道'));
       await waitForInventory(tester);
 
@@ -592,11 +632,12 @@ void main() {
         ),
       );
       await openMathListCompact(tester);
-      // 每页 10 道，5 页勾满 50 道。
+      await enterExportMode(tester);
+      // 每页 10 道，5 页点满 50 道。
       for (var page = 0; page < 5; page++) {
         for (var i = 0; i < 10; i++) {
           final id = 'q${page * 10 + i}';
-          await tapCheck(tester, id);
+          await tapExportRow(tester, id);
         }
         if (page < 4) {
           await tapVisibleText(tester, '下一页');
@@ -605,11 +646,11 @@ void main() {
       expect(summaryNumbers(tester), contains('已选 50 / 50 道'));
       // 第 6 页只有 q50，点选被拒绝。
       await tapVisibleText(tester, '下一页');
-      await tapCheck(tester, 'q50');
+      await tapExportRow(tester, 'q50');
       await tester.pumpAndSettle();
       expect(find.text('单次最多导出 50 道题'), findsOneWidget);
       expect(summaryNumbers(tester), contains('已选 50 / 50 道'));
-      expect(checkBox(tester, 'q50').value, isFalse);
+      expect(isExportSelected(tester, 'q50'), isFalse);
     });
   });
 
@@ -622,8 +663,9 @@ void main() {
         ),
       );
       await openMathListCompact(tester);
-      await tapCheck(tester, 'q1');
-      await tapCheck(tester, 'q2');
+      await enterExportMode(tester);
+      await tapExportRow(tester, 'q1');
+      await tapExportRow(tester, 'q2');
       await waitForInventory(tester);
       await tester.tap(find.byKey(const Key('export-selected-toolbar')));
       await tester.pump();
@@ -641,10 +683,19 @@ void main() {
       }
       await tester.pump();
       expect(find.text('全部完成'), findsOneWidget);
-      // 关闭完成界面：生成已完成，本次勾选清空。
+      // 关闭完成界面：生成已完成，本次勾选清空、退出导出模式。
       await tester.tap(find.text('关闭'));
       await tester.pumpAndSettle();
       expect(summaryNumbers(tester), contains('已选 0 / 50 道'));
+      expect(find.byKey(const Key('export-mode-cancel')), findsNothing);
+      expect(
+        tester
+            .widget<QmButton>(
+              find.byKey(const Key('export-selected-toolbar')),
+            )
+            .label,
+        '导出',
+      );
     });
 
     testWidgets('汇总条里的导出按钮同样进确认步', (tester) async {
@@ -655,7 +706,8 @@ void main() {
         ),
       );
       await openMathListCompact(tester);
-      await tapCheck(tester, 'q1');
+      await enterExportMode(tester);
+      await tapExportRow(tester, 'q1');
       await tester.tap(find.byKey(const Key('export-selected-bar')));
       await tester.pump();
       for (var i = 0; i < 10; i++) {

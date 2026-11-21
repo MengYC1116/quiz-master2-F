@@ -2050,3 +2050,55 @@ unavailable），kill -9 后新进程可取锁——与实现依据一致。
 
 - 内容：`_exportSelectedQuestions()` 中筛选外已选题共用排序键 `1 << 20`，Dart `List.sort` 不保证等键稳定，相对顺序可能变化（不丢题，只影响题号顺序）。修法：主排序不变，同键时按 `createdAt` 降序、再按 `id` 升序，保证全序；`wrongbook_page.dart:501` 注释由“勾选集合在打开瞬间按 filteredAll() 顺序拍快照”改为“打开瞬间拍一份按 filteredAll() 顺序排的全集快照（快照取自 exportSelected 全集，filteredAll() 只定顺序）”，与 `:239-240` 注释统一。
 - 锁定测试：`test/b16_export_selection_test.dart` 新增 2 项（筛选外按 createdAt 降序；createdAt 相同时按 id 升序、与入库顺序无关）；相关测试 10/10，analyze 无新增问题，演示库 md5 未变。
+## D-207 — 十七批范围与批准（2026-11-21，Meng 2026-11-21 21:59 批准开工，22:04 批准“小修都修了”）
+
+- 内容：十七批 = P1 红公式修复（D-208）＋ P2 导出模式＋点选高亮（D-209）＋ 5 项小修：A1 D-190 乱码核查、A2 analyze 基线清零（D-210）、A3 Q1 标题草稿拼接（D-211）、A4 Word 完成界面加页数（D-212）、A5 Word 页码提示（D-213）。另 b14 sim 8 个既存失败暂缓，见 D-214。
+- 批准经过：21:47 Meng 在十六批 Win11 验证中发现新导出的 PDF/DOCX 公式全红；21:55 他定导出选法改第 2 方案（导出模式＋点选高亮、无方框）；21:59 他改主意“先修吧，把之前落下的也修了，公式也是黑色，再加导出模式＋点选高亮”；22:01 他确认十六批 28 项除红公式外全部通过；22:04 他定 5 项小修全进十七批。
+- 不在本批：Meng 22:00 另要的题目列表＋详情页从 0 重设计（另起设计线，不在本批做）；22:05 起的五线对照板亦然。
+- A1 核查结果：D-190 乱码经核查无需改动——本地与远端 `docs/decision-log.md` 的 D-190 条目均为正确「本次导出」，全文件无 U+FFFD 字符、无非法 UTF-8 字节（2026-11-21 协调员核查）。
+
+## D-208 — 十七批 P1：红公式修复，Math.tex 写死黑色＋常规字重（2026-11-21，Meng 2026-11-21 21:59 批准）
+
+- 内容：根因是公式栅格化在根 Overlay 下的离屏 OverlayEntry 里渲染、无 Material 祖先，`Math.tex` 继承了 MaterialApp 的红色错误兜底样式 0xD0FF0000（还带 w900 超粗字重）；证据是导出的公式 PNG 像素实测 (255,0,0,208)。修法：`lib/services/pdf_export/formula_rasterizer.dart` 的 `_FormulaRenderHostState.build` 里，`Math.tex` 的 textStyle 写死成 `TextStyle(fontSize: request.fontSizePt, color: Colors.black, fontWeight: FontWeight.normal)`（字号仍 pin，只补颜色和字重）。应用内 FormulaView（`question_content_renderer.dart`）在 Material 下本来就是对的，不动。
+- 回归测试：`test/b15_m1c_formula_test.dart` 新增「公式颜色回归」组 2 项（行内＋独立），解码 PNG 逐像素断言无 0xD0FF0000 像素、有墨像素全通道 < 60、存在不透明黑色字形核心；反证：临时还原旧代码，2 项全失败，证明测试真能抓红。相关测试 b15_m1c 17/17、b15_m1e 18/18、b16_word_image 6/6，analyze 限改动文件干净。
+
+## D-209 — 十七批 P2：导出选法改导出模式＋点选高亮，废常驻方框（2026-11-21，Meng 2026-11-21 21:55 定第 2 方案，21:59 批十七批）
+
+- 内容：D-190（错题本直接勾选，列表每行常驻导出方框）改选法，不改导出本身。列表平时干净、无方框；工具栏点「导出」进入导出模式（空选也能进）；模式里工具栏是「取消」＋「导出（n）」，n = 0 时置灰，n > 0 点开确认步；模式里点一行即切换该题的导出选中，不进详情页；模式外点行照常进详情页。
+- 选中表现：蓝底（沿用 `palette.accentSoft`）＋右端小 ✓（大卡片在原来方框的位置附近、主色圆底白 ✓；紧凑行在行右端 `›` 之后）；大卡片选中时主色加粗边框保留；✓＋蓝底在模式外也显示。
+- 状态：导出模式是列表页 widget 本地 State（`_WrongbookViewState._exportMode`），选择仍在 Notifier 的 `WrongbookState.exportSelected`（Set<String>，按 ID 持有），语义不动：翻页、换筛选、切视图、跨学科不丢；50 道上限复用 `toggleExportSelected`／`checkSelectionCap`（第 51 道拒绝＋“单次最多导出 50 道题”）。
+- 退出语义（本包定）：点「取消」退出模式时保留已选，再进模式还能看到；导出成功（done，含部分成功）后清空选中并退出模式；从确认步取消回来留在模式里。
+- 互斥（本包定）：导出模式与批量模式互斥——进导出模式时退出批量模式（批量勾选清空），进批量模式时退出导出模式（导出已选保留）。
+- 不变：底部汇总条功能（已选几道、学科/文件夹数、跳过信息、展开清单逐个取消、「清除选择」、汇总条「导出」入口）、确认步（版本/文件名）、50 道上限与超限提示、后台盘点/guard、快照语义、A/C 路线、完成界面。Notifier 选择语义、确认步对话框、导出引擎、其他页面未动。
+- key：保留 `export-card-<id>`、`export-row-<id>`、`export-summary-bar`、`export-selected-toolbar`；废 `export-check-<id>`；新增 `export-mode-cancel`（模式里取消）、`export-mode-hint`（模式提示）、`export-mark-<id>`（选中 ✓）。
+- 测试：新增 `test/b17_export_mode_test.dart`（13 项）；`b16_direct_export_test.dart`（12 项）按新交互重写；`b16_export_selection_test.dart` widget 部分 2 项改新交互、Notifier 层 8 项未动；`b16_export_confirm_test.dart`（13 项）未动直接通过；`wrongbook_page_test.dart` SR2-76 与 `b11_6_batch_review_test.dart` 各 1 处批量复选框序号顺移回去（`at(3)`→`at(2)`）。合计 155/155，analyze 限 8 个改动文件干净。
+- 已知注意点（未改，需另定才做）：模式里紧凑行收藏星／缩略图仍走原行为、不切换选中；大卡片点按以 `QuestionSlice` 区域为准（12px 内边距边缘无反应）；模式随页面 State 存活，切目录／书架再回列表仍在模式里。
+
+## D-210 — 十七批 A2：analyze 基线 9 问题清零，只动 b14 sim 测试文件（2026-11-21，Meng 2026-11-21 22:04 批准“小修都修了”）
+
+- 内容：9 个问题全在 `integration_test/b14_sim_*`。4 处 `undefined_getter` 是 `AcceptedCandidate` 误当 `Question` 用（`ocrFigures`／`questionType`／`questionTypeSource`／`ocrStem` 都是 `Question` 的字段），改走 `.question.<字段>`（与 b13 测试同款写法）；其余 5 个是未用 import／零调用点死代码（`_sliceHash`、`checkAllAndNext`），直接删除；删 `_sliceHash` 时随带删因此变未用的 crypto import。lib/ 未动。
+- 结果：修前 `flutter analyze` 9 issues，修后 `No issues found!`，基线归零（协调员独立复核全量 analyze 干净）。相关测试：B 文件 10/10 通过；其余 3 个文件 8 个失败与本次改动无关，见 D-214。
+
+## D-211 — 十七批 A3：Q1 标题草稿拼接，标题后补行尾换行（2026-11-21，Meng 2026-11-21 22:04 批准“小修都修了”）
+
+- 内容：原发现为十四批 Round 2 流 A 附带发现（`'# 标题'` + `'正文 '` 存成 `'# 标题正文 $x$ 尾'`）。根因：标题行行尾换行在解析时被标题行吃掉、保存时无人补回；再解析时后文被标题吞掉，行内公式 `$x$` 变成标题里的字面文本。修法两层：① `question_content.dart` 的 `blocksToMarkdown` 的 `HeadingBlock` 分支在标题后（且后面还有段时）补 `'\n'`；② `StemEditor._draftsToMarkdown` 保存时对末行是标题行的文字草稿段补尾换行（仅后面还有段时；不动编辑器显示文本）。标题在末尾时不补尾换行。未动解析器与渲染层。
+- 测试：新增 `test/b17_a3_title_draft_test.dart`（5 项）；收紧 `b14_win11_r2_q1_composite_card_test.dart` 标题断言为等值拼回（旧 `contains` 断言对 bug 输出也能通过，正是漏网原因）。新测试 5/5（修前 3 项失败复现与原发现逐字一致）、Q1 既有 15/15、相关既有 127/127，analyze 限改动文件干净。
+- 观察（未修，需另定）：反方向——用户在编辑器里主动删掉标题卡前一段的尾换行时，标题会与前文拼在同一行、标题标记丢失；是否在保存时同样 guard，属新增行为，另定。
+
+## D-212 — 十七批 A4：Word 完成界面页数用内容估算、标「约 N 页（估计值）」（2026-11-21，Meng 2026-11-21 22:04 批准“小修都修了”）
+
+- 内容：Word 实测页数生成时未知（D-203/W-11 仍成立：自然分页、无分页规划、`WordExportResult` 无 totalPages；docx_creator 1.4.0 无任何分页／页数 API；用 PDF 管线复算等于再生成一次 PDF，不可取）。完成界面新增估计行「约 N 页（估计值）」，口径见 `lib/services/word_export/word_page_estimate.dart` 文件头：每页可用高 727.81 pt（PDF 实测可用高同值，偏保守）；文本段可跨页、图片段不可拆分、答案区前分页符；文本行数字宽模型估算（汉字 1 em、ASCII 0.5 em、空格 0.25 em，行高字号 × 1.5）；图片段间距按 0、hr 按 11 pt；不考虑孤行控制／字体回退／打印机差异，实际页数可能上下浮动 1 页左右。
+- 不变：`ExportCompletionRow.pageCount` 对 Word 行仍为 null；原有「共 M 道题 · 页数以 Word 打开为准」保留；PDF 行只用实测页数，不显示估计；`reportSummaryLines` 不含页数行；估计值缺失（null）时不显示估计行。
+- 实现：估计值由 `buildWordContent` 建文档时同步喂入 `WordPageEstimator`（纯加法，不影响文档），经 `WordContentResult` → `WordExportResult` → `ExportCompletionRow` 传到完成界面；导出引擎、确认步其他部分均不动。
+- 测试：新增 `test/b17_a45_word_completion_test.dart` 15 项通过；b16 指定两文件 20/20、其余 Word 相关 56/56 通过；analyze 限 7 个改动文件干净。Win11 真机复核待做：在真实 Word 里对比「约 N 页」与实际页数（单题 C、20 道 C、长切片 A、含答案版），系统性偏差大时再调口径。
+
+## D-213 — 十七批 A5：Word 完成界面提示 Ctrl+A 再按 F9 更新页码（2026-11-21，Meng 2026-11-21 22:04 批准“小修都修了”）
+
+- 内容：Word 页脚 PAGE/NUMPAGES 字段无缓存值（D-196），不更新字段的查看器会显示空白；完成界面在 Word 文件已交付时加一行提示，文案逐字为「在 Word 里按 Ctrl+A 再按 F9 更新页码」，不自行发挥。
+- 范围：只在 Word 完成行、且已交付时显示；PDF 完成行不显示；Word 未交付、整单失败／取消时不显示。
+- 测试：见 D-212 同文件 widget 组（4 项）。
+
+## D-214 — 十七批 A2 附带：b14 sim 测试 8 个失败暂缓，另立包（2026-11-21，协调员记）
+
+- 内容：A2 清零 analyze 后，被改的 4 个 `integration_test/b14_sim_*` 文件跑出 8 个失败，全部与 A2 改动无关、是十四批后 lib 变化导致的既存回归，十四批时这些文件全绿（A 7/7、B 10/10、C 7/8、D1 18/18）。A：4 败（3 个是 `user_version == 5` 断言 vs 当前 schema v6，1 个是恢复完成提示文案未出现）；C：2 败（#7b 内容序列期望 `RichText` 实际是 `Padding`，#9 期望文案「位置未确认」0 命中）；D1：2 败（#17 会话按钮 finder 为空致 RangeError，#18 标签未确认提示文案 0 命中）。A2 改动只删零引用代码、读同一字段，不可能导致这些失败。
+- 处理：不在十七批修，另立包（b14 sim 回归：schema v6 断言更新＋恢复／渲染／复习页行为复核）。注意 `integration_test/` 不在 `flutter test` 全量范围内，这 8 个失败不影响十七批全量结果；复测前先等并行包落定（C #7b/#9 与 D1 #17/#18 可能与并行改动有关）。日志：`~/workspace/batch17-work/b17_a2_sim_{a,c,d1}_run.log`。

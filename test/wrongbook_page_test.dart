@@ -2474,7 +2474,8 @@ void main() {
       expect(find.text('共 12 道 · 第 2 / 2 页'), findsOneWidget);
       await tester.tap(find.text('批量操作'));
       await tester.pumpAndSettle();
-      // 第 0 个 Checkbox 是批量条的全选框，第 1、2 个是第 2 页的两道题。
+      // 第 0 个 Checkbox 是批量条的全选框；每行只剩批量复选框
+      //（十七批 P2：导出方框已废），第 1、2 个是第 2 页两道题的批量框。
       await tester.tap(find.byType(Checkbox).at(1));
       await tester.pumpAndSettle();
       await tester.tap(find.byType(Checkbox).at(2));
