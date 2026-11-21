@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -17,12 +18,14 @@ import '../../services/pdf_export/export_versions.dart';
 import '../../services/pdf_export/formula_rasterizer.dart';
 import '../../services/pdf_export/pdf_delivery.dart';
 import '../../services/pdf_export/pdf_export_service.dart';
+import '../../services/word_export/word_delivery.dart';
+import '../../services/word_export/word_export_service.dart';
 import '../../state/repository_provider.dart';
 import '../../state/wrongbook_notifier.dart';
 import '../../theme/app_theme.dart'; // 转出 design_tokens，本文件不再单引它。
 import '../../widgets/uikit.dart';
 import '../../widgets/widgets.dart';
-import 'export_wizard.dart';
+import 'export_confirm.dart';
 
 part 'wrongbook_cover.dart';
 part 'wrongbook_directory.dart';
@@ -61,6 +64,7 @@ class WrongbookPage extends StatefulWidget {
     this.onGoOrganize,
     required this.onOpenDetail,
     required this.onGoReview,
+    this.exportControllerFactory,
   });
 
   final QuestionRepository repo;
@@ -79,6 +83,10 @@ class WrongbookPage extends StatefulWidget {
   final VoidCallback? onGoOrganize;
   final Future<void> Function(Question q, List<String> orderIds) onOpenDetail;
   final void Function({String? subjectId}) onGoReview;
+
+  /// 十六批 B（D-190）：导出流程控制器的测试注入口（widget 测试传
+  /// 桩控制器，避免碰真实数据库；生产传 null，走下面的真实构建）。
+  final ExportFlowController Function()? exportControllerFactory;
 
   @override
   State<WrongbookPage> createState() => _WrongbookPageState();
@@ -105,6 +113,7 @@ class _WrongbookPageState extends State<WrongbookPage> {
         onGoOrganize: widget.onGoOrganize,
         onOpenDetail: widget.onOpenDetail,
         onGoReview: widget.onGoReview,
+        exportControllerFactory: widget.exportControllerFactory,
       ),
     );
   }
@@ -118,6 +127,7 @@ class _WrongbookView extends ConsumerStatefulWidget {
     this.onGoOrganize,
     required this.onOpenDetail,
     required this.onGoReview,
+    this.exportControllerFactory,
   });
 
   final VoidCallback onOpenHome;
@@ -126,6 +136,7 @@ class _WrongbookView extends ConsumerStatefulWidget {
   final VoidCallback? onGoOrganize;
   final Future<void> Function(Question q, List<String> orderIds) onOpenDetail;
   final void Function({String? subjectId}) onGoReview;
+  final ExportFlowController Function()? exportControllerFactory;
 
   @override
   ConsumerState<_WrongbookView> createState() => _WrongbookViewState();
@@ -152,6 +163,32 @@ class _WrongbookViewState extends ConsumerState<_WrongbookView> {
   /// 页面 dispose 时释放最后一个。
   TextEditingController? _batchAddTagCtrl;
 
+  // ---------- 十六批 B：错题本直接勾选导出（D-190） ----------
+
+  /// 导出流程控制器（懒建；测试注入口优先，见
+  /// [WrongbookPage.exportControllerFactory]）。
+  ExportFlowController? _exportController;
+
+  /// 公式栅格化器（打开确认步时创建 + 挂载，收尾时卸载；只在
+  /// 生成时用到，后台盘点不需要它）。
+  FormulaRasterizer? _exportRasterizer;
+
+  /// 汇总条展开 / 收起（页面本地状态，不进 Provider）。
+  bool _exportSummaryExpanded = false;
+
+  /// 汇总条后台盘点的防抖定时器。
+  Timer? _exportInventoryTimer;
+
+  /// 汇总条后台盘点的防抖序号（只认最新一次的结果，旧结果丢弃）。
+  int _exportInventorySeq = 0;
+
+  /// 汇总条后台盘点的最近一次结果（只在与当前勾选一致时展示）。
+  ExportInventory? _lastExportInventory;
+
+  /// [_lastExportInventory] 对应的勾选 ID（顺序同
+  /// [_exportSelectedQuestions]）。
+  List<String>? _lastExportInventoryIds;
+
   @override
   void dispose() {
     _searchCtrl.dispose();
@@ -159,6 +196,8 @@ class _WrongbookViewState extends ConsumerState<_WrongbookView> {
     _newFolderCtrl.dispose();
     _renameCtrl.dispose();
     _batchAddTagCtrl?.dispose();
+    _exportInventoryTimer?.cancel();
+    _exportRasterizer?.detach();
     super.dispose();
   }
 
@@ -195,34 +234,60 @@ class _WrongbookViewState extends ConsumerState<_WrongbookView> {
     _n.openShelf();
   }
 
-  // ---------- 十五批 M3：新建导出单（D-168/D-169） ----------
+  // ---------- 十六批 B：错题本直接勾选导出（D-190） ----------
 
-  /// 打开导出向导（书架页顶栏「新建导出单」入口）。
-  ///
-  /// 默认路径 = 打开瞬间的当前筛选结果（filteredAll() 快照）；向导内
-  /// 的范围 / 挑题 / 确认只用这份快照，生成过程中用户改筛选 / 改题
-  /// 均不影响本次导出。公式栅格化器在向导打开时挂载、收尾时卸载；
-  /// 生成在后台跑，面板关闭不取消（会话终态时再次弹出完成界面）。
-  void _openExportWizard() {
-    final st = _sr;
-    final base = st.filteredAll();
-    if (base.isEmpty) {
-      _snack('先筛选出题目');
+  /// 勾选的题目（filteredAll() 顺序在前，其余——换筛选后不在当前
+  /// 结果里的已勾选题——按 createdAt 降序、id 升序排在后面；
+  /// 题号按此顺序编）。
+  List<Question> _exportSelectedQuestions(WrongbookState st) {
+    final order = st.filteredAll().map((q) => q.id).toList();
+    final qs = st.questions
+        .where((q) => st.exportSelected.contains(q.id))
+        .toList();
+    qs.sort((a, b) {
+      final ia = order.indexOf(a.id);
+      final ib = order.indexOf(b.id);
+      final c =
+          (ia < 0 ? 1 << 20 : ia).compareTo(ib < 0 ? 1 << 20 : ib);
+      if (c != 0) return c;
+      // 确定性次键：Dart List.sort 不保证等键稳定，筛选外已选题
+      // 共用键 1 << 20，相对顺序可能变化；按 createdAt 降序、
+      // 再按 id 升序，保证全序（题号顺序可复现）。
+      final byTime = b.createdAt.compareTo(a.createdAt);
+      if (byTime != 0) return byTime;
+      return a.id.compareTo(b.id);
+    });
+    return qs;
+  }
+
+  /// 列表行勾选框 / 汇总清单取消钮共用：点选第 51 道时返回拒绝，
+  /// 页面弹 SnackBar；其余情况静默成功并刷新后台盘点。
+  void _toggleExportSelected(String id) {
+    final msg = _n.toggleExportSelected(id);
+    if (msg != null) {
+      _snack(msg);
       return;
     }
-    final rasterizer = FormulaRasterizer()..resetCancellation();
-    rasterizer.attach(context);
+    _scheduleExportInventoryRefresh();
+  }
+
+  /// 汇总清单里逐个取消勾选。
+  void _removeExportSelected(String id) {
+    _n.removeExportSelected(id);
+    _scheduleExportInventoryRefresh();
+  }
+
+  /// 导出流程控制器（懒建；测试注入口优先，生产走真实构建）。
+  ExportFlowController _ensureExportController() {
+    final existing = _exportController;
+    if (existing != null) return existing;
+    final factory = widget.exportControllerFactory;
+    if (factory != null) {
+      return _exportController = factory();
+    }
     const source = DriftExportQuestionSource();
     final delivery = PdfDeliveryService();
-    final subjectsById = {for (final s in st.subjects) s.id: s};
-    final sortText = switch (st.sort) {
-      'old' => '时间旧→新',
-      'subj-asc' || 'subject' => '学科升序',
-      'subj-desc' => '学科降序',
-      'status-asc' => '错因状态升序',
-      'status-desc' => '错因状态降序',
-      _ => '时间新→旧',
-    };
+    final wordDelivery = WordDeliveryService();
     final controller = ExportFlowController(
       computeInventory:
           ({
@@ -268,6 +333,13 @@ class _WrongbookViewState extends ConsumerState<_WrongbookView> {
             String? folderName,
             bool excludeLowDpi = false,
           }) {
+            final rasterizer = _exportRasterizer;
+            if (rasterizer == null) {
+              throw StateError('公式栅格化器未挂载');
+            }
+            final subjectsById = {
+              for (final s in _sr.subjects) s.id: s,
+            };
             final service = PdfExportService(
               source: source,
               rasterizer: rasterizer,
@@ -293,24 +365,194 @@ class _WrongbookViewState extends ConsumerState<_WrongbookView> {
           },
       deliverAll: ({required List<VersionDeliveryRequest> requests}) =>
           delivery.deliverAll(requests: requests),
+      // 十六批 C（D-194）：Word 生成 + 交付，与 PDF 同一套
+      // source / rasterizer / sourceTextFor / subjectName /
+      // excludeLowDpi（只换服务类与交付类）。
+      generateWord:
+          ({
+            required List<String> ids,
+            required List<ExcludedQuestion> excluded,
+            required String filterText,
+            required String sortText,
+            required ExportVersionSelection versions,
+            required int circledCount,
+            required ExportCancellationToken token,
+            void Function(int done, int total, String label)? onProgress,
+            String subjectName = '多学科',
+            String? folderName,
+            bool excludeLowDpi = false,
+          }) {
+            final rasterizer = _exportRasterizer;
+            if (rasterizer == null) {
+              throw StateError('公式栅格化器未挂载');
+            }
+            final subjectsById = {
+              for (final s in _sr.subjects) s.id: s,
+            };
+            final service = WordExportService(
+              source: source,
+              rasterizer: rasterizer,
+              subjectName: subjectName,
+              excludeLowDpi: excludeLowDpi,
+              sourceTextFor: (record) => formatExportSourceText(
+                subjectName:
+                    subjectsById[record.subjectId]?.name ?? '',
+                folderNames: record.folderNames,
+                examName: record.examName,
+              ),
+            );
+            return service.generateVersions(
+              ids: ids,
+              excluded: excluded,
+              filterText: filterText,
+              sortText: sortText,
+              versions: versions,
+              circledCount: circledCount,
+              token: token,
+              onProgress: onProgress,
+            );
+          },
+      deliverWord:
+          ({
+            required Uint8List docxBytes,
+            required String fileName,
+            required int expectedImageCount,
+          }) => wordDelivery.deliver(
+            docxBytes: docxBytes,
+            fileName: fileName,
+            expectedImageCount: expectedImageCount,
+          ),
       openFile: delivery.openPdf,
       openFolder: delivery.openContainingFolder,
       shareFile: (path) => delivery.sharePdf(path),
     );
-    final causeNames = <String>{
-      ...ErrorTypes.fixed,
-      for (final q in base) ...q.allCauses,
-    }.toList();
-    final session = ExportWizardSession(
+    return _exportController = controller;
+  }
+
+  /// 汇总条展开 / 收起切换（放页面本体里：part 文件的 extension
+  /// 方法里调 setState 会触发 invalid_use_of_protected_member）。
+  void _toggleExportSummaryExpanded() {
+    setState(() {
+      _exportSummaryExpanded = !_exportSummaryExpanded;
+    });
+  }
+
+  /// 汇总条的跳过信息：勾选变化后防抖 300ms 跑一次后台盘点（只读
+  /// 盘点，不写库、不生成）。结果只在与当前勾选一致时展示；失败
+  /// 时静默——确认步会重新盘点并展示错误，不在这里打扰用户。
+  void _scheduleExportInventoryRefresh() {
+    _exportInventoryTimer?.cancel();
+    final ids = _exportSelectedQuestions(_sr).map((q) => q.id).toList();
+    if (ids.isEmpty) {
+      _lastExportInventory = null;
+      _lastExportInventoryIds = null;
+      return;
+    }
+    final seq = ++_exportInventorySeq;
+    _exportInventoryTimer = Timer(const Duration(milliseconds: 300), () async {
+      if (seq != _exportInventorySeq || !mounted) return;
+      try {
+        final controller = _ensureExportController();
+        final inv = await controller.computeInventory(
+          ids: ids,
+          excluded: const [],
+          circledCount: _sr.filteredAll().length,
+        );
+        if (seq != _exportInventorySeq || !mounted) return;
+        setState(() {
+          _lastExportInventory = inv;
+          _lastExportInventoryIds = ids;
+        });
+      } catch (_) {
+        if (seq == _exportInventorySeq && mounted) {
+          setState(() {
+            _lastExportInventory = null;
+            _lastExportInventoryIds = null;
+          });
+        }
+      }
+    });
+  }
+
+  /// 汇总条的跳过信息文案（后台盘点结果与当前勾选一致时才展示，
+  /// 否则显示“正在盘点…”；未勾选时不展示跳过信息）。
+  String? _exportSkipSummary(List<Question> selectedQs) {
+    if (selectedQs.isEmpty) return null;
+    final ids = selectedQs.map((q) => q.id).toList();
+    final inv = _lastExportInventory;
+    if (inv == null ||
+        _lastExportInventoryIds == null ||
+        !listEquals(_lastExportInventoryIds, ids)) {
+      return '正在盘点是否会被跳过…';
+    }
+    if (inv.guard.isHardReject) return '内容过重，无法导出';
+    if (inv.route == ExportRoute.c) {
+      return inv.skippedCount > 0
+          ? '将跳过 ${inv.skippedCount} 道'
+          : '全部可印，无跳过';
+    }
+    return inv.lowDpi.isNotEmpty
+        ? '低于清晰度阈值 ${inv.lowDpi.length} 道'
+        : '全部可印，无跳过';
+  }
+
+  /// 打开导出确认步（列表页工具栏「导出」与汇总条「导出」共用入口）。
+  ///
+  /// 打开瞬间拍一份按 filteredAll() 顺序排的全集快照（快照取自
+  /// exportSelected 全集，filteredAll() 只定顺序）；确认步内的
+  /// 盘点 / 生成只用这份快照，生成过程中用户改筛选 / 改题均不影
+  /// 响本次导出。公式栅格化器在打开时挂载、收尾时卸载；生成在后
+  /// 台跑，面板关闭不取消（会话终态时再次弹出完成界面）。生成
+  /// 完成（done，含部分成功）后清空本次勾选与汇总盘点。
+  void _openExportConfirm() {
+    final st = _sr;
+    final selectedQs = _exportSelectedQuestions(st);
+    if (selectedQs.isEmpty) {
+      _snack('先在列表里勾选要导出的题目');
+      return;
+    }
+    _exportRasterizer ??= FormulaRasterizer()..resetCancellation();
+    _exportRasterizer!.attach(context);
+    final controller = _ensureExportController();
+    final subject = st.subjectId == null
+        ? null
+        : st.subjectOf(st.subjectId!);
+    final folder = st.folderId == null
+        ? null
+        : st.folders.firstWhere(
+            (f) => f.id == st.folderId!,
+            orElse: () => Folder(
+              id: st.folderId!,
+              name: '',
+              subjectId: st.subjectId ?? '',
+            ),
+          );
+    final subjectName = subject?.name ?? '多学科';
+    final folderName = folder != null && folder.name.isNotEmpty
+        ? folder.name
+        : null;
+    final filterParts = <String>[];
+    if (subject != null) filterParts.add('学科：${subject.name}');
+    if (folderName != null) filterParts.add('文件夹：$folderName');
+    final sortText = switch (st.sort) {
+      'old' => '时间旧→新',
+      'subj-asc' || 'subject' => '学科升序',
+      'subj-desc' => '学科降序',
+      'status-asc' => '错因状态升序',
+      'status-desc' => '错因状态降序',
+      _ => '时间新→旧',
+    };
+    final session = ExportConfirmSession(
       controller: controller,
-      input: ExportWizardInput(
-        questions: base,
+      input: ExportConfirmInput(
+        questions: selectedQs,
         subjects: st.subjects,
         folders: st.folders,
-        exams: st.exams,
-        kps: st.kps,
-        causeNames: causeNames,
         sortText: sortText,
+        filterText: filterParts.isEmpty ? '全部题目' : filterParts.join('；'),
+        subjectName: subjectName,
+        folderName: folderName,
+        circledCount: st.filteredAll().length,
       ),
       onOpenQuestion: (questionId) {
         final q = st.questions
@@ -319,13 +561,22 @@ class _WrongbookViewState extends ConsumerState<_WrongbookView> {
         if (q == null) return;
         Navigator.of(context).pop();
         unawaited(
-          widget.onOpenDetail(q, base.map((e) => e.id).toList()),
+          widget.onOpenDetail(q, selectedQs.map((e) => e.id).toList()),
         );
       },
-      onFinished: rasterizer.detach,
+      onFinished: () {
+        if (controller.phase == ExportFlowPhase.done) {
+          _n.clearExportSelected();
+          _lastExportInventory = null;
+          _lastExportInventoryIds = null;
+        }
+        _exportRasterizer?.detach();
+        _exportRasterizer = null;
+      },
     );
     session.show(context);
   }
+
 
   void _snack(String msg, {String? actionLabel, VoidCallback? onAction}) {
     ScaffoldMessenger.of(context).showSnackBar(

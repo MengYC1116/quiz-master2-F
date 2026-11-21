@@ -1952,3 +1952,101 @@ unavailable），kill -9 后新进程可取锁——与实现依据一致。
 - 内容：`ocr_content_snapshot.dart` 的图块裁剪调用处（`cropFigurePng` 之后），对裁剪结果加 `capPngTo300Dpi`（与公式原图裁剪同款）。显示宽 = min(内容宽 510.2 pt，裁剪宽按 300 DPI 换算的自然宽），与 guard 的 `_figureDisplaySize` 同口径；解不出尺寸按裁剪失败处理（图块略过、PARTIAL 降级，与既有裁剪失败口径一致）。只改导出图块裁剪调用处；`figure_files.dart:128` 的应用图库存储调用处不动（改它会改变已存图块质量，guard 低估只涉及导出临时副本）。
 - 依据：GPT 终审 C-13 经核实成立——`cropFigurePng` 是纯 `copyCrop`，guard 按显示宽计入，裁剪宽超 2126 px 时低估可达约 2 倍；guard 实际值从图块临时文件读尺寸计入，故降采样后计入像素数 = 实际嵌入像素数。
 - 测试：`test/b15_fix_c13_figure_cap_test.dart` 3 项（3000×600 裁剪 → 2126×425；1500×500 不变；恰好 2126×400 不变）。
+
+---
+
+## D-188 — 十六批 PDF 缺陷修复：_FixedSizeBox 补 paint + 行内公式降级标记汇总（2026-11-21，Meng 批准修）
+
+- 内容：`c_content_builder.dart` 的 `_FixedSizeBox` 只重写了 `layout()`、没重写 `paint()`，pdf 包的 `SingleChildWidget` 不重写 `paint()`（`Widget.paint` 默认空操作），子件 `pw.Image` 的 `paint` 从未执行 → C 路线全部公式/配图静默丢失（十五批 `20261121.pdf` pdfimages 0 张的根源，与数据无关、必现；A 路线用 `pw.SizedBox` 不受影响）。补 `paint` 重写，照抄 `ConstrainedBox.paint`：`super.paint(context); paintChild(context);`。顺带修 `_collectResults()`：只扫 `CPartImage` 时，只有行内公式用了原图/被缩小的题会误判 COMPLETE 而非 PARTIAL——`CInlineFormula` 新增 `isOriginal` / `shrunk` 字段（默认 false；`_convertCQuestion` 行内分支按 `FormulaRasterResult.isOriginal` / `shrunk` 填，与独立公式的 `CAtomicBlock` 同口径），`text_pagination.dart` 的 `groupForLines` 重建行内公式时透传两字段（超长题拆分不丢标记），`_collectResults` 同时汇总 `CPartRichText` 的行内公式标记。
+- 依据：`PDF-DEFECT-ROOT-CAUSE.md` §1（代码追踪 + PDF 取证锁定；复现未完成不影响修法，修法本身即运行验证）。
+- 测试：`test/b16_d188_fixed_size_box_test.dart` 4 项——含行内公式 + 独立公式 + 配图的 C 文档 `save()` 后 `/Subtype/Image` 计 6（每张图一个图片 XObject + 一个 SMask XObject；另按宽度断言三张图各在；修前为 0，反向验证已做：临时去掉 paint 重写时计数为 0）；只有行内公式为原图 → PARTIAL；行内公式被缩小 → `hasShrunkFormula` 真、状态仍 printed；超长题拆分后原图标记不丢 → PARTIAL。注意：pdf 包写字典时名字值前不加空格，实际字节是 `/Subtype/Image`（不是 `/Subtype /Image`）；内容流为 Flate 压缩，故不数 `Do`。
+
+## D-189 — 十六批 PDF 缺陷修复：题干含选项时不重复追加选项块（2026-11-21，Meng 批准修）
+
+- 内容：`assembleCMarkdown()` 无条件把 `option_contents` 追加到题干后，题干已含内嵌选项 + `option_contents` 非空并存的遗留行会把选项印两遍。修法选逐标签去重（比整块跳过稳：题干只含部分标签时不丢其余选项）：新增共用口径 `_stemOptionLabels()`——对冻结后的题干跑 `splitStem()`，autoSplit 时返回其 `optionLabels` 集合，其余状态返回空集；`assessCPrintability()` 与 `assembleCMarkdown()` 共用它。`assessCPrintability()`：题干含全部非空选项标签 → 视同 `inlineInStem` + 标 `optionSplitUncertain`（可印，走纠错入口）；只含部分标签 → 保持原 `available`/`uncertain` 判定。`assembleCMarkdown()`：`available`/`uncertain` 时跳过题干里已有的标签，只追加其余标签；全部标签都已在题干时不追加。检测只读冻结后的 `ocrStem`，不回写、不改库（D-177）；ambiguous / notSplit 时不去重（宁可重复也不丢选项）。`_stemContainsOptions()`（NULL 情形 (a)）改为复用 `_stemOptionLabels().isNotEmpty`，行为不变。
+- 默认口径（Meng 未定，暂按此做）：`nonEmpty == 1` 维持现状（可印 + `optionSplitUncertain`）；OCR 错字接受现状，不补 M1-DESIGN §8 的两个标记（LaTeX 不平衡 / 已知弱点命中）。
+- 测试：`test/b16_d189_stem_options_test.dart` 5 项——题干含全部选项 → 每选项恰好出现一次、`inlineInStem` + `optionSplitUncertain`、Markdown 等于题干；题干只含 A/B → A/B 只在题干出现、C/D 追加一次；题干无选项 → 照常追加一次（既有行为不变）；端到端快照块序列每选项恰好一次；锁定测试：`option_contents` 四项全为公式字符串时 `nonEmpty` 计为 4、判定 `available`（防将来把“公式不算内容”误修进去）。反向验证已做：临时去掉 assemble 去重时部分标签用例里选项出现 2 次。
+---
+
+## D-190 — 十六批 B：导出选法改错题本直接勾选，废三步向导（2026-11-21，Meng 2026-11-21 17:42 定，17:43 两次补充）
+
+- 内容：D-168（方案 4 新建导出单向导）与 D-169（入口在书架页顶栏）作废，由本条取代。选题改到错题本列表页直接勾选：列表每行（大卡片 / 紧凑行）加常驻勾选框，勾完点工具栏「导出」进确认步；书架页顶栏「新建导出单」入口删除，`export_wizard.dart`（向导对话框 / 输入 / 会话）与 `export_scope.dart`（范围筛选 `ExportScopeFilter` / `applyExportScopeFilter` / 向导挑题 `ExportSelection`）删除，无死入口。
+- 选择状态：`WrongbookState` 新增 `exportSelected`（Set<String>，按 ID 持有），与批量操作的 `selected` 分开——批量删除 / 移文件夹等不动它；翻页、换筛选、切视图、跨学科都不丢；只在题目从库里消失时由 `load()` 收敛，导出成功（done，含部分成功）后由页面清空。点选走 `toggleExportSelected`，复用 `checkSelectionCap`：点选第 51 道拒绝 + 提示“单次最多导出 50 道题”，选择不变；确认步、流程入口（`ExportFlowController.start`）、快照工厂的超限阻断原样保留（M1-DESIGN §2 第 2–4 点不动）。
+- 汇总条：列表页底部常驻（滚动区包进 Expanded，汇总条固定在下；已归档视图不画）。折叠只剩数字行“已选 N / 50 道 · X 个学科 · Y 个文件夹 · 跳过信息”；点开是清单（题号按勾选顺序编 + 题干开头单行省略），每行 ✕ 逐个取消勾选，另有“清除选择”与“导出”按钮。勾过的行一直高亮（紧凑行浅底、大卡片浅底 + 主色加粗边框）。跳过信息来自后台盘点：勾选变化后防抖 300ms 调流程控制器的 `computeInventory`（只读盘点，不写库、不生成），结果只在与当前勾选一致时展示（C 路线“将跳过 N 道”/“全部可印，无跳过”，A 路线“低于清晰度阈值 N 道”/“全部可印，无跳过”，guard 硬拒绝时“内容过重，无法导出”，盘点中显示“正在盘点是否会被跳过…”）；后台盘点失败静默，确认步重新盘点并展示错误。
+- 确认步：从向导第 3 步抽出为 `ExportConfirmDialog`（+ `ExportConfirmInput` / `ExportConfirmSession`，完成界面 `ExportCompletionView` 原样搬入），展示口径与生成流程不变：已选数 / 范围、路线明示、版本（练习版 / 答案版）、纸张 A4 纵向固定、文件名、跳过 / 可疑 / 低清晰度清单、排除低于阈值勾选、guard 软警告 / 硬拒绝、跳过二次确认、进度 / 取消、完成界面（逐份状态 + 报告摘要 + 警告清单 + 打开 / 分享）。确认步输入在打开瞬间按 filteredAll() 顺序拍快照，生成中改筛选 / 改题不影响本次导出。
+- Word 接入点：`export_versions.dart` 新增 `ExportFormat` 枚举（pdf 可用 / word 不可用）；确认步“导出格式”行只留位置（PDF 可选、Word 置灰“即将推出”），不接任何生成逻辑，Word 由 C 包实现（见 `batch16-work/spikes/WORD-SPIKE.md`，推荐 docx_creator）。
+- 测试：新文件 `test/b16_export_selection_test.dart`（Notifier 层：勾选 / 取消、上限拒绝、清除、逐个取消、换筛选不丢、load 收敛、与批量互不干扰，8 项）、`test/b16_export_confirm_test.dart`（确认步：信息完整、格式接入点、C/A 路线、文件名、guard 软 / 硬、跳过二次确认、超限阻断、进度 / 取消、完成 / 部分成功 / Android 分享 / 整单失败，13 项）、`test/b16_direct_export_test.dart`（列表页：勾选与汇总数、高亮、大卡片勾选、清单展开与逐个取消、学科 / 文件夹数、跳过信息、翻页 / 换筛选不丢、50 道上限拒绝、工具栏与汇总条导出入口全流程，11 项）；旧测试：`b15_m3_wizard_test.dart`、`b15_m3_scope_test.dart` 删除（确认步部分已移植进 b16 确认步测试），`b15_m3_shelf_test.dart` 改写为断言向导入口已废；既有测试调整（行为变更所致，非放宽）：`wrongbook_page_test.dart` SR2-76 与 `b11_6_batch_review_test.dart` 各一处按序号点的批量复选框顺移（每行多了一个导出勾选框，批量框序号 2→3）。
+- 注意（实现中发现、非本包范围）：Dart `List.sort` 在 51 个全相等比较器下不保序（实测：同 createdAt 的 51 道题排后 q0 被换到后面，q17 顶到首位；12 道以下保序）。这是 `filteredAll()` 既有行为，本包不动排序；B 包 50 道上限测试用不同 createdAt 让“时间新→旧”顺序确定。
+- 依据：Meng 2026-11-21 17:42 定（导出选法改直接勾选，确认步保留），17:43 两次补充（勾选时须让用户知道具体选了哪几道题；显示选了多少道题等汇总信息）。
+---
+
+## D-191 — 十六批 C：Word 导出选库 docx_creator 1.4.0（2026-11-21，设计定稿，见 WORD-DESIGN.md §1/§8）
+
+- 内容：选 `docx_creator ^1.4.0`（lock 锁定 1.4.0），不选 docs_gee 1.5.1。依据：spike 实测——docx_creator 唯一能在 run 级写 `w:eastAsia="Noto Sans SC"`（docs_gee 中文回退衬线体）、唯一能出 A4（docs_gee 实测 Letter）；字体可嵌入（`addFont()` 实测合规，v1 不用）；30 天下载 19,863 vs 937，35 个版本。许可证实质 MIT（已读包内 LICENSE 原文，Copyright (c) 2024 Ali Hassan；pub.dev `license:unknown` 标签系检测器被 LICENSE 附加的第三方段落干扰，不作为否决项）；并留意后续版本是否修掉该标签。docs_gee 的 MIT 干净（pub.dev 识别为 `license:mit`），但干净解决不了上面两项硬需求不通过。
+- 依赖变化：`pubspec.yaml` 加 `docx_creator: ^1.4.0`；lock 只加 docx_creator 闭包 6 个包（docx_creator 1.4.0 + csslib / equatable / html / markdown / pointycastle），0 删、0 改版，150 → 156（W-1）。
+
+## D-192 — 十六批 C：12 个直接依赖全量引入，不部分引用、不 fork（2026-11-21，设计定稿）
+
+- 内容：pub 无部分引用机制；用不上的 6 个（`markdown` / `html` / `http` / `pointycastle` / `web` + `image` 未用部分）只进 lockfile，tree-shaking 不进二进制；`flutter pub get` 后核对 lock 变化只含 docx_creator 闭包；解析冲突时停下报协调员，不得自行升级已有依赖、不得用 `dependency_overrides`。
+
+## D-193 — 十六批 C：字体只指名、不嵌入（默认）（2026-11-21，设计定稿；协调员 §9 裁决 3：v1 不做字体嵌入开关、不嵌入）
+
+- 内容：全文 run 级三槽同名 `Noto Sans SC`（`w:rFonts` 的 ascii / hAnsi / eastAsia 同名，`DocxFont.family` 实测）；默认不调 `addFont()`，单文件不 +6.6 MB；用户机器无此字体时由 Word 自身回退，文档侧不指定回退字体、不埋第二字体名；嵌入开关 v1 不做，嵌入须先解决子集化、由 Meng 单独定。完成界面摘要行明示“字体未嵌入：在未安装 Noto Sans SC 的电脑上打开时，Word 会以替用字体显示。”
+
+## D-194 — 十六批 C：Word 复用 PDF 内容管线，不另起一套（2026-11-21，设计定稿）
+
+- 内容：快照（`ExportSnapshot.fromSelection`）→ 可印判定（`assessCPrintability` 结果）→ 去重后组装（`assembleCMarkdown` 的块序列产物）→ guard（`ContentGuard`）→ 50 道上限，全部复用；Word 只新增快照→docx 翻译层（`lib/services/word_export/`）与编排胶水；不得新增 `WordSnapshot` / `WordGuard` 等平行模型。文件名规则复用 `export_filename.dart`（不另建 `word_file_name.dart`，一处规则少漂移）：`buildExportFileName` 加 `ExportFormat format = ExportFormat.pdf`，`validateExportFileName` 加 `{ExportFormat? format}`（null → PDF-only，现有测试与行为不变）。
+- 实现偏差（报协调员追认）：设计 §2.4 的 `buildWordContent` 签名（`snapshot` / `answersById` / `versions`）装不下栅格化后的公式位图、A 路线增强字节、来源行数据、题型——这些都不在快照上（公式位图是快照后栅格化才产出；来源行要记录里的学科名；题型不在快照条目上）。只加可选参数，不动必需签名：`subjectName` / `recordsById` / `sourceTextFor` / `formulaVerdicts` / `aPrepared`。
+
+## D-195 — 十六批 C：Word 文档几何与字号（2026-11-21，设计定稿）
+
+- 内容：A4 纵向、页边距 15 mm（850 twips）、内容宽 510.2 pt；题号 13 加粗、正文/选项 11、页眉页脚/来源行 10、行距 1.5（`w:line` 360）；与 PDF M1 §7 同款初值。页眉复用 `PdfExportHeaderInfo.line`（错题本 · 学科≤30 字 · 日期）；页脚“第 PAGE / NUMPAGES 页”。交付复用 `PdfDeliveryService`（设计 §5.3 抽取条款：`deliver` 族加可选 `validator` / `dialogTitle` / `includePageCount`，默认值保持 PDF 行为不变；不复制落盘逻辑），Word 校验器为 `defaultDocxFileValidator`（PK 魔数 + `[Content_Types].xml` + `word/document.xml` + 图片部件数一致；纯 Dart 中央目录解析，不引 archive——archive 只是 dev_dependency，生产库不得 import）。
+
+## D-196 — 十六批 C：页脚「第 x / y 页」用 PAGE + NUMPAGES 字段，无缓存值、接受现状（2026-11-21，设计定稿；协调员 §9 裁决 1）
+
+- 内容：docx_creator 字段结构无缓存值，不更新字段的查看器会显示空白；Win11 Word 打开即更新字段（LibreOffice 已实证），故 v1 不补缓存值；Win11 真机复核（W-V-05）失败时的 fallback 是完成界面提示“按 Ctrl+A 后按 F9 更新域”，不补占位缓存值（1/1 比空白更误导）。
+
+## D-197 — 十六批 C：练习版与答案版为一份 `.docx` 内的两部分（2026-11-21，设计定稿）
+
+- 内容：与 PDF 的两份文件不同；答案区在练习内容后另起一页（分页符，非分节符）；默认只勾练习版；缺失印“本题未录入答案/解析”（复用 `answer_section.dart` 常量）；答案区标题下明示“答案与解析由用户在错题本中录入，非 OCR 识别结果。”完成界面只有一行（标签 'Word'，不带页数）；答案版文件名预览行在 Word 模式隐藏，改显示“答案版包含在同一文件内，不另存文件。”
+
+## D-198 — 十六批 C：公式与配图 v1 全用栅格图（2026-11-21，设计定稿）
+
+- 内容：复用 PDF C 路线同一批公式位图与图块裁剪（同一批文件、同一 300 DPI 上限）；不做 LaTeX→OMML（两家库均不支持）；降级链与 PDF 同口径（渲染失败→原图裁剪→裁剪亦失败则整题跳过）。LaTeX 源码绝不外露：Word 侧只见公式标识与文件引用，报错/日志只含题号与原因，不含公式内容（C-11）。单图超高时按比例缩小到页高内（上限 700 pt，PDF 可用高 727.81 pt 的保守取值）并标记可疑，绝不放出高于单页可用内容的部件。
+
+## D-199 — 十六批 C：无 key 时整单走 A 路线（2026-11-21，设计定稿；协调员 §9 裁决 4：超长切片复用 PDF 硬切分段，不降级为整图缩放）
+
+- 内容：路由判定复用 `OcrKeyStore.hasApiKey()`，快照冻结路线；Word A 路线复用 PDF A 路线的同一批切段（同一原始图片坐标、同一固定缩放比例，`AContentBuilder.planQuestions` 直接复用），每段为独立图片段落；续页标不印（Word 自然分页不知道断点）；题号行只出现在第一段之前。超长切片不降级为整图缩放（降级须协调员另批，现不批）。
+
+## D-200 — 十六批 C：入口走 B 的直接勾选 + 确认步 `ExportFormat.word` 可选（2026-11-21，设计定稿）
+
+- 内容：选题、汇总条、确认步其余口径一律不动；`ExportFlowController` 按格式分发（pdf 走既有服务，word 走 `WordExportService`，`start(format:)`；Word 回调未接入时整单失败，不静默回落 PDF）；Word 生成在后台 Isolate 里跑（`DocxExporter().exportToBytes`），每题一取消检查点，60 s 看门狗兜底（与 PDF D-183 同值；超时 kill 子 Isolate + 报错“生成超时，已中止，未产生文件”）。探针实测 `DocxBuiltDocument` 可跨 Isolate 传递（`test/b16_word_isolate_probe_test.dart`，验证后已删）。
+
+## D-201 — 十六批 C：文件命名与交付与 PDF M4 同口径，只改扩展名（2026-11-21，设计定稿）
+
+- 内容：默认名 `错题本_<学科>_<文件夹>_<yyyyMMdd>.docx`，干规则/100 rune 上限/`safeFileName` 清理/答案后缀 `_答案` 全同；另存为对话框（file_picker 8.3.7）+ 原子写入 + 冲突顺延 `（1）`；校验器改为 `defaultDocxFileValidator`（PK 魔数 + `[Content_Types].xml` + `word/document.xml` + 图片部件数一致），PDF 的页数校验不适用。切换格式时文件名扩展名跟随切换（干不变）。
+
+## D-202 — 十六批 C：guard 与 50 道上限原样沿用（2026-11-21，设计定稿；协调员 §9 裁决 2：Word 软警告只显示 Mpx、不显示 MB 预估）
+
+- 内容：80 Mpx 软警告 / 150 Mpx 硬拒绝 / 单图 12 Mpx 警告、50 道硬上限、计数守恒、跳过清单与二次确认（跳过 > 20 或 > 50%）全部与 PDF 一致；唯一分叉是 Word 软警告不显示 MB 预估（pdf 的 10 MB/Mpx 是 save 膨胀模型，不适用于 docx 压缩存储），只显示栅格总量 Mpx。硬拒绝文案两格式一致（只含 Mpx）。
+
+## D-203 — 十六批 C：Word 不做两遍布局，总页数生成时未知（2026-11-21，设计定稿）
+
+- 内容：Word 自然分页，无分页规划；完成界面与报告不得编造页数，写“页数以 Word 打开为准”；单个图片超高时按比例缩小到页高内并标记可疑（PDF M1-C 附录 C.4 的 Word 版），绝不放出高于单页可用内容的部件。`WordExportResult` 没有 totalPages 字段（W-11）；报告摘要行追加文件实际大小 + 字体未嵌入提示。
+
+## D-204 — 十六批 C：Word 测试口径（2026-11-21，设计定稿）
+
+- 内容：新测试 `b16_word_*`（初定 50 项，WORD-DESIGN.md §7.2）；断言方式为解包 docx 查 XML / 断言关键串 / 图片部件存在与 md5，不只断言字节长度；Win11 真机验证 12 项（W-V-01～W-V-12）供写入验证清单。
+- 测试文件（实做 51 项，比初定 50 多 1 项：guard 文件为 6 项——80/150 边界
+  单元断言 + 软警告/硬拒绝服务级各 1 项 + 单图警告 + 50 道上限 +
+  计数守恒）：`b16_word_library_test.dart`（6）、`b16_word_builder_test.dart`（8）、`b16_word_content_test.dart`（8）、`b16_word_image_test.dart`（6）、`b16_word_guard_test.dart`（6）、`b16_word_delivery_test.dart`（6）、`b16_word_flow_test.dart`（7）、`b16_word_a_route_test.dart`（4），共 51 项，全部通过；另更新 `b16_export_confirm_test.dart` 格式断言（Word 可选，行为变更所致，非放宽）。
+
+## D-205 — 十六批修复批：ambiguous / notSplit 时不去重，选项全量追加（已知降级）（2026-11-21，GPT 终审 P1-5 核实成立，Meng 2026-11-21 19:57 批准补测试）
+
+- 内容：题干无法自动切分（ambiguous 或 notSplit）时，D-189 不去重、选项全量追加（宁可重复也不丢选项）。依据：`_stemOptionLabels` 只在 autoSplit 时返回标签集，其余状态返回空集（`lib/services/pdf_export/ocr_content_snapshot.dart`），`assembleCMarkdown` 因此追加全部非空选项。完整性报告不标旗：`assessCPrintability` 在 stemLabels 为空时落到情形 (d)，标签正常且 nonEmpty ≥ 2 时判 available、无 `optionSplitUncertain`。重复是设计上接受的降级，不是“已去重”。
+- 锁定测试：`test/b16_d189_stem_options_test.dart` D-205 组（ambiguous、notSplit 各 1 项）；相关测试 52/52（b16 7 项 + b13 45 项），analyze 无新增问题，演示库 md5 未变。
+
+## D-206 — 十六批修复批：跨筛选已选题排序加确定性次键 createdAt 降序 + id；注释措辞修正（2026-11-21，GPT 终审核实发现的小残留，Meng 2026-11-21 19:57 批准小修）
+
+- 内容：`_exportSelectedQuestions()` 中筛选外已选题共用排序键 `1 << 20`，Dart `List.sort` 不保证等键稳定，相对顺序可能变化（不丢题，只影响题号顺序）。修法：主排序不变，同键时按 `createdAt` 降序、再按 `id` 升序，保证全序；`wrongbook_page.dart:501` 注释由“勾选集合在打开瞬间按 filteredAll() 顺序拍快照”改为“打开瞬间拍一份按 filteredAll() 顺序排的全集快照（快照取自 exportSelected 全集，filteredAll() 只定顺序）”，与 `:239-240` 注释统一。
+- 锁定测试：`test/b16_export_selection_test.dart` 新增 2 项（筛选外按 createdAt 降序；createdAt 相同时按 id 升序、与入库顺序无关）；相关测试 10/10，analyze 无新增问题，演示库 md5 未变。
