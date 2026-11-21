@@ -51,6 +51,13 @@ dependencies:
   crypto: ^3.0.8
   flutter_secure_storage: ^10.3.4
   image: ^4.13.1
+  # 十五批 M1-A：PDF 组卷导出（pdf 3.13.1，见 M1-DESIGN.md §14，只加 pdf）。
+  pdf: ^3.13.1
+  # 十五批 M2：Android 系统分享（share_plus，S1 dry-run 确认可解析到
+  # 12.0.2）与公共 Downloads 落盘（path_provider 由传递依赖转直接
+  # 依赖，当前锁定 2.1.6，见 M1-DESIGN.md §14）。
+  share_plus: ^12.0.2
+  path_provider: ^2.1.6
 
 dev_dependencies:
   flutter_test:
@@ -70,3 +77,9 @@ flutter:
     # （2026-11-13 实测：只写 assets/models/ 时模型未进包）。
     # 第 2 层模型已移出仓库（见 D-23），只留第 1 层。
     - assets/models/question/
+    # 十五批 M1-A：PDF 导出内嵌字体 Noto Sans SC Regular（静态 TTF，
+    # 由上游可变字体固定 wght=400 实例化，见 M1-DESIGN.md §13）
+    # + 随附的 SIL OFL 1.1 许可全文。pdf 包直接读字体字节，
+    # 不注册为 Flutter 字体。
+    - assets/fonts/NotoSansSC-Regular.ttf
+    - assets/fonts/OFL.txt

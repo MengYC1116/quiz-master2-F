@@ -62,6 +62,9 @@ extension _WrongbookShelfBuild on _WrongbookViewState {
   Widget _buildShelfTop(int archivedCount) {
     final scale = qmScaleOf(context);
     final palette = DesignTokens.of(Theme.of(context).brightness);
+    // 十五批 M3（D-169）：书架页顶栏「新建导出单」入口；筛选结果为 0 题
+    // 时按钮置灰 + 提示「先筛选出题目」（不得让用户对着空结果导出）。
+    final exportableCount = _s.filteredAll().length;
     return Padding(
       padding: EdgeInsets.only(bottom: 14 * scale),
       child: Row(
@@ -75,9 +78,19 @@ extension _WrongbookShelfBuild on _WrongbookViewState {
           SizedBox(width: 10 * scale),
           Expanded(
             child: Text(
-              '归档的题不在书里，点这里看归档列表、能恢复回错题本',
+              exportableCount == 0
+                  ? '先筛选出题目'
+                  : '归档的题不在书里，点这里看归档列表、能恢复回错题本',
               style: TextStyle(fontSize: 13, color: palette.muted),
             ),
+          ),
+          SizedBox(width: 10 * scale),
+          QmButton(
+            key: const Key('new-export-order'),
+            label: '新建导出单',
+            variant: QmButtonVariant.secondary,
+            size: QmButtonSize.small,
+            onPressed: exportableCount == 0 ? null : _openExportWizard,
           ),
         ],
       ),

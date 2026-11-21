@@ -1,14 +1,28 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../data/repository.dart';
 import '../../models/models.dart';
 import '../../modules/ocr/question_classifier.dart';
+import '../../services/ocr_key_store.dart';
+import '../../services/pdf_export/drift_export_source.dart';
+import '../../services/pdf_export/export_flow.dart';
+import '../../services/pdf_export/export_inventory.dart';
+import '../../services/pdf_export/export_question_record.dart';
+import '../../services/pdf_export/export_route.dart';
+import '../../services/pdf_export/export_snapshot.dart';
+import '../../services/pdf_export/export_versions.dart';
+import '../../services/pdf_export/formula_rasterizer.dart';
+import '../../services/pdf_export/pdf_delivery.dart';
+import '../../services/pdf_export/pdf_export_service.dart';
 import '../../state/repository_provider.dart';
 import '../../state/wrongbook_notifier.dart';
 import '../../theme/app_theme.dart'; // 转出 design_tokens，本文件不再单引它。
 import '../../widgets/uikit.dart';
 import '../../widgets/widgets.dart';
+import 'export_wizard.dart';
 
 part 'wrongbook_cover.dart';
 part 'wrongbook_directory.dart';
@@ -179,6 +193,138 @@ class _WrongbookViewState extends ConsumerState<_WrongbookView> {
   void _openShelf() {
     _clearFilters();
     _n.openShelf();
+  }
+
+  // ---------- 十五批 M3：新建导出单（D-168/D-169） ----------
+
+  /// 打开导出向导（书架页顶栏「新建导出单」入口）。
+  ///
+  /// 默认路径 = 打开瞬间的当前筛选结果（filteredAll() 快照）；向导内
+  /// 的范围 / 挑题 / 确认只用这份快照，生成过程中用户改筛选 / 改题
+  /// 均不影响本次导出。公式栅格化器在向导打开时挂载、收尾时卸载；
+  /// 生成在后台跑，面板关闭不取消（会话终态时再次弹出完成界面）。
+  void _openExportWizard() {
+    final st = _sr;
+    final base = st.filteredAll();
+    if (base.isEmpty) {
+      _snack('先筛选出题目');
+      return;
+    }
+    final rasterizer = FormulaRasterizer()..resetCancellation();
+    rasterizer.attach(context);
+    const source = DriftExportQuestionSource();
+    final delivery = PdfDeliveryService();
+    final subjectsById = {for (final s in st.subjects) s.id: s};
+    final sortText = switch (st.sort) {
+      'old' => '时间旧→新',
+      'subj-asc' || 'subject' => '学科升序',
+      'subj-desc' => '学科降序',
+      'status-asc' => '错因状态升序',
+      'status-desc' => '错因状态降序',
+      _ => '时间新→旧',
+    };
+    final controller = ExportFlowController(
+      computeInventory:
+          ({
+            required List<String> ids,
+            required List<ExcludedQuestion> excluded,
+            required int circledCount,
+          }) async {
+            final decision = await resolveExportRouteFromStore(
+              OcrKeyStore(),
+            );
+            final records = <ExportQuestionRecord>[];
+            for (final id in ids) {
+              final record = await source.fetchQuestion(id);
+              records.add(
+                record ??
+                    ExportQuestionRecord(
+                      id: id,
+                      title: '',
+                      subjectId: '',
+                      contentVersion: 0,
+                    ),
+              );
+            }
+            return runInventory(
+              decision: decision,
+              circledCount: circledCount,
+              selected: records,
+              excluded: excluded,
+              source: source,
+            );
+          },
+      generateVersions:
+          ({
+            required List<String> ids,
+            required List<ExcludedQuestion> excluded,
+            required String filterText,
+            required String sortText,
+            required ExportVersionSelection versions,
+            required int circledCount,
+            required ExportCancellationToken token,
+            void Function(int done, int total, String label)? onProgress,
+            String subjectName = '多学科',
+            String? folderName,
+            bool excludeLowDpi = false,
+          }) {
+            final service = PdfExportService(
+              source: source,
+              rasterizer: rasterizer,
+              subjectName: subjectName,
+              excludeLowDpi: excludeLowDpi,
+              sourceTextFor: (record) => formatExportSourceText(
+                subjectName:
+                    subjectsById[record.subjectId]?.name ?? '',
+                folderNames: record.folderNames,
+                examName: record.examName,
+              ),
+            );
+            return service.generateVersions(
+              ids: ids,
+              excluded: excluded,
+              filterText: filterText,
+              sortText: sortText,
+              versions: versions,
+              circledCount: circledCount,
+              token: token,
+              onProgress: onProgress,
+            );
+          },
+      deliverAll: ({required List<VersionDeliveryRequest> requests}) =>
+          delivery.deliverAll(requests: requests),
+      openFile: delivery.openPdf,
+      openFolder: delivery.openContainingFolder,
+      shareFile: (path) => delivery.sharePdf(path),
+    );
+    final causeNames = <String>{
+      ...ErrorTypes.fixed,
+      for (final q in base) ...q.allCauses,
+    }.toList();
+    final session = ExportWizardSession(
+      controller: controller,
+      input: ExportWizardInput(
+        questions: base,
+        subjects: st.subjects,
+        folders: st.folders,
+        exams: st.exams,
+        kps: st.kps,
+        causeNames: causeNames,
+        sortText: sortText,
+      ),
+      onOpenQuestion: (questionId) {
+        final q = st.questions
+            .where((x) => x.id == questionId)
+            .firstOrNull;
+        if (q == null) return;
+        Navigator.of(context).pop();
+        unawaited(
+          widget.onOpenDetail(q, base.map((e) => e.id).toList()),
+        );
+      },
+      onFinished: rasterizer.detach,
+    );
+    session.show(context);
   }
 
   void _snack(String msg, {String? actionLabel, VoidCallback? onAction}) {

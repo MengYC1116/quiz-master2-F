@@ -1839,3 +1839,116 @@ unavailable），kill -9 后新进程可取锁——与实现依据一致。
 - 信号：`review_state` 是单行表（`id CHECK (id = 1)`），有可恢复快照行当且仅当会话开始后未完成/未放弃（写：复习中 `_persistSession`；清：完成、回列表、从头开始/放弃续治）；`loadReviewState` 队列为空时返回 null，所以 `reviewState() != null` 就是“有未完成会话”。注：快照若在复习页重载校验时才发现失效，行会残留到下次加载才清——极小概率下文案会为一个已不可续治的快照提一句，不影响数据。
 - 修法：恢复前先查一次（`SettingsNotifier.hasUnfinishedReviewSession`，读既有 `repository.reviewState()`，不改 `restoreBackup` 的警告列表契约）；成功文案抽成纯函数 `restoreSuccessMessage`（`settings_page.dart` 文件顶）：有会话 →“恢复成功，已清除未完成的复习会话”，无会话 →“恢复成功”；图块警告有则照旧追加。恢复前确认弹窗的文案不动（里面本来就没提会话）。恢复本身仍清 `review_state`，行为不变。
 - 证据：新测试 `test/b14_win11_d173_restore_success_copy_test.dart`（文案四种组合 + 信号 true/false，共 6 项）。
+
+---
+
+## D-174 — 十五批 M1：C 路线图块执行 300 DPI 有效分辨率上限（2026-11-20，Meng 批准实施）
+
+- 内容：300 DPI 有效分辨率上限扩到 C 路线图块（裁剪后下采样，不得放大）；公式位图按 300 DPI 渲染；公式原图降级裁剪结果同样执行 300 DPI 上限，低于 300 DPI 不放大。
+- 依据：S1b 实测高组图块有效 DPI 约 332，已超 300；上限的目的是约束嵌入栅格总量，图块就是栅格。
+
+---
+
+## D-175 — 十五批 M1：50 道上限六处设防（2026-11-20，Meng 批准实施）
+
+- 内容：50 道上限在六处设防（选择状态、确认步、快照工厂、服务入口、两版同一快照、禁止内部拆分），任何一处不得静默截断；跳过题仍占 50 名额，不得跳过后补入第 51 题。
+- 依据：Meng 2026-11-20 定 50 道硬上限 + GPT Q4-5 不得绕过规则。
+
+---
+
+## D-176 — 十五批 M1：内容 guard 阈值（2026-11-20，Meng 批准实施）
+
+- 内容：内容 guard 阈值 80 Mpx 软警告 / 150 Mpx 硬拒绝 / 单图 12 Mpx 警告（M1-DESIGN.md §3）。
+- 依据：S1b 实测模型（save 增量 ≈ 10 MB/Mpx）。M1 实现后用真实样本复核一次，调阈值走决策日志，不静默改。
+
+---
+
+## D-177 — 十五批 M1：选项权威来源为库内已存值（2026-11-20，Meng 批准实施）
+
+- 内容：C 路线用库内已存 `ocr_stem` + `option_contents`（解析器 v2），导出时不重派 `md_results`；`option_contents` 为 NULL 时按 M1-DESIGN.md §5 四种情形判定（NULL 不自动等于完整或不完整）；遇未知解析器版本标可疑并按不可印处理。
+- 依据：D-104 修订已持久化选项（十四批包 5），重派会丢用户纠错。
+
+---
+
+## D-178 — 十五批 M1：快照一致性策略——版本冻结 + 终态复核（2026-11-20，Meng 批准实施）
+
+- 内容：快照开始时记录全部源切片的内容哈希与相关 OCR 记录版本（版本号/更新时间）；全部复制/裁剪完成后逐项复核哈希与版本，任一变化 → 整单失效，清理临时目录，明确报错“快照期间题目内容发生变化，请重试”，不生成 PDF。
+- 依据：GPT Q9-4；逐题持锁保不住整批同一时刻。否决的备选：整批锁定会阻塞用户在快照期间的重框选与整理操作；仅“发生修改时整单失效”而不记录版本，无法发现静默替换（备份恢复、文件替换）。
+
+---
+
+## D-179 — 十五批 M1：哈希失败分类（2026-11-20，Meng 批准实施）
+
+- 内容：源文件本身损坏归题目级（BROKEN/跳过）；已成功创建的快照副本哈希不一致归快照完整性失败、整单中止。
+- 依据：GPT Q9-3；统一 M1-DESIGN.md §6 原两处矛盾口径。
+
+---
+
+## D-180 — 十五批 M1：C 路线分页机制（2026-11-20，Meng 批准实施）
+
+- 内容：普通题用 `Inseparable` 包整题强制整体移页，超长题另走块边界拆分分支；`MultiPage.maxPages` 显式设 500；机制在探针通过前为候选机制。
+- 依据：GPT Q9-1/2；pdf 3.13.1 源码核实。
+
+---
+
+## D-181 — 十五批 M1：guard 时序（2026-11-20，Meng 批准实施）
+
+- 内容：盘点阶段用估算值（明确标注“估算值”），快照完成后、生成开始前用实际栅格化像素数复核一次；实际值超硬阈值则中止生成并清理临时目录，偏差记入验证记录。
+- 依据：GPT Q9-5。
+
+---
+
+## D-182 — 十五批 M1：DPI 回退口径（2026-11-20，Meng 批准实施）
+
+- 内容：A 路线增强失败回退到增强前的 300 DPI 限制后图像（内部状态区分“源切片原图”与“DPI 限制后未增强图”）；公式原图降级裁剪结果同样执行 300 DPI 上限，低于 300 DPI 不放大。
+- 依据：GPT Q9-6/7。
+
+---
+
+## D-183 — 十五批修复批 P0-1：分页运行时保护（2026-11-21，Meng 2026-11-21 07:49 批准按核实结论开修）
+
+- 内容（三层缺一不可）：
+  1. 规划期上限 Release 生效：`validatePlan` 去 assert 化，`paginate()` 内无条件执行，违规抛 `StateError`；整题分支加 2 行安全余量（`kWholeQuestionSafetyMarginPt = 2 × kPdfSourceLineHeightPt ≈ 29.04 pt`），整题高超过“封顶 − 余量”即强制走切分支；公式高度建模（`_MeasuredParagraph.lineHeights`：含公式占位符起点的行取 max（文本单行高，公式显示高 pt））；来源行定长（`kExportSourceLineMaxChars = 45`，超长截断加省略号，单行硬约束）；`kPdfUsableHeightPt` 727.87 → 727.81（实测值）。
+  2. A 路线：修正 `a_content_builder.dart` 文件头错误注释（Release 下超预留不会抛错、是无限循环；预留 + 截断是主防线，看门狗是兜底）；页眉/页脚预留 32 → 40 pt（实测约 29.04 pt，留约 11 pt 余量）；页眉学科名截断（`kExportHeaderSubjectMaxChars = 30`，超长截断加省略号）。
+  3. 运行时兜底 isolate 看门狗：主 Isolate 对生成回包加 60 s 超时（`kPdfGenerationWatchdogTimeout`），超时 `Isolate.kill(priority: Isolate.immediate)` + 抛 `StateError('生成超时，已中止，未产生文件')`；超时前未产生任何文件（落盘在回包之后才做）。看门狗不能替代规划期上限（死循环可能先 OOM）。
+- 依据：GPT 终审 P0-1 经核实成立且更精确（危险带约 29 pt；三处未建模偏差源）；`maxPages` 保护全在 assert 内、Release 下失效。
+- 注意：`paginate()` 级 StateError 抛错在修复后经公开 API 不可达（各道门均已堵住），属纵深防御；测试用手造违规规划验证 `validatePlan`（既有测试）+ 新测试断言各道门本身。看门狗真超时行为在 Debug 单元测试中无法 staging（maxPages assert 在 500 页先触发），只做无假阳性验证 + 代码核实；真超时复测是 Win11 Release 检查项（WIN11-CHECKLIST-B15 新增）。
+- 既有测试调整（行为变更所致，非回归）：`b15_m1c_pagination_test.dart` 两处边界测试改为新余量边界（封顶减余量恰好放本页 / 多 0.5 pt 走切分支）；`b15_m1d_builder_test.dart` 长题切段硬编码值随预留 32→40 变化（首段 1590→1570 px，续段 1732→1711 px，余段 678→719 px，yStart 3322→3281）。
+
+---
+
+## D-184 — 十五批修复批 P0-2：分支矩阵测试补齐（2026-11-21，Meng 2026-11-21 07:49 批准按核实结论开修）
+
+- 内容：只补测试，不改生产代码。新文件 `test/b15_fix_p02_branch_matrix_test.dart`，6 项端到端测试：
+  - T1 快照后公式全失败变 0：2 道含公式题、无栅格化器 → 抛 `ExportNoPrintableException`，文案为公式级变零抛点（`pdf_export_service.dart:782`）的“本次没有可导出题目（全部题目因公式无法呈现被跳过）。”，不建快照、不生成 PDF、无残留；
+  - T2-A 计数守恒混合分类 A：2 正常 + 1 PARTIAL（800 px 低清晰度）+ 1 BROKEN（切片不可用）+ 1 排除 → 选中 5、快照 4、排除 1、印出 2、PARTIAL 1、BROKEN 1、跳过 0，守恒两式成立，印出题号连续 1–4；
+  - T2-C 计数守恒混合分类 C：2 正常 + 1 PARTIAL（1 个非空选项槽 → optionSplitUncertain）+ 1 SKIPPED（空题干）→ 选中 4、快照 4、印出 2、PARTIAL 1、跳过 1，守恒成立，印出题号连续 1–3；
+  - T3 清晰度门禁排除：构造子 `excludeLowDpi: true` 时 113 DPI 题跳过（skipReason 含“清晰度低于门禁”），默认不勾时同一题只警告、判 PARTIAL 仍印出；
+  - T4 50 道中含 SKIPPED：源里 51 道、选前 50 道、其中 1 道排除 → 选中 50、快照 49、印出 49、题号连续 1–49，第 51 道未被回填。
+- 依据：GPT 终审 P0-2（测试缺口；守恒机制本身已闭合，经核实 `_buildReport` 末 `checkConservationOrThrow` + 快照工厂自检）。
+- 注意：T1 初版断言用的盘点级文案（“本次没有可导出题目。公式栅格化与原图裁剪均失败 2 道”）不成立——公式跳过发生在快照后的栅格化阶段，实际触发的是公式级变零抛点（:782），文案以实测为准修正。
+
+---
+
+## D-185 — 十五批修复批 P0-3a：备份恢复切换段持锁（2026-11-21，Meng 2026-11-21 07:49 批准按核实结论开修）
+
+- 内容：只把恢复第 4 步“逐文件进位”那一段（manifest 写好、日志推进到 `filesSwitching` 之后，`for (final item in manifest)` 循环，`db_backup.dart` 约 2315-2333）包进一次 `FileLifecycleGuard.instance.withLock`。进位期间物理删除/孤儿清理/备份导出读文件不得并发进场，避免在原文件已移进 rollback、staging 文件未到正式位置的间隙读到半截状态。不包整个恢复流程（毫秒级持锁）；进位后核对、写库、提交均在锁外。
+- 依据：GPT 终审 P0-3a 经核实成立——恢复段此前零 guard 引用；最坏情况不是静默损坏（rename 原子 + 哈希复核可整单失效），但半截状态可被并发读到。
+- 注意：无重入风险——恢复入口此前未持锁（第 1 步 stale-staging 清理只在有残留目录时取锁、已释锁；新测试目录无残留）；循环体内只有原始 File 操作，无 guard 调用。回滚路径（`:2728` 的第二处 `for (final item in manifest)`）不在本次范围，不动。
+- 测试：`test/b15_fix_p03a_restore_lock_test.dart`（占锁 → 轮询日志到 filesSwitching → 断言 200 ms 内恢复未完成、目标文件未切换 → 放锁 → 断言恢复完成、文件字节一致）；既有 `p3_backup_migration_test.dart` 27 项全过。
+
+---
+
+## D-186 — 十五批修复批 P0-3b：答案版本复核——单次读行（2026-11-21，Meng 2026-11-21 07:49 批准按核实结论开修）
+
+- 内容：采用推荐方案 (ii) 单次读行，不做方案 (i)（不加 answerVersion 字段）。`ExportSnapshot.fromSelection` 新增可选参数 `Map<String, ExportQuestionRecord?>? recordsById`（缺题为 null），传了即复用、不再调 `source.fetchQuestions` 二次读行；`_buildEntries` 阶段一改走该 map（不传时仍内部一次读齐，旧行为不变）。`_freezeExport` step 2 另记一份原始读行结果 `fetchedById`（含缺题 null；与供报告/生成用的占位记录 `recordsById` 分开——占位记录进快照会改变缺题口径），step 4 传给 `fromSelection`。终态复核（阶段三）的第三次批量重读保留。
+- 依据：GPT 终审 P0-3b 经核实成立——`_freezeExport` 曾读两次（step 2 逐题 + 快照阶段一批量），中间夹盘点 I/O，窗口数百毫秒至数秒，窗口内改答案会静默导出旧答案（快照自洽，无报错）。
+- 计数证明（`test/b15_fix_p03b_single_read_test.dart`）：2 道题一次 generate 的 fetchQuestion 调用数修后为 4（step 2 读 2 + 终态复核 2），修前为 6；快照级传 recordsById 时阶段一零读行（只剩终态复核 2 次），不传时阶段一读 2 次 + 复核 2 次。
+
+---
+
+## D-187 — 十五批修复批 C-13：图块裁剪降采样（2026-11-21，Meng 2026-11-21 07:49 批准按核实结论开修）
+
+- 内容：`ocr_content_snapshot.dart` 的图块裁剪调用处（`cropFigurePng` 之后），对裁剪结果加 `capPngTo300Dpi`（与公式原图裁剪同款）。显示宽 = min(内容宽 510.2 pt，裁剪宽按 300 DPI 换算的自然宽），与 guard 的 `_figureDisplaySize` 同口径；解不出尺寸按裁剪失败处理（图块略过、PARTIAL 降级，与既有裁剪失败口径一致）。只改导出图块裁剪调用处；`figure_files.dart:128` 的应用图库存储调用处不动（改它会改变已存图块质量，guard 低估只涉及导出临时副本）。
+- 依据：GPT 终审 C-13 经核实成立——`cropFigurePng` 是纯 `copyCrop`，guard 按显示宽计入，裁剪宽超 2126 px 时低估可达约 2 倍；guard 实际值从图块临时文件读尺寸计入，故降采样后计入像素数 = 实际嵌入像素数。
+- 测试：`test/b15_fix_c13_figure_cap_test.dart` 3 项（3000×600 裁剪 → 2126×425；1500×500 不变；恰好 2126×400 不变）。
