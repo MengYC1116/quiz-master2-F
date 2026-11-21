@@ -2144,9 +2144,11 @@ bool _isRestoreStagingDir(String name) {
 ///    原文件先移进 rollback 目录（`imports-rollback/<id>/`，与正式目录
 ///    同一文件系统，见 B-NEW-07 硬性约束），staging 文件再移进正式位置；
 ///    两次移动的目标都不存在，不用 File.rename 覆盖已存在目标、不触发
-///    Win11 errno 5；未被备份引用的原文件不动（B2-5c 已钉死：恢复不删旧文件，
-///    孤儿扫描接住它们——故不用 plan 字面的整目录重命名，逐文件进位 +
-///    rollback 目录同样保证“被覆盖的原文件内容必须能回来”）；
+///    Win11 errno 5；进位段持 FileLifecycleGuard 锁（D-185），防并发
+///    物理删除/孤儿清理/备份导出读到半截状态；未被备份引用的原文件不动
+///    （B2-5c 已钉死：恢复不删旧文件，孤儿扫描接住它们——故不用 plan 字面
+///    的整目录重命名，逐文件进位 + rollback 目录同样保证“被覆盖的原文件
+///    内容必须能回来”）；
 ///    进位后核对正式文件存在与字节数，再写日志 DATABASE_RESTORING；
 /// 5. 写库 + 提交：[AppDatabase.importBackupJsonInto] 事务整体覆盖数据库；
 ///    成功后写日志 COMMITTED，再清理 rollback 目录、快照、staging 与日志
@@ -2312,25 +2314,32 @@ Future<List<String>> importBackupZipIntoImpl(
       journal,
       RestoreStage.filesSwitching,
     );
-    for (final item in manifest) {
-      final rel = item['rel'] as String;
-      final hadOriginal = item['hadOriginal'] == true;
-      final staged = File(p.join(stagingDir.path, rel));
-      final destPath = _resolveInsideDir(dir, rel);
-      if (destPath == null) {
-        throw BackupRestoreException('这份备份里有非法路径：$rel');
+    // D-185：逐文件进位持锁（FileLifecycleGuard.withLock）——进位期间
+    // 物理删除/孤儿清理/备份导出读文件不得并发进场，避免在原文件已
+    // 移进 rollback、staging 文件未到正式位置的间隙读到半截状态。
+    // 只包进位这一段（毫秒级），不包整个恢复流程；调用链此前未持锁
+    // （第 1 步的 stale-staging 清理已释锁），无重入风险。
+    await FileLifecycleGuard.instance.withLock(() async {
+      for (final item in manifest) {
+        final rel = item['rel'] as String;
+        final hadOriginal = item['hadOriginal'] == true;
+        final staged = File(p.join(stagingDir.path, rel));
+        final destPath = _resolveInsideDir(dir, rel);
+        if (destPath == null) {
+          throw BackupRestoreException('这份备份里有非法路径：$rel');
+        }
+        final dest = File(destPath);
+        await dest.parent.create(recursive: true);
+        if (hadOriginal && dest.existsSync()) {
+          // 原文件先移进 rollback 目录（目标不存在，rename 不覆盖）。
+          final backup = File(p.join(rollbackDir.path, rel));
+          await backup.parent.create(recursive: true);
+          await dest.rename(backup.path);
+        }
+        // staging 文件移进正式位置（目标不存在，rename 不覆盖）。
+        await staged.rename(dest.path);
       }
-      final dest = File(destPath);
-      await dest.parent.create(recursive: true);
-      if (hadOriginal && dest.existsSync()) {
-        // 原文件先移进 rollback 目录（目标不存在，rename 不覆盖）。
-        final backup = File(p.join(rollbackDir.path, rel));
-        await backup.parent.create(recursive: true);
-        await dest.rename(backup.path);
-      }
-      // staging 文件移进正式位置（目标不存在，rename 不覆盖）。
-      await staged.rename(dest.path);
-    }
+    });
     // 进位后核对：每个条目都在正式位置且字节数对得上，再进写库阶段。
     for (final e in fileEntries) {
       final destPath = _resolveInsideDir(dir, e.name);
