@@ -181,6 +181,25 @@ CPrintability assessCPrintability(ExportQuestionRecord record) {
       optionsState: OptionsState.unavailable,
     );
   }
+  // D-189：题干已含全部非空选项 → 视同 inlineInStem，不另附选项块
+  // （与 assembleCMarkdown 同一口径，见 _stemOptionLabels）；遗留
+  // 行（题干含选项 + option_contents 非空并存）标可疑
+  // optionSplitUncertain，走纠错入口。只含部分标签时不断言
+  // inlineInStem，assembleCMarkdown 逐标签去重、补齐其余标签。
+  final stemLabels = _stemOptionLabels(stem);
+  final nonEmptyLabels = decoded.entries
+      .where((e) => e.value.trim().isNotEmpty)
+      .map((e) => e.key)
+      .toSet();
+  if (stemLabels.isNotEmpty &&
+      nonEmptyLabels.every(stemLabels.contains)) {
+    suspicious.add('optionSplitUncertain');
+    return CPrintability(
+      printable: true,
+      optionsState: OptionsState.inlineInStem,
+      suspiciousFlags: suspicious,
+    );
+  }
   // 情形 (d)：标签不连续 / 个别槽为空 / 非空槽不足 2 个 → 可疑但已印。
   final labels = decoded.keys.toList()..sort();
   final expected = List<String>.generate(
@@ -225,10 +244,23 @@ bool _needsOptions(String? questionType, String mdResults) {
   return kChoiceQuestionTypes.contains(questionType);
 }
 
+/// 题干里已含的选项标签（D-189）：对题干文本本身跑 `splitStem`，
+/// autoSplit 时返回其 optionLabels 集合；其余状态返回空集。
+///
+/// assessCPrintability 与 assembleCMarkdown 共用同一口径（只读冻结
+/// 后的 ocrStem，不回写、不改库，D-177）：全覆盖 → inlineInStem；
+/// 部分覆盖 → 逐标签去重。ambiguous / notSplit 时不去重（宁可重复
+/// 也不丢选项）。
+Set<String> _stemOptionLabels(String stem) {
+  final result = splitStem(stem);
+  if (result.status != StemSplitStatus.autoSplit) return const {};
+  return result.optionLabels?.toSet() ?? const {};
+}
+
 /// 题干是否含选项（NULL 情形 (a) 的判定）：对题干文本本身跑
 /// `splitStem`，能自动切分出选项序列即视为选项 inline 在题干里。
 bool _stemContainsOptions(String stem) =>
-    splitStem(stem).status == StemSplitStatus.autoSplit;
+    _stemOptionLabels(stem).isNotEmpty;
 
 /// 可追溯性（§9 P2-8，per-question 记录，不存库）。
 class OcrTraceability {
@@ -361,6 +393,9 @@ class OcrContentSnapshot {
 /// `A. <内容>` 行，公式原样保留；非空槽才成行；NULL inline 情形与
 /// 不要求选项的题型不另附选项块）。
 ///
+/// D-189：题干里已有的标签不重复追加（逐标签去重，与
+/// assessCPrintability 同一口径 _stemOptionLabels）。
+///
 /// 快照组装与盘点公式计数共用同一函数（同一组装口径，不各行其是）。
 String assembleCMarkdown(
   ExportQuestionRecord record,
@@ -370,9 +405,15 @@ String assembleCMarkdown(
   final options = record.optionContents;
   if (printability.optionsState == OptionsState.available ||
       printability.optionsState == OptionsState.uncertain) {
+    // D-189：追加前逐标签去重——题干里已有的标签不重复追加（遗留行：
+    // 题干含选项 + optionContents 非空并存）。检测只读冻结后的
+    // ocrStem，与 assessCPrintability 同一口径（_stemOptionLabels）；
+    // 全部标签都已在题干时 lines 为空，不追加任何内容。
+    final stemLabels = _stemOptionLabels(record.ocrStem ?? '');
     final labels = (options ?? {}).keys.toList()..sort();
     final lines = <String>[];
     for (final label in labels) {
+      if (stemLabels.contains(label)) continue;
       final content = options![label] ?? '';
       if (content.trim().isEmpty) continue;
       lines.add('$label. $content');

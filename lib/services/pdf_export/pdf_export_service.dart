@@ -1396,6 +1396,11 @@ class PdfExportService {
                   heightPt: result.logicalHeightPt,
                   formulaId: id,
                   ref: result.relativePath,
+                  // D-188：行内公式同样携带原图/缩小标记（与独立公式
+                  // 的 CAtomicBlock 同口径），供 _collectResults 汇总
+                  // 完整性状态；否则只有行内公式降级的题误判 COMPLETE。
+                  isOriginal: result.isOriginal,
+                  shrunk: result.shrunk,
                 ),
               );
             }

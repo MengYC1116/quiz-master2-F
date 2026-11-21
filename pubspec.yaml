@@ -53,6 +53,11 @@ dependencies:
   image: ^4.13.1
   # 十五批 M1-A：PDF 组卷导出（pdf 3.13.1，见 M1-DESIGN.md §14，只加 pdf）。
   pdf: ^3.13.1
+  # 十六批 C：Word 组卷导出（docx_creator 1.4.0，见
+  # batch16-work/WORD-DESIGN.md §1；spike 结论：唯一能在 run 级写
+  # w:eastAsia 且能出 A4 的库，见 batch16-work/spikes/WORD-SPIKE.md）。
+  # 只加这一个依赖；12 个直接依赖全量引入，不拆包、不 fork（D-192）。
+  docx_creator: ^1.4.0
   # 十五批 M2：Android 系统分享（share_plus，S1 dry-run 确认可解析到
   # 12.0.2）与公共 Downloads 落盘（path_provider 由传递依赖转直接
   # 依赖，当前锁定 2.1.6，见 M1-DESIGN.md §14）。

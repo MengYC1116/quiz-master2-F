@@ -1,6 +1,7 @@
 // 十五批 M2-3：导出文件名默认规则与校验（PLAN-15-REV3 §2）。
 //
-// 默认 `错题本_<学科>_<文件夹>_<yyyyMMdd>.pdf`：
+// 默认 `错题本_<学科>_<文件夹>_<yyyyMMdd>.pdf`（Word 时扩展名为
+// `.docx`，干规则与 PDF 完全相同，见十六批 C D-195）：
 // - 无文件夹时省掉该段；
 // - 多文件夹时用“多文件夹”或省略文件夹段，多学科时用“多学科”
 //   （不得取第一道题的学科/文件夹代表整个导出范围——调用方传入
@@ -39,14 +40,22 @@ String sanitizeExportFileName(String raw) {
 
 /// 校验用户改后的文件名（M3 面板用；返回 null 表示通过）。
 ///
-/// 校验的是完整文件名（含 `.pdf` 扩展名）。与 [sanitizeExportFileName]
-/// 的关系：校验不过时面板应提示原因，由用户改或点“自动修正”
-/// （修正即走 sanitize）；生成流程内部一律用 sanitize 后的名字，
-/// 不直接用未经校验的用户输入写盘。
-String? validateExportFileName(String fileName) {
+/// 校验的是完整文件名（含扩展名）。[format] 为 null 时按 PDF 校验
+///（默认行为不变，现有测试与调用方不受影响）；Word 格式时要求
+/// 以 `.docx` 结尾。与 [sanitizeExportFileName] 的关系：校验不过时
+/// 面板应提示原因，由用户改或点“自动修正”（修正即走 sanitize）；
+/// 生成流程内部一律用 sanitize 后的名字，不直接用未经校验的用户
+/// 输入写盘。
+String? validateExportFileName(String fileName, {ExportFormat? format}) {
   if (fileName.trim().isEmpty) return '文件名不能为空';
-  if (!fileName.toLowerCase().endsWith('.pdf')) return '文件名须以 .pdf 结尾';
-  final stem = fileName.substring(0, fileName.length - 4);
+  final extension = (format ?? ExportFormat.pdf).extension;
+  if (!fileName.toLowerCase().endsWith(extension)) {
+    return '文件名须以 $extension 结尾';
+  }
+  final stem = fileName.substring(
+    0,
+    fileName.length - extension.length,
+  );
   if (stem.trim().isEmpty) return '文件名不能为空';
   if (RegExp(r'[\\/:*?"<>|]').hasMatch(fileName)) {
     return '文件名不能包含 \\ / : * ? " < > |';
@@ -61,17 +70,19 @@ String? validateExportFileName(String fileName) {
   return null;
 }
 
-/// 生成默认导出文件名（含 `.pdf`）。
+/// 生成默认导出文件名（含扩展名；默认 `.pdf`）。
 ///
 /// [subjectName] 为展示用学科名（多学科时传“多学科”，不得取第一道题
 /// 的学科作代表）；[folderName] 为展示用文件夹名（null/空白 = 省掉
 /// 该段；多文件夹时传“多文件夹”或 null）；[date] 为导出日期；
-/// [version] 决定是否加 `_答案` 后缀。
+/// [version] 决定是否加 `_答案` 后缀；[format] 决定扩展名
+///（默认 PDF；Word 时为 `.docx`，干规则与 PDF 完全相同，D-195）。
 String buildExportFileName({
   required String subjectName,
   String? folderName,
   required DateTime date,
   required ExportVersion version,
+  ExportFormat format = ExportFormat.pdf,
 }) {
   final dateText = _dateText(date);
   var subject = subjectName.trim().isEmpty
@@ -87,7 +98,7 @@ String buildExportFileName({
     folder: folder,
     dateText: dateText,
   );
-  return '$stem$suffix.pdf';
+  return '$stem$suffix${format.extension}';
 }
 
 /// 过长干截断：保留日期与后缀，先缩文件夹段、再缩学科段。

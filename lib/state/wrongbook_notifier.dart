@@ -29,6 +29,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../data/data_change_events.dart';
 import '../data/repository.dart';
 import '../models/models.dart';
+import '../services/pdf_export/export_route.dart';
 import 'repository_provider.dart';
 import 'subject_sort.dart';
 
@@ -141,6 +142,8 @@ class WrongbookState {
     this.hoverBookId,
     this.batchMode = false,
     this.selected = const {},
+    // 十六批 B（D-190）：导出勾选集合，与批量操作的 selected 分开。
+    this.exportSelected = const {},
     this.batchFolderId,
     this.inBookArchived = false,
   });
@@ -206,6 +209,13 @@ class WrongbookState {
   final String? hoverBookId;
   final bool batchMode;
   final Set<String> selected;
+
+  /// 十六批 B（D-190）：导出勾选的题目 ID（按 ID 持有，与当前页 /
+  /// 筛选无关）。翻页、换筛选、切视图都不丢，只在题目从库里消失时
+  /// 由 load() 收敛；导出成功后由页面清空。与批量操作的 [selected]
+  /// 分开——批量删除 / 移文件夹等不得动它。
+  final Set<String> exportSelected;
+
   final String? batchFolderId;
   final bool inBookArchived;
 
@@ -256,6 +266,7 @@ class WrongbookState {
     Object? hoverBookId = _unset,
     bool? batchMode,
     Set<String>? selected,
+    Set<String>? exportSelected,
     Object? batchFolderId = _unset,
     bool? inBookArchived,
   }) {
@@ -322,6 +333,7 @@ class WrongbookState {
           : hoverBookId as String?,
       batchMode: batchMode ?? this.batchMode,
       selected: selected ?? this.selected,
+      exportSelected: exportSelected ?? this.exportSelected,
       batchFolderId: batchFolderId == _unset
           ? this.batchFolderId
           : batchFolderId as String?,
@@ -869,6 +881,11 @@ class WrongbookNotifier extends Notifier<WrongbookState> {
         counts: counts,
         recordsByQ: byQ,
         filterErrorType: filterErrorType,
+        // 十六批 B（D-190）：导出勾选只收敛已不存在的题（删题 / 恢复
+        // 后重读），不因筛选 / 分页变化而丢。
+        exportSelected: state.exportSelected.intersection(
+          questions.map((q) => q.id).toSet(),
+        ),
         pageSize: state.pageSizeInitialized
             ? state.pageSize
             : settings.pageSize,
@@ -1100,6 +1117,42 @@ class WrongbookNotifier extends Notifier<WrongbookState> {
       next.remove(id);
     }
     state = state.copyWith(selected: next);
+  }
+
+  // ---------- 导出勾选（十六批 B，D-190） ----------
+
+  /// 导出勾选一题：已选则取消，未选则加入。
+  ///
+  /// 50 道硬上限（M1-DESIGN §2 第 1 点，复用
+  /// [checkSelectionCap]）：点选第 51 道时拒绝，返回
+  /// “单次最多导出 50 道题”，本次选择不变；成功返回 null。
+  /// 换筛选 / 翻页不经过这里，不丢已选（见 [applyFilterChange]：
+  /// 只收敛批量 [selected]，不动 exportSelected）。
+  String? toggleExportSelected(String id) {
+    final next = {...state.exportSelected};
+    if (next.contains(id)) {
+      next.remove(id);
+    } else {
+      final cap = checkSelectionCap([...next, id]);
+      if (!cap.allowed) return cap.reason;
+      next.add(id);
+    }
+    state = state.copyWith(exportSelected: next);
+    return null;
+  }
+
+  /// 导出勾选里去掉一题（汇总清单里的逐个取消用）。
+  void removeExportSelected(String id) {
+    if (!state.exportSelected.contains(id)) return;
+    state = state.copyWith(
+      exportSelected: {...state.exportSelected}..remove(id),
+    );
+  }
+
+  /// 清空导出勾选（导出成功后、用户点“清除选择”时调）。
+  void clearExportSelected() {
+    if (state.exportSelected.isEmpty) return;
+    state = state.copyWith(exportSelected: const {});
   }
 
   // ---------- 文件夹操作 ----------

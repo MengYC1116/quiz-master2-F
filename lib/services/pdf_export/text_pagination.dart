@@ -183,6 +183,8 @@ class CInlineFormula {
     required this.heightPt,
     required this.formulaId,
     required this.ref,
+    this.isOriginal = false,
+    this.shrunk = false,
   });
 
   /// 在段落原文中的字符偏移（公式位于该偏移处，即该偏移字符之前）。
@@ -200,6 +202,14 @@ class CInlineFormula {
   /// 图片引用（任务临时目录内的相对路径，如 `formulas/q1-f0.png`；
   /// 构建器凭此取字节；与 [CAtomicBlock.ref] 同口径）。
   final String ref;
+
+  /// 是否为原图降级（公式渲染失败但裁剪成功；PARTIAL 标记用，
+  /// D-188：与 [CAtomicBlock.isOriginal] 同口径，分页重建时透传）。
+  final bool isOriginal;
+
+  /// 是否已被缩小（超宽行内公式等比缩小；可疑标记“公式已缩小”用，
+  /// D-188：与 [CAtomicBlock.shrunk] 同口径，分页重建时透传）。
+  final bool shrunk;
 }
 
 /// 一个段落：连续的文本 + 行内公式（行内公式随行不断，整行移页）。
@@ -924,6 +934,10 @@ class _MeasuredParagraph {
           heightPt: span.formula.heightPt,
           formulaId: span.formula.formulaId,
           ref: span.formula.ref,
+          // D-188：分页重建行内公式时透传原图/缩小标记，否则
+          // _collectResults 汇总不到行内公式的降级状态。
+          isOriginal: span.formula.isOriginal,
+          shrunk: span.formula.shrunk,
         ),
       );
       cursor = span.measuredStart + span.length;

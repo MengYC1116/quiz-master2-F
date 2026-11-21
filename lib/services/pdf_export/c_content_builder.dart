@@ -202,6 +202,16 @@ class _FixedSizeBox extends pw.SingleChildWidget {
     );
     box = PdfRect.fromPoints(PdfPoint.zero, PdfPoint(width, height));
   }
+
+  // D-188：pdf 包的 SingleChildWidget 不重写 paint（Widget.paint
+  // 默认空操作），只重写 layout 会导致子件图片永远不画（十五批
+  // 20261121.pdf 公式/配图全丢的根源）。照抄 ConstrainedBox.paint：
+  // 先画自身（空操作），再画子件。
+  @override
+  void paint(pw.Context context) {
+    super.paint(context);
+    paintChild(context);
+  }
 }
 
 /// C 路线内容构建器：规划（[CPagePlan]）→ pdf widgets → [pw.Document]。
@@ -587,6 +597,13 @@ class CContentBuilder {
           if (block is CPartImage) {
             if (block.isOriginal) hasOriginal = true;
             if (block.shrunk) hasShrunk = true;
+          } else if (block is CPartRichText) {
+            // D-188：行内公式的原图/缩小标记同样汇总——只扫 CPartImage
+            // 时，只有行内公式降级的题会被误判 COMPLETE 而非 PARTIAL。
+            for (final f in block.inlineFormulas) {
+              if (f.isOriginal) hasOriginal = true;
+              if (f.shrunk) hasShrunk = true;
+            }
           }
         }
       }

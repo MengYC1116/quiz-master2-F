@@ -1,12 +1,13 @@
 // 十五批 M3：导出流程控制器（PLAN-15-REV3 §6 M3-2；M1-DESIGN.md §2）。
 //
-// 向导（界面）与生成/交付（服务）之间的编排层：
-// - 盘点 → 生成（两版，同一快照）→ 交付（逐份，P1-5 部分成功语义）；
+// 确认步（界面）与生成/交付（服务）之间的编排层：
+// - 盘点 → 生成（PDF 两版，同一快照；Word 单份，练习版与答案版在同一
+//   份 .docx 内）→ 交付（PDF 逐份，P1-5 部分成功语义；Word 单份）；
 // - 进度按题推进（服务侧 onProgress 回调：准备 / 公式栅格化按题报数，
-//   Isolate 生成阶段报“正在生成 PDF…”）；可取消（ExportCancellationToken，
-//   取消即停、清理临时文件、不留半截 PDF；C 路线栅格化取消由服务侧
-//   接 ExportCancellationToken → FormulaRasterizer.cancel()，见
-//   pdf_export_service.dart）；
+//   Isolate 生成阶段报“正在生成 PDF…” / “正在生成 Word…”）；可取消
+//   （ExportCancellationToken，取消即停、清理临时文件、不留半截文件；
+//   C 路线栅格化取消由服务侧接 ExportCancellationToken →
+//   FormulaRasterizer.cancel()，见 pdf_export_service.dart）；
 // - 完成 / 部分成功 / 失败 / 取消四种终态全部以数据留在控制器里，
 //   完成界面只做展示；导出不写数据库（快照在内存，报告在任务内），
 //   不推进治愈、不记复习记录、不动最近查看、不动角标。
@@ -17,6 +18,7 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 
+import '../word_export/word_export_service.dart';
 import 'export_integrity.dart';
 import 'export_inventory.dart';
 import 'export_route.dart';
@@ -36,7 +38,7 @@ typedef ComputeInventoryFn =
 /// 两版生成回调（生产：PdfExportService.generateVersions；测试：桩）。
 ///
 /// [subjectName]/[folderName] 为本次范围的展示名（多学科时“多学科”，
-/// 多文件夹时 null，由向导在点「生成」时按最终范围传入；不得取第一道
+/// 多文件夹时 null，由确认步在点「生成」时按最终范围传入；不得取第一道
 /// 题的学科 / 文件夹代表范围）；[excludeLowDpi] 为面板勾选的
 /// “排除低于清晰度阈值的题”。
 typedef GenerateVersionsFn =
@@ -60,15 +62,42 @@ typedef DeliverAllFn =
       required List<VersionDeliveryRequest> requests,
     });
 
+/// Word 生成回调（生产：WordExportService.generateVersions；测试：桩）。
+///
+/// 与 [GenerateVersionsFn] 同输入，返回单份 Word 结果（练习版与答案版
+/// 在同一份 .docx 内，不分版；答案版勾选时答案区追加在同一文件内）。
+typedef GenerateWordFn =
+    Future<WordExportResult> Function({
+      required List<String> ids,
+      required List<ExcludedQuestion> excluded,
+      required String filterText,
+      required String sortText,
+      required ExportVersionSelection versions,
+      required int circledCount,
+      required ExportCancellationToken token,
+      void Function(int done, int total, String label)? onProgress,
+      String subjectName,
+      String? folderName,
+      bool excludeLowDpi,
+    });
+
+/// Word 文件交付回调（生产：WordDeliveryService.deliver；测试：桩）。
+typedef DeliverWordFn =
+    Future<FileDeliveryResult> Function({
+      required Uint8List docxBytes,
+      required String fileName,
+      required int expectedImageCount,
+    });
+
 /// 导出流程阶段。
 enum ExportFlowPhase {
   /// 未开始。
   idle,
 
-  /// 正在盘点（第 3 步确认内容加载中）。
+  /// 正在盘点（确认步内容加载中）。
   preparing,
 
-  /// 正在生成 PDF（准备 / 栅格化 / Isolate 生成）。
+  /// 正在生成 PDF/Word（准备 / 栅格化 / Isolate 生成）。
   generating,
 
   /// 正在落盘交付（另存为对话框 / 写下载目录）。
@@ -97,6 +126,9 @@ class ExportCompletionRow {
     this.deliveredPath,
     this.generationError,
     this.deliveryError,
+    this.labelOverride,
+    this.isWordCombined = false,
+    this.fileSizeBytes,
   });
 
   /// 版本。
@@ -105,7 +137,8 @@ class ExportCompletionRow {
   /// 文件名（落盘后的实际文件名；生成失败时为期望文件名）。
   final String fileName;
 
-  /// 页数（已交付时为验证通过的页数）。
+  /// 页数（已交付时为验证通过的页数；Word 为 null——页数只有 Word
+  /// 打开后才知道，完成界面写“以 Word 打开为准”，不得编造）。
   final int? pageCount;
 
   /// 题数（已生成时为该版题数）。
@@ -120,6 +153,17 @@ class ExportCompletionRow {
   /// 交付失败原因（交付失败时非空）。
   final String? deliveryError;
 
+  /// 完成界面显示的版本标签覆盖（Word 行显示 'Word'，不显示
+  /// '练习版'；为 null 时显示 [version] 的 label）。
+  final String? labelOverride;
+
+  /// 是否 Word 合并文件（练习版与答案版在同一份 .docx 内；
+  /// 为 true 时完成界面隐藏答案版文件名行，显示合并说明）。
+  final bool isWordCombined;
+
+  /// 文件字节数（Word 行展示用实际大小；PDF 行不用）。
+  final int? fileSizeBytes;
+
   /// 是否已交付。
   bool get isDelivered => deliveredPath != null && deliveryError == null;
 
@@ -133,6 +177,8 @@ class ExportFlowController extends ChangeNotifier {
     required this.computeInventory,
     required this.generateVersions,
     required this.deliverAll,
+    this.generateWord,
+    this.deliverWord,
     this.openFile,
     this.openFolder,
     this.shareFile,
@@ -147,6 +193,12 @@ class ExportFlowController extends ChangeNotifier {
 
   /// 文件交付回调。
   final DeliverAllFn deliverAll;
+
+  /// Word 生成回调（Word 格式时必需；PDF 格式时可不传）。
+  final GenerateWordFn? generateWord;
+
+  /// Word 文件交付回调（Word 格式时必需；PDF 格式时可不传）。
+  final DeliverWordFn? deliverWord;
 
   /// 打开文件（生产：PdfDeliveryService.openPdf；测试：桩）。
   final Future<bool> Function(String path)? openFile;
@@ -171,15 +223,22 @@ class ExportFlowController extends ChangeNotifier {
       _phase == ExportFlowPhase.failed ||
       _phase == ExportFlowPhase.cancelled;
 
-  /// 盘点结果（第 3 步确认内容；准备失败时为 null）。
+  /// 盘点结果（确认步内容；准备失败时为 null）。
   ExportInventory? inventory;
 
   /// 两版生成结果（生成成功后非空；两版都失败时为 null，见
   /// [error]）。
   TwoVersionExportResult? versionsResult;
 
+  /// Word 生成结果（Word 格式生成成功后非空；与 [versionsResult]
+  /// 二选一，Word 不用两版结果）。
+  WordExportResult? wordResult;
+
   /// 每份文件的交付结果（交付阶段后非空，按版本顺序）。
   List<FileDeliveryResult>? deliveryResults;
+
+  /// Word 文件的交付结果（Word 格式交付阶段后非空；单份）。
+  FileDeliveryResult? wordDeliveryResult;
 
   /// 整单失败原因（phase == failed 时非空；面向用户的明确说明）。
   String? error;
@@ -207,7 +266,7 @@ class ExportFlowController extends ChangeNotifier {
   /// 只出「分享」）。
   bool get supportsOpen => !isAndroid;
 
-  /// 盘点（第 3 步进入时调；失败 → phase failed + [error]）。
+  /// 盘点（确认步进入时调；失败 → phase failed + [error]）。
   Future<void> prepare({
     required List<String> ids,
     required List<ExcludedQuestion> excluded,
@@ -222,8 +281,8 @@ class ExportFlowController extends ChangeNotifier {
         excluded: excluded,
         circledCount: circledCount,
       );
-      // 盘点本身不推进阶段：确认内容由向导展示，仍停在 preparing
-      // 语义上等价于“待确认”；向导以 inventory 非空判定加载完成。
+      // 盘点本身不推进阶段：确认内容由确认步展示，仍停在 preparing
+      // 语义上等价于“待确认”；确认步以 inventory 非空判定加载完成。
       // 阶段保持 preparing 直到 start() 或新的 prepare()。
       notifyListeners();
     } on ExportCancelledException {
@@ -234,12 +293,15 @@ class ExportFlowController extends ChangeNotifier {
     }
   }
 
-  /// 开始生成 + 交付（第 3 步点「生成」后调）。
+  /// 开始生成 + 交付（确认步点「生成」后调）。
   ///
-  /// [fileNameFor] 为用户确认后的文件名（含 .pdf；答案版由向导按
-  /// 练习版文件名派生 `_答案` 后缀，见 export_filename.dart）。
+  /// [fileNameFor] 为用户确认后的文件名（PDF：含 .pdf；答案版由确认步
+  /// 按练习版文件名派生 `_答案` 后缀，见 export_filename.dart；
+  /// Word：单份文件，取练习版文件名，扩展名 .docx）。
+  /// [format] 决定走 PDF 两版流程还是 Word 单份流程（十六批 C，
+  /// D-190/D-194；默认 PDF，现有调用方不受影响）。
   /// 确认前断言 selected.length <= 50（M1-DESIGN §2 第 2 点）：
-  /// 超限则阻断生成并报错，不生成 PDF。
+  /// 超限则阻断生成并报错，不生成文件。
   Future<void> start({
     required List<String> ids,
     required List<ExcludedQuestion> excluded,
@@ -251,6 +313,7 @@ class ExportFlowController extends ChangeNotifier {
     String subjectName = '多学科',
     String? folderName,
     bool excludeLowDpi = false,
+    ExportFormat format = ExportFormat.pdf,
   }) async {
     if (ids.length > kExportMaxQuestions) {
       error = '单次最多导出 50 道题';
@@ -267,9 +330,27 @@ class ExportFlowController extends ChangeNotifier {
     progressTotal = ids.length;
     progressLabel = '正在准备题目…';
     versionsResult = null;
+    wordResult = null;
     deliveryResults = null;
+    wordDeliveryResult = null;
     error = null;
     _setPhase(ExportFlowPhase.generating);
+    if (format == ExportFormat.word) {
+      await _startWord(
+        ids: ids,
+        excluded: excluded,
+        filterText: filterText,
+        sortText: sortText,
+        versions: versions,
+        circledCount: circledCount,
+        fileNameFor: fileNameFor,
+        subjectName: subjectName,
+        folderName: folderName,
+        excludeLowDpi: excludeLowDpi,
+        token: token,
+      );
+      return;
+    }
     try {
       final result = await generateVersions(
         ids: ids,
@@ -329,13 +410,101 @@ class ExportFlowController extends ChangeNotifier {
     }
   }
 
+  /// Word 单份流程：生成一份 .docx（练习版与答案版在同一文件内）
+  /// → 单份交付。生成/交付回调未接入时整单失败（不静默回落 PDF）。
+  Future<void> _startWord({
+    required List<String> ids,
+    required List<ExcludedQuestion> excluded,
+    required String filterText,
+    required String sortText,
+    required ExportVersionSelection versions,
+    required int circledCount,
+    required String Function(ExportVersion version) fileNameFor,
+    required String subjectName,
+    required String? folderName,
+    required bool excludeLowDpi,
+    required ExportCancellationToken token,
+  }) async {
+    final generate = generateWord;
+    final deliver = deliverWord;
+    if (generate == null || deliver == null) {
+      error = 'Word 导出未接入，请稍后再试。';
+      _setPhase(ExportFlowPhase.failed);
+      return;
+    }
+    try {
+      final result = await generate(
+        ids: ids,
+        excluded: excluded,
+        filterText: filterText,
+        sortText: sortText,
+        versions: versions,
+        circledCount: circledCount,
+        token: token,
+        onProgress: (done, total, label) {
+          progressDone = done;
+          progressTotal = total;
+          progressLabel = label;
+          notifyListeners();
+        },
+        subjectName: subjectName,
+        folderName: folderName,
+        excludeLowDpi: excludeLowDpi,
+      );
+      wordResult = result;
+      // 交付：单份交付（无部分成功语义；一份文件要么交付要么失败）。
+      _setPhase(ExportFlowPhase.delivering);
+      progressLabel = '正在保存文件…';
+      notifyListeners();
+      wordDeliveryResult = await deliver(
+        docxBytes: result.docxBytes,
+        fileName: fileNameFor(ExportVersion.practice),
+        expectedImageCount: result.imageCount,
+      );
+      _setPhase(ExportFlowPhase.done);
+    } on ExportCancelledException {
+      // 取消即停：服务侧已清理快照临时目录，不留半截 docx。
+      _setPhase(ExportFlowPhase.cancelled);
+    } catch (e) {
+      error = _userMessage(e);
+      _setPhase(ExportFlowPhase.failed);
+    }
+  }
+
   /// 请求取消（进度界面「取消」按钮；取消后服务侧停在下一个检查点，
   /// 清理临时文件，不留半截 PDF，不留僵尸 Isolate）。
   void cancel() => _token?.cancel();
 
   /// 完成界面展示行（生成结果 + 交付结果按版本拼行；生成失败的版本
   /// 只有生成错误行；部分成功时逐份列出成功/失败，不得伪装）。
+  ///
+  /// Word 格式时只有一行（标签 'Word'，不带页数，题数为已印题数，
+  /// 文件大小为实际字节数）。
   List<ExportCompletionRow> get completionRows {
+    final word = wordResult;
+    if (word != null) {
+      final delivered = wordDeliveryResult;
+      return [
+        ExportCompletionRow(
+          version: ExportVersion.practice,
+          fileName: delivered?.fileName ?? '',
+          pageCount: null,
+          questionCount:
+              word.report.completeCount + word.report.partialCount,
+          deliveredPath: delivered?.isDelivered == true
+              ? delivered!.filePath
+              : null,
+          deliveryError: delivered?.status == FileDeliveryStatus.failed
+              ? delivered!.error
+              : delivered?.status == FileDeliveryStatus.cancelled
+              ? '已取消保存'
+              : null,
+          labelOverride: 'Word',
+          isWordCombined: true,
+          fileSizeBytes: word.docxBytes.length,
+        ),
+      ];
+    }
     final result = versionsResult;
     if (result == null) return const [];
     final rows = <ExportCompletionRow>[];
@@ -383,10 +552,11 @@ class ExportFlowController extends ChangeNotifier {
 
   /// 完整性报告摘要行（完成界面展示；按路线两张表，见 M1-DESIGN §12）。
   ///
-  /// 返回空列表表示无报告可展示（如生成失败）。
+  /// 返回空列表表示无报告可展示（如生成失败）。Word 格式时在末尾
+  /// 追加两行：文件实际大小 + 字体未嵌入提示（D-193；不编造页数）。
   List<String> get reportSummaryLines {
-    final result = versionsResult;
-    final report = result?.report;
+    final word = wordResult;
+    final report = word?.report ?? versionsResult?.report;
     if (report == null) return const [];
     final lines = <String>[];
     final routeLabel = report.route == ExportRoute.c
@@ -422,12 +592,17 @@ class ExportFlowController extends ChangeNotifier {
         '${report.explanationsTotal} 道',
       );
     }
+    if (word != null) {
+      lines.add('文件大小：${_formatBytes(word.docxBytes.length)}');
+      lines.add('字体未嵌入：在未安装 Noto Sans SC 的电脑上打开时，'
+          'Word 会以替用字体显示。');
+    }
     return lines;
   }
 
   /// 警告清单明细（有跳过 / 缺失 / 降级题时可展开看；每项含题名与原因）。
   List<String> get warningDetails {
-    final report = versionsResult?.report;
+    final report = wordResult?.report ?? versionsResult?.report;
     if (report == null) return const [];
     final lines = <String>[];
     for (final entry in report.entries) {
@@ -466,6 +641,15 @@ class ExportFlowController extends ChangeNotifier {
   void _setPhase(ExportFlowPhase phase) {
     _phase = phase;
     notifyListeners();
+  }
+
+  /// 字节数转人类可读大小（Word 完成行展示用实际大小）。
+  String _formatBytes(int bytes) {
+    if (bytes < 1024) return '$bytes B';
+    if (bytes < 1024 * 1024) {
+      return '${(bytes / 1024).toStringAsFixed(1)} KB';
+    }
+    return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
   }
 
   String _userMessage(Object e) {

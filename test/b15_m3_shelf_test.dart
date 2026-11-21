@@ -1,7 +1,7 @@
-// 十五批 M3：书架页顶栏「新建导出单」入口（D-169）。
+// 十六批 B（D-190）：书架页顶栏「新建导出单」入口已废（D-169 作废）。
 //
-// 0 题时按钮置灰 + 提示「先筛选出题目」；有题时可点，点开 D-168 向导
-// （第 1 步选范围）；向导内取消即丢弃本次选择。
+// 书架顶栏只留已归档入口与提示；导出改到错题本列表页直接勾选
+//（入口在列表页工具栏，见 test/b16_direct_export_test.dart）。
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:quiz_master2/data/database.dart';
@@ -9,7 +9,6 @@ import 'package:quiz_master2/data/repository.dart';
 import 'package:quiz_master2/models/models.dart';
 import 'package:quiz_master2/modules/wrongbook/wrongbook_page.dart';
 import 'package:quiz_master2/theme/app_theme.dart';
-import 'package:quiz_master2/widgets/uikit.dart';
 
 Question shelfQ(String id, {String subjectId = 'math'}) => Question(
   id: id,
@@ -79,34 +78,29 @@ Future<void> pumpShelf(WidgetTester tester, ShelfFakeRepo repo) async {
 }
 
 void main() {
-  group('书架页顶栏「新建导出单」入口', () {
-    testWidgets('有题时按钮可用，点开向导第 1 步', (tester) async {
+  group('书架页顶栏：向导入口已废', () {
+    testWidgets('有题时也不再有「新建导出单」按钮与「先筛选出题目」提示', (
+      tester,
+    ) async {
       await pumpShelf(
         tester,
         ShelfFakeRepo(questions: [shelfQ('q1'), shelfQ('q2')]),
       );
-      final button = tester.widget<QmButton>(
-        find.byKey(const Key('new-export-order')),
+      expect(find.byKey(const Key('new-export-order')), findsNothing);
+      expect(find.text('新建导出单'), findsNothing);
+      expect(find.text('先筛选出题目'), findsNothing);
+      // 已归档入口与提示仍在。
+      expect(find.textContaining('已归档'), findsOneWidget);
+      expect(
+        find.text('归档的题不在书里，点这里看归档列表、能恢复回错题本'),
+        findsOneWidget,
       );
-      expect(button.onPressed, isNotNull);
-      await tester.tap(find.byKey(const Key('new-export-order')));
-      await tester.pumpAndSettle();
-      expect(find.text('新建导出单 · 第 1 步：选范围'), findsOneWidget);
-      expect(find.text('圈定 2 道题'), findsOneWidget);
-      // 向导内取消：对话框关闭，回到书架。
-      await tester.tap(find.text('取消'));
-      await tester.pumpAndSettle();
-      expect(find.text('新建导出单 · 第 1 步：选范围'), findsNothing);
-      expect(find.text('错题本'), findsOneWidget);
     });
 
-    testWidgets('0 题时按钮置灰 + 提示「先筛选出题目」', (tester) async {
+    testWidgets('0 题时同样没有导出入口', (tester) async {
       await pumpShelf(tester, ShelfFakeRepo(questions: []));
-      final button = tester.widget<QmButton>(
-        find.byKey(const Key('new-export-order')),
-      );
-      expect(button.onPressed, isNull);
-      expect(find.text('先筛选出题目'), findsOneWidget);
+      expect(find.byKey(const Key('new-export-order')), findsNothing);
+      expect(find.text('新建导出单'), findsNothing);
     });
   });
 }

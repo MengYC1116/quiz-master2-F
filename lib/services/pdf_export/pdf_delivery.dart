@@ -183,11 +183,19 @@ class PdfDeliveryService {
 
   /// 按平台分发交付（一份文件）：Windows 走另存为对话框，
   /// Android 走公共下载目录，其它平台返回失败（不静默改写别处）。
+  ///
+  /// 十六批 C（D-195）：Word 复用本方法，只换三处——[validator]
+  ///（默认 `defaultPdfFileValidator`，PDF 页数校验）、[dialogTitle]
+  ///（默认 '保存 PDF'）、[includePageCount]（默认 true；Word 传
+  /// false，结果不带页数）。三者都不传时行为与原来完全一致。
   Future<FileDeliveryResult> deliver({
     required Uint8List pdfBytes,
     required String fileName,
     required ExportVersion version,
     required int expectedPages,
+    PdfFileValidator? validator,
+    String? dialogTitle,
+    bool includePageCount = true,
   }) {
     if (_platform == PdfDeliveryPlatform.windows) {
       return deliverWindows(
@@ -195,6 +203,9 @@ class PdfDeliveryService {
         fileName: fileName,
         version: version,
         expectedPages: expectedPages,
+        validator: validator,
+        dialogTitle: dialogTitle ?? '保存 PDF',
+        includePageCount: includePageCount,
       );
     }
     if (_platform == PdfDeliveryPlatform.android) {
@@ -203,6 +214,8 @@ class PdfDeliveryService {
         fileName: fileName,
         version: version,
         expectedPages: expectedPages,
+        validator: validator,
+        includePageCount: includePageCount,
       );
     }
     return Future.value(
@@ -225,9 +238,12 @@ class PdfDeliveryService {
     required String fileName,
     required ExportVersion version,
     required int expectedPages,
+    PdfFileValidator? validator,
+    String dialogTitle = '保存 PDF',
+    bool includePageCount = true,
   }) async {
     final picked = await _pickSavePath(
-      dialogTitle: '保存 PDF',
+      dialogTitle: dialogTitle,
       fileName: fileName,
     );
     if (picked == null) {
@@ -243,6 +259,8 @@ class PdfDeliveryService {
       version: version,
       expectedPages: expectedPages,
       overwrite: true,
+      validator: validator,
+      includePageCount: includePageCount,
     );
   }
 
@@ -255,6 +273,8 @@ class PdfDeliveryService {
     required String fileName,
     required ExportVersion version,
     required int expectedPages,
+    PdfFileValidator? validator,
+    bool includePageCount = true,
   }) async {
     final downloads = await _downloadsDirectory();
     if (downloads == null) {
@@ -273,6 +293,8 @@ class PdfDeliveryService {
       version: version,
       expectedPages: expectedPages,
       overwrite: false,
+      validator: validator,
+      includePageCount: includePageCount,
     );
   }
 
@@ -280,6 +302,8 @@ class PdfDeliveryService {
   ///
   /// [overwrite] 为 true 仅当调用方已取得用户覆盖确认（如 Windows
   /// 另存为对话框）；默认 false → 目标已存在时顺延命名。
+  /// [validator] 为 null 时用默认 PDF 校验（页数与预期一致）；
+  /// [includePageCount] 为 false 时结果不带页数（Word：页数生成时未知）。
   /// 本方法不抛错：失败以 [FileDeliveryResult] 返回（M3 直接展示）。
   Future<FileDeliveryResult> deliverToPath({
     required Uint8List pdfBytes,
@@ -287,6 +311,8 @@ class PdfDeliveryService {
     required ExportVersion version,
     required int expectedPages,
     bool overwrite = false,
+    PdfFileValidator? validator,
+    bool includePageCount = true,
   }) async {
     try {
       final file = await writePdfAtomically(
@@ -294,13 +320,14 @@ class PdfDeliveryService {
         bytes: pdfBytes,
         expectedPages: expectedPages,
         overwrite: overwrite,
+        validate: validator,
       );
       return FileDeliveryResult(
         status: FileDeliveryStatus.delivered,
         version: version,
         fileName: file.uri.pathSegments.last,
         filePath: file.path,
-        pageCount: expectedPages,
+        pageCount: includePageCount ? expectedPages : null,
       );
     } on AtomicWriteException catch (e) {
       return FileDeliveryResult(

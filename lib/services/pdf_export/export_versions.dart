@@ -71,3 +71,36 @@ class ExportVersionSelection {
         if (answer) ExportVersion.answer,
       ];
 }
+
+// ------------------------------------------------------------------
+// 导出格式（十六批 B，D-190；十六批 C 启用 Word）。
+//
+// - PDF：生成流程走 PDF；
+// - Word：C 包实现（docx_creator，见 batch16-work/spikes/
+//   WORD-SPIKE.md），确认步可选，生成入口按格式分发
+//   （见 ExportFlowController.start 的 format 参数）。
+// ------------------------------------------------------------------
+
+/// 导出文件格式（确认步单选）。
+enum ExportFormat {
+  /// PDF。
+  pdf,
+
+  /// Word（.docx）。
+  word;
+
+  /// 确认步里的中文名。
+  String get label => switch (this) {
+        ExportFormat.pdf => 'PDF',
+        ExportFormat.word => 'Word',
+      };
+
+  /// 现在能不能选（十六批 C：Word 已实现，可选）。
+  bool get availableNow => true;
+
+  /// 文件扩展名（含圆点）。
+  String get extension => switch (this) {
+        ExportFormat.pdf => '.pdf',
+        ExportFormat.word => '.docx',
+      };
+}

@@ -42,49 +42,174 @@ extension _WrongbookListBuild on _WrongbookViewState {
     // B8-9：去掉蓝色大框（_openBookFrame）：工具条 / 筛选 / 列表 / 分页
     // 直接落在页面底色上，列表本体按定稿 A 留白卡片排版。
     // 目录页的书框不动（那是目录页的样式，不在本次范围）。
-    return SingleChildScrollView(
-      padding: EdgeInsets.zero,
+    // 十六批 B（D-190）：汇总条常驻底部（不随列表滚动）：滚动区
+    // 包进 Expanded，汇总条固定在下面；已归档视图没有导出勾选，
+    // 不画汇总条。
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Expanded(
+          child: SingleChildScrollView(
+            padding: EdgeInsets.zero,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                _buildListHeader(title, scale),
+                _pageSubtitle('这一科的题目列表，点一道题进题目详情；筛选里没有文件夹，文件夹在目录页选。'),
+                _buildListToolbar(),
+                if (_s.filterOpen) _buildFilterPanel(),
+                if (!_s.inBookArchived) _buildMasteredNote(),
+                if (_s.inBookArchived) _buildArchBar(all.length),
+                if (_s.batchMode && !_s.inBookArchived) _buildBatchBar(all),
+                _buildListBody(items, orderIds),
+                if (all.isNotEmpty) _buildPagination(all.length, totalPages, page),
+                // B8-9：页尾留白——分页器是页内最后一个元素，滚到底时它贴着
+                // 视口底边；此时点“每页 N 道”下拉，框架按选中项对齐按钮中心
+                // 会把菜单底推出视口（debug 下触发 dropdown.dart 的
+                // menuLimits 断言；release 下菜单底被裁 5px）。留 24px，
+                // 按钮离底边够远、菜单放得下，视觉上页尾也不挤。
+                SizedBox(height: 24 * scale),
+              ],
+            ),
+          ),
+        ),
+        if (!_s.inBookArchived) _buildExportSummaryBar(),
+      ],
+    );
+  }
+
+  /// 列表页头（标题 + 目录 / 合上按钮）：从 _buildList 拆出，
+  /// 只为让汇总条常驻底部的 Column 结构可读。
+  Widget _buildListHeader(String title, double scale) {
+    return Row(
+      children: [
+        Expanded(child: _pageTitle(title)),
+        QmButton(
+          label: '← 目录',
+          variant: QmButtonVariant.plain,
+          onPressed: () {
+            if (_sr.subjectId != null) {
+              _openDirectory(_sr.subjectId!);
+            } else {
+              _openShelf();
+            }
+          },
+        ),
+        SizedBox(width: 8 * scale),
+        QmButton(
+          label: '合上 ✕',
+          variant: QmButtonVariant.plain,
+          onPressed: _openShelf,
+        ),
+      ],
+    );
+  }
+
+  /// 底部常驻汇总条（十六批 B，D-190）：一直显示已选多少道；
+  /// 点开是清单（题号 + 题干开头），能一个个取消勾选；汇总里还
+  /// 有涉及几个学科 / 文件夹、有没有会被跳过的题（后台盘点）；
+  /// 收起来只剩数字。翻页、换筛选不丢已选（选择在 Notifier 里
+  /// 按 ID 持有，与当前页无关）。
+  Widget _buildExportSummaryBar() {
+    final scale = qmScaleOf(context);
+    final palette = DesignTokens.of(Theme.of(context).brightness);
+    final selectedQs = _exportSelectedQuestions(_s);
+    final count = selectedQs.length;
+    final subjectCount =
+        selectedQs.map((q) => q.subjectId).toSet().length;
+    final folderCount =
+        selectedQs.expand((q) => q.folderIds).toSet().length;
+    final skipText = _exportSkipSummary(selectedQs);
+    final numbers = '已选 $count / 50 道'
+        '${count > 0 ? ' · $subjectCount 个学科 · $folderCount 个文件夹' : ''}'
+        '${skipText == null ? '' : ' · $skipText'}';
+    return Container(
+      key: const Key('export-summary-bar'),
+      padding: EdgeInsets.symmetric(
+        horizontal: 12 * scale,
+        vertical: 10 * scale,
+      ),
+      decoration: BoxDecoration(
+        color: palette.surface2,
+        border: Border(top: BorderSide(color: palette.lineStrong)),
+      ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
         children: [
           Row(
             children: [
-              Expanded(child: _pageTitle(title)),
-              QmButton(
-                label: '← 目录',
-                variant: QmButtonVariant.plain,
-                onPressed: () {
-                  if (_sr.subjectId != null) {
-                    _openDirectory(_sr.subjectId!);
-                  } else {
-                    _openShelf();
-                  }
-                },
+              Expanded(
+                child: GestureDetector(
+                  onTap: _toggleExportSummaryExpanded,
+                  child: Text(
+                    '$numbers ${_exportSummaryExpanded ? '▴ 收起' : '▾ 清单'}',
+                    key: const Key('export-summary-numbers'),
+                    style: const TextStyle(fontWeight: FontWeight.w700),
+                  ),
+                ),
               ),
-              SizedBox(width: 8 * scale),
+              if (count > 0) ...[
+                QmButton(
+                  label: '清除选择',
+                  variant: QmButtonVariant.plain,
+                  size: QmButtonSize.small,
+                  onPressed: () {
+                    _n.clearExportSelected();
+                    _scheduleExportInventoryRefresh();
+                  },
+                ),
+                SizedBox(width: 8 * scale),
+              ],
               QmButton(
-                label: '合上 ✕',
-                variant: QmButtonVariant.plain,
-                onPressed: _openShelf,
+                key: const Key('export-selected-bar'),
+                label: '导出',
+                variant: QmButtonVariant.secondary,
+                size: QmButtonSize.small,
+                onPressed: count == 0 ? null : _openExportConfirm,
               ),
             ],
           ),
-          _pageSubtitle('这一科的题目列表，点一道题进题目详情；筛选里没有文件夹，文件夹在目录页选。'),
-          _buildListToolbar(),
-          if (_s.filterOpen) _buildFilterPanel(),
-          if (!_s.inBookArchived) _buildMasteredNote(),
-          if (_s.inBookArchived) _buildArchBar(all.length),
-          if (_s.batchMode && !_s.inBookArchived) _buildBatchBar(all),
-          _buildListBody(items, orderIds),
-          if (all.isNotEmpty) _buildPagination(all.length, totalPages, page),
-          // B8-9：页尾留白——分页器是页内最后一个元素，滚到底时它贴着
-          // 视口底边；此时点“每页 N 道”下拉，框架按选中项对齐按钮中心
-          // 会把菜单底推出视口（debug 下触发 dropdown.dart 的
-          // menuLimits 断言；release 下菜单底被裁 5px）。留 24px，
-          // 按钮离底边够远、菜单放得下，视觉上页尾也不挤。
-          SizedBox(height: 24 * scale),
+          if (_exportSummaryExpanded) ...[
+            SizedBox(height: 8 * scale),
+            if (selectedQs.isEmpty)
+              const Text('还没有勾选题目，去列表里勾选吧。')
+            else
+              SizedBox(
+                height: 240 * scale,
+                child: ListView(
+                  children: [
+                    for (var i = 0; i < selectedQs.length; i++)
+                      _buildExportSummaryRow(selectedQs[i], i + 1),
+                  ],
+                ),
+              ),
+          ],
         ],
       ),
+    );
+  }
+
+  /// 汇总清单里的一行：题号 + 题干开头（标题，单行省略）+ 取消勾选。
+  Widget _buildExportSummaryRow(Question q, int number) {
+    return Row(
+      children: [
+        Expanded(
+          child: Text(
+            '$number. ${q.title}',
+            key: ValueKey('export-summary-item-${q.id}'),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
+        ),
+        QmButton(
+          key: ValueKey('export-uncheck-${q.id}'),
+          label: '✕',
+          variant: QmButtonVariant.plain,
+          size: QmButtonSize.small,
+          onPressed: () => _removeExportSelected(q.id),
+        ),
+      ],
     );
   }
 
@@ -322,6 +447,20 @@ extension _WrongbookListBuild on _WrongbookViewState {
                   selected: const <String>{},
                 ),
               ),
+            ),
+          // 十六批 B（D-190）：导出入口——列表页工具栏。勾选为空时
+          // 置灰；有勾选时点开确认步（D-168/D-169 的向导入口已废）。
+          if (!_s.inBookArchived)
+            QmButton(
+              key: const Key('export-selected-toolbar'),
+              label: _s.exportSelected.isEmpty
+                  ? '导出'
+                  : '导出（${_s.exportSelected.length}）',
+              variant: QmButtonVariant.secondary,
+              size: QmButtonSize.small,
+              onPressed: _s.exportSelected.isEmpty
+                  ? null
+                  : _openExportConfirm,
             ),
         ],
       ),
@@ -843,10 +982,20 @@ extension _WrongbookListBuild on _WrongbookViewState {
         for (var i = 0; i < cards.length; i++) ...[
           if (i > 0) SizedBox(height: 14 * scale),
           Container(
+            // 十六批 B（D-190）：勾过的卡片边框加粗变主色（与紧凑行
+            // 高亮同款语义）。
+            key: ValueKey('export-card-${items[i].id}'),
             padding: EdgeInsets.all(12 * scale),
             decoration: BoxDecoration(
-              color: palette.surface,
-              border: Border.all(color: palette.line),
+              color: _s.exportSelected.contains(items[i].id)
+                  ? palette.accentSoft
+                  : palette.surface,
+              border: Border.all(
+                color: _s.exportSelected.contains(items[i].id)
+                    ? palette.accent
+                    : palette.line,
+                width: _s.exportSelected.contains(items[i].id) ? 2 : 1,
+              ),
               borderRadius: BorderRadius.circular(DesignTokens.radius * scale),
               boxShadow: palette.shadow,
             ),
@@ -926,6 +1075,23 @@ extension _WrongbookListBuild on _WrongbookViewState {
               ),
             ),
           ),
+        // 十六批 B（D-190）：导出勾选框（右上角，与左上角序号圆盘、
+        // 批量勾选框不冲突；常驻，不依赖批量模式）。
+        Positioned(
+          top: 9 * scale,
+          right: 9 * scale,
+          child: Container(
+            decoration: BoxDecoration(
+              color: palette.surface,
+              borderRadius: BorderRadius.circular(5 * scale),
+            ),
+            child: Checkbox(
+              key: ValueKey('export-check-${q.id}'),
+              value: _s.exportSelected.contains(q.id),
+              onChanged: (_) => _toggleExportSelected(q.id),
+            ),
+          ),
+        ),
       ],
     );
   }
@@ -948,37 +1114,54 @@ extension _WrongbookListBuild on _WrongbookViewState {
     final scale = qmScaleOf(context);
     final palette = DesignTokens.of(Theme.of(context).brightness);
     final nextRecheck = _s.nextRecheckOf(q);
+    // 十六批 B（D-190）：勾过的行一直高亮（浅底），与批量勾选无关。
+    final exportChecked = _s.exportSelected.contains(q.id);
     return InkWell(
       onTap: () async {
         await widget.onOpenDetail(q, orderIds);
         await _n.load();
       },
       borderRadius: BorderRadius.circular(6 * scale),
-      child: Padding(
-        padding: EdgeInsets.fromLTRB(
-          DesignTokens.prowPaddingLeft * scale,
-          DesignTokens.prowPaddingV * scale,
-          DesignTokens.prowPaddingH * scale,
-          DesignTokens.prowPaddingV * scale,
+      child: Container(
+        key: ValueKey('export-row-${q.id}'),
+        decoration: BoxDecoration(
+          color: exportChecked ? palette.accentSoft : Colors.transparent,
+          borderRadius: BorderRadius.circular(6 * scale),
         ),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            if (_s.batchMode)
+        child: Padding(
+          padding: EdgeInsets.fromLTRB(
+            DesignTokens.prowPaddingLeft * scale,
+            DesignTokens.prowPaddingV * scale,
+            DesignTokens.prowPaddingH * scale,
+            DesignTokens.prowPaddingV * scale,
+          ),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              if (_s.batchMode)
+                Padding(
+                  padding: EdgeInsets.only(right: 8 * scale),
+                  child: Checkbox(
+                    value: _s.selected.contains(q.id),
+                    onChanged: (v) => _n.toggleSelected(q.id, v == true),
+                  ),
+                ),
+              // 十六批 B（D-190）：导出勾选框（常驻，不依赖批量模式）。
               Padding(
                 padding: EdgeInsets.only(right: 8 * scale),
                 child: Checkbox(
-                  value: _s.selected.contains(q.id),
-                  onChanged: (v) => _n.toggleSelected(q.id, v == true),
+                  key: ValueKey('export-check-${q.id}'),
+                  value: exportChecked,
+                  onChanged: (_) => _toggleExportSelected(q.id),
                 ),
               ),
-            GestureDetector(
-              onTap: () => showQuestionZoomDialog(context, q),
-              child: CompactSliceThumb(
-                question: q,
-                subject: _s.subjectOf(q.subjectId),
+              GestureDetector(
+                onTap: () => showQuestionZoomDialog(context, q),
+                child: CompactSliceThumb(
+                  question: q,
+                  subject: _s.subjectOf(q.subjectId),
+                ),
               ),
-            ),
             SizedBox(width: 12 * scale),
             Expanded(
               child: Column(
@@ -1030,6 +1213,7 @@ extension _WrongbookListBuild on _WrongbookViewState {
             ),
           ],
         ),
+      ),
       ),
     );
   }

@@ -33,7 +33,7 @@ enum ContentGuardStatus {
   /// 总栅格 ≤ 80 Mpx：正常继续。
   ok,
 
-  /// 总栅格 > 80 Mpx：向导确认步明确提示，用户确认后才继续。
+  /// 总栅格 > 80 Mpx：确认步明确提示，用户确认后才继续。
   softWarning,
 
   /// 总栅格 > 150 Mpx：阻断生成，不生成 PDF。
