@@ -122,7 +122,7 @@ void main() {
       await _pumpHistoryHome(
         tester,
         repo: repo,
-        onOpenDetail: (q, ids) {
+        onOpenDetail: (q, ids, {String? searchContext}) {
           opened = q;
           openedIds = ids;
         },

@@ -27,6 +27,26 @@ class _B8FakeRepo extends QuestionRepository {
 
   List<Subject> subjectsValue;
 
+  /// 十九批 A3：内存版已存查找（不碰真实库；不覆盖会走到真实库，
+  /// load() 里的 savedSearches() 永不完成，页面卡 loading 转圈，
+  /// pumpAndSettle 超时）。
+  final List<SavedSearch> savedSearchList = [];
+
+  @override
+  Future<List<SavedSearch>> savedSearches() async =>
+      List.of(savedSearchList);
+
+  @override
+  Future<void> saveSavedSearch(SavedSearch search) async {
+    savedSearchList.removeWhere((s) => s.id == search.id);
+    savedSearchList.add(search);
+  }
+
+  @override
+  Future<void> deleteSavedSearch(String id) async {
+    savedSearchList.removeWhere((s) => s.id == id);
+  }
+
   @override
   Future<List<Subject>> subjects() async => List.of(subjectsValue);
 
@@ -261,10 +281,15 @@ void main() {
           repo: _B8FakeRepo(subjects: const []),
           onOpenHome: () {},
           onGoSubjects: () => wentToSubjects = true,
-          onOpenDetail: (_, __) async {},
+          onOpenDetail: (_, __, {String? searchContext}) async {},
           onGoReview: ({String? subjectId}) {},
         ),
       );
+      // 十九批 A5：默认落点改 L1 列表，书架从筛选面板顶部入口进。
+      await tester.tap(find.text('筛选 ▾'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('📚 书架（按学科浏览）'));
+      await tester.pumpAndSettle();
       for (final name in ['数学', '英语', '政治']) {
         expect(find.text(name), findsNothing);
       }
@@ -282,10 +307,14 @@ void main() {
         WrongbookPage(
           repo: _B8FakeRepo(),
           onOpenHome: () {},
-          onOpenDetail: (_, __) async {},
+          onOpenDetail: (_, __, {String? searchContext}) async {},
           onGoReview: ({String? subjectId}) {},
         ),
       );
+      await tester.tap(find.text('筛选 ▾'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('📚 书架（按学科浏览）'));
+      await tester.pumpAndSettle();
       for (final name in ['数学', '英语', '政治']) {
         expect(find.text(name), findsOneWidget);
       }

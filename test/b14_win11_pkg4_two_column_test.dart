@@ -231,6 +231,11 @@ class _P4DetailRepo extends QuestionRepository {
 
   @override
   Future<void> syncCauseRecords(Question question) async {}
+
+  /// 详情页自愈（_healSliceIfNeeded）读同页框：无框，不碰真实库（见 D-88）。
+  @override
+  Future<List<QuestionBox>> boxesForPageImage(String pageImagePath) async =>
+      const [];
 }
 
 ProviderContainer _orgContainer(_P4OrgRepo repo) {
@@ -813,7 +818,7 @@ void main() {
       await _pumpOrganize(tester, repo);
       await tester.tap(find.text('重新分类'));
       await tester.pumpAndSettle();
-      expect(find.text('仍无法自动定型，请人工指定'), findsOneWidget);
+      expect(find.text('仍无法自动分类，请人工指定'), findsOneWidget);
       expect(find.widgetWithText(QmChip, '待确认'), findsOneWidget);
     });
 
@@ -867,8 +872,8 @@ void main() {
         questions: [_q('q1', '默写题', ocrRaw: _raw(noSignalText))],
       );
       await _pumpDetail(tester, repo);
-      await tester.tap(find.text('题目信息'));
-      await tester.pumpAndSettle();
+      // 十九批 C：题目信息 panel 默认展开（D1），不用再点标题展开；
+      // 旧布局默认折叠，点标题会把它合上、chip 反而找不到了。
       // 待确认 chip + 切分诊断（同整理页：按完整诊断文本断言，
       // 避开题干区既有的“切分：未切分”状态文案）。
       expect(find.widgetWithText(QmChip, '待确认'), findsOneWidget);
@@ -892,8 +897,7 @@ void main() {
         ],
       );
       await _pumpDetail(tester, repo);
-      await tester.tap(find.text('题目信息'));
-      await tester.pumpAndSettle();
+      // 十九批 C：题目信息 panel 默认展开（D1），不用再点标题展开。
       expect(find.widgetWithText(QmChip, '填空题'), findsOneWidget);
       await tester.tap(find.text('重新分类'));
       await tester.pumpAndSettle();
@@ -919,7 +923,7 @@ Future<void> _pumpOrganize(WidgetTester tester, _P4OrgRepo repo) async {
       home: Scaffold(
         body: OrganizePage(
           repo: repo,
-          onOpenDetail: (_, __) async {},
+          onOpenDetail: (_, __, {String? searchContext}) async {},
           onGoReview: () {},
           onGoCollect: () {},
         ),

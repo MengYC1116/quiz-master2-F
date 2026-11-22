@@ -122,4 +122,139 @@ void main() {
       expect(await _save(tester), stem);
     });
   });
+
+  group('A3 反方向（B20-P2）：blocksToMarkdown 标题前缺换行须补回', () {
+    test('公式块后接标题：拼回须补换行', () {
+      final rebuilt = blocksToMarkdown([
+        const FormulaBlock('x', displayMode: false),
+        const HeadingBlock('标题', 1),
+      ]);
+      expect(rebuilt, '\$x\$\n# 标题');
+    });
+
+    test('代码块后接标题：拼回须补换行', () {
+      final rebuilt = blocksToMarkdown([
+        const CodeBlock('a=1', language: 'python'),
+        const HeadingBlock('标题', 1),
+      ]);
+      expect(rebuilt, '```python\na=1\n```\n# 标题');
+    });
+
+    test('图块在标题前：图块无文本输出，标题前仍须补换行', () {
+      final rebuilt = blocksToMarkdown([
+        const TextBlock('前文'),
+        const FigureBlock(figureId: 'f1', cropPath: ''),
+        const HeadingBlock('标题', 1),
+      ]);
+      expect(rebuilt, '前文\n# 标题');
+    });
+
+    test('连续标题：只补一处换行，不重复补空行', () {
+      final rebuilt = blocksToMarkdown([
+        const HeadingBlock('标题1', 1),
+        const HeadingBlock('标题2', 1),
+      ]);
+      expect(rebuilt, '# 标题1\n# 标题2');
+    });
+
+    test('标题在首：不补前换行', () {
+      final rebuilt = blocksToMarkdown([
+        const HeadingBlock('标题', 1),
+        const TextBlock('后文'),
+      ]);
+      expect(rebuilt, '# 标题\n后文');
+    });
+  });
+
+  group('A3 反方向（B20-P2）：StemEditor 标题卡前一段尾换行被删，保存时补回', () {
+    testWidgets('标题在中：前段尾换行被删，保存时补回', (tester) async {
+      const stem = '前文\n# 标题\n后文';
+      _lastSavedForTest = '';
+      await _pumpEditor(
+        tester,
+        stem: stem,
+        onSave: (s) => _lastSavedForTest = s,
+      );
+      expect(_draftTexts(tester), ['前文\n', '# 标题', '后文']);
+      await _deleteTrailingNewline(tester, 0);
+      expect(_draftTexts(tester), ['前文', '# 标题', '后文']);
+      expect(await _save(tester), stem);
+      // 再解析：标题仍为标题，不被前文吞掉。
+      final reparsed = parseQuestionContent(_lastSavedForTest);
+      expect(reparsed[1], isA<HeadingBlock>());
+      expect((reparsed[1] as HeadingBlock).text, '标题');
+    });
+
+    testWidgets('标题在末：前段尾换行被删，保存时补回且不加尾换行', (tester) async {
+      const stem = '前文\n# 标题';
+      _lastSavedForTest = '';
+      await _pumpEditor(
+        tester,
+        stem: stem,
+        onSave: (s) => _lastSavedForTest = s,
+      );
+      expect(_draftTexts(tester), ['前文\n', '# 标题']);
+      await _deleteTrailingNewline(tester, 0);
+      expect(await _save(tester), stem);
+    });
+
+    testWidgets('连续标题：前段尾换行被删，只补第一处', (tester) async {
+      const stem = '前文\n# 标题1\n# 标题2\n后文';
+      _lastSavedForTest = '';
+      await _pumpEditor(
+        tester,
+        stem: stem,
+        onSave: (s) => _lastSavedForTest = s,
+      );
+      expect(
+        _draftTexts(tester),
+        ['前文\n', '# 标题1', '# 标题2', '后文'],
+      );
+      await _deleteTrailingNewline(tester, 0);
+      expect(await _save(tester), stem);
+    });
+
+    testWidgets('标题前是含公式段落卡：段内末段尾换行被删，保存时补回',
+        (tester) async {
+      const stem = '前文 \$x\$ 尾\n# 标题\n后文';
+      _lastSavedForTest = '';
+      await _pumpEditor(
+        tester,
+        stem: stem,
+        onSave: (s) => _lastSavedForTest = s,
+      );
+      expect(_draftTexts(tester), ['前文 ', ' 尾\n', '# 标题', '后文']);
+      await _deleteTrailingNewline(tester, 1);
+      expect(await _save(tester), stem);
+    });
+
+    testWidgets('二级标题：前段尾换行被删，保存时补回', (tester) async {
+      const stem = '前文\n## 副标题\n后文';
+      _lastSavedForTest = '';
+      await _pumpEditor(
+        tester,
+        stem: stem,
+        onSave: (s) => _lastSavedForTest = s,
+      );
+      expect(_draftTexts(tester), ['前文\n', '## 副标题', '后文']);
+      await _deleteTrailingNewline(tester, 0);
+      expect(await _save(tester), stem);
+    });
+  });
+}
+
+/// 模拟用户在编辑器里删掉第 [index] 个草稿段的尾换行。
+Future<void> _deleteTrailingNewline(WidgetTester tester, int index) async {
+  final field = tester.widget<TextField>(find.byType(TextField).at(index));
+  final text = field.controller?.text ?? '';
+  expect(
+    text.endsWith('\n'),
+    isTrue,
+    reason: '前置条件：第 $index 个草稿段应以换行结尾，实际为 "$text"',
+  );
+  await tester.enterText(
+    find.byType(TextField).at(index),
+    text.substring(0, text.length - 1),
+  );
+  await tester.pumpAndSettle();
 }

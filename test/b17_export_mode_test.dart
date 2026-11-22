@@ -1,11 +1,15 @@
-// 十七批 P2（D-208）：错题本导出模式＋点选高亮（widget 测试）。
+// 十七批 P2（D-208）＋十九批 A2（D-220）：错题本导出模式＋点选高亮
+//（widget 测试）。十九批 A1 去掉大卡片／紧凑列表，只剩板子一种行
+// 设计；A2 按板子 §1.6 重做入口与汇总条（入口「导出打印」
+// 是结果头里的 chip，二十一批 D-243；汇总条只在模式里显示，
+// 「已选 N 道：题名…」）。
 //
-// 覆盖：进模式 / 退模式、模式里点行切换选中＋✓＋蓝底（紧凑行 /
-// 大卡片）、模式外点行进详情、退出模式保留已选、工具栏计数更新、
-// 两种模式下列表里都没有 Checkbox、跨分页 / 换筛选不丢已选、
-// 50 道上限仍拒绝、导出模式与批量模式互斥、从确认步取消回来留
-// 在模式里。导出流程控制器用桩（经
-// WrongbookPage.exportControllerFactory 注入），不碰真实数据库。
+// 覆盖：进模式 / 退模式、模式里点行切换选中＋✓＋蓝底（板子行）、
+// 模式外点行进详情、退出模式保留已选、工具栏计数更新、两种模式下
+// 列表里都没有 Checkbox、跨分页 / 换筛选不丢已选、50 道上限仍拒绝、
+// 导出模式与批量模式互斥、从确认步取消回来留在模式里。导出流程
+// 控制器用桩（经 WrongbookPage.exportControllerFactory 注入），
+// 不碰真实数据库。
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
@@ -48,6 +52,24 @@ class B17FakeRepo extends QuestionRepository {
   B17FakeRepo({required this.questions}) : super(AppDatabase.instance);
 
   List<Question> questions;
+
+  /// 十九批 A3：内存版已存查找（不碰真实库）。
+  final List<SavedSearch> savedSearchList = [];
+
+  @override
+  Future<List<SavedSearch>> savedSearches() async =>
+      List.of(savedSearchList);
+
+  @override
+  Future<void> saveSavedSearch(SavedSearch search) async {
+    savedSearchList.removeWhere((s) => s.id == search.id);
+    savedSearchList.add(search);
+  }
+
+  @override
+  Future<void> deleteSavedSearch(String id) async {
+    savedSearchList.removeWhere((s) => s.id == id);
+  }
 
   @override
   Future<List<Subject>> subjects() async => [
@@ -189,7 +211,11 @@ ExportFlowController b17StubController() {
 Future<void> pumpB17(
   WidgetTester tester, {
   required B17FakeRepo repo,
-  Future<void> Function(Question q, List<String> orderIds)? onOpenDetail,
+  Future<void> Function(
+    Question q,
+    List<String> orderIds, {
+    String? searchContext,
+  })? onOpenDetail,
 }) async {
   tester.view.physicalSize = const Size(1280, 720);
   tester.view.devicePixelRatio = 1.0;
@@ -205,7 +231,7 @@ Future<void> pumpB17(
           repo: repo,
           exportControllerFactory: () => ctrl,
           onOpenHome: () {},
-          onOpenDetail: onOpenDetail ?? (_, __) async {},
+          onOpenDetail: onOpenDetail ?? (_, __, {String? searchContext}) async {},
           onGoReview: ({String? subjectId}) {},
         ),
       ),
@@ -214,16 +240,14 @@ Future<void> pumpB17(
   await tester.pumpAndSettle();
 }
 
+// 十九批 A5：/wrongbook 默认落点就是 L1 列表（全部题目都已在），
+// 不再经书架 → 目录 → 全部题目导航；A1 去掉视图切换，
+// openMathListCompact 与 openMathList 同款（只等列表稳定）。
 Future<void> openMathList(WidgetTester tester) async {
-  await tester.tap(find.text('数学'));
-  await tester.pumpAndSettle();
-  await tester.tap(find.text('全部题目'));
   await tester.pumpAndSettle();
 }
 
 Future<void> openMathListCompact(WidgetTester tester) async {
-  await openMathList(tester);
-  await tester.tap(find.text('紧凑列表'));
   await tester.pumpAndSettle();
 }
 
@@ -233,15 +257,10 @@ Future<void> enterExportMode(WidgetTester tester) async {
   await tester.pump();
 }
 
-/// 导出模式里点一行切换选中（大卡片点卡片，紧凑行点行）。
-Future<void> tapExportRow(
-  WidgetTester tester,
-  String id, {
-  bool large = false,
-}) async {
-  final finder = find.byKey(
-    ValueKey(large ? 'export-card-$id' : 'export-row-$id'),
-  );
+/// 导出模式里点一行切换选中（十九批 A1：只剩板子行，
+// 行 key 是 `export-row-$id`；模式外点行进详情）。
+Future<void> tapExportRow(WidgetTester tester, String id) async {
+  final finder = find.byKey(ValueKey('export-row-$id'));
   await tester.ensureVisible(finder);
   await tester.pump(const Duration(milliseconds: 100));
   await tester.tap(finder);
@@ -269,17 +288,23 @@ String summaryNumbers(WidgetTester tester) {
   return text.data ?? '';
 }
 
-/// 工具栏导出按钮的 label（平时「导出」，模式里「导出（n）」）。
-String toolbarExportLabel(WidgetTester tester) =>
-    tester
-        .widget<QmButton>(
-          find.byKey(const Key('export-selected-toolbar')),
-        )
-        .label;
+/// 导出入口的 label：平时是结果头里的 QmChip「导出打印」
+/// （二十一批 D-243，原先是虚线框 InkWell 里的「▣ 预览导出模式」），
+/// 模式里是 QmButton「导出」/「导出（n）」（十九批 A2）。
+String toolbarExportLabel(WidgetTester tester) {
+  if (find.text('导出打印').evaluate().isNotEmpty) {
+    return '导出打印';
+  }
+  return tester
+      .widget<QmButton>(
+        find.byKey(const Key('export-selected-toolbar')),
+      )
+      .label;
+}
 
 void main() {
   group('进模式与退模式', () {
-    testWidgets('点工具栏「导出」进模式：出现取消＋提示，导出（0）置灰', (tester) async {
+    testWidgets('点「导出打印」进模式：出现取消＋提示，导出（0）置灰', (tester) async {
       await pumpB17(
         tester,
         repo: B17FakeRepo(
@@ -287,15 +312,18 @@ void main() {
         ),
       );
       await openMathListCompact(tester);
-      // 平时：工具栏只有「导出」（进模式入口），没有「取消」。
-      expect(toolbarExportLabel(tester), '导出');
+      // 平时：入口是结果头里的「导出打印」chip，没有「取消」。
+      expect(toolbarExportLabel(tester), '导出打印');
       expect(find.byKey(const Key('export-mode-cancel')), findsNothing);
       expect(find.byKey(const Key('export-mode-hint')), findsNothing);
 
       await enterExportMode(tester);
       expect(find.byKey(const Key('export-mode-cancel')), findsOneWidget);
       expect(find.byKey(const Key('export-mode-hint')), findsOneWidget);
-      expect(find.text('导出模式：点一行即选中，再点取消选中'), findsOneWidget);
+      expect(
+        find.text('导出模式中：点一行即选中（不会进详情），选中行蓝底、右端出现 ✓；再点一次取消。'),
+        findsOneWidget,
+      );
       // n = 0 时模式里的「导出」置灰。
       final btn = tester.widget<QmButton>(
         find.byKey(const Key('export-selected-toolbar')),
@@ -318,7 +346,7 @@ void main() {
       await tester.pump();
       expect(find.byKey(const Key('export-mode-cancel')), findsNothing);
       expect(find.byKey(const Key('export-mode-hint')), findsNothing);
-      expect(toolbarExportLabel(tester), '导出');
+      expect(toolbarExportLabel(tester), '导出打印');
     });
 
     testWidgets('退出模式保留已选：✓ 与蓝底仍在，再进模式还能看到', (tester) async {
@@ -332,13 +360,14 @@ void main() {
       await enterExportMode(tester);
       await tapExportRow(tester, 'q1');
       expect(isExportSelected(tester, 'q1'), isTrue);
-      expect(summaryNumbers(tester), contains('已选 1 / 50 道'));
+      expect(summaryNumbers(tester), contains('已选 1 道'));
 
       await tester.tap(find.byKey(const Key('export-mode-cancel')));
       await tester.pump();
-      // 退出模式：已选保留（✓ 与蓝底、汇总数都在）。
+      // 退出模式：已选保留（✓ 与蓝底仍在；汇总条只在模式里画，
+      // 退出后不画——A2 板子 §1.6 平时 display:none）。
       expect(isExportSelected(tester, 'q1'), isTrue);
-      expect(summaryNumbers(tester), contains('已选 1 / 50 道'));
+      expect(find.byKey(const Key('export-summary-numbers')), findsNothing);
       final row = tester.widget<Container>(
         find.byKey(const ValueKey('export-row-q1')),
       );
@@ -349,14 +378,15 @@ void main() {
       // 再进模式，之前选的还在；点一下能取消。
       await enterExportMode(tester);
       expect(isExportSelected(tester, 'q1'), isTrue);
+      expect(summaryNumbers(tester), contains('已选 1 道'));
       await tapExportRow(tester, 'q1');
       expect(isExportSelected(tester, 'q1'), isFalse);
-      expect(summaryNumbers(tester), contains('已选 0 / 50 道'));
+      expect(summaryNumbers(tester), contains('已选 0 道'));
     });
   });
 
   group('模式里点行切换选中', () {
-    testWidgets('紧凑行：点行选中出 ✓＋蓝底，再点取消', (tester) async {
+    testWidgets('板子行：点行选中出 ✓＋蓝底，再点取消', (tester) async {
       await pumpB17(
         tester,
         repo: B17FakeRepo(
@@ -367,7 +397,7 @@ void main() {
       await enterExportMode(tester);
       await tapExportRow(tester, 'q1');
       expect(isExportSelected(tester, 'q1'), isTrue);
-      expect(summaryNumbers(tester), contains('已选 1 / 50 道'));
+      expect(summaryNumbers(tester), contains('已选 1 道'));
       final row = tester.widget<Container>(
         find.byKey(const ValueKey('export-row-q1')),
       );
@@ -379,10 +409,10 @@ void main() {
       expect(isExportSelected(tester, 'q2'), isFalse);
       await tapExportRow(tester, 'q1');
       expect(isExportSelected(tester, 'q1'), isFalse);
-      expect(summaryNumbers(tester), contains('已选 0 / 50 道'));
+      expect(summaryNumbers(tester), contains('已选 0 道'));
     });
 
-    testWidgets('大卡片：点卡片选中出 ✓＋蓝底＋主色加粗边框', (tester) async {
+    testWidgets('板子行（第二道）：未选行无 ✓、白底细边', (tester) async {
       await pumpB17(
         tester,
         repo: B17FakeRepo(
@@ -391,22 +421,20 @@ void main() {
       );
       await openMathList(tester);
       await enterExportMode(tester);
-      await tapExportRow(tester, 'q1', large: true);
+      await tapExportRow(tester, 'q1');
       expect(isExportSelected(tester, 'q1'), isTrue);
-      expect(summaryNumbers(tester), contains('已选 1 / 50 道'));
-      final card = tester.widget<Container>(
-        find.byKey(const ValueKey('export-card-q1')),
+      expect(summaryNumbers(tester), contains('已选 1 道'));
+      final row = tester.widget<Container>(
+        find.byKey(const ValueKey('export-row-q1')),
       );
-      final deco = card.decoration as BoxDecoration?;
+      final deco = row.decoration as BoxDecoration?;
       expect(deco?.color, DesignTokens.of(Brightness.light).accentSoft);
-      expect(deco?.border?.top.color, DesignTokens.of(Brightness.light).accent);
-      expect(deco?.border?.top.width, 2);
-      // 未选的卡片无 ✓、边框是细线。
+      // 未选的行无 ✓、白底细边。
       expect(isExportSelected(tester, 'q2'), isFalse);
-      final card2 = tester.widget<Container>(
-        find.byKey(const ValueKey('export-card-q2')),
+      final row2 = tester.widget<Container>(
+        find.byKey(const ValueKey('export-row-q2')),
       );
-      final deco2 = card2.decoration as BoxDecoration?;
+      final deco2 = row2.decoration as BoxDecoration?;
       expect(deco2?.color, DesignTokens.of(Brightness.light).surface);
       expect(deco2?.border?.top.width, 1);
     });
@@ -419,6 +447,7 @@ void main() {
         ),
       );
       await openMathListCompact(tester);
+      expect(toolbarExportLabel(tester), '导出打印');
       await enterExportMode(tester);
       expect(toolbarExportLabel(tester), '导出');
       await tapExportRow(tester, 'q1');
@@ -438,17 +467,17 @@ void main() {
         repo: B17FakeRepo(
           questions: [b17q('q1'), b17q('q2')],
         ),
-        onOpenDetail: (q, _) async {
+        onOpenDetail: (q, _, {String? searchContext}) async {
           opened = q;
         },
       );
       await openMathListCompact(tester);
-      // 模式外点行进详情。
+      // 模式外点行进详情（汇总条只在模式里画，模式外不画）。
       await tapExportRow(tester, 'q1');
       await tester.pump();
       expect(opened?.id, 'q1');
       expect(isExportSelected(tester, 'q1'), isFalse);
-      expect(summaryNumbers(tester), contains('已选 0 / 50 道'));
+      expect(find.byKey(const Key('export-summary-numbers')), findsNothing);
 
       // 模式里点行不进详情，只切换选中。
       opened = null;
@@ -457,11 +486,12 @@ void main() {
       await tester.pump();
       expect(opened, isNull);
       expect(isExportSelected(tester, 'q2'), isTrue);
+      expect(summaryNumbers(tester), contains('已选 1 道'));
     });
   });
 
   group('两种模式下列表里都没有 Checkbox', () {
-    testWidgets('平时与模式里：紧凑行与大卡片都没有导出方框', (tester) async {
+    testWidgets('平时与模式里：板子行都没有导出方框', (tester) async {
       await pumpB17(
         tester,
         repo: B17FakeRepo(
@@ -474,12 +504,9 @@ void main() {
       expect(find.byType(Checkbox), findsNothing);
       await tapExportRow(tester, 'q1');
       expect(find.byType(Checkbox), findsNothing);
-
-      // 切大卡片视图：平时与模式里同样没有方框。
+      // 退出模式再进一次，板子行仍无方框（十九批 A1 已无视图切换）。
       await tester.tap(find.byKey(const Key('export-mode-cancel')));
       await tester.pump();
-      await tester.tap(find.text('大卡片'));
-      await tester.pumpAndSettle();
       expect(find.byType(Checkbox), findsNothing);
       await enterExportMode(tester);
       expect(find.byType(Checkbox), findsNothing);
@@ -497,9 +524,9 @@ void main() {
       await openMathListCompact(tester);
       await enterExportMode(tester);
       await tapExportRow(tester, 'q0');
-      expect(summaryNumbers(tester), contains('已选 1 / 50 道'));
+      expect(summaryNumbers(tester), contains('已选 1 道'));
       await tapVisibleText(tester, '下一页');
-      expect(summaryNumbers(tester), contains('已选 1 / 50 道'));
+      expect(summaryNumbers(tester), contains('已选 1 道'));
       expect(find.byKey(const ValueKey('export-row-q0')), findsNothing);
       await tapVisibleText(tester, '上一页');
       expect(isExportSelected(tester, 'q0'), isTrue);
@@ -528,7 +555,7 @@ void main() {
       await tester.enterText(find.byType(TextField).first, '求导数');
       await tester.pumpAndSettle();
       expect(find.byKey(const ValueKey('export-row-q1')), findsNothing);
-      expect(summaryNumbers(tester), contains('已选 1 / 50 道'));
+      expect(summaryNumbers(tester), contains('已选 1 道'));
       await tester.enterText(find.byType(TextField).first, '');
       await tester.pumpAndSettle();
       expect(isExportSelected(tester, 'q1'), isTrue);
@@ -561,18 +588,18 @@ void main() {
           await tapVisibleText(tester, '下一页');
         }
       }
-      expect(summaryNumbers(tester), contains('已选 50 / 50 道'));
+      expect(summaryNumbers(tester), contains('已选 50 道'));
       await tapVisibleText(tester, '下一页');
       await tapExportRow(tester, 'q50');
       await tester.pumpAndSettle();
       expect(find.text('单次最多导出 50 道题'), findsOneWidget);
-      expect(summaryNumbers(tester), contains('已选 50 / 50 道'));
+      expect(summaryNumbers(tester), contains('已选 50 道'));
       expect(isExportSelected(tester, 'q50'), isFalse);
     });
   });
 
   group('与批量模式互斥', () {
-    testWidgets('进批量退导出（已选保留）；进导出退批量（批量勾选清空）', (tester) async {
+    testWidgets('进批量退导出（导出已选清空）；进导出退批量（批量勾选清空）', (tester) async {
       await pumpB17(
         tester,
         repo: B17FakeRepo(
@@ -582,15 +609,17 @@ void main() {
       await openMathListCompact(tester);
       await enterExportMode(tester);
       await tapExportRow(tester, 'q1');
-      expect(summaryNumbers(tester), contains('已选 1 / 50 道'));
+      expect(summaryNumbers(tester), contains('已选 1 道'));
 
-      // 进批量：导出模式退出，批量条出现，导出已选保留。
+      // 进批量：导出模式退出，批量条出现，导出已选清空（D-217；
+      // D-209 的「取消保留已选」只适用于点「取消」退出，不适用于
+      // 进批量模式）。汇总条只在模式里画，退出后不画。
       await tester.tap(find.text('批量操作'));
       await tester.pumpAndSettle();
       expect(find.byKey(const Key('export-mode-cancel')), findsNothing);
       expect(find.text('全选当前结果'), findsOneWidget);
-      expect(isExportSelected(tester, 'q1'), isTrue);
-      expect(summaryNumbers(tester), contains('已选 1 / 50 道'));
+      expect(isExportSelected(tester, 'q1'), isFalse);
+      expect(find.byKey(const Key('export-summary-numbers')), findsNothing);
 
       // 批量全选 3 道，再进导出模式：批量条消失、批量勾选清空。
       await tester.tap(find.byType(Checkbox).first);
@@ -601,9 +630,9 @@ void main() {
       expect(find.byKey(const Key('export-mode-cancel')), findsOneWidget);
       expect(find.text('全选当前结果'), findsNothing);
       expect(find.text('已选 3 道'), findsNothing);
-      // 导出已选不受影响。
-      expect(isExportSelected(tester, 'q1'), isTrue);
-      expect(summaryNumbers(tester), contains('已选 1 / 50 道'));
+      // 导出已选已在进批量时清空，再进导出模式仍是空选。
+      expect(isExportSelected(tester, 'q1'), isFalse);
+      expect(summaryNumbers(tester), contains('已选 0 道'));
     });
   });
 
@@ -638,7 +667,7 @@ void main() {
       expect(find.text('确认导出'), findsNothing);
       expect(find.byKey(const Key('export-mode-cancel')), findsOneWidget);
       expect(isExportSelected(tester, 'q1'), isTrue);
-      expect(summaryNumbers(tester), contains('已选 1 / 50 道'));
+      expect(summaryNumbers(tester), contains('已选 1 道'));
     });
   });
 }

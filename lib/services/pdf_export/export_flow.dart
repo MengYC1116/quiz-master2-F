@@ -187,6 +187,7 @@ class ExportFlowController extends ChangeNotifier {
     this.deliverWord,
     this.openFile,
     this.openFolder,
+    this.openPdfDetailed,
     this.shareFile,
     this.platformOverride,
   });
@@ -211,6 +212,11 @@ class ExportFlowController extends ChangeNotifier {
 
   /// 打开所在文件夹（生产：PdfDeliveryService.openContainingFolder）。
   final Future<bool> Function(String path)? openFolder;
+
+  /// 打开 PDF 并返回详细结果（生产：
+  /// PdfDeliveryService.openPdfWithResult；测试：桩；未接入时
+  /// [openDeliveredPdf] 退回 [openFile] 的 bool 结果）。
+  final Future<OpenPdfResult?> Function(String path)? openPdfDetailed;
 
   /// 系统分享（生产：PdfDeliveryService.sharePdf）。
   final Future<ShareResult> Function(String path)? shareFile;
@@ -262,15 +268,21 @@ class ExportFlowController extends ChangeNotifier {
   /// 本次取消令牌（每次 start() 新建；取消即停）。
   ExportCancellationToken? _token;
 
-  /// 当前平台是否 Android（Android 只出「分享」，无内置打开通道，
-  /// 见 pdf_delivery.dart 文件头；测试可用 platformOverride 覆盖）。
+  /// 当前平台是否 Android（Android 出「分享」+ 独立「打开 PDF」
+  /// 按钮（二十批 P7，open_filex 通道），见 [supportsAndroidOpenPdf]；
+  /// 测试可用 platformOverride 覆盖）。
   bool get isAndroid =>
       platformOverride == PdfDeliveryPlatform.android ||
       (platformOverride == null && Platform.isAndroid);
 
-  /// 是否支持直接打开文件 / 文件夹（桌面端；Android 不支持，
-  /// 只出「分享」）。
+  /// 是否显示桌面端打开方式（「打开文件 / 打开所在文件夹」；
+  /// Android 不显示这两项，改出「分享」+「打开 PDF」）。
   bool get supportsOpen => !isAndroid;
+
+  /// Android 是否出独立「打开 PDF」按钮（二十批 P7：open_filex 通道；
+  /// 桌面端已有「打开文件」，不重复出此按钮；Word 行不走此按钮，
+  /// 见完成界面按行判定）。
+  bool get supportsAndroidOpenPdf => isAndroid;
 
   /// 盘点（确认步进入时调；失败 → phase failed + [error]）。
   Future<void> prepare({
@@ -624,11 +636,29 @@ class ExportFlowController extends ChangeNotifier {
     return lines;
   }
 
-  /// 打开文件（桌面端；Android 不出此按钮，见 [supportsOpen]）。
+  /// 打开文件（桌面端「打开文件」按钮；Android 不出此按钮，
+  /// 改走 [openDeliveredPdf] 的独立「打开 PDF」按钮）。
   Future<bool> openDeliveredFile(String path) async {
     final fn = openFile;
     if (fn == null) return false;
     return fn(path);
+  }
+
+  /// 打开 PDF 并返回详细结果（Android「打开 PDF」按钮；失败原因
+  /// 由 [OpenPdfResult.error] 带回，供完成界面 SnackBar 展示）。
+  ///
+  /// 未接入 [openPdfDetailed] 时退回 [openDeliveredFile] 的 bool
+  /// 结果（失败原因退为通用文案，不静默吞掉）。
+  Future<OpenPdfResult> openDeliveredPdf(String path) async {
+    final detailed = openPdfDetailed;
+    if (detailed != null) {
+      return await detailed(path) ??
+          const OpenPdfResult(success: false, error: '打开 PDF 失败，请重试。');
+    }
+    final ok = await openDeliveredFile(path);
+    return ok
+        ? const OpenPdfResult(success: true)
+        : const OpenPdfResult(success: false, error: '打开 PDF 失败，请重试。');
   }
 
   /// 打开所在文件夹（桌面端）。

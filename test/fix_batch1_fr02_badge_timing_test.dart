@@ -119,6 +119,19 @@ class TimingFakeRepo extends QuestionRepository {
   /// fake async 里永不完成，见 D-88）。
   @override
   Future<void> recordQuestionViewed(String questionId) async {}
+
+  /// FR-09：详情 load() 读复查间隔（默认 7 天），不碰真实库（见 D-88）。
+  @override
+  Future<AppSettings> settings() async => AppSettings.defaults;
+
+  /// 十三批 M5：OCR 状态是 best-effort 加载（不 await）；返回空任务行
+  /// 与“无 key”，不碰真实库（见 D-88）。
+  @override
+  Future<List<OcrJob>> ocrJobsForQuestion(String questionId) async =>
+      const [];
+
+  @override
+  Future<bool> hasOcrApiKey() async => false;
 }
 
 void main() {

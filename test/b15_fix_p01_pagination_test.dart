@@ -123,14 +123,18 @@ void main() {
       expect(parts[1].continuation, isTrue);
     });
 
-    test('矮公式不抬高行高：行高仍取文本行高', () {
-      // 公式高 10 pt < 单行 15.97 pt，行高不变。
+    test('矮公式未知基线：行高取构建器实际值 16.15（旧 max 模型低估 0.18pt）', () {
+      // 公式高 10 pt、基线未知（旧居中 β=(15.97-10)/2=+2.985）：
+      // pdf 行布局行高 = max(A, h+β) + max(D, -β) = 12.985+3.168 = 16.153，
+      // 不是旧 max(单行高，公式高) 的 15.97——旧模型低估 0.183pt，
+      // 构建器实际行高以探针实测 box.height 16.1529 为准（见
+      // B18-P1-FIX-REPORT.md §1-§4）。勿改回 15.97。
       final plan = paginator.paginate([_q(0, '测' * 40, formulas: [_formula(10)])]);
       expect(plan.totalPages, 1);
       final part = plan.pages.single.parts.single;
       expect(
         part.heightPt,
-        closeTo(kPdfQuestionNumberHeightPt + 15.97, 0.01),
+        closeTo(kPdfQuestionNumberHeightPt + 16.15, 0.01),
       );
     });
   });

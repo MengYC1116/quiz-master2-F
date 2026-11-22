@@ -3,12 +3,20 @@
 // 才变 partial；孤儿保护（`_referencedRelativePaths`，行存在即保护）
 // 原语义不动；回收站清扫的文件条目也走同一引用口径复查（§1.9）。
 //
-// 分类规则（`WIN11-Q4-BACKUP-RACE-INVESTIGATION.md` §3.2，按顺序）：
-// 1. source_path 为空或不在 `imports/<本行 id>/` 下 → 可选（拆分行）；
-// 2. PDF 行 → 可选；3. status failed/importing/queued → 可选；
-// 4. 图片行读原图头 EXIF：方向 1 / 无 EXIF / 非 JPEG → 可选，
-//    方向 3/6/8 → 必需；O1：source_hash 不可信（NULL 或不符）→ 可选；
-//    O3：全文件哈希只在“方向 != 1 且副本缺失”时才算。
+// 二十批 P6 修法 A（D-237 提案）更新：备份侧的必需/可选分类已删除，
+// 改为存在性门禁——派生引用只在快照时点文件存在时才进清单
+// （见 `db_backup.dart` 的修法 A 注释）。本文件里原先断言“必需缺失
+// 警告 / 可选暂存区丢失静默”的两处已按新语义更新；其余用例
+// （38 行拆分形状、EXIF 各方向、孤儿保护、回收站清扫）断言不变，
+// 继续守护“按构造不该有的文件不警告、不 partial”与底线。
+//
+// 旧分类规则（`WIN11-Q4-BACKUP-RACE-INVESTIGATION.md` §3.2，仅作历史记录，
+// 修法 A 已删除该分类；本文件保留这些用例是因为它们在新语义下仍应
+// 全部静默——缺失的归一化副本无论哪一类都不警告）：
+// 1. source_path 为空或不在 `imports/<本行 id>/` 下（拆分行）；
+// 2. PDF 行；3. status failed/importing/queued；
+// 4. 图片行 EXIF 方向 1 / 无 EXIF / 非 JPEG；方向 3/6/8 原为“必需”，
+//    修法 A 下缺失同样不警告（见“方向 6 但归一化副本缺失”用例）。
 // 全部用临时目录 / 内存库，不碰真实用户库。
 import 'dart:convert';
 import 'dart:io';
@@ -246,7 +254,7 @@ void main() {
     });
   });
 
-  group('Q4：EXIF 分类——可选缺失不警告，必需缺失才警告', () {
+  group('修法 A：归一化副本缺失一律不警告（原 Q4 EXIF 分类已删除，D-237）', () {
     test('无 EXIF 的原图（PNG）：缺失归一化副本不警告', () async {
       await insertTask(
         id: 't1',
@@ -306,7 +314,7 @@ void main() {
       expectNoStagingLeft();
     });
 
-    test('方向 6 但归一化副本缺失：partial，警告注明歧义（O2）', () async {
+    test('方向 6 但归一化副本缺失：修法 A 下不警告、仍 complete（D-237）', () async {
       final bytes = exifJpeg(6);
       await insertTask(
         id: 't1',
@@ -316,16 +324,14 @@ void main() {
       );
       await writeBytes('imports/t1/original.jpg', bytes);
       final report = await _backup(db, dataDir);
-      expect(report.status, BackupExportStatus.partial);
-      expect(
-        report.brokenFiles,
-        contains('imports/t1/page-normalized.png'),
-      );
-      expect(
-        report.warnings.join('\n'),
-        contains('可能已丢失，也可能当初未生成'),
-        reason: 'O2：文案须如实注明“丢了 vs 静默降级未生成”的歧义（§2.5 残差）',
-      );
+      // 二十批 P6 修法 A（D-237）：存在性门禁在枚举阶段——副本不在盘上
+      // 就不进清单，不警告、不变 partial。Q4 的 O2 警告随分类一并删除：
+      // 该信号本身有歧义（真丢失 vs 当初静默降级未生成，调查 §2.5），
+      // 且副本可由原图再生（原图是直接引用，缺失即整单抛错），备份里
+      // 不丢不可替代的数据。
+      expect(report.warnings, isEmpty);
+      expect(report.brokenFiles, isEmpty);
+      expect(report.status, BackupExportStatus.complete);
       expectNoStagingLeft();
     });
 
@@ -437,9 +443,10 @@ void main() {
       expectNoStagingLeft();
     });
 
-    test('可选副本在暂存区被删：静默跳过、仍 complete', () async {
-      // 拆分行目录下异常存在一张归一化副本（按构造不该有）：快照时
-      // 已判可选，暂存区丢失也不警告。
+    test('快照时在盘上的副本在暂存区被删：警告 + partial（D-237）', () async {
+      // 拆分行目录下异常存在一张归一化副本（按构造不该有）：修法 A 只
+      // 看快照时点的存在性——在盘上即进清单，暂存区丢失是真实丢失，
+      // 按通用派生口径警告。Q4 的“按构造不该有故静默”判定已随分类删除。
       const parentOriginal = 'imports/task-parent/original.png';
       await writeBytes(parentOriginal, [7, 7, 7]);
       await insertTask(
@@ -461,8 +468,15 @@ void main() {
           'imports/task-1795135761439-818830-1-0/page-normalized.png',
         )).deleteSync(),
       );
-      expect(report.warnings, isEmpty);
-      expect(report.status, BackupExportStatus.complete);
+      expect(report.status, BackupExportStatus.partial);
+      expect(
+        report.brokenFiles,
+        contains('imports/task-1795135761439-818830-1-0/page-normalized.png'),
+      );
+      expect(
+        report.warnings,
+        contains('派生文件 imports/task-1795135761439-818830-1-0/page-normalized.png 暂存区文件缺失，未包含在备份中'),
+      );
       expectNoStagingLeft();
     });
   });

@@ -111,6 +111,20 @@ class FakeExportRepo extends QuestionRepository {
   /// 十二批功能 4（D-91）：记一次查看的桩（同上，不碰真实库）。
   @override
   Future<void> recordQuestionViewed(String questionId) async {}
+
+  /// 十三批 M5：OCR 状态是 best-effort 加载（不 await）；返回空任务行
+  /// 与“无 key”，不碰真实库（见 D-88）。
+  @override
+  Future<List<OcrJob>> ocrJobsForQuestion(String questionId) async =>
+      const [];
+
+  @override
+  Future<bool> hasOcrApiKey() async => false;
+
+  /// 详情页自愈（_healSliceIfNeeded）读同页框：无框，不碰真实库（见 D-88）。
+  @override
+  Future<List<QuestionBox>> boxesForPageImage(String pageImagePath) async =>
+      const [];
 }
 
 /// 导出服务的假实现：三个外部边界（剪贴板写、另存为对话框、
@@ -351,8 +365,8 @@ void main() {
       expect(find.text('复制图片'), findsOneWidget);
       expect(find.text('保存图片'), findsOneWidget);
       expect(find.text('导出带答案版'), findsOneWidget);
-      // 未收藏时按钮文案是“☆ 收藏”（已收藏时是“★ 已收藏（点击取消）”）。
-      expect(find.text('☆ 收藏'), findsOneWidget);
+      // D1：收藏是标题行星标（未收藏 ☆，已收藏 ★），底部卡片只剩三按钮。
+      expect(find.text('☆'), findsOneWidget);
       expect(find.text('归档'), findsOneWidget);
       expect(find.text('删除'), findsOneWidget);
     });
@@ -464,7 +478,14 @@ void main() {
         findsOneWidget,
       );
       expect(find.text('数学 ｜ 试卷 ｜ 概念不清'), findsOneWidget);
-      expect(find.text('函数极限'), findsOneWidget);
+      // D1 标题行就是纯题名「函数极限」，与弹窗里的题名同文 → 用弹窗后代定位。
+      expect(
+        find.descendant(
+          of: find.byType(AlertDialog),
+          matching: find.text('函数极限'),
+        ),
+        findsOneWidget,
+      );
       // 页里还有一张 Image.file（题目图），弹窗卡片里是 Image.memory。
       expect(
         find.descendant(
@@ -537,7 +558,6 @@ void main() {
         service: FakeExportService(),
         onGoReview: () => tapped = true,
       );
-      await tapExportText(tester, '复习记录');
       expect(find.text('暂无复习记录，去复习页练一次会出现在这里'), findsOneWidget);
       expect(find.text('去复习'), findsOneWidget);
       await tapExportText(tester, '去复习');
@@ -546,7 +566,6 @@ void main() {
 
     testWidgets('无 onGoReview：空状态只有文字，没有按钮', (tester) async {
       await pumpExportDetail(tester, repo: repo(), service: FakeExportService());
-      await tapExportText(tester, '复习记录');
       expect(find.text('暂无复习记录，去复习页练一次会出现在这里'), findsOneWidget);
       expect(find.text('去复习'), findsNothing);
     });

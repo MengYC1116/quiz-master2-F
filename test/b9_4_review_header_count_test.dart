@@ -15,6 +15,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:quiz_master2/data/database.dart';
 import 'package:quiz_master2/data/repository.dart';
+import 'package:quiz_master2/data/review_engine.dart';
 import 'package:quiz_master2/models/models.dart';
 import 'package:quiz_master2/modules/review/review_page.dart';
 import 'package:quiz_master2/theme/app_theme.dart';
@@ -77,6 +78,24 @@ class _FakeRepo extends QuestionRepository {
 
   @override
   Future<ReviewSessionState?> reviewState() async => null;
+
+  /// 复习 load() 只有在 reviewState() 返回非空会话时才调这三口
+  /// （M3-10 断点恢复校验）；本 Fake 的会话恒为 null，返回“无会话”
+  /// 默认值，不碰真实库（见 D-88）。
+  @override
+  Future<bool> hasSessionVerdict({
+    required String causeStableId,
+    required String sessionId,
+  }) async => false;
+
+  @override
+  Future<AttemptData?> loadAttempt({
+    required String sessionId,
+    required String questionId,
+  }) async => null;
+
+  @override
+  Future<void> clearReviewState() async {}
 }
 
 Future<void> _pumpReview(WidgetTester tester, _FakeRepo repo) async {
@@ -91,7 +110,7 @@ Future<void> _pumpReview(WidgetTester tester, _FakeRepo repo) async {
       home: Scaffold(
         body: ReviewPage(
           repo: repo,
-          onOpenDetail: (_, __) async {},
+          onOpenDetail: (_, __, {String? searchContext}) async {},
           onGoWrongbook: () {},
         ),
       ),

@@ -23,6 +23,7 @@
 // - 角标走 `badgeCountsProvider`（第 4 阶段：订阅 `DataChangeBus`，
 //   见 `badge_counts_provider.dart`）。
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -46,7 +47,10 @@ final wrongbookProvider =
     );
 
 /// 错题本页的构造参数（初始落点）：带错因 / 知识点筛选进来 → 列表页
-///（学科只定列表的范围）；只带学科进来 → 目录页；都不带 → 书架。
+///（学科只定列表的范围）；只带学科进来 → 按该学科筛选的列表；
+/// 都不带 → 全部题目的列表（十九批 A5：默认落点改为 L1 搜索结果页，
+/// 不再先过书架；书架 / 目录视图保留在代码里，从 L1 筛选面板顶部
+/// 「📚 书架（按学科浏览）」入口进入）。
 /// 页面外壳经 `ProviderScope` 注入；Notifier 的 `build()` 里读它，
 /// 不在 `initState` 里改 Provider（Riverpod 禁止在 build /
 /// initState 等生命周期里同步改 Provider）。
@@ -55,11 +59,17 @@ class WrongbookInitial {
     this.subjectId,
     this.filterCause,
     this.filterKnowledgePointId,
+    this.filterFolderId,
   });
 
   final String? subjectId;
   final String? filterCause;
   final String? filterKnowledgePointId;
+
+  /// 十九批 A：详情页右栏「打开列表 ›」跳进来时按该文件夹筛选
+  ///（与 filterCause / filterKnowledgePointId 同款深链路参数，
+  /// 见 build() 的初始落点）。
+  final String? filterFolderId;
 
   // D-50：外壳每次 build 都新建一个实例；补 `==` / `hashCode` 使
   // 值相等的实例比较相等（同款见 `DetailInitial` / `ReviewInitial`）。
@@ -71,14 +81,15 @@ class WrongbookInitial {
       other is WrongbookInitial &&
       other.subjectId == subjectId &&
       other.filterCause == filterCause &&
-      other.filterKnowledgePointId == filterKnowledgePointId;
+      other.filterKnowledgePointId == filterKnowledgePointId &&
+      other.filterFolderId == filterFolderId;
 
   @override
   int get hashCode =>
-      Object.hash(subjectId, filterCause, filterKnowledgePointId);
+      Object.hash(subjectId, filterCause, filterKnowledgePointId, filterFolderId);
 }
 
-/// 初始落点 Provider：默认空（书架）；页面外壳按构造参数 override。
+/// 初始落点 Provider：默认空（L1 列表）；页面外壳按构造参数 override。
 final wrongbookInitialProvider = Provider<WrongbookInitial>(
   (ref) => const WrongbookInitial(),
 );
@@ -146,6 +157,14 @@ class WrongbookState {
     this.exportSelected = const {},
     this.batchFolderId,
     this.inBookArchived = false,
+    // 十九批 A3：存下来的查找（saved_searches 表）与本会话的最近搜过
+    //（只放内存，不入库；最近 4 条）。
+    this.savedSearches = const [],
+    this.recentSearches = const [],
+    // 十九批 A1：治愈需自查「已解决」次数（设置 cureChecks，默认 2）：
+    // 列表行「解决中 · ✓n/m」里的 m 用它。设置页可改，load() 每次
+    // 重读（本页不改它，不用 pageSize/sort 那套首次守门）。
+    this.cureChecks = 2,
   });
 
   final bool loading;
@@ -219,6 +238,16 @@ class WrongbookState {
   final String? batchFolderId;
   final bool inBookArchived;
 
+  /// 十九批 A3：存下来的查找（库里 saved_searches 表，最新存的在前）。
+  final List<SavedSearch> savedSearches;
+
+  /// 十九批 A3：本会话最近搜过（只放内存，不入库；最新在前，最多 4 条）。
+  /// 一条 = 显示名 + 条件（与 SavedSearch 同一形状，id 为 'recent:$label'）。
+  final List<SavedSearch> recentSearches;
+
+  /// 十九批 A1：治愈需自查「已解决」次数（设置 cureChecks，默认 2）。
+  final int cureChecks;
+
   WrongbookState copyWith({
     bool? loading,
     bool? loadError,
@@ -269,6 +298,9 @@ class WrongbookState {
     Set<String>? exportSelected,
     Object? batchFolderId = _unset,
     bool? inBookArchived,
+    List<SavedSearch>? savedSearches,
+    List<SavedSearch>? recentSearches,
+    int? cureChecks,
   }) {
     return WrongbookState(
       loading: loading ?? this.loading,
@@ -338,6 +370,9 @@ class WrongbookState {
           ? this.batchFolderId
           : batchFolderId as String?,
       inBookArchived: inBookArchived ?? this.inBookArchived,
+      savedSearches: savedSearches ?? this.savedSearches,
+      recentSearches: recentSearches ?? this.recentSearches,
+      cureChecks: cureChecks ?? this.cureChecks,
     );
   }
 
@@ -460,8 +495,10 @@ class WrongbookState {
     return next;
   }
 
-  /// 搜索只查元数据，永不搜题干（HTML `nbFiltered` 的 haystack）：
-  /// 题名 / 学科 / 文件夹 / 标签 / 试卷 / 收集日期 / 知识点 / 错误类型。
+  /// 内容搜索（D-241）：元数据＋题干内容——题名 / 学科 / 文件夹 /
+  /// 标签 / 试卷 / 收集日期 / 知识点 / 错误类型＋题干 OCR 文字
+  /// （sliceText）/ 选项文字（optionContents 的值）/ 答案 / 解析 /
+  /// 备注。旧口径“只查元数据，永不搜题干”由 Meng 2026-11-22 改掉。
   String searchHaystack(Question q) {
     final subject = subjectOf(q.subjectId).name;
     final folderNames = q.folderIds
@@ -508,6 +545,12 @@ class WrongbookState {
       datePlain,
       ...kpNames,
       ...q.allCauses,
+      // D-241 内容搜索：题干 OCR 文字、选项文字、答案、解析、备注。
+      q.sliceText,
+      ...?q.optionContents?.values,
+      if (q.answer != null) q.answer!,
+      if (q.explanation != null) q.explanation!,
+      if (q.notes != null) q.notes!,
     ].join(' ').toLowerCase();
   }
 
@@ -682,6 +725,35 @@ class WrongbookState {
   bool hasSearchOrFilter() =>
       search.trim().isNotEmpty || activeFilterCount() > 0;
 
+  /// 十九批 A3：当前查找条件（只存非默认值；键见 models.dart 的
+  /// SavedSearch 注释）。「＋ 存当前条件」存的就是这份；与某条
+  /// 已存查找相等时它的 chip 显示选中态（见 [conditionsEqual]）。
+  Map<String, dynamic> currentConditions() {
+    final out = <String, dynamic>{};
+    if (subjectId != null) out['subjectId'] = subjectId;
+    if (folderId != null) out['folderId'] = folderId;
+    if (filterCauseName != null) out['cause'] = filterCauseName;
+    if (filterCauseStatus != 'all') {
+      out['causeStatus'] = filterCauseStatus;
+    }
+    if (filterExamId != null) out['examId'] = filterExamId;
+    if (filterErrorType != null) out['errorType'] = filterErrorType;
+    if (filterQuestionType != null) {
+      out['questionType'] = filterQuestionType;
+    }
+    if (filterTimeRange != 'all') out['timeRange'] = filterTimeRange;
+    if (filterFavorite) out['favorite'] = true;
+    if (filterOverdue) out['overdue'] = true;
+    if (filterTags.isNotEmpty) {
+      out['tags'] = filterTags.toList()..sort();
+    }
+    if (filterKpIds.isNotEmpty) {
+      out['kpIds'] = filterKpIds.toList()..sort();
+    }
+    if (search.trim().isNotEmpty) out['search'] = search.trim();
+    return out;
+  }
+
   List<Folder> batchFolderOptions() {
     if (subjectId == null) return [];
     return subjectFolders(subjectId!).where((f) => f.id != folderId).toList();
@@ -782,6 +854,143 @@ String cancelReviewResultMessage(
   return parts.isEmpty ? '没有题被取消加入复习' : parts.join('；');
 }
 
+// ---------- 十九批 A3：查找条件（SavedSearch.conditions 的规约） ----------
+//
+// 条件 JSON 的键（只存非默认值，见 WrongbookState.currentConditions）：
+// subjectId / folderId / cause / causeStatus / examId / errorType /
+// questionType / timeRange / favorite / overdue / tags / kpIds / search。
+// 其中 causeStatus ∈ pending / inProgress / solved / recheck，
+// timeRange ∈ week / month（其余值视为未设），tags / kpIds 是
+// 字符串列表。未知键丢弃，不抛错（旧版本存的条件也能读）。
+
+/// 条件归一化：只留已知键、去掉空值与非法枚举值；tags / kpIds
+/// 去重排序（比较与存库都走归一化后的形状）。
+Map<String, dynamic> normalizeConditions(Map<String, dynamic> raw) {
+  final out = <String, dynamic>{};
+  String? str(String key) {
+    final v = raw[key];
+    return v is String && v.trim().isNotEmpty ? v.trim() : null;
+  }
+
+  void putStr(String key) {
+    final v = str(key);
+    if (v != null) out[key] = v;
+  }
+
+  putStr('subjectId');
+  putStr('folderId');
+  putStr('cause');
+  putStr('examId');
+  putStr('errorType');
+  putStr('questionType');
+  putStr('search');
+  final causeStatus = str('causeStatus');
+  if (causeStatus != null &&
+      const {'pending', 'inProgress', 'solved', 'recheck'}.contains(
+        causeStatus,
+      )) {
+    out['causeStatus'] = causeStatus;
+  }
+  final timeRange = str('timeRange');
+  if (timeRange != null && const {'week', 'month'}.contains(timeRange)) {
+    out['timeRange'] = timeRange;
+  }
+  if (raw['favorite'] == true) out['favorite'] = true;
+  if (raw['overdue'] == true) out['overdue'] = true;
+  for (final key in ['tags', 'kpIds']) {
+    final v = raw[key];
+    if (v is List) {
+      final list = v
+          .whereType<String>()
+          .where((s) => s.isNotEmpty)
+          .toSet()
+          .toList()
+        ..sort();
+      if (list.isNotEmpty) out[key] = list;
+    }
+  }
+  return out;
+}
+
+/// 条件比较键：键排序后的 JSON（tags / kpIds 已在归一化里排序）。
+/// 当前条件与某条已存查找相等时，它的 chip 显示选中态。
+String conditionsKey(Map<String, dynamic> conditions) {
+  final norm = normalizeConditions(conditions);
+  final sorted = Map.fromEntries(
+    norm.entries.toList()..sort((a, b) => a.key.compareTo(b.key)),
+  );
+  return jsonEncode(sorted);
+}
+
+/// 两份条件是否相等（归一化后比较，与键顺序 / 多余键无关）。
+bool conditionsEqual(
+  Map<String, dynamic> a,
+  Map<String, dynamic> b,
+) => conditionsKey(a) == conditionsKey(b);
+
+/// 把一份条件应用到状态上（返回新状态，不改原状态）：
+/// 落到列表视图（view=list），范围（学科 / 文件夹）与筛选全部按
+/// 条件重设（条件里没有的项回到默认：跨学科、全部、无筛选），
+/// 回第 1 页、清空批量勾选（与 applyFilterChange 同款）。
+/// folderId 有、subjectId 缺时按文件夹反查学科；文件夹找不到了
+/// （被删）则 folderId 一并丢弃，不带失效 id 进列表。
+WrongbookState stateWithConditions(
+  WrongbookState base,
+  Map<String, dynamic> conditions,
+) {
+  final c = normalizeConditions(conditions);
+  String? subjectId = c['subjectId'] as String?;
+  String? folderId = c['folderId'] as String?;
+  if (folderId != null && subjectId == null) {
+    final folder = base.folderById(folderId);
+    subjectId = folder?.subjectId;
+    if (subjectId == null) folderId = null;
+  }
+  return base.copyWith(
+    view: WrongbookView.list,
+    subjectId: subjectId,
+    folderId: folderId,
+    search: (c['search'] as String?) ?? '',
+    filterExamId: c['examId'] as String?,
+    filterErrorType: c['errorType'] as String?,
+    filterQuestionType: c['questionType'] as String?,
+    filterTimeRange: (c['timeRange'] as String?) ?? 'all',
+    filterCauseStatus: (c['causeStatus'] as String?) ?? 'all',
+    filterCauseName: c['cause'] as String?,
+    filterFavorite: (c['favorite'] as bool?) ?? false,
+    filterOverdue: (c['overdue'] as bool?) ?? false,
+    filterTags: {...(c['tags'] as List<String>?) ?? const <String>[]},
+    filterKpIds: {...(c['kpIds'] as List<String>?) ?? const <String>[]},
+    page: 0,
+    selected: const <String>{},
+    inBookArchived: false,
+  );
+}
+
+/// 按一份条件对给定数据计题（命令面板各条目的 hint 计数用）：
+/// 用给定数据拼一个临时列表态，走同一份 filteredAll()（含“已掌握
+/// 默认隐藏”口径），计数与点进去看到的结果数一致。
+int countQuestionsForConditions({
+  required List<Question> questions,
+  required List<Subject> subjects,
+  required List<Folder> folders,
+  required List<Exam> exams,
+  required List<KnowledgePoint> kps,
+  required Map<String, List<CauseRecord>> recordsByQ,
+  required Map<String, dynamic> conditions,
+}) {
+  final base = WrongbookState(
+    questions: questions,
+    subjects: subjects,
+    folders: folders,
+    exams: exams,
+    kps: kps,
+    recordsByQ: recordsByQ,
+    view: WrongbookView.list,
+  );
+  return stateWithConditions(base, conditions).filteredAll().length;
+}
+
 /// 错题本页业务逻辑 + 业务数据（ARCH-PLAN-A 第 2 阶段：原
 /// `wrongbook_page.dart` 的 `_WrongbookPageState` 里调 `repo` 的部分
 /// 原样迁入；页面只留 widget 与本地交互状态）。
@@ -799,22 +1008,22 @@ class WrongbookNotifier extends Notifier<WrongbookState> {
   WrongbookState build() {
     ref.onDispose(() => _disposed = true);
     unawaited(load());
-    // 初始落点（原 `initState` 的一部分）：带错因 / 知识点筛选进来 →
-    // 列表页（D-50：筛选优先于学科——报告深链路带学科 + 错因 / 知识点
-    // 进来时直达已筛选列表，学科只定列表的范围，不把落点拉回目录页）；
-    // 只带学科进来 → 目录页；都不带 → 书架。
+    // 初始落点（原 `initState` 的一部分）：十九批 A5——默认落点改
+    // 为 L1 搜索结果页（不再先过书架）；带错因 / 知识点 / 文件夹
+    // 筛选进来 → 带筛选的列表（D-50：筛选优先于学科——报告深链路
+    // 带学科 + 错因 / 知识点进来时直达已筛选列表，学科只定列表的
+    // 范围；详情页右栏「打开列表 ›」带文件夹 + 学科进来时同款，
+    // 落到按该文件夹筛选的列表）；只带学科进来 → 按该学科筛选的
+    // 列表（不再落目录页）；都不带 → 全部题目的列表。书架 / 目录
+    // 视图保留在代码里，从 L1 筛选面板顶部「📚 书架（按学科浏览）」
+    // 入口进入。
     // `load()` 只写数据字段，不动视图 / 范围 / 筛选字段，
     // 所以先读后读不影响最终状态。
     final initial = ref.read(wrongbookInitialProvider);
-    var view = WrongbookView.shelf;
-    if (initial.filterCause != null || initial.filterKnowledgePointId != null) {
-      view = WrongbookView.list;
-    } else if (initial.subjectId != null) {
-      view = WrongbookView.directory;
-    }
     return WrongbookState(
-      view: view,
+      view: WrongbookView.list,
       subjectId: initial.subjectId,
+      folderId: initial.filterFolderId,
       filterCauseName: initial.filterCause,
       filterKpIds: initial.filterKnowledgePointId == null
           ? const {}
@@ -849,6 +1058,9 @@ class WrongbookNotifier extends Notifier<WrongbookState> {
       final counts = await repo.subjectCounts();
       final records = await repo.causeRecords();
       final settings = await repo.settings();
+      // 十九批 A3：已存查找同批读回（repo 层读失败兜底空列表，
+      // 不拖垮列表加载）。
+      final saved = await repo.savedSearches();
       final byQ = <String, List<CauseRecord>>{};
       for (final r in records) {
         (byQ[r.questionId] ??= []).add(r);
@@ -896,6 +1108,8 @@ class WrongbookNotifier extends Notifier<WrongbookState> {
         viewModeInitialized: true,
         sort: state.sortInitialized ? state.sort : sort,
         sortInitialized: true,
+        savedSearches: saved,
+        cureChecks: settings.cureChecks,
         loading: false,
         loadError: false,
         hasLoaded: true,
@@ -961,6 +1175,9 @@ class WrongbookNotifier extends Notifier<WrongbookState> {
       selected: const {},
       batchMode: false,
       inBookArchived: false,
+      // 十九批 A5：跨视图导航时关筛选面板（面板只属于列表页内；
+      // 不关时经面板进书架再回列表，面板还开着）。
+      filterOpen: false,
     );
   }
 
@@ -979,6 +1196,7 @@ class WrongbookNotifier extends Notifier<WrongbookState> {
       renamingId: null,
       draggingId: null,
       dragOverKey: null,
+      filterOpen: false,
     );
   }
 
@@ -992,6 +1210,7 @@ class WrongbookNotifier extends Notifier<WrongbookState> {
       inBookArchived: false,
       // SR2-7：回书架时移动目标一并复位。
       moveTargetId: '__top__',
+      filterOpen: false,
     );
   }
 
@@ -1095,6 +1314,87 @@ class WrongbookNotifier extends Notifier<WrongbookState> {
     state = state.copyWith(viewMode: v);
   }
 
+  // ---------- 十九批 A3：我的查找 / 最近搜过 ----------
+
+  /// 应用一份查找条件（saved chip / 最近搜过 chip / 命令面板条目
+  /// 共用）：范围与筛选按条件重设（见 [stateWithConditions]），
+  /// 落到列表视图；[label] 非空时把这次查找记入「最近搜过」
+  ///（最新在前，最多 4 条，同名同条件去重后顶到最前）。
+  void applySearchConditions(
+    Map<String, dynamic> conditions, {
+    String? label,
+  }) {
+    state = stateWithConditions(state, conditions);
+    if (label != null) recordRecentSearch(label, conditions);
+  }
+
+  /// 应用一条已存查找（chip 点按）：条件 + 名字都取自该条。
+  void applySavedSearch(SavedSearch saved) {
+    applySearchConditions(saved.conditions, label: saved.name);
+  }
+
+  /// 记一次最近搜过（label 为显示名，如关键词本身 / chip 名）。
+  /// 空条件（全部题目）不记；同 label 同条件去重后顶到最前；
+  /// 只留最新 4 条。
+  void recordRecentSearch(
+    String label,
+    Map<String, dynamic> conditions,
+  ) {
+    final name = label.trim();
+    if (name.isEmpty) return;
+    final norm = normalizeConditions(conditions);
+    if (norm.isEmpty) return;
+    final key = conditionsKey(norm);
+    final entry = SavedSearch(
+      id: 'recent:$name',
+      name: name,
+      conditions: norm,
+      createdAt: DateTime.now(),
+    );
+    final rest = state.recentSearches
+        .where(
+          (s) => !(s.name == name && conditionsKey(s.conditions) == key),
+        )
+        .toList();
+    state = state.copyWith(
+      recentSearches: [entry, ...rest].take(4).toList(),
+    );
+  }
+
+  /// 大搜索框回车：把关键词记入最近搜过（只记关键词条件）。
+  void recordKeywordSearch(String keyword) {
+    final kw = keyword.trim();
+    if (kw.isEmpty) return;
+    recordRecentSearch(kw, {'search': kw});
+  }
+
+  /// 存当前条件为一条「我的查找」：名字由调用方（命名对话框）给，
+  /// 空名返回提示、不写库；成功返回 null，页面弹 toast。
+  /// 存完即出现在 state.savedSearches 最前面（最新在前）。
+  Future<String?> saveCurrentSearch(String name) async {
+    final trimmed = name.trim();
+    if (trimmed.isEmpty) return '先给这次查找起个名字';
+    final search = SavedSearch(
+      id: newEntityId('ss'),
+      name: trimmed,
+      conditions: state.currentConditions(),
+      createdAt: DateTime.now(),
+    );
+    await _repo.saveSavedSearch(search);
+    state = state.copyWith(
+      savedSearches: [search, ...state.savedSearches],
+    );
+    return null;
+  }
+
+  /// 删一条已存查找（chip 上的小 ×，无确认；删了可重存）。
+  Future<void> deleteSavedSearch(String id) async {
+    await _repo.deleteSavedSearch(id);
+    state = state.copyWith(
+      savedSearches: state.savedSearches.where((s) => s.id != id).toList(),
+    );
+  }
+
   // ---------- 选择与批量模式 ----------
 
   /// 批量全选 / 全不选（复选框与「全选当前结果」文案共用）。
@@ -1173,7 +1473,7 @@ class WrongbookNotifier extends Notifier<WrongbookState> {
     // SR-P2-36：整科判重——同一学科下任何层级已有同名文件夹都拦下，
     // 不只同层兄弟。
     if (await repo.folderNameExistsInSubject(subjectId, name)) {
-      return '已经有了';
+      return '已经有了这个文件夹';
     }
     final maxOrder = siblings.isEmpty
         ? 0
@@ -1191,7 +1491,7 @@ class WrongbookNotifier extends Notifier<WrongbookState> {
     } on StateError {
       // upsertFolder 的最后一道防线：预检与保存之间被别处抢建同名时
       // 也只提示“已经有了”，不当未知错误报。
-      return '已经有了';
+      return '已经有了这个文件夹';
     }
     await load();
     return null;
@@ -1210,7 +1510,7 @@ class WrongbookNotifier extends Notifier<WrongbookState> {
       name,
       excludeId: f.id,
     )) {
-      return '已经有了';
+      return '已经有了这个文件夹';
     }
     try {
       await repo.saveFolder(
@@ -1223,7 +1523,7 @@ class WrongbookNotifier extends Notifier<WrongbookState> {
         ),
       );
     } on StateError {
-      return '已经有了';
+      return '已经有了这个文件夹';
     }
     await load();
     return null;
@@ -1255,7 +1555,7 @@ class WrongbookNotifier extends Notifier<WrongbookState> {
       // firstWhere 会抛 StateError 中断整批；找不到按“目标不存在”返回。
       final target = state.folderById(targetParentId);
       if (target == null || target.subjectId != f.subjectId) {
-        return '目标文件夹已经不存在了';
+        return '目标文件夹找不到了';
       }
       if (target.parentId != null) return '子文件夹只能有一层';
       if (state.subFolders(f.id).isNotEmpty) {
@@ -1381,7 +1681,7 @@ class WrongbookNotifier extends Notifier<WrongbookState> {
         }
       });
     } on StateError {
-      return '已经有了';
+      return '已经有了这个文件夹';
     }
     await load();
     return null;

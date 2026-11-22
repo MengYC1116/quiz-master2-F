@@ -117,6 +117,15 @@ class FakeDetailNotifierRepo extends QuestionRepository {
     recordedViews.add(questionId);
   }
 
+  /// 十三批 M5：OCR 状态是 best-effort 加载（不 await）；返回空任务行
+  /// 与“无 key”，不碰真实库（见 D-88）。
+  @override
+  Future<List<OcrJob>> ocrJobsForQuestion(String questionId) async =>
+      const [];
+
+  @override
+  Future<bool> hasOcrApiKey() async => false;
+
   final List<Question> saved = [];
   final List<String> deletedIds = [];
   int syncCauseRecordsCalls = 0;

@@ -534,7 +534,7 @@ class _SubjectsViewState extends ConsumerState<_SubjectsView> {
                       target: 'subject:${s.id}',
                       title: '删除学科「${s.name}」，确定吗？',
                       detail:
-                          '删除这个学科会删掉其中全部的题——这一科现在有 ${_s.questionCounts[s.id] ?? 0} 道题，会全部一起删掉；这一科自己的文件夹也跟着一起删掉（其他科目的文件夹不受影响），删了就没了，确定吗？',
+                          '删除这个学科会删掉其中全部的题——这一科现在有 ${_s.questionCounts[s.id] ?? 0} 道题，会全部一起删掉；这一科自己的文件夹也跟着一起删掉（其他学科的文件夹不受影响），删了就没了，确定吗？',
                       confirmLabel:
                           '确认删除这一科和全部 ${_s.questionCounts[s.id] ?? 0} 道题',
                     ),

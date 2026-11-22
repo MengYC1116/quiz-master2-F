@@ -13,7 +13,8 @@ import 'package:quiz_master2/models/models.dart';
 import 'package:quiz_master2/widgets/uikit.dart';
 
 import 'wrongbook_page_test.dart'
-    show FakeWrongbookRepo, openMathList, openMathListCompact, pumpWrongbook, wbq;
+    show FakeWrongbookRepo, boardRow, openMathList, openMathListCompact,
+        pumpWrongbook, wbq;
 
 Question _bq(
   String id, {
@@ -58,6 +59,24 @@ class _BatchFakeRepo extends QuestionRepository {
 
   List<Question> questions = [];
   List<CauseRecord> records = [];
+
+  /// 十九批 A3：内存版已存查找（不碰真实库）。
+  final List<SavedSearch> savedSearchList = [];
+
+  @override
+  Future<List<SavedSearch>> savedSearches() async =>
+      List.of(savedSearchList);
+
+  @override
+  Future<void> saveSavedSearch(SavedSearch search) async {
+    savedSearchList.removeWhere((s) => s.id == search.id);
+    savedSearchList.add(search);
+  }
+
+  @override
+  Future<void> deleteSavedSearch(String id) async {
+    savedSearchList.removeWhere((s) => s.id == id);
+  }
 
   @override
   Future<List<CauseRecord>> causeRecords() async => List.of(records);
@@ -406,8 +425,9 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(find.text('方法不会').last);
       await tester.pumpAndSettle();
-      expect(find.text('待解决乙'), findsOneWidget);
-      expect(find.text('待解决甲'), findsNothing);
+      // 十九批 A1：行标题是 RichText，find.text 找不到。
+      expect(boardRow('待解决乙'), findsOneWidget);
+      expect(boardRow('待解决甲'), findsNothing);
 
       await openBatchBar(tester);
       await tester.tap(find.text('全部加入复习'));

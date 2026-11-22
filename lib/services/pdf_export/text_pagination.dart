@@ -44,6 +44,17 @@ const double kPdfUsableHeightPt = 727.81;
 /// pdf 行高因子（附录 C.2：单行高 ≈ 字号 × 1.4518）。
 const double kPdfLineHeightFactor = 1.4518;
 
+/// Noto Sans SC Regular 的 hhea 上升沿占比（十八批 P1 D-216）。
+///
+/// hhea ascender 1160 / unitsPerEm 1000；pdf 3.13.1 的行高按
+/// ascent − descent 计，文本行高 = 字号 × (1.16 + 0.288) = 1.448 ×
+/// 字号（与 [kPdfLineHeightFactor] 的 1.4518 差 0.004×字号，文本行
+/// 仍以单行高为准；此处只用来拆出行内公式行的基线上/下两段）。
+const double kPdfFontAscentFactor = 1.16;
+
+/// Noto Sans SC Regular 的 hhea 下降沿占比（hhea descender −288）。
+const double kPdfFontDescentFactor = 0.288;
+
 /// 11 pt 正文单行高（pt，实测 ≈ 15.97）。
 const double kPdfBodySingleLineHeightPt =
     PdfExportTypography.bodyPt * kPdfLineHeightFactor;
@@ -185,6 +196,7 @@ class CInlineFormula {
     required this.ref,
     this.isOriginal = false,
     this.shrunk = false,
+    this.baselineOffsetPt,
   });
 
   /// 在段落原文中的字符偏移（公式位于该偏移处，即该偏移字符之前）。
@@ -210,6 +222,11 @@ class CInlineFormula {
   /// 是否已被缩小（超宽行内公式等比缩小；可疑标记“公式已缩小”用，
   /// D-188：与 [CAtomicBlock.shrunk] 同口径，分页重建时透传）。
   final bool shrunk;
+
+  /// 数学基线偏移（pt，十八批 P1 D-216：图片顶到数学基线的距离，
+  /// 栅格化器量得；构建器按此把公式基线落在文字基线上）。
+  /// 为 null = 未知基线（原图降级等），构建器按旧居中启发式放。
+  final double? baselineOffsetPt;
 }
 
 /// 一个段落：连续的文本 + 行内公式（行内公式随行不断，整行移页）。
@@ -580,8 +597,9 @@ class CTextPaginator {
             fontSizePt: paragraph.fontSizePt,
           );
           final lines = offsets.length - 1;
-          // D-183：行高按行内公式建模（见 _MeasuredParagraph.lineHeights），
-          // 含高公式的行取 max（文本行高，公式显示高），不是纯文本行高。
+          // D-183：行高按行内公式建模（见 _MeasuredParagraph.lineHeights）；
+          // 十八批 P1：基线对齐建模（上段 max（上升沿，基线偏移）+
+          // 下段 max（下降沿，高 − 基线偏移）），不是纯文本行高。
           height += measured.heightForLineRange(
             offsets,
             0,
@@ -851,17 +869,28 @@ class _MeasuredParagraph {
     return out;
   }
 
-  /// 每行高度（pt，D-183：行内公式建模）。
+  /// 每行高度（pt，D-183：行内公式建模；十八批 P1 D-216：基线对齐建模）。
   ///
-  /// 无公式行 = 单行高（字号 × 1.4518）；含行内公式行 = max（单行高，
-  /// 该行内公式显示高）——pdf 行高由 WidgetSpan 参与决定（行高 =
-  /// bottom − top，公式 WidgetSpan 的 baseline 居中启发式使行高约
-  /// 等于公式显示高，见 c_content_builder.dart）；只计宽度会系统性
-  /// 低估，封顶附近的题会被推入危险带。公式只影响其占位符起点所在行
+  /// 行高 = 基线上段 + 基线下段（pdf 3.13.1 的行高 = bottom − top，
+  /// 探针 2c 实测：文本行 15.93 = 12.76 + 3.17，WidgetSpan 行与
+  /// 模型分毫不差）。文本行：上段 = 字号 × 1.16、下段 = 字号 × 0.288，
+  /// 合计取 max（单行高，上下段和）——与旧模型文本行完全一致。
+  /// 含行内公式行：上段取 max（文本上升沿，各公式基线偏移），下段取
+  /// max（文本下降沿，各公式高 − 基线偏移）；基线未知的公式（原图
+  /// 降级）仍按旧居中启发式折算（上段 (单行高 + 公式高) / 2、
+  /// 下段 (公式高 − 单行高) / 2）。公式只影响其占位符起点所在行
   /// （WidgetSpan 是单行内联部件，不跨行）。
+  /// 旧模型（max（单行高，公式高））在基线靠下的公式上会低估行高
+  /// （如高 15、基线 14 的公式：旧 15.97，实 17.17），封顶附近的
+  /// 题会被推入危险带；新模型与构建器的实际行高一致。
   List<double> lineHeights(List<int> offsets, double fontSizePt) {
     final single = fontSizePt * kPdfLineHeightFactor;
+    final ascent = fontSizePt * kPdfFontAscentFactor;
+    final descent = fontSizePt * kPdfFontDescentFactor;
     final heights = List<double>.filled(offsets.length - 1, single);
+    // 每行的基线上/下段（下标与 heights 对齐；无公式行保持单行高）。
+    final above = List<double>.filled(offsets.length - 1, ascent);
+    final below = List<double>.filled(offsets.length - 1, descent);
     for (final span in spans) {
       var line = -1;
       for (var i = 0; i < offsets.length - 1; i++) {
@@ -873,7 +902,21 @@ class _MeasuredParagraph {
       }
       if (line < 0) continue;
       final h = span.formula.heightPt;
-      if (h > heights[line]) heights[line] = h;
+      final b = span.formula.baselineOffsetPt;
+      if (b != null) {
+        if (b > above[line]) above[line] = b;
+        final under = h - b;
+        if (under > below[line]) below[line] = under;
+      } else {
+        // 未知基线：旧居中启发式（WidgetSpan baseline = (单行高 − 高)/2）
+        // 下公式在行内的上下段。
+        final centeredAbove = (single + h) / 2;
+        if (centeredAbove > above[line]) above[line] = centeredAbove;
+        final centeredBelow = (h - single) / 2;
+        if (centeredBelow > below[line]) below[line] = centeredBelow;
+      }
+      final modeled = above[line] + below[line];
+      if (modeled > heights[line]) heights[line] = modeled;
     }
     return heights;
   }
@@ -938,6 +981,9 @@ class _MeasuredParagraph {
           // _collectResults 汇总不到行内公式的降级状态。
           isOriginal: span.formula.isOriginal,
           shrunk: span.formula.shrunk,
+          // 十八批 P1：透传基线偏移，否则分页按旧模型算、构建器
+          // 按新基线放，两边行高脱节。
+          baselineOffsetPt: span.formula.baselineOffsetPt,
         ),
       );
       cursor = span.measuredStart + span.length;

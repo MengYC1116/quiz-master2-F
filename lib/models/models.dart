@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
@@ -304,6 +305,55 @@ class Exam {
   final String id;
   final String name;
   final DateTime? date;
+}
+
+/// 十九批 A3：存下来的查找（「我的查找」）。
+///
+/// [conditions] 是 WrongbookState 筛选字段的子集（JSON 存库）：
+/// subjectId / folderId / cause（错因名，即 filterCauseName）/
+/// causeStatus / examId / errorType / questionType / timeRange /
+/// favorite / overdue / tags / kpIds / search——只存非默认值
+///（见 wrongbook_notifier.dart 的条件 helpers）。conditions 里
+/// 的 kpIds / tags 是字符串列表；其余键是字符串 / 布尔。
+/// 最近搜过（session 内、不入库）复用同一模型，id 为
+/// `'recent:$label'`、createdAt 为记入时间。
+class SavedSearch {
+  const SavedSearch({
+    required this.id,
+    required this.name,
+    required this.conditions,
+    required this.createdAt,
+  });
+
+  final String id;
+  final String name;
+  final Map<String, dynamic> conditions;
+  final DateTime createdAt;
+
+  String get conditionsJson => jsonEncode(conditions);
+
+  factory SavedSearch.fromRow(
+    String id,
+    String name,
+    String conditionsJson,
+    int createdAtMs,
+  ) {
+    Map<String, dynamic> conditions;
+    try {
+      final decoded = jsonDecode(conditionsJson);
+      conditions = decoded is Map<String, dynamic>
+          ? decoded
+          : <String, dynamic>{};
+    } catch (_) {
+      conditions = <String, dynamic>{};
+    }
+    return SavedSearch(
+      id: id,
+      name: name,
+      conditions: conditions,
+      createdAt: DateTime.fromMillisecondsSinceEpoch(createdAtMs),
+    );
+  }
 }
 
 /// 一道题 = 最小单位，整题保存，永不拆分；一道题在数据层只存一份，

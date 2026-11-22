@@ -18,6 +18,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:quiz_master2/data/database.dart';
 import 'package:quiz_master2/data/repository.dart';
+import 'package:quiz_master2/data/review_engine.dart';
 import 'package:quiz_master2/models/models.dart';
 import 'package:quiz_master2/modules/detail/question_detail_page.dart';
 import 'package:quiz_master2/modules/organize/organize_page.dart';
@@ -131,6 +132,20 @@ class _SweepDetailRepo extends QuestionRepository {
   /// 基类读真实 Drift 库，fake async 里永不完成，见 D-88）。
   @override
   Future<void> recordQuestionViewed(String questionId) async {}
+
+  /// 十三批 M5：OCR 状态是 best-effort 加载（不 await）；返回空任务行
+  /// 与“无 key”，不碰真实库（见 D-88）。
+  @override
+  Future<List<OcrJob>> ocrJobsForQuestion(String questionId) async =>
+      const [];
+
+  @override
+  Future<bool> hasOcrApiKey() async => false;
+
+  /// 详情页自愈（_healSliceIfNeeded）读同页框：无框，不碰真实库（见 D-88）。
+  @override
+  Future<List<QuestionBox>> boxesForPageImage(String pageImagePath) async =>
+      const [];
 }
 
 // ---------------------------------------------------------------- 整理页
@@ -176,6 +191,23 @@ class _SweepOrganizeRepo extends QuestionRepository {
     required String subjectId,
     required String title,
   }) async {}
+
+  /// B11-10：OrganizeNotifier 只在队列已空且库里有题时读这两个数
+  /// （今日小结行用）；返回 0 / 空，不碰真实库（见 D-88）。
+  @override
+  Future<int> organizedTodayCount({DateTime? now}) async => 0;
+
+  @override
+  Future<List<CauseRecord>> causeRecords() async => const [];
+
+  /// 十三批 M5：OCR 状态是 best-effort 加载（不 await）；返回空任务行
+  /// 与“无 key”，不碰真实库（见 D-88）。
+  @override
+  Future<List<OcrJob>> ocrJobsForQuestion(String questionId) async =>
+      const [];
+
+  @override
+  Future<bool> hasOcrApiKey() async => false;
 }
 
 // ---------------------------------------------------------------- 报告页
@@ -248,6 +280,24 @@ class _SweepReviewRepo extends QuestionRepository {
 
   @override
   Future<ReviewSessionState?> reviewState() async => null;
+
+  /// 复习 load() 只有在 reviewState() 返回非空会话时才调这三口
+  /// （M3-10 断点恢复校验）；本 Fake 的会话恒为 null，返回“无会话”
+  /// 默认值，不碰真实库（见 D-88）。
+  @override
+  Future<bool> hasSessionVerdict({
+    required String causeStableId,
+    required String sessionId,
+  }) async => false;
+
+  @override
+  Future<AttemptData?> loadAttempt({
+    required String sessionId,
+    required String questionId,
+  }) async => null;
+
+  @override
+  Future<void> clearReviewState() async {}
 }
 
 void main() {
@@ -265,9 +315,9 @@ void main() {
           orderIds: const ['q1'],
         ),
       );
-      // 标题是拼串「学科 · 题型｜题名」（_buildTitle）；题图占位里还有
-      // 一个「题：函数极限」，故用整串精确匹配。
-      expect(find.text('数学 · 材料题｜函数极限'), findsOneWidget);
+      // 十九批 C：旧拼串标题「学科 · 题型｜题名」已随 D1 板子去掉
+      //（板子 §2.3：学科 chip + 题名 + 状态 pill + 星）；题名本身仍在。
+      expect(find.text('函数极限'), findsOneWidget);
       expect(tester.takeException(), isNull);
 
       // 题不存在（已被删）+ 学科表为空：空状态，不摆预设三科。
@@ -297,7 +347,7 @@ void main() {
             questions: [_q('q1', '函数极限', isOrganized: false)],
             subjects: const [],
           ),
-          onOpenDetail: (_, __) async {},
+          onOpenDetail: (_, __, {String? searchContext}) async {},
           onGoReview: () {},
           onGoCollect: () {},
         ),
@@ -310,7 +360,7 @@ void main() {
         tester,
         OrganizePage(
           repo: _SweepOrganizeRepo(questions: const [], subjects: const []),
-          onOpenDetail: (_, __) async {},
+          onOpenDetail: (_, __, {String? searchContext}) async {},
           onGoReview: () {},
           onGoCollect: () {},
         ),
@@ -383,7 +433,7 @@ void main() {
             records: [_rec('q1', '概念不清')],
             subjects: const [],
           ),
-          onOpenDetail: (_, __) async {},
+          onOpenDetail: (_, __, {String? searchContext}) async {},
           onGoWrongbook: () {},
         ),
       );
@@ -416,7 +466,7 @@ void main() {
             ],
             records: [_rec('q1', '概念不清')],
           ),
-          onOpenDetail: (_, __) async {},
+          onOpenDetail: (_, __, {String? searchContext}) async {},
           onGoWrongbook: () {},
         ),
       );

@@ -49,6 +49,7 @@ import '../../models/models.dart';
 import '../../state/home_provider.dart';
 import '../../state/repository_provider.dart';
 import '../../theme/app_theme.dart';
+import '../../widgets/entrance_animation.dart';
 import '../../widgets/uikit.dart';
 
 /// 首页：问候 + 焦点大卡片（要复习的数量）+ 继续上次 + 快速收集 +
@@ -161,7 +162,9 @@ class _HomePageState extends ConsumerState<HomePage> {
   Widget _buildBody(BuildContext context, WidgetRef ref, HomeState home) {
     final palette = DesignTokens.of(Theme.of(context).brightness);
     final scale = qmScaleOf(context);
-    return SingleChildScrollView(
+    // 二十二批 D-247：首页入场上移淡入。
+    return EntranceFadeSlide(
+        child: SingleChildScrollView(
       // 无页内边距：外壳已给 26/30（R2），本页不再叠加。
       padding: EdgeInsets.zero,
       child: Column(
@@ -292,7 +295,7 @@ class _HomePageState extends ConsumerState<HomePage> {
           ],
         ],
       ),
-    );
+    ));
   }
 }
 

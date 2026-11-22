@@ -19,7 +19,7 @@ import 'report_page_test.dart'
 import 'review_page_test.dart'
     show FakeReviewRepo, pumpReview, rec, rq;
 import 'wrongbook_page_test.dart'
-    show FakeWrongbookRepo, pumpWrongbook, wbq;
+    show FakeWrongbookRepo, openShelfFromList, pumpWrongbook, wbq;
 
 /// 新学科：化学，紫 0xFF7C5CFC（与 B2 / B2 补充测试同值，轮换表第 4 位）。
 const chemPurple = Color(0xFF7C5CFC);
@@ -281,6 +281,12 @@ void main() {
       );
       await pumpWrongbook(tester,
           repo: repo, initialSubjectId: 'subject-chem');
+      // 二十批全量定位：十九批后 /wrongbook 默认落点是 L1 列表（D-223），
+      // L1 页头随收尾修复已删，标题不在列表页——目录标题在目录视图里，
+      // 经筛选面板书架入口进书架、点化学封面进目录再断言。
+      await openShelfFromList(tester);
+      await tester.tap(find.text('化学'));
+      await tester.pumpAndSettle();
       expect(find.text('化学 · 错题本'), findsOneWidget);
       expect(find.text('数学 · 错题本'), findsNothing);
     });

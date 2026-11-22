@@ -619,7 +619,7 @@ class _BoxEditorDialogState extends State<_BoxEditorDialog> {
     }
     if (matches.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('没找到对应的检测框（重叠度需超过 0.3），请手动框选')),
+        const SnackBar(content: Text('没找到对应的检测框，请手动框选')),
       );
       return;
     }
@@ -646,7 +646,7 @@ class _BoxEditorDialogState extends State<_BoxEditorDialog> {
     if (missed > 0 && mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('有 $missed 道框没找到对应的检测框（重叠度需超过 0.3），已恢复其余框，请手动框选'),
+          content: Text('有 $missed 道框没找到对应的检测框，已恢复其余框，请手动框选'),
         ),
       );
     }

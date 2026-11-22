@@ -651,8 +651,9 @@ class _ExportConfirmDialogState extends State<ExportConfirmDialog> {
 
 /// 完成界面（确认步内与 [ExportConfirmSession] 再次弹出的对话
 /// 框共用）：逐份文件成功 / 失败状态 + 完整性报告摘要 + 警告清单展开 +
-/// 平台操作按钮（Windows「打开文件 / 打开所在文件夹」，Android 只出
-/// 「分享」）。
+/// 平台操作按钮（Windows「打开文件 / 打开所在文件夹」，Android
+/// 「分享」+ 独立「打开 PDF」（二十批 P7，open_filex；仅 PDF 行
+/// 已交付时出现，Word 行不出现）。
 class ExportCompletionView extends StatelessWidget {
   const ExportCompletionView({
     super.key,
@@ -832,7 +833,7 @@ class ExportCompletionView extends StatelessWidget {
                       }
                     },
                   ),
-                ] else
+                ] else ...[
                   QmButton(
                     label: '分享',
                     variant: QmButtonVariant.plain,
@@ -853,6 +854,33 @@ class ExportCompletionView extends StatelessWidget {
                       }
                     },
                   ),
+                  // 二十批 P7（十五批 #31）：Android 独立「打开 PDF」
+                  // 按钮（open_filex 通道；文案逐字「打开 PDF」）。
+                  // 只在 PDF 行出现：Word 行（isWordCombined）不出现；
+                  // 本 Wrap 只在 deliveredPath 非空（即已交付）时构建，
+                  // 未交付 / 整单失败 / 取消时不出现。
+                  if (controller.supportsAndroidOpenPdf &&
+                      !row.isWordCombined)
+                    QmButton(
+                      label: '打开 PDF',
+                      variant: QmButtonVariant.plain,
+                      size: QmButtonSize.small,
+                      onPressed: () async {
+                        final result = await controller.openDeliveredPdf(
+                          row.deliveredPath!,
+                        );
+                        if (!result.success && context.mounted) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(
+                              content: Text(
+                                result.error ?? '打开 PDF 失败，请重试。',
+                              ),
+                            ),
+                          );
+                        }
+                      },
+                    ),
+                ],
               ],
             ),
           ],

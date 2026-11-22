@@ -165,7 +165,7 @@ class ImportService {
   static String? storageLimitMessage(int totalBytes) {
     if (totalBytes <= maxStorageBytes) return null;
     return '题图与原图已超过 2GB 上限（现在 ${formatBytes(totalBytes)}），'
-        '先清理孤儿文件或删掉不需要的题目，再导入新题。';
+        '先清理无用文件或删掉不需要的题目，再导入新题。';
   }
 
   /// 超限硬判（与 enqueue 的失败行为一致，见 SR-P1-14）；

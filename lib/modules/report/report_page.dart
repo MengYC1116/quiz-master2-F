@@ -212,7 +212,7 @@ class _ReportPageState extends ConsumerState<ReportPage> {
                     palette: palette,
                     brightness: brightness,
                     scale: scale,
-                    title: '最常错的5个原因',
+                    title: '最常错的 5 个原因',
                     groups: causeTop,
                     expanded: _expandCauses,
                     onToggleExpand: () =>
@@ -230,7 +230,7 @@ class _ReportPageState extends ConsumerState<ReportPage> {
                     palette: palette,
                     brightness: brightness,
                     scale: scale,
-                    title: '最常错的5个知识点',
+                    title: '最常错的 5 个知识点',
                     groups: kpTop,
                     expanded: _expandKps,
                     onToggleExpand: () =>
@@ -253,7 +253,7 @@ class _ReportPageState extends ConsumerState<ReportPage> {
                   palette: palette,
                   brightness: brightness,
                   scale: scale,
-                  title: '最常错的5个原因',
+                  title: '最常错的 5 个原因',
                   groups: causeTop,
                   expanded: _expandCauses,
                   onToggleExpand: () =>
@@ -269,7 +269,7 @@ class _ReportPageState extends ConsumerState<ReportPage> {
                   palette: palette,
                   brightness: brightness,
                   scale: scale,
-                  title: '最常错的5个知识点',
+                  title: '最常错的 5 个知识点',
                   groups: kpTop,
                   expanded: _expandKps,
                   onToggleExpand: () =>

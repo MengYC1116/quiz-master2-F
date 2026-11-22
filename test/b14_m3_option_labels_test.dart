@@ -625,6 +625,14 @@ class _FakeOrgRepo extends QuestionRepository {
   Future<void> syncCauseRecords(Question q) async {
     syncCauseRecordsCalls++;
   }
+
+  /// B11-10：OrganizeNotifier 只在队列已空且库里有题时读这两个数
+  /// （今日小结行用）；返回 0 / 空，不碰真实库（见 D-88）。
+  @override
+  Future<int> organizedTodayCount({DateTime? now}) async => 0;
+
+  @override
+  Future<List<CauseRecord>> causeRecords() async => const [];
 }
 
 ProviderContainer _orgContainer(_FakeOrgRepo repo) {
@@ -699,6 +707,11 @@ class _FakeDetailRepo extends QuestionRepository {
   Future<void> syncCauseRecords(Question q) async {
     syncCauseRecordsCalls++;
   }
+
+  /// 详情页自愈（_healSliceIfNeeded）读同页框：无框，不碰真实库（见 D-88）。
+  @override
+  Future<List<QuestionBox>> boxesForPageImage(String pageImagePath) async =>
+      const [];
 }
 
 ProviderContainer _detailContainer(_FakeDetailRepo repo) {

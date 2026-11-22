@@ -288,6 +288,12 @@ void main() {
     db = await AppDatabase.openForTest();
     AppDatabase.useDatabaseForTest(db);
     repo = QuestionRepository(AppDatabase.instance);
+    // FR-45 后续（slices 污染）：同 b13_p1_1——tearDown 的 resetForTest()
+    // 置 null 后，从第 2 个测试起 dataDirectoryPath() 读到真实目录，
+    // 图块版本切片写进真实 slices/（P3 批量 2 实测本文件 +3）。setUp 先给
+    // testDataDirectory 指全新临时目录，再读路径。
+    final tmpDataDir = await Directory.systemTemp.createTemp('qm2-pkg3-');
+    AppDatabase.testDataDirectory = tmpDataDir.path;
     dataDir = Directory(AppDatabase.dataDirectoryPath());
     await dataDir.create(recursive: true);
     keyBackend = _MemoryKeyBackend();
@@ -300,6 +306,10 @@ void main() {
     FileLifecycleGuard.instance.debugClearPendingForTest();
     FileLifecycleGuard.instance.debugClearStagingForTest();
     await AppDatabase.resetForTest();
+    // setUp 指的临时数据目录用完即删，不留残留。
+    try {
+      if (await dataDir.exists()) await dataDir.delete(recursive: true);
+    } catch (_) {}
   });
 
   group('reorderFiguresInQuestion（纯函数，notifier 共用）', () {
@@ -925,7 +935,7 @@ void main() {
           home: Scaffold(
             body: OrganizePage(
               repo: repo,
-              onOpenDetail: (_, __) async {},
+              onOpenDetail: (_, __, {String? searchContext}) async {},
               onGoReview: () {},
               onGoCollect: () {},
               imageFailed: false,

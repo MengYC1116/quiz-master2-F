@@ -950,6 +950,19 @@ class _FakeDetailRepo extends QuestionRepository {
   Future<List<CauseRecord>> causeRecordsFor(String questionId) async =>
       const [];
 
+  // FR-45：_refreshRelated（十九批 D1，DetailNotifier.load 内 unawaited）
+  // 调 repo.all() + repo.causeRecords()；未覆写时走真实 QuestionRepository
+  // → 单例 db getter → testDataDirectory 已被 resetForTest 置 null 的窗口
+  // 里会打开真实演示库并跑 v2→v6 迁移（本文件 36 号测试“saveEdit 保留 OCR
+  // 字段”触发，见 batch20-work/p3-fr45/STATUS.md）。与 _FakeOrganizeRepo
+  // 的 all() 同款：直接读内存列表，不碰单例。
+  @override
+  Future<List<Question>> all({bool includeArchived = false}) async =>
+      List.of(questions);
+
+  @override
+  Future<List<CauseRecord>> causeRecords() async => const [];
+
   @override
   Future<List<({String result, DateTime reviewedAt})>> reviewHistory(
     String questionId,
@@ -1057,7 +1070,7 @@ Future<void> _pumpOrganizeGuard(
       home: Scaffold(
         body: OrganizePage(
           repo: repo,
-          onOpenDetail: (_, __) async {},
+          onOpenDetail: (_, __, {String? searchContext}) async {},
           onGoReview: () {},
           onGoCollect: () {},
         ),
@@ -1314,6 +1327,14 @@ void _guardAndNotifierTests() {
     setUp(() async {
       db = await AppDatabase.openForTest();
       AppDatabase.useDatabaseForTest(db);
+      // FR-45 后续（slices 污染）：tearDown 的 resetForTest() 置 null 后，
+      // 从第 2 个测试起 dataDirectoryPath() 读到真实目录，切片写进真实
+      // slices/（P3 批量 2 实测本组 +2）。setUp 先给 testDataDirectory
+      // 指全新临时目录，再读路径。
+      final tmpDataDir = await Directory.systemTemp.createTemp(
+        'qm2-stem1310-',
+      );
+      AppDatabase.testDataDirectory = tmpDataDir.path;
       dataDir = Directory(AppDatabase.dataDirectoryPath());
       await dataDir.create(recursive: true);
       await Directory(p.join(dataDir.path, 'slices')).create(recursive: true);
@@ -1324,6 +1345,10 @@ void _guardAndNotifierTests() {
 
     tearDown(() async {
       await AppDatabase.resetForTest();
+      // setUp 指的临时数据目录用完即删，不留残留。
+      try {
+        if (await dataDir.exists()) await dataDir.delete(recursive: true);
+      } catch (_) {}
     });
 
     test('整理页重新识别：为当前题建 pending 任务，哈希对得上切片', () async {

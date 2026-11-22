@@ -213,10 +213,10 @@ void main() {
       );
       for (final letter in ['A', 'B', 'C', 'D']) {
         final d = _chipDecoration(tester, letter);
-        expect(d.color, const Color(0xFFFFFEF9), reason: '选项 $letter 未选应为白底');
+        expect(d.color, const Color(0xFFFFFFFF), reason: '选项 $letter 未选应为白底');
         expect(
           (d.border as Border).top.color,
-          const Color(0xFFCFC39E),
+          const Color(0xFFB9C6D8),
           reason: '选项 $letter 未选应为 line-strong 边',
         );
         expect(
@@ -245,10 +245,10 @@ void main() {
       );
       for (final letter in ['B', 'C', 'D']) {
         final d = _chipDecoration(tester, letter);
-        expect(d.color, const Color(0xFFFFFEF9), reason: '选项 $letter 未选应为白底');
+        expect(d.color, const Color(0xFFFFFFFF), reason: '选项 $letter 未选应为白底');
         expect(
           (d.border as Border).top.color,
-          const Color(0xFFCFC39E),
+          const Color(0xFFB9C6D8),
           reason: '选项 $letter 未选应为 line-strong 边',
         );
       }

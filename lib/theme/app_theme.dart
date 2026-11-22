@@ -37,15 +37,15 @@ class AppTheme {
   // 新代码请直接用 DesignTokens，不要再加 AppTheme 常量。
   static const Color accent = Color(0xFF2E7CF6);
   static const Color accentText = Color(0xFF175CD3);
-  static const Color lightBackground = Color(0xFFFDF8EC);
-  static const Color lightSurface = Color(0xFFFFFEF9);
-  static const Color lightSurface2 = Color(0xFFFDF3D8);
-  static const Color lightSurface3 = Color(0xFFF3E9C8);
+  static const Color lightBackground = Color(0xFFF7FAFD);
+  static const Color lightSurface = Color(0xFFFFFFFF);
+  static const Color lightSurface2 = Color(0xFFEFF4FA);
+  static const Color lightSurface3 = Color(0xFFDCE8F5);
   static const Color lightInk = Color(0xFF17233B);
   static const Color lightInk2 = Color(0xFF3D4E6B);
   static const Color lightMuted = Color(0xFF5F718E);
-  static const Color lightLine = Color(0xFFE8DFC2);
-  static const Color lightLineStrong = Color(0xFFCFC39E);
+  static const Color lightLine = Color(0xFFDCE4EF);
+  static const Color lightLineStrong = Color(0xFFB9C6D8);
   static const Color lightFocusCard = Color(0xFFE1EDFF);
   static const Color lightAccentSoft = Color(0xFFE1EDFF);
   static const Color lightAccentInk = Color(0xFFFFFFFF);
@@ -65,21 +65,21 @@ class AppTheme {
   static const Color darkFocusCard = Color(0xFF2C3949);
   static const Color darkAccentSoft = Color(0xFF2C3949);
 
-  /// 左导航：亮色为暖纸底（预览 .side 用 --surface-2 #FDF3D8），
+  /// 左导航：亮色为淡蓝底（预览 .side 用 --surface-2 #EFF4FA），
   /// 当前页是实心蓝块 + 白字（预览口径）；
   /// 深色为冷灰底，当前页是雾蓝块 + 深字。
-  static const Color lightNavBackground = Color(0xFFFDF3D8);
+  static const Color lightNavBackground = Color(0xFFEFF4FA);
   static const Color lightNavSelected = Color(0xFF2E7CF6);
   static const Color lightNavSelectedInk = Color(0xFFFFFFFF);
   static const Color darkNavBackground = Color(0xFF21262E);
   static const Color darkNavSelected = Color(0xFF7FA8D0);
   static const Color darkNavSelectedInk = Color(0xFF131A24);
 
-  /// 打开的书的纸页：亮色暖白纸面，深色浅灰纸面（#D8DCE2，见
+  /// 打开的书的纸页：亮色白纸面，深色浅灰纸面（#D8DCE2，见
   /// DesignTokens 注释；旧代码的冷灰 #262B33 已废弃）。
-  static const Color lightPaper = Color(0xFFFFFDF4);
-  static const Color lightPaperInk = Color(0xFF22251F);
-  static const Color lightPaperLine = Color(0xFFE3D9BE);
+  static const Color lightPaper = Color(0xFFFFFFFF);
+  static const Color lightPaperInk = Color(0xFF17233B);
+  static const Color lightPaperLine = Color(0xFFDCE4EF);
   static const Color darkPaper = Color(0xFFD8DCE2);
   static const Color darkPaperInk = Color(0xFF232830);
   static const Color darkPaperLine = Color(0xFFAEB6C2);
@@ -219,7 +219,7 @@ class AppTheme {
 }
 
 /// 纸纹微点（预览 body 背景）：
-/// 亮色暖纸 rgba(180,160,90,.07)、深色 rgba(160,180,205,.030)，
+/// 亮色 rgba(160,180,205,.05)、深色 rgba(160,180,205,.030)，
 /// 1px 点、22px 间距。只铺在应用底色上，打开的书的纸页本身
 /// 按预览是干净纸面（background-image:none），不铺点。
 /// R1 只做 token 化（颜色取自 DesignTokens），行为不变。

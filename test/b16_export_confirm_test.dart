@@ -592,7 +592,7 @@ void main() {
       expect(find.text('生成失败：答案版生成失败'), findsOneWidget);
     });
 
-    testWidgets('Android 只出「分享」，不出打开按钮', (tester) async {
+    testWidgets('Android 出「分享」+ 独立「打开 PDF」，不出桌面打开按钮', (tester) async {
       final controller = confirmController(
         inventory: confirmInventory(),
         platformOverride: PdfDeliveryPlatform.android,
@@ -606,6 +606,9 @@ void main() {
       await waitForTerminal(tester);
       expect(find.text('全部完成'), findsOneWidget);
       expect(find.text('分享'), findsOneWidget);
+      // 二十批 P7（十五批 #31）：Android 在「分享」旁加独立
+      // 「打开 PDF」按钮（open_filex 通道）。
+      expect(find.text('打开 PDF'), findsOneWidget);
       expect(find.text('打开文件'), findsNothing);
       expect(find.text('打开所在文件夹'), findsNothing);
     });

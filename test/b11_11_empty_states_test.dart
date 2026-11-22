@@ -11,6 +11,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:quiz_master2/data/database.dart';
 import 'package:quiz_master2/data/repository.dart';
+import 'package:quiz_master2/data/review_engine.dart';
 import 'package:quiz_master2/models/models.dart';
 import 'package:quiz_master2/modules/collect/collect_page.dart';
 import 'package:quiz_master2/modules/organize/organize_page.dart';
@@ -80,6 +81,24 @@ class _B11ReviewRepo extends QuestionRepository {
   List<Question> questions;
   List<CauseRecord> records;
 
+  /// 十九批 A3：内存版已存查找（不碰真实库）。
+  final List<SavedSearch> savedSearchList = [];
+
+  @override
+  Future<List<SavedSearch>> savedSearches() async =>
+      List.of(savedSearchList);
+
+  @override
+  Future<void> saveSavedSearch(SavedSearch search) async {
+    savedSearchList.removeWhere((s) => s.id == search.id);
+    savedSearchList.add(search);
+  }
+
+  @override
+  Future<void> deleteSavedSearch(String id) async {
+    savedSearchList.removeWhere((s) => s.id == id);
+  }
+
   @override
   Future<List<Subject>> subjects() async => List.of(Subject.all);
 
@@ -95,6 +114,24 @@ class _B11ReviewRepo extends QuestionRepository {
 
   @override
   Future<ReviewSessionState?> reviewState() async => null;
+
+  /// 复习 load() 只有在 reviewState() 返回非空会话时才调这三口
+  /// （M3-10 断点恢复校验）；本 Fake 的会话恒为 null，返回“无会话”
+  /// 默认值，不碰真实库（见 D-88）。
+  @override
+  Future<bool> hasSessionVerdict({
+    required String causeStableId,
+    required String sessionId,
+  }) async => false;
+
+  @override
+  Future<AttemptData?> loadAttempt({
+    required String sessionId,
+    required String questionId,
+  }) async => null;
+
+  @override
+  Future<void> clearReviewState() async {}
 }
 
 // --------------------------------------------------------------- 整理页 --
@@ -118,6 +155,24 @@ class _B11OrganizeRepo extends QuestionRepository {
   _B11OrganizeRepo({required this.questions}) : super(AppDatabase.instance);
 
   List<Question> questions;
+
+  /// 十九批 A3：内存版已存查找（不碰真实库）。
+  final List<SavedSearch> savedSearchList = [];
+
+  @override
+  Future<List<SavedSearch>> savedSearches() async =>
+      List.of(savedSearchList);
+
+  @override
+  Future<void> saveSavedSearch(SavedSearch search) async {
+    savedSearchList.removeWhere((s) => s.id == search.id);
+    savedSearchList.add(search);
+  }
+
+  @override
+  Future<void> deleteSavedSearch(String id) async {
+    savedSearchList.removeWhere((s) => s.id == id);
+  }
 
   @override
   Future<List<Subject>> subjects() async => List.of(Subject.all);
@@ -146,6 +201,15 @@ class _B11OrganizeRepo extends QuestionRepository {
   @override
   Future<List<Question>> dueToday({bool includeArchived = false}) async =>
       const [];
+
+  /// 十三批 M5：OCR 状态是 best-effort 加载（不 await）；返回空任务行
+  /// 与“无 key”，不碰真实库（见 D-88）。
+  @override
+  Future<List<OcrJob>> ocrJobsForQuestion(String questionId) async =>
+      const [];
+
+  @override
+  Future<bool> hasOcrApiKey() async => false;
 }
 
 // --------------------------------------------------------------- 错题本 --
@@ -194,6 +258,24 @@ class _B11WrongbookRepo extends QuestionRepository {
   List<Question> questions;
   List<CauseRecord> records;
 
+  /// 十九批 A3：内存版已存查找（不碰真实库）。
+  final List<SavedSearch> savedSearchList = [];
+
+  @override
+  Future<List<SavedSearch>> savedSearches() async =>
+      List.of(savedSearchList);
+
+  @override
+  Future<void> saveSavedSearch(SavedSearch search) async {
+    savedSearchList.removeWhere((s) => s.id == search.id);
+    savedSearchList.add(search);
+  }
+
+  @override
+  Future<void> deleteSavedSearch(String id) async {
+    savedSearchList.removeWhere((s) => s.id == id);
+  }
+
   @override
   Future<List<Subject>> subjects() async => [
         Subject.math.copyWith(coverColor: 'green'),
@@ -236,6 +318,24 @@ class _B11CollectRepo extends QuestionRepository {
 
   List<Subject> subjectsValue;
 
+  /// 十九批 A3：内存版已存查找（不碰真实库）。
+  final List<SavedSearch> savedSearchList = [];
+
+  @override
+  Future<List<SavedSearch>> savedSearches() async =>
+      List.of(savedSearchList);
+
+  @override
+  Future<void> saveSavedSearch(SavedSearch search) async {
+    savedSearchList.removeWhere((s) => s.id == search.id);
+    savedSearchList.add(search);
+  }
+
+  @override
+  Future<void> deleteSavedSearch(String id) async {
+    savedSearchList.removeWhere((s) => s.id == id);
+  }
+
   @override
   Future<List<Subject>> subjects() async => List.of(subjectsValue);
 
@@ -267,7 +367,7 @@ void main() {
             questions: [_rq('q9', '马原', subjectId: 'politics')],
             records: const [],
           ),
-          onOpenDetail: (_, __) async {},
+          onOpenDetail: (_, __, {String? searchContext}) async {},
           onGoWrongbook: () => went++,
         ),
       );
@@ -283,7 +383,7 @@ void main() {
         tester,
         OrganizePage(
           repo: _B11OrganizeRepo(questions: []),
-          onOpenDetail: (_, __) async {},
+          onOpenDetail: (_, __, {String? searchContext}) async {},
           onGoReview: () {},
           onGoCollect: () => went++,
         ),
@@ -301,7 +401,7 @@ void main() {
           repo: _B11OrganizeRepo(
             questions: [_oq('q1', '函数极限', isOrganized: true)],
           ),
-          onOpenDetail: (_, __) async {},
+          onOpenDetail: (_, __, {String? searchContext}) async {},
           onGoReview: () => went++,
           onGoCollect: () {},
         ),
@@ -322,16 +422,19 @@ void main() {
           ),
           initialSubjectId: 'math',
           onOpenHome: () {},
-          onOpenDetail: (_, __) async {},
+          onOpenDetail: (_, __, {String? searchContext}) async {},
           onGoReview: ({String? subjectId}) {},
         ),
       );
-      await _tapText(tester, '全部题目');
+      // 十九批 A5：initialSubjectId 直接落列表，不用点「全部题目」。
       expect(find.text('这里的题错因都已解决'), findsOneWidget);
       await _tapText(tester, '看看已解决的题');
-      // 默认大卡片不显示题名，切紧凑列表再断言题出现。
-      await _tapText(tester, '紧凑列表');
-      expect(find.text('函数极限'), findsOneWidget);
+      // 十九批 A1：板子行标题常显，不用切视图。
+      // 二十一批 D-244：行标题改显示题干（'题：求极限'），不再显示标题。
+      expect(
+        find.textContaining('题：求极限', findRichText: true),
+        findsOneWidget,
+      );
     });
 
     testWidgets('错题本：搜不到时点“清除全部筛选”恢复列表', (tester) async {
@@ -344,15 +447,18 @@ void main() {
           ),
           filterCause: '不存在的错因',
           onOpenHome: () {},
-          onOpenDetail: (_, __) async {},
+          onOpenDetail: (_, __, {String? searchContext}) async {},
           onGoReview: ({String? subjectId}) {},
         ),
       );
       expect(find.text('没找到这道题，换个词试试'), findsOneWidget);
       await _tapText(tester, '清除全部筛选');
-      // 默认大卡片不显示题名，切紧凑列表再断言题出现。
-      await _tapText(tester, '紧凑列表');
-      expect(find.text('函数极限'), findsOneWidget);
+      // 十九批 A1：板子行标题常显，不用切视图。
+      // 二十一批 D-244：行标题改显示题干（'题：求极限'），不再显示标题。
+      expect(
+        find.textContaining('题：求极限', findRichText: true),
+        findsOneWidget,
+      );
       expect(find.text('没找到这道题，换个词试试'), findsNothing);
     });
 
@@ -363,7 +469,7 @@ void main() {
           repo: _B11WrongbookRepo(questions: [], records: const []),
           filterCause: '不存在的错因',
           onOpenHome: () {},
-          onOpenDetail: (_, __) async {},
+          onOpenDetail: (_, __, {String? searchContext}) async {},
           onGoReview: ({String? subjectId}) {},
         ),
       );
@@ -384,20 +490,27 @@ void main() {
           ),
           initialSubjectId: 'math',
           onOpenHome: () {},
-          onOpenDetail: (_, __) async {},
+          onOpenDetail: (_, __, {String? searchContext}) async {},
           onGoReview: ({String? subjectId}) {},
         ),
       );
-      await _tapText(tester, '全部题目');
-      // 默认大卡片不显示题名，切紧凑列表再断言题出现（切后保持紧凑）。
-      await _tapText(tester, '紧凑列表');
-      expect(find.text('函数极限'), findsOneWidget);
+      // 十九批 A5：initialSubjectId 直接落列表，不用点「全部题目」；
+      // A1：板子行标题常显，不用切视图。
+      // 二十一批 D-244：行标题改显示题干（'题：求极限'）。
+      expect(
+        find.textContaining('题：求极限', findRichText: true),
+        findsOneWidget,
+      );
       await _tapText(tester, '筛选 ▾');
       expect(find.text('已归档'), findsOneWidget);
       await _tapText(tester, '已归档');
       expect(find.text('这一本里还没有归档的题'), findsOneWidget);
       await _tapText(tester, '返回题目列表');
-      expect(find.text('函数极限'), findsOneWidget);
+      // 二十一批 D-244：行标题改显示题干（'题：求极限'）。
+      expect(
+        find.textContaining('题：求极限', findRichText: true),
+        findsOneWidget,
+      );
       expect(find.text('这一本里还没有归档的题'), findsNothing);
     });
 

@@ -9,6 +9,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:quiz_master2/data/database.dart';
 import 'package:quiz_master2/data/repository.dart';
+import 'package:quiz_master2/data/review_engine.dart';
+import 'package:quiz_master2/models/exam_event.dart';
 import 'package:quiz_master2/models/models.dart';
 import 'package:quiz_master2/modules/review/review_page.dart';
 import 'package:quiz_master2/modules/settings/settings_page.dart';
@@ -54,6 +56,24 @@ class FakeP0B2Repo extends QuestionRepository {
       ),
   ];
 
+  /// 十九批 A3：内存版已存查找（不碰真实库）。
+  final List<SavedSearch> savedSearchList = [];
+
+  @override
+  Future<List<SavedSearch>> savedSearches() async =>
+      List.of(savedSearchList);
+
+  @override
+  Future<void> saveSavedSearch(SavedSearch search) async {
+    savedSearchList.removeWhere((s) => s.id == search.id);
+    savedSearchList.add(search);
+  }
+
+  @override
+  Future<void> deleteSavedSearch(String id) async {
+    savedSearchList.removeWhere((s) => s.id == id);
+  }
+
   @override
   Future<List<Subject>> subjects() async => Subject.all;
 
@@ -94,6 +114,29 @@ class FakeP0B2Repo extends QuestionRepository {
 
   @override
   Future<ReviewSessionState?> reviewState() async => null;
+
+  /// B11-9：考试事件内存版（设置页考试组打开时读；不覆盖会落到基类
+  /// 读真实库，fake async 里永不完成，见 D-88）。
+  @override
+  Future<List<ExamEvent>> examEvents() async => const [];
+
+  /// 复习 load() 只有在 reviewState() 返回非空会话时才调这三口
+  /// （M3-10 断点恢复校验）；本 Fake 的会话恒为 null，返回“无会话”
+  /// 默认值，不碰真实库（见 D-88）。
+  @override
+  Future<bool> hasSessionVerdict({
+    required String causeStableId,
+    required String sessionId,
+  }) async => false;
+
+  @override
+  Future<AttemptData?> loadAttempt({
+    required String sessionId,
+    required String questionId,
+  }) async => null;
+
+  @override
+  Future<void> clearReviewState() async {}
 }
 
 Future<void> _pump(WidgetTester tester, Widget page) async {
@@ -119,7 +162,7 @@ Future<void> pumpReviewP0B2(
     ReviewPage(
       key: UniqueKey(),
       repo: repo,
-      onOpenDetail: (q, ids) async {},
+      onOpenDetail: (q, ids, {String? searchContext}) async {},
       onGoWrongbook: () {},
     ),
   );
@@ -136,12 +179,11 @@ Future<void> pumpWrongbookP0B2(
       repo: repo,
       initialSubjectId: 'math',
       onOpenHome: () {},
-      onOpenDetail: (q, ids) async {},
+      onOpenDetail: (q, ids, {String? searchContext}) async {},
       onGoReview: ({String? subjectId}) {},
     ),
   );
-  await tester.tap(find.text('全部题目'));
-  await tester.pumpAndSettle();
+  // 十九批 A5：initialSubjectId 直接落列表，不用再点「全部题目」。
 }
 
 Future<void> pickPageSize(WidgetTester tester, int size) async {
@@ -174,7 +216,9 @@ void main() {
 
       // 同一库新开错题本：仍跟默认值 10（不是复习页改出的 20）。
       await pumpWrongbookP0B2(tester, repo: repo);
-      expect(find.text('共 15 道 · 第 1 / 2 页'), findsOneWidget);
+      // 十九批 A1：分页无数字按钮，计数与页码分两处断言。
+      expect(find.text('共 15 道 · 按收集时间 新 → 旧'), findsOneWidget);
+      expect(find.textContaining('第 1/2 页'), findsOneWidget);
       expect(
         find.byWidgetPredicate(
           (w) => w is DropdownButton<int> && w.value == 10,
@@ -184,7 +228,7 @@ void main() {
 
       // 反向：错题本改 20 同样不碰设置默认值。
       await pickPageSize(tester, 20);
-      expect(find.text('共 15 道 · 第 1 / 1 页'), findsOneWidget);
+      expect(find.textContaining('第 1/1 页'), findsOneWidget);
       expect(repo.settingsValue.pageSize, 10);
       expect(repo.saveSettingsCalls, 0);
     });
@@ -220,7 +264,8 @@ void main() {
 
       // 错题本首次打开跟新默认 20。
       await pumpWrongbookP0B2(tester, repo: repo);
-      expect(find.text('共 15 道 · 第 1 / 1 页'), findsOneWidget);
+      expect(find.text('共 15 道 · 按收集时间 新 → 旧'), findsOneWidget);
+      expect(find.textContaining('第 1/1 页'), findsOneWidget);
       expect(
         find.byWidgetPredicate(
           (w) => w is DropdownButton<int> && w.value == 20,

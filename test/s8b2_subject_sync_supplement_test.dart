@@ -7,7 +7,8 @@
 // 5. 报告弱点行颜色 subjectInk 补传存色 report_page.dart:622-623
 // 6. subjectCounts() 初始化键 repository.dart:202
 // 7. 收集中心导入学科下拉 collect_page.dart:577
-// 8. 错题本紧凑行/归档行 _prowMetaLine wrongbook_page.dart:3020
+// 8. 错题本板子行学科圆点 _buildBoardRow wrongbook_list.dart:262
+//    （十九批 C：紧凑行 / 归档行已随视图切换去掉，断言改到板子行圆点）
 //
 // 颜色不断言具体色值以外的硬编码，只断言等于新学科的存色、
 // 且不等于数学色（任务要求）。
@@ -23,7 +24,8 @@ import 'collect_page_test.dart' show FakeRepo, pumpCollect;
 import 'report_page_test.dart' show pumpReport, reportRepo, tq, trec;
 import 'review_page_test.dart'
     show FakeReviewRepo, pickMenuItem, pumpReview, rec, reviewRepo, rq;
-import 'wrongbook_page_test.dart' show FakeWrongbookRepo, pumpWrongbook, wbq;
+import 'wrongbook_page_test.dart'
+    show FakeWrongbookRepo, boardRowDotColor, pumpWrongbook, wbq;
 
 /// 新学科：化学，紫 0xFF7C5CFC（与 B2 测试、学科管理轮换表第 4 位同值）。
 const chemPurple = Color(0xFF7C5CFC);
@@ -219,8 +221,10 @@ void main() {
     });
   });
 
-  group('8. 错题本紧凑行', () {
-    testWidgets('紧凑行明细行：新学科名与颜色走存色，不等于数学色',
+  group('8. 错题本板子行', () {
+    // 十九批 C：紧凑行已随视图切换去掉（D-219），学科同步断言改到
+    // 板子行学科圆点上（圆点色走库里学科的存色）。
+    testWidgets('板子行学科圆点：新学科名与颜色走存色，不等于数学色',
         (tester) async {
       final repo = FakeWrongbookRepo(
         questions: [
@@ -237,11 +241,7 @@ void main() {
       );
       await pumpWrongbook(tester,
           repo: repo, initialSubjectId: 'subject-chem');
-      await tester.tap(find.text('全部题目'));
-      await tester.pumpAndSettle();
-      await tester.tap(find.text('紧凑列表'));
-      await tester.pumpAndSettle();
-      final color = spanColorFor(tester, '化学');
+      final color = boardRowDotColor(tester, 'q-chem-1');
       expect(color, chemPurple);
       expect(color, isNot(DesignTokens.of(Brightness.light).mathInk));
     });

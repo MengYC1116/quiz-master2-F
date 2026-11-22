@@ -236,7 +236,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
       }
       _apiKeyController.clear();
       await _loadKeyStatus();
-      _snack(text.trim().isEmpty ? 'BigModel key 已清除' : 'BigModel key 已保存');
+      _snack(text.trim().isEmpty ? 'BigModel API Key 已清除' : 'BigModel API Key 已保存');
     } catch (_) {
       _snack('没保存上，稍后再试');
     } finally {
@@ -253,7 +253,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
       await _keyStore.clearApiKey();
       _apiKeyController.clear();
       await _loadKeyStatus();
-      _snack('BigModel key 已清除');
+      _snack('BigModel API Key 已清除');
     } catch (_) {
       _snack('没清除掉，稍后再试');
     } finally {
@@ -562,7 +562,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
           _dbPendingRestart = true;
           _dbMigrated = false;
         });
-        _snack('已切换到新位置原来的题库，重启后生效');
+        _snack('已切换到新位置的题库，重启后生效');
         return;
       }
       await _migrateDb(dir, overwrite: true);
@@ -1081,7 +1081,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
           ),
         ),
         _row(
-          '通知提醒',
+          '复查提醒',
           '到复查时间时提醒，关了就不提醒。',
           _segmented<bool>(
             value: _s.notifyEnabled,
@@ -1363,7 +1363,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
         ),
         if (storageWarning != null) _noteText(storageWarning),
         _row(
-          '孤儿清理',
+          '无用文件清理',
           orphanScan == null
               ? '正在扫描无用文件…'
               : orphanScan.files.isEmpty
@@ -1412,7 +1412,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
         // 为空、从不预填 key；状态只显示已设置/未设置，key 值本身
         // 永不显示（本页不调用 getApiKey）。
         _row(
-          'BigModel key',
+          'BigModel API Key',
           'OCR 识别用的 BigModel API Key，只存在本机安全存储，不进题库、不进备份。保存后排队的识别任务会立即开始，不用等。',
           SizedBox(
             width: 460 * scale,

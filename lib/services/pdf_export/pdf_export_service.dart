@@ -1401,6 +1401,9 @@ class PdfExportService {
                   // 完整性状态；否则只有行内公式降级的题误判 COMPLETE。
                   isOriginal: result.isOriginal,
                   shrunk: result.shrunk,
+                  // 十八批 P1：透传栅格化器量得的基线偏移（原图降级
+                  // 为 null，构建器按旧居中启发式放）。
+                  baselineOffsetPt: result.baselineOffsetPt,
                 ),
               );
             }

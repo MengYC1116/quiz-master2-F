@@ -595,6 +595,24 @@ class QuestionRepository {
 
   Future<void> saveSettings(AppSettings s) => _db.saveSettings(s);
 
+  /// 十九批 A3：「我的查找」——存下来的查找（saved_searches 表）。
+  /// 读失败返回空列表（查找是锦上添花，绝不能拖垮列表加载；
+  /// 与 ocrJobsForQuestion 同款兜底）。
+  Future<List<SavedSearch>> savedSearches() async {
+    try {
+      return await _db.savedSearches();
+    } catch (_) {
+      return const [];
+    }
+  }
+
+  /// 十九批 A3：存一条查找（同 id 覆盖）。
+  Future<void> saveSavedSearch(SavedSearch search) =>
+      _db.saveSavedSearch(search);
+
+  /// 十九批 A3：删一条查找（id 不存在时空操作）。
+  Future<void> deleteSavedSearch(String id) => _db.deleteSavedSearch(id);
+
   /// B3：上次停留的路由（复用 settings 表 key `lastRoute`，见 database.dart）。
   Future<String?> lastRoute() => _db.loadLastRoute();
 

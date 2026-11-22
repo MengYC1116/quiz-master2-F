@@ -59,6 +59,20 @@ class MechFakeRepo extends QuestionRepository {
   /// 基类读真实 Drift 库，fake async 里永不完成，见 D-88）。
   @override
   Future<void> recordQuestionViewed(String questionId) async {}
+
+  /// 十三批 M5：OCR 状态是 best-effort 加载（不 await）；返回空任务行
+  /// 与“无 key”，不碰真实库（见 D-88）。
+  @override
+  Future<List<OcrJob>> ocrJobsForQuestion(String questionId) async =>
+      const [];
+
+  @override
+  Future<bool> hasOcrApiKey() async => false;
+
+  /// 详情页自愈（_healSliceIfNeeded）读同页框：无框，不碰真实库（见 D-88）。
+  @override
+  Future<List<QuestionBox>> boxesForPageImage(String pageImagePath) async =>
+      const [];
 }
 
 final _q = Question(

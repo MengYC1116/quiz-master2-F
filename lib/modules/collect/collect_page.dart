@@ -418,7 +418,7 @@ class _CollectViewState extends ConsumerState<_CollectView> {
             ),
             SizedBox(height: 3 * scale),
             Text(
-              '把纸变成题：导入 → 自动框题 → 修框 → 去整理 · 新流程不使用 OCR，文字内容在整理时人工补充',
+              '把纸变成题：导入 → 自动框题 → 修框 → 去整理 · 框好后自动识别题干与选项，整理时核对补全',
               style: TextStyle(
                 fontSize: DesignTokens.bodySmallFontSize,
                 color: palette.muted,
@@ -663,7 +663,7 @@ class _CollectViewState extends ConsumerState<_CollectView> {
           // B8-1：学科删空时说明去处，不留一个打不开的空下拉。
           s.subjects.isEmpty
               ? '还没有学科：先去「学科管理」添加一个，再回来导入。'
-              : '每次导入都自己选：不默认上次选的，也不默认数学，没选学科不能导入',
+              : '每次导入都自己选：不默认上次选的，也不默认数学，没选学科不能导入。',
           style: TextStyle(
             fontSize: DesignTokens.captionFontSize,
             color: palette.muted,
@@ -808,7 +808,7 @@ class _CollectViewState extends ConsumerState<_CollectView> {
           ),
           SizedBox(height: 4 * scale),
           Text(
-            '先在上面选好学科，再点“开始导入”。',
+            '先在上面选好学科，再点「开始导入」。',
             style: TextStyle(
               fontSize: DesignTokens.bodySmallFontSize,
               color: palette.muted,

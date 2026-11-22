@@ -7,7 +7,49 @@ part of 'wrongbook_page.dart';
 
 // 书内列表视图：列表页、工具条、筛选面板、批量条、大卡片 / 紧凑行 / 归档行、分页与已归档视图。
 
+/// L1 行标题（D-244，Meng 2026-11-22；2026-11-22 11:32 修订：取消
+/// 15 字限制，不设字数截断）：优先显示题干 OCR 文字（sliceText），
+/// 无题干时回退到标题字段。题干先去 LaTeX 公式标记与换行/多余空白，
+/// 完整显示、行内自动换行。
+/// 详情页标题栏与导出汇总里的标题不动（仍用 q.title）。
+/// 顶层公开函数：纯字符串逻辑，供 test/b21_row_title_test.dart
+/// 直接单测（回退 / LaTeX / 空白折叠 / 完整显示）。
+String rowDisplayTitle(Question q) {
+  final stem = stripLatexForRow(q.sliceText).replaceAll(
+    RegExp(r'\s+'),
+    ' ',
+  ).trim();
+  if (stem.isEmpty) return q.title;
+  return stem;
+}
+
+/// 行标题去 LaTeX：`$…$` / `$$…$$` / `\(…\)` / `\[…\]` 整段
+/// 去掉（只留纯文本），不成对的 `$` 也去掉。公式本身仍在详情页
+/// 纸面与题干区正常渲染，这里只是行内不露源码。
+/// 简化口径：假定成对 `$` 都是公式定界符（题干里 `$` 作货币
+/// 符的情形未见，遇上会误删中间文字）。
+String stripLatexForRow(String text) {
+  return text
+      .replaceAll(RegExp(r'\$\$.*?\$\$', dotAll: true), ' ')
+      .replaceAll(RegExp(r'\$.*?\$', dotAll: true), ' ')
+      .replaceAll(RegExp(r'\\\(.*?\\\)', dotAll: true), ' ')
+      .replaceAll(RegExp(r'\\\[.*?\\\]', dotAll: true), ' ')
+      .replaceAll('\$', '');
+}
+
 extension _WrongbookListBuild on _WrongbookViewState {
+  /// 十九批 A1：L1 列表页（命令面板式，一比一复刻板子 §1）。
+  ///
+  /// 自上而下：大搜索框 → 范围说明行 → 「我的查找」行 →
+  /// 「最近搜过」行 → 结果头（标题＋计数＋排序＋筛选＋批量）→
+  /// 导出模式入口 / 提示条 → 筛选面板（点「筛选 ▾」展开）→
+  /// 已掌握提示 / 归档条 / 批量条 → 列表行 → 分页行 →
+  /// 底部汇总条（仅导出模式）。页头（标题 + 目录 / 合上）已删
+  /// （十九批收尾：板子 §1.1 的 L1 从大搜索框直接开始，没有页头；
+  /// 回目录 / 书架走筛选面板顶部的书架入口）。书架 / 目录视图保留，
+  /// 从筛选面板顶部「📚 书架（按学科浏览）」入口进入（A5）。
+  /// 视图切换已去掉：只用板子一种行设计（_buildBoardRow），
+  /// `viewMode` 字段与 load() 守门保留在 Notifier 里不用。
   Widget _buildList() {
     final all = _s.filteredAll();
     final totalPages = (all.length / _s.pageSize).ceil().clamp(1, 9999);
@@ -15,36 +57,13 @@ extension _WrongbookListBuild on _WrongbookViewState {
     final start = page * _s.pageSize;
     final items = all.skip(start).take(_s.pageSize).toList();
     final orderIds = all.map((q) => q.id).toList();
-    final subject = _s.subjectId == null ? null : _s.subjectOf(_s.subjectId!);
-    final folder = _s.folderId == null
-        ? null
-        : _s.folders.firstWhere(
-            (f) => f.id == _s.folderId!,
-            orElse: () => Folder(
-              id: _s.folderId!,
-              name: '',
-              subjectId: _s.subjectId ?? '',
-            ),
-          );
-    final title = _s.inBookArchived
-        // FR-17：无学科时不留悬空的“ · ”，与下面分支同款处理。
-        ? subject != null
-              ? '${subject.name} · 错题本'
-              : '已归档 · 错题本'
-        : folder != null && folder.name.isNotEmpty
-        ? subject != null
-              ? '${subject.name} · ${folder.name}'
-              : folder.name
-        : subject != null
-        ? '${subject.name} · 错题本'
-        : '错题本';
     final scale = qmScaleOf(context);
-    // B8-9：去掉蓝色大框（_openBookFrame）：工具条 / 筛选 / 列表 / 分页
-    // 直接落在页面底色上，列表本体按定稿 A 留白卡片排版。
-    // 目录页的书框不动（那是目录页的样式，不在本次范围）。
-    // 十六批 B（D-190）：汇总条常驻底部（不随列表滚动）：滚动区
-    // 包进 Expanded，汇总条固定在下面；已归档视图没有导出勾选，
-    // 不画汇总条。
+    // B8-9：去掉蓝色大框（_openBookFrame）：搜索框 / 结果头 / 列表 /
+    // 分页直接落在页面底色上。目录页的书框不动（那是目录页的样式，
+    // 不在本次范围）。
+    // 十六批 B（D-190）→ 十九批 A2：汇总条只在导出模式显示
+    //（板子 §1.6：平时 display:none），固定在底部不随列表滚动；
+    // 已归档视图没有导出勾选，不画汇总条。
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -54,9 +73,11 @@ extension _WrongbookListBuild on _WrongbookViewState {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                _buildListHeader(title, scale),
-                _pageSubtitle('这一科的题目列表，点一道题进题目详情；筛选里没有文件夹，文件夹在目录页选。'),
-                _buildListToolbar(),
+                _buildBigSearch(),
+                _buildSavedSearchRow(),
+                _buildRecentSearchRow(),
+                _buildResultHead(all.length),
+                _buildExportToggle(),
                 if (_s.filterOpen) _buildFilterPanel(),
                 if (!_s.inBookArchived) _buildMasteredNote(),
                 if (_s.inBookArchived) _buildArchBar(all.length),
@@ -73,155 +94,461 @@ extension _WrongbookListBuild on _WrongbookViewState {
             ),
           ),
         ),
-        if (!_s.inBookArchived) _buildExportSummaryBar(),
+        if (_exportMode && !_s.inBookArchived) _buildExportSummaryBar(items),
       ],
     );
   }
 
-  /// 列表页头（标题 + 目录 / 合上按钮）：从 _buildList 拆出，
-  /// 只为让汇总条常驻底部的 Column 结构可读。
-  Widget _buildListHeader(String title, double scale) {
-    return Row(
-      children: [
-        Expanded(child: _pageTitle(title)),
-        QmButton(
-          label: '← 目录',
-          variant: QmButtonVariant.plain,
-          onPressed: () {
-            if (_sr.subjectId != null) {
-              _openDirectory(_sr.subjectId!);
-            } else {
-              _openShelf();
-            }
-          },
-        ),
-        SizedBox(width: 8 * scale),
-        QmButton(
-          label: '合上 ✕',
-          variant: QmButtonVariant.plain,
-          onPressed: _openShelf,
-        ),
-      ],
-    );
-  }
-
-  /// 底部常驻汇总条（十六批 B，D-190）：一直显示已选多少道；
-  /// 点开是清单（题号 + 题干开头），能一个个取消勾选；汇总里还
-  /// 有涉及几个学科 / 文件夹、有没有会被跳过的题（后台盘点）；
-  /// 收起来只剩数字。翻页、换筛选不丢已选（选择在 Notifier 里
-  /// 按 ID 持有，与当前页无关）。
-  Widget _buildExportSummaryBar() {
+  /// 底部汇总条（十九批 A2，板子 §1.6）：仅导出模式显示，深色底
+  /// `#17233B` 白字、圆角 10、上边距 12。左起：已选文案（未选时
+  /// `已选 0 道`，选中后 `已选 N 道：题名1、题名2…`）→ `全选本页` →
+  /// `清空` → 弹性空隙 → `退出导出` → `下一步：选版本与文件名 →`
+  ///（主按钮，蓝底）。点「下一步」走现版 ExportConfirmDialog
+  ///（快照语义 R13 不变）；点「退出导出」只退模式，已选保留
+  ///（D-208）。不画旧的展开清单与盘点跳过信息（板子没有）。
+  Widget _buildExportSummaryBar(List<Question> pageItems) {
     final scale = qmScaleOf(context);
-    final palette = DesignTokens.of(Theme.of(context).brightness);
     final selectedQs = _exportSelectedQuestions(_s);
     final count = selectedQs.length;
-    final subjectCount =
-        selectedQs.map((q) => q.subjectId).toSet().length;
-    final folderCount =
-        selectedQs.expand((q) => q.folderIds).toSet().length;
-    final skipText = _exportSkipSummary(selectedQs);
-    final numbers = '已选 $count / 50 道'
-        '${count > 0 ? ' · $subjectCount 个学科 · $folderCount 个文件夹' : ''}'
-        '${skipText == null ? '' : ' · $skipText'}';
+    final sumText = count == 0
+        ? '已选 0 道'
+        : '已选 $count 道：${selectedQs.map((q) => q.title).join('、')}';
     return Container(
       key: const Key('export-summary-bar'),
+      margin: EdgeInsets.only(top: 12 * scale),
       padding: EdgeInsets.symmetric(
-        horizontal: 12 * scale,
+        horizontal: 14 * scale,
         vertical: 10 * scale,
       ),
       decoration: BoxDecoration(
-        color: palette.surface2,
-        border: Border(top: BorderSide(color: palette.lineStrong)),
+        color: const Color(0xFF17233B),
+        borderRadius: BorderRadius.circular(10 * scale),
       ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        mainAxisSize: MainAxisSize.min,
+      child: Row(
         children: [
-          Row(
-            children: [
-              Expanded(
-                child: GestureDetector(
-                  onTap: _toggleExportSummaryExpanded,
-                  child: Text(
-                    '$numbers ${_exportSummaryExpanded ? '▴ 收起' : '▾ 清单'}',
-                    key: const Key('export-summary-numbers'),
-                    style: const TextStyle(fontWeight: FontWeight.w700),
-                  ),
-                ),
-              ),
-              if (count > 0) ...[
-                QmButton(
-                  label: '清除选择',
-                  variant: QmButtonVariant.plain,
-                  size: QmButtonSize.small,
-                  onPressed: () {
-                    _n.clearExportSelected();
-                    _scheduleExportInventoryRefresh();
-                  },
-                ),
-                SizedBox(width: 8 * scale),
-              ],
-              QmButton(
-                key: const Key('export-selected-bar'),
-                label: '导出',
-                variant: QmButtonVariant.secondary,
-                size: QmButtonSize.small,
-                onPressed: count == 0 ? null : _openExportConfirm,
-              ),
-            ],
+          Expanded(
+            child: Text(
+              sumText,
+              key: const Key('export-summary-numbers'),
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(fontSize: 13.5, color: Colors.white),
+            ),
           ),
-          if (_exportSummaryExpanded) ...[
-            SizedBox(height: 8 * scale),
-            if (selectedQs.isEmpty)
-              const Text('还没有选题目，点工具栏「导出」进入导出模式后点一行即可选中。')
-            else
-              SizedBox(
-                height: 240 * scale,
-                child: ListView(
-                  children: [
-                    for (var i = 0; i < selectedQs.length; i++)
-                      _buildExportSummaryRow(selectedQs[i], i + 1),
-                  ],
-                ),
-              ),
-          ],
+          SizedBox(width: 10 * scale),
+          _summaryButton(
+            '全选本页',
+            key: const Key('export-select-page'),
+            onPressed: () => _selectAllExportOnPage(pageItems),
+          ),
+          SizedBox(width: 8 * scale),
+          _summaryButton(
+            '清空',
+            key: const Key('export-clear'),
+            onPressed: count == 0
+                ? null
+                : () {
+                    _n.clearExportSelected();
+                  },
+          ),
+          const Spacer(),
+          _summaryButton(
+            '退出导出',
+            key: const Key('export-exit'),
+            onPressed: _exitExportMode,
+          ),
+          SizedBox(width: 8 * scale),
+          _summaryButton(
+            '下一步：选版本与文件名 →',
+            key: const Key('export-next'),
+            primary: true,
+            onPressed: _openExportConfirm,
+          ),
         ],
       ),
     );
   }
 
-  /// 汇总清单里的一行：题号 + 题干开头（标题，单行省略）+ 取消勾选。
-  Widget _buildExportSummaryRow(Question q, int number) {
-    return Row(
-      children: [
-        Expanded(
-          child: Text(
-            '$number. ${q.title}',
-            key: ValueKey('export-summary-item-${q.id}'),
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-          ),
+  /// 汇总条按钮（板子 `.sbtn`）：白字透明底、白边、圆角 8、最小高
+  /// 32；主按钮（`.sbtn.go`）蓝底 `#2E7CF6` 蓝边、字重 600。
+  Widget _summaryButton(
+    String label, {
+    Key? key,
+    required VoidCallback? onPressed,
+    bool primary = false,
+  }) {
+    final scale = qmScaleOf(context);
+    return TextButton(
+      key: key,
+      onPressed: onPressed,
+      style: TextButton.styleFrom(
+        foregroundColor: Colors.white,
+        disabledForegroundColor: Colors.white.withValues(alpha: 0.45),
+        backgroundColor: primary ? const Color(0xFF2E7CF6) : Colors.transparent,
+        side: BorderSide(
+          color: primary ? const Color(0xFF2E7CF6) : Colors.white,
         ),
-        QmButton(
-          key: ValueKey('export-uncheck-${q.id}'),
-          label: '✕',
-          variant: QmButtonVariant.plain,
-          size: QmButtonSize.small,
-          onPressed: () => _removeExportSelected(q.id),
+        padding: EdgeInsets.symmetric(horizontal: 14 * scale, vertical: 4 * scale),
+        minimumSize: Size(0, 32 * scale),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(8 * scale),
         ),
-      ],
+        textStyle: TextStyle(
+          fontSize: 13.5,
+          fontWeight: primary ? FontWeight.w600 : FontWeight.normal,
+        ),
+      ),
+      child: Text(label),
     );
   }
 
-  /// 列表本体（含空状态）：A 留白卡片——大卡片自带单卡容器，
-  /// 紧凑行 / 归档行共用一张白卡。
+  /// 汇总条「全选本页」：把本页未选的题逐个点选（50 道硬上限仍由
+  /// toggleExportSelected 守：到上限时弹一次提示就停，不再往下点）。
+  void _selectAllExportOnPage(List<Question> pageItems) {
+    for (final q in pageItems) {
+      if (_sr.exportSelected.contains(q.id)) continue;
+      if (_toggleExportSelected(q.id) != null) break;
+    }
+  }
+
+  /// 列表本体（含空状态）：十九批 A1——只用板子一种行设计
+  ///（_buildBoardRow），大卡片 / 紧凑行已随视图切换去掉；
+  /// 归档行仍共用一张白卡（_listSurface）。
   Widget _buildListBody(List<Question> items, List<String> orderIds) {
     if (items.isEmpty) return _buildListEmpty();
     if (_s.inBookArchived) {
       return _listSurface(child: _buildArchivedRows(items, orderIds));
     }
-    if (_s.viewMode == 'large') return _buildLargeCards(items, orderIds);
-    return _listSurface(child: _buildCompactRows(items, orderIds));
+    final scale = qmScaleOf(context);
+    return Column(
+      children: [
+        for (var i = 0; i < items.length; i++) ...[
+          if (i > 0) SizedBox(height: 8 * scale),
+          // 二十二批 D-247：行轻微错开入场（行号 × 30ms，上限 8 行）。
+          EntranceFadeSlide(
+            delay: Duration(milliseconds: (i > 8 ? 8 : i) * 30),
+            child: _buildBoardRow(items[i], orderIds),
+          ),
+        ],
+      ],
+    );
+  }
+
+  /// 板子行（L1 §1.4）：白底、1px 边、圆角 10、内边距 10/12、行距 8。
+  /// 第一行（左→右）：学科圆点（9px）→ 标题（14.5px/600，可换行…
+  /// 标题过长时省略，板子未定行数，这里单行省略）→ 状态 pill →
+  /// 逾期红字（有则）→ 右侧收集时间（12.5px）→ 导出 ✓（仅选中行，
+  /// 22px 蓝圆白字）；第二行：meta 归属行（独占一行，12.5px，
+  /// `文件夹 · 知识点 · 错因 · 标签 · 试卷`，缺失项省略）。
+  /// 命中字段按搜索关键词高亮（#FFF1B8）。批量模式时行首多个
+  /// Checkbox（勾选与点行进详情分开，沿用旧行为）；导出模式点行
+  /// 即切换导出选中、不进详情（B12）；平时点行进详情，点按末尾
+  /// `await _n.load()`（R3：详情返回刷新唯一链路）。
+  Widget _buildBoardRow(Question q, List<String> orderIds) {
+    final scale = qmScaleOf(context);
+    final palette = DesignTokens.of(Theme.of(context).brightness);
+    final exportChecked = _s.exportSelected.contains(q.id);
+    final keyword = _s.search.trim().isEmpty ? null : _s.search.trim();
+    final subject = _s.subjectOf(q.subjectId);
+    final collected =
+        '${q.createdAt.month.toString().padLeft(2, '0')}-${q.createdAt.day.toString().padLeft(2, '0')} 收集';
+    return InkWell(
+      onTap: () async {
+        // 十七批 P2（D-208）：导出模式里点行即切换导出选中，
+        // 不进详情；模式外照常进详情（带 searchContext，A6）。
+        if (_exportMode) {
+          _toggleExportSelected(q.id);
+          return;
+        }
+        await widget.onOpenDetail(
+          q,
+          orderIds,
+          searchContext: _searchContext(),
+        );
+        await _n.load();
+      },
+      borderRadius: BorderRadius.circular(10 * scale),
+      child: Container(
+        key: ValueKey('export-row-${q.id}'),
+        padding: EdgeInsets.symmetric(
+          horizontal: 12 * scale,
+          vertical: 10 * scale,
+        ),
+        decoration: BoxDecoration(
+          color: exportChecked ? palette.accentSoft : palette.surface,
+          border: Border.all(color: palette.line),
+          borderRadius: BorderRadius.circular(10 * scale),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                if (_s.batchMode)
+                  Padding(
+                    padding: EdgeInsets.only(right: 8 * scale),
+                    child: Checkbox(
+                      value: _s.selected.contains(q.id),
+                      onChanged: (v) => _n.toggleSelected(q.id, v == true),
+                    ),
+                  ),
+                Padding(
+                  padding: EdgeInsets.only(top: 5 * scale, right: 6 * scale),
+                  child: Container(
+                    width: 9,
+                    height: 9,
+                    decoration: BoxDecoration(
+                      color: subject.color,
+                      shape: BoxShape.circle,
+                    ),
+                  ),
+                ),
+                Expanded(
+                  child: RichText(
+                    // D-244 修订（2026-11-22 11:32）：不设字数截断，
+                    // 题干完整显示、自动换行。
+                    text: TextSpan(
+                      style: TextStyle(
+                        fontSize: 14.5,
+                        fontWeight: FontWeight.w600,
+                        color: palette.ink,
+                      ),
+                      children: _highlightSpans(
+                        rowDisplayTitle(q),
+                        keyword,
+                      ),
+                    ),
+                  ),
+                ),
+                SizedBox(width: 8 * scale),
+                _statusPill(q),
+                if (_overdueDays(q) > 0) ...[
+                  SizedBox(width: 6 * scale),
+                  Text(
+                    '逾期 ${_overdueDays(q)} 天',
+                    style: const TextStyle(
+                      fontSize: 12.5,
+                      color: Color(0xFFEF4444),
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ],
+                SizedBox(width: 8 * scale),
+                Text(
+                  collected,
+                  style: TextStyle(fontSize: 12.5, color: palette.muted),
+                ),
+                // 十七批 P2（D-208）：选中行的 ✓ 在行右端
+                //（蓝底见行容器；22px 蓝圆白字，板子 §1.6）。
+                if (exportChecked) ...[
+                  SizedBox(width: 6 * scale),
+                  Container(
+                    key: ValueKey('export-mark-${q.id}'),
+                    width: 22,
+                    height: 22,
+                    alignment: Alignment.center,
+                    decoration: const BoxDecoration(
+                      color: Color(0xFF2E7CF6),
+                      shape: BoxShape.circle,
+                    ),
+                    child: const Text(
+                      '✓',
+                      style: TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w700,
+                        color: Colors.white,
+                        height: 1,
+                      ),
+                    ),
+                  ),
+                ],
+              ],
+            ),
+            SizedBox(height: 4 * scale),
+            _metaLine(q, keyword),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// 行状态 pill（板子 §1.4，四态配色；解决中带自查进度
+  /// `解决中 · ✓n/m`，m = 设置 cureChecks，n = 首个未治愈错因的
+  /// 已解决自查次数；待复查 pill 字重 600）。
+  Widget _statusPill(Question q) {
+    final status = _s.causeStatusOf(q);
+    final (bg, fg, label, bold) = switch (status) {
+      'inProgress' => (
+        const Color(0xFFFFF4D6),
+        const Color(0xFF8A6D00),
+        '解决中 · ✓${_inProgressCount(q)}/${_s.cureChecks}',
+        false,
+      ),
+      'solved' => (
+        const Color(0xFFE2F5EC),
+        const Color(0xFF0B7A55),
+        '已解决',
+        false,
+      ),
+      'recheck' => (
+        const Color(0xFFE1EDFF),
+        const Color(0xFF2E7CF6),
+        '待复查',
+        true,
+      ),
+      _ => (
+        const Color(0xFFFDECEC),
+        const Color(0xFFC62828),
+        '待解决',
+        false,
+      ),
+    };
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 9),
+      height: 22,
+      alignment: Alignment.center,
+      decoration: BoxDecoration(
+        color: bg,
+        borderRadius: BorderRadius.circular(999),
+      ),
+      child: Text(
+        label,
+        style: TextStyle(
+          fontSize: 12,
+          color: fg,
+          fontWeight: bold ? FontWeight.w600 : FontWeight.normal,
+          height: 1,
+        ),
+      ),
+    );
+  }
+
+  /// 首个未治愈错因的已解决自查次数（状态 pill `✓n/m` 里的 n）。
+  int _inProgressCount(Question q) {
+    final rs = _s.recordsByQ[q.id];
+    if (rs == null) return 0;
+    for (final r in rs) {
+      if (r.status != CauseStatus.solved) return r.solvedCount;
+    }
+    return 0;
+  }
+
+  /// 逾期天数（0 = 未逾期）：到复查时间的错因里，复查日距今天最远的。
+  int _overdueDays(Question q) {
+    final rs = _s.recordsByQ[q.id];
+    if (rs == null) return 0;
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    var max = 0;
+    for (final r in rs) {
+      if (!r.isRecheckDue || r.recheckDate == null) continue;
+      final d = DateTime(
+        r.recheckDate!.year,
+        r.recheckDate!.month,
+        r.recheckDate!.day,
+      );
+      final days = today.difference(d).inDays;
+      if (days > max) max = days;
+    }
+    return max;
+  }
+
+  /// 命中高亮（板子 `.hl`：#FFF1B8 底、圆角 3）：在 [text] 里按
+  /// [keyword]（大小写不敏感）切出命中的子串；无关键词时原样返回。
+  List<InlineSpan> _highlightSpans(String text, String? keyword) {
+    const hlBg = Color(0xFFFFF1B8);
+    if (keyword == null || keyword.isEmpty) {
+      return [TextSpan(text: text)];
+    }
+    final lower = text.toLowerCase();
+    final kw = keyword.toLowerCase();
+    final spans = <InlineSpan>[];
+    var start = 0;
+    while (true) {
+      final idx = lower.indexOf(kw, start);
+      if (idx < 0) {
+        if (start < text.length) {
+          spans.add(TextSpan(text: text.substring(start)));
+        }
+        break;
+      }
+      if (idx > start) {
+        spans.add(TextSpan(text: text.substring(start, idx)));
+      }
+      spans.add(
+        TextSpan(
+          text: text.substring(idx, idx + kw.length),
+          style: const TextStyle(backgroundColor: hlBg),
+        ),
+      );
+      start = idx + kw.length;
+      if (start >= text.length) break;
+    }
+    return spans;
+  }
+
+  /// meta 归属行（板子 §1.4）：`文件夹 {…} · 知识点 {…} · 错因 {…} ·
+  /// 标签 {…} · {试卷名}`，缺失项直接省略不留空位；命中的字段按
+  /// 搜索关键词高亮。文件夹 / 知识点 / 错因 / 标签多值时用 `、` 连接。
+  Widget _metaLine(Question q, String? keyword) {
+    final palette = DesignTokens.of(Theme.of(context).brightness);
+    final baseStyle = TextStyle(fontSize: 12.5, color: palette.muted);
+    final parts = <(String, String)>[];
+    final folderNames = q.folderIds
+        .map(
+          (id) => _s.folders
+              .firstWhere(
+                (f) => f.id == id,
+                orElse: () => Folder(id: id, name: '', subjectId: ''),
+              )
+              .name,
+        )
+        .where((n) => n.isNotEmpty)
+        .toList();
+    if (folderNames.isNotEmpty) {
+      parts.add(('文件夹 ', folderNames.join('、')));
+    }
+    final kpNames = q.knowledgePointIds
+        .map(
+          (id) => _s.kps
+              .firstWhere(
+                (k) => k.id == id,
+                orElse: () => const KnowledgePoint(
+                  id: '',
+                  subjectId: '',
+                  chapter: '',
+                  name: '',
+                ),
+              )
+              .name,
+        )
+        .where((n) => n.isNotEmpty)
+        .toList();
+    if (kpNames.isNotEmpty) parts.add(('知识点 ', kpNames.join('、')));
+    if (q.allCauses.isNotEmpty) {
+      parts.add(('错因 ', q.allCauses.join('、')));
+    }
+    if (q.tags.isNotEmpty) parts.add(('标签 ', q.tags.join('、')));
+    final examName = _s.exams
+        .firstWhere(
+          (e) => e.id == q.examId,
+          orElse: () => Exam(id: '', name: ''),
+        )
+        .name;
+    if (examName.isNotEmpty) parts.add(('', examName));
+    final children = <InlineSpan>[];
+    for (var i = 0; i < parts.length; i++) {
+      if (i > 0) children.add(const TextSpan(text: ' · '));
+      final (prefix, value) = parts[i];
+      if (prefix.isNotEmpty) children.add(TextSpan(text: prefix));
+      children.addAll(_highlightSpans(value, keyword));
+    }
+    return RichText(
+      maxLines: 2,
+      overflow: TextOverflow.ellipsis,
+      text: TextSpan(style: baseStyle, children: children),
+    );
   }
 
   /// 白卡容器（紧凑行 / 归档行共用一张卡）。
@@ -360,51 +687,374 @@ extension _WrongbookListBuild on _WrongbookViewState {
     );
   }
 
-  Widget _buildListToolbar() {
+  // ---------- 十九批 A1：大搜索框 / 我的查找 / 最近搜过 / 结果头 ----------
+
+  /// 大搜索框（板子 §1.2）：白底、2px #2E7CF6 边框、圆角 14、内边距
+  /// 12/16、字号 16、阴影 `0 4px 18px rgba(46,124,246,.14)`；左起
+  /// 放大镜 → 输入框（占位「搜标题、题干、选项、答案、解析、备注…」）。
+  /// 二十一批（D-242）：框内深色 Ctrl+K kbd 已去掉（Meng 2026-11-22：
+  /// 框里多个小框不好看）；命令面板仍可用 Ctrl+K 呼出，入口在下方
+  /// 范围说明行的浅色 kbd。
+  /// 就是现版搜索输入框（同一 _searchCtrl、同一 setSearch()、同一
+  /// haystack；D-241 起内容搜索）。输入即实时过滤；回车
+  /// 把关键词记入「最近搜过」（D-决策第 4 项）。
+  Widget _buildBigSearch() {
     final scale = qmScaleOf(context);
     final palette = DesignTokens.of(Theme.of(context).brightness);
-    final filterCount = _s.activeFilterCount();
-    // HTML `.toolbar` 是 flex-wrap：窄窗 / 大字号时换行，不溢出。
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Container(
+          margin: EdgeInsets.only(top: 12 * scale),
+          decoration: BoxDecoration(
+            color: palette.surface,
+            border: Border.all(color: palette.accent, width: 2),
+            borderRadius: BorderRadius.circular(14 * scale),
+            boxShadow: const [
+              BoxShadow(
+                offset: Offset(0, 4),
+                blurRadius: 18,
+                color: Color.fromRGBO(46, 124, 246, 0.14),
+              ),
+            ],
+          ),
+          padding: EdgeInsets.symmetric(
+            horizontal: 16 * scale,
+            vertical: 12 * scale,
+          ),
+          child: Row(
+            children: [
+              const Text('🔍', style: TextStyle(fontSize: 19)),
+              SizedBox(width: 10 * scale),
+              Expanded(
+                child: TextField(
+                  key: const Key('big-search'),
+                  controller: _searchCtrl,
+                  style: const TextStyle(fontSize: 16),
+                  decoration: const InputDecoration(
+                    border: InputBorder.none,
+                    isDense: true,
+                    hintText: '搜标题、题干、选项、答案、解析、备注…',
+                    hintStyle: TextStyle(color: Color(0xFF94A3B8)),
+                    contentPadding: EdgeInsets.zero,
+                  ),
+                  onChanged: (v) => _n.setSearch(v),
+                  onSubmitted: (v) => _n.recordKeywordSearch(v),
+                ),
+              ),
+            ],
+          ),
+        ),
+        // 范围说明行（板子 `.scope-note`，12.5px #64748B）：
+        // 板子原文还提到页面右下角的「试试命令面板」浮动按钮，
+        // 该按钮是演示用呼出方式、不进应用（协调员决策），这里
+        // 只保留“搜索范围 + 点 Ctrl+K 呼出面板”两层意思，
+        // Ctrl/K 浅色 kbd 可点（框内深色 kbd 二十一批已去掉）。
+        Padding(
+          padding: EdgeInsets.only(top: 8 * scale, left: 2 * scale),
+          child: Wrap(
+            crossAxisAlignment: WrapCrossAlignment.center,
+            children: [
+              Text(
+                '可搜标题、题干、选项、答案、解析、备注，也搜文件夹、标签、错因、知识点、试卷。点 ',
+                style: TextStyle(fontSize: 12.5, color: palette.muted),
+              ),
+              GestureDetector(
+                onTap: _openCommandPalette,
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    _kbd('Ctrl', light: true),
+                    SizedBox(width: 4 * scale),
+                    _kbd('K', light: true),
+                  ],
+                ),
+              ),
+              Text(
+                ' 呼出命令面板。',
+                style: TextStyle(fontSize: 12.5, color: palette.muted),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  /// kbd（板子 §1.2）：深色版 #17233B 底白字；浅色版（`kbd.lt`）
+  /// #E8EDF3 底 #475569 字；圆角 5、内边距 1/6、字号 11.5。
+  Widget _kbd(String text, {bool light = false}) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+      decoration: BoxDecoration(
+        color: light ? const Color(0xFFE8EDF3) : const Color(0xFF17233B),
+        borderRadius: BorderRadius.circular(5),
+      ),
+      child: Text(
+        text,
+        style: TextStyle(
+          fontSize: 11.5,
+          color: light ? const Color(0xFF475569) : Colors.white,
+        ),
+      ),
+    );
+  }
+
+  /// L1 chip（板子 `.fchip`）：白底、1px #E3E8F0 边、圆角 999、
+  /// 内边距 4/12、字号 13、最小高 32。saved 态（`.fchip.saved`）：
+  /// 虚线蓝边 + 蓝字；选中态（`.fchip.on`）：蓝底白字、字重 600。
+  Widget _l1Chip({
+    required String label,
+    required VoidCallback onTap,
+    bool saved = false,
+    bool selected = false,
+    VoidCallback? onDelete,
+  }) {
+    final scale = qmScaleOf(context);
+    final palette = DesignTokens.of(Theme.of(context).brightness);
+    final content = Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Text(
+          label,
+          style: TextStyle(
+            fontSize: 13,
+            color: selected ? Colors.white : (saved ? palette.accent : palette.ink),
+            fontWeight: selected ? FontWeight.w600 : FontWeight.normal,
+          ),
+        ),
+        if (onDelete != null) ...[
+          SizedBox(width: 6 * scale),
+          GestureDetector(
+            onTap: onDelete,
+            child: Text(
+              '✕',
+              style: TextStyle(
+                fontSize: 12,
+                color: selected ? Colors.white : palette.muted,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ),
+        ],
+      ],
+    );
+    final inner = Container(
+      constraints: BoxConstraints(minHeight: 32 * scale),
+      padding: EdgeInsets.symmetric(horizontal: 12 * scale, vertical: 4 * scale),
+      decoration: BoxDecoration(
+        color: selected ? palette.accent : palette.surface,
+        borderRadius: BorderRadius.circular(999 * scale),
+        border: saved || selected
+            ? null
+            : Border.all(color: palette.line),
+      ),
+      child: content,
+    );
+    final dashed = (saved && !selected)
+        ? CustomPaint(
+            painter: _DashedBorderPainter(
+              color: palette.accent,
+              borderRadius: BorderRadius.circular(999 * scale),
+              strokeWidth: 1,
+            ),
+            child: inner,
+          )
+        : inner;
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(999 * scale),
+      child: dashed,
+    );
+  }
+
+  /// 「我的查找」行（板子 §1.3.1）：`我的查找：` + 已存 chip
+  ///（`★ {名字}`，虚线蓝边；当前条件与该条相等时选中态）+
+  /// `＋ 存当前条件`。chip 点按应用条件、结果头与计数联动、
+  /// toast `已应用查找：{名字}`；chip 上小 × 删除（无确认，
+  /// 删了可重存）。为空时只显示存条件按钮。
+  Widget _buildSavedSearchRow() {
+    final scale = qmScaleOf(context);
+    final palette = DesignTokens.of(Theme.of(context).brightness);
+    final currentKey = conditionsKey(_s.currentConditions());
     return Padding(
-      padding: EdgeInsets.only(bottom: 12 * scale),
+      padding: EdgeInsets.only(top: 12 * scale, bottom: 4 * scale),
       child: Wrap(
         spacing: 8 * scale,
         runSpacing: 8 * scale,
         crossAxisAlignment: WrapCrossAlignment.center,
         children: [
-          SizedBox(
-            width: 280 * scale,
-            height: 40 * scale,
-            child: TextField(
-              controller: _searchCtrl,
-              decoration: InputDecoration(
-                hintText: '按题名 / 文件夹 / 标签 / 学科 / 试卷 / 日期查找',
-                hintStyle: TextStyle(color: palette.muted),
-                isDense: true,
-                contentPadding: EdgeInsets.symmetric(
-                  horizontal: 13 * scale,
-                  vertical: 9 * scale,
-                ),
-              ),
-              onChanged: (v) => _n.setSearch(v),
+          Text(
+            '我的查找：',
+            style: TextStyle(
+              fontSize: 13,
+              color: palette.muted,
+              fontWeight: FontWeight.w600,
             ),
           ),
-          QmChip(
-            label: filterCount > 0
-                ? '筛选（已选 $filterCount）${_s.filterOpen ? ' ▴' : ' ▾'}'
-                : '筛选${_s.filterOpen ? ' ▴' : ' ▾'}',
-            selected: _s.filterOpen,
-            onTap: () =>
-                _n.update((st) => st.copyWith(filterOpen: !st.filterOpen)),
+          for (final saved in _s.savedSearches)
+            _l1Chip(
+              label: '★ ${saved.name}',
+              saved: true,
+              selected: conditionsKey(saved.conditions) == currentKey,
+              onTap: () => _applySearchConditions(
+                saved.conditions,
+                label: saved.name,
+                toast: '已应用查找：${saved.name}',
+              ),
+              onDelete: () => _deleteSavedSearch(saved),
+            ),
+          _l1Chip(label: '＋ 存当前条件', onTap: _openSaveSearchDialog),
+        ],
+      ),
+    );
+  }
+
+  /// 「最近搜过」行（板子 §1.3.2）：`最近搜过：` + chip（点按联动
+  /// 搜索框 / 结果头 / 计数 + toast，与「我的查找」同款）。
+  /// 为空时整行不画。
+  Widget _buildRecentSearchRow() {
+    if (_s.recentSearches.isEmpty) return const SizedBox.shrink();
+    final scale = qmScaleOf(context);
+    final palette = DesignTokens.of(Theme.of(context).brightness);
+    return Padding(
+      padding: EdgeInsets.only(top: 4 * scale, bottom: 4 * scale),
+      child: Wrap(
+        spacing: 8 * scale,
+        runSpacing: 8 * scale,
+        crossAxisAlignment: WrapCrossAlignment.center,
+        children: [
+          Text(
+            '最近搜过：',
+            style: TextStyle(
+              fontSize: 13,
+              color: palette.muted,
+              fontWeight: FontWeight.w600,
+            ),
           ),
-          QmChip(label: '重置', onTap: _resetFilters),
+          for (final recent in _s.recentSearches)
+            _l1Chip(
+              label: recent.name,
+              onTap: () => _applySearchConditions(
+                recent.conditions,
+                label: recent.name,
+                toast: '已应用查找：${recent.name}',
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  /// 应用一份查找条件（saved / 最近 / 命令面板共用）：Notifier
+  /// 改状态（并记入最近搜过），页面同步搜索框文字、弹 toast。
+  /// 无搜索关键词的条件进列表时搜索框清空（条件里的 search 为空
+  /// 时 _searchCtrl 不同步会残留旧词，与结果对不上）。
+  void _applySearchConditions(
+    Map<String, dynamic> conditions, {
+    String? label,
+    String? toast,
+  }) {
+    _n.applySearchConditions(conditions, label: label);
+    final search = normalizeConditions(conditions)['search'] as String?;
+    _searchCtrl.text = search ?? '';
+    if (toast != null) _snack(toast);
+  }
+
+  /// 删一条已存查找（chip 上的小 ×，无确认）。
+  Future<void> _deleteSavedSearch(SavedSearch saved) async {
+    await _n.deleteSavedSearch(saved.id);
+    if (mounted) _snack('已删除查找：${saved.name}');
+  }
+
+  /// 「＋ 存当前条件」命名对话框（板子未注明保存交互，协调员决策
+  /// 第 5 项）：名字默认取当前条件的描述（空条件为「全部题目」），
+  /// 可改；保存后 toast `已保存查找：{名字}`。
+  Future<void> _openSaveSearchDialog() async {
+    _saveSearchNameCtrl.text =
+        _describeConditions(_s.currentConditions(), includeScope: true);
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('存当前条件'),
+        content: TextField(
+          key: const Key('save-search-name'),
+          controller: _saveSearchNameCtrl,
+          autofocus: true,
+          decoration: const InputDecoration(hintText: '给这次查找起个名字'),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('保存'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true || !mounted) return;
+    final msg = await _n.saveCurrentSearch(_saveSearchNameCtrl.text);
+    if (!mounted) return;
+    if (msg != null) {
+      _snack(msg);
+      return;
+    }
+    _snack('已保存查找：${_saveSearchNameCtrl.text.trim()}');
+  }
+
+  /// 结果头（板子 §1.3.3）：标题（15px/700）+ 计数（13px）+
+  /// 右侧排序下拉 +「筛选 ▾」+ 批量入口（批量模式保留在结果头
+  /// 工具栏区，协调员决策第 8 项）。
+  /// 标题：搜关键词时为「「{关键词}」的结果」；有筛选时为
+  /// 「「{筛选描述}」的结果」；否则「全部题目」（学科 / 文件夹
+  /// 归属范围不进标题，页头已显示）。
+  Widget _buildResultHead(int total) {
+    final scale = qmScaleOf(context);
+    final palette = DesignTokens.of(Theme.of(context).brightness);
+    final filterCount = _s.activeFilterCount();
+    final sortLabel = switch (_s.sort) {
+      'old' => '收集时间 旧 → 新',
+      'subj-asc' || 'subject' => '学科首字母 A → Z',
+      'subj-desc' => '学科首字母 Z → A',
+      'status-asc' => '错因状态 待解决 → 已解决',
+      'status-desc' => '错因状态 已解决 → 待解决',
+      _ => '收集时间 新 → 旧',
+    };
+    return Padding(
+      padding: EdgeInsets.only(top: 14 * scale, bottom: 8 * scale),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: [
+          Flexible(
+            child: Wrap(
+              spacing: 10 * scale,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              children: [
+                Text(
+                  _resultTitle(),
+                  style: const TextStyle(
+                    fontSize: 15,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                Text(
+                  '共 $total 道 · 按$sortLabel',
+                  style: TextStyle(fontSize: 13, color: palette.muted),
+                ),
+              ],
+            ),
+          ),
+          const Spacer(),
           SizedBox(
             width: 200 * scale,
             child: _styledDropdown<String>(
               value: _s.sort,
               items: const [
-                DropdownMenuItem(value: 'new', child: Text('排序：时间 新 → 旧')),
-                DropdownMenuItem(value: 'old', child: Text('排序：时间 旧 → 新')),
+                DropdownMenuItem(value: 'new', child: Text('排序：时间新 → 旧')),
+                DropdownMenuItem(value: 'old', child: Text('排序：时间旧 → 新')),
                 DropdownMenuItem(
                   value: 'subj-asc',
                   child: Text('排序：学科首字母 A → Z'),
@@ -427,29 +1077,194 @@ extension _WrongbookListBuild on _WrongbookViewState {
               },
             ),
           ),
+          SizedBox(width: 8 * scale),
           QmChip(
-            label: '大卡片',
-            selected: _s.viewMode == 'large',
-            onTap: () => _n.setViewMode('large'),
+            label: filterCount > 0
+                ? '筛选（已选 $filterCount）${_s.filterOpen ? ' ▴' : ' ▾'}'
+                : '筛选${_s.filterOpen ? ' ▴' : ' ▾'}',
+            selected: _s.filterOpen,
+            onTap: () =>
+                _n.update((st) => st.copyWith(filterOpen: !st.filterOpen)),
           ),
-          QmChip(
-            label: '紧凑列表',
-            selected: _s.viewMode == 'compact',
-            onTap: () => _n.setViewMode('compact'),
-          ),
-          if (!_s.inBookArchived)
+          if (!_s.inBookArchived) ...[
+            SizedBox(width: 8 * scale),
             QmChip(
               label: '批量操作',
               selected: _s.batchMode,
-              // 十七批 P2（D-208）：与导出模式互斥，进批量时退导出模式。
+              // 十八批 P2（D-217）：与导出模式彻底互斥，进批量时退
+              // 导出模式并清空导出已选（D-209 的「取消保留已选」只
+              // 适用于点「取消」退出，不适用于进批量）。
               onTap: _toggleBatchMode,
             ),
-          // 十七批 P2（D-208）：导出模式入口——平时列表无方框，点
-          // 工具栏「导出」进模式；模式里工具栏是「取消」+「导出（n）」，
-          // n = 0 时「导出（n）」置灰；点开确认步（D-168/D-169 的向导
-          // 入口已废，见 D-190）。
-          if (!_s.inBookArchived)
-            if (_exportMode) ...[
+            // 二十一批 D-243：导出入口「导出打印」与排序/筛选/
+            // 批量操作并排（原先是结果头下方的独立虚线行）。
+            // 模式里不画（取消/导出（n）在下方控制区）。
+            if (!_exportMode) ...[
+              SizedBox(width: 8 * scale),
+              QmChip(
+                key: const Key('export-selected-toolbar'),
+                label: '导出打印',
+                onTap: _enterExportMode,
+              ),
+            ],
+          ],
+        ],
+      ),
+    );
+  }
+
+  /// 结果头标题：见 _buildResultHead 注释。
+  String _resultTitle() {
+    if (_s.search.trim().isNotEmpty) return '「${_s.search.trim()}」的结果';
+    // 范围（学科 / 文件夹）只进页头，不进结果标题：去掉范围键后
+    // 还有条件才是「筛选后的结果」；否则标题就是「全部题目」。
+    // 不能用 desc 是否为空判断——_describeConditions 空条件回退
+    // 成「全部题目」当名字，旧代码会拼出「「全部题目」的结果」。
+    final conditions = normalizeConditions(_s.currentConditions())
+      ..remove('subjectId')
+      ..remove('folderId');
+    if (conditions.isEmpty) return '全部题目';
+    final desc = _describeConditions(
+      _s.currentConditions(),
+      includeScope: false,
+      includeSearch: false,
+    );
+    return '「$desc」的结果';
+  }
+
+  /// 条件的人话描述（` · ` 连接；空条件为「全部题目」）：
+  /// 学科名 / 文件夹名 / 错因名 / 状态 / 试卷名 / 错误类型 /
+  /// 题型 / 时间范围 / 仅收藏 / 仅逾期 / 标签 / 知识点名 /
+  /// 搜索关键词。保存命名默认值与结果头标题共用（includeScope /
+  /// includeSearch 控制是否含范围与关键词）。
+  String _describeConditions(
+    Map<String, dynamic> conditions, {
+    bool includeScope = true,
+    bool includeSearch = true,
+  }) {
+    final c = normalizeConditions(conditions);
+    final parts = <String>[];
+    if (includeScope) {
+      final subjectId = c['subjectId'] as String?;
+      if (subjectId != null) {
+        final name = _s.subjects
+            .where((s) => s.id == subjectId)
+            .map((s) => s.name)
+            .firstOrNull;
+        if (name != null) parts.add(name);
+      }
+      final folderId = c['folderId'] as String?;
+      if (folderId != null) {
+        final folder = _s.folderById(folderId);
+        if (folder != null) parts.add(folder.name);
+      }
+    }
+    final cause = c['cause'] as String?;
+    if (cause != null) parts.add(cause);
+    final causeStatus = c['causeStatus'] as String?;
+    if (causeStatus != null) {
+      parts.add(
+        switch (causeStatus) {
+          'pending' => '待解决',
+          'inProgress' => '解决中',
+          'solved' => '已解决',
+          'recheck' => '待复查',
+          _ => causeStatus,
+        },
+      );
+    }
+    final examId = c['examId'] as String?;
+    if (examId != null) {
+      final name = _s.exams
+          .where((e) => e.id == examId)
+          .map((e) => e.name)
+          .firstOrNull;
+      if (name != null) parts.add(name);
+    }
+    final errorType = c['errorType'] as String?;
+    if (errorType != null) parts.add(errorType);
+    final questionType = c['questionType'] as String?;
+    if (questionType != null) {
+      parts.add(questionTypeLabels[questionType] ?? questionType);
+    }
+    final timeRange = c['timeRange'] as String?;
+    if (timeRange != null) {
+      parts.add(timeRange == 'week' ? '最近一周' : '最近 30 天');
+    }
+    if (c['favorite'] == true) parts.add('仅收藏');
+    if (c['overdue'] == true) parts.add('仅逾期');
+    final tags = c['tags'];
+    if (tags is List && tags.isNotEmpty) {
+      parts.add('标签：${tags.whereType<String>().join('、')}');
+    }
+    final kpIds = c['kpIds'];
+    if (kpIds is List && kpIds.isNotEmpty) {
+      final names = kpIds
+          .whereType<String>()
+          .map(
+            (id) => _s.kps
+                .where((k) => k.id == id)
+                .map((k) => k.name)
+                .firstOrNull,
+          )
+          .whereType<String>()
+          .toList();
+      if (names.isNotEmpty) parts.add(names.join('、'));
+    }
+    if (includeSearch) {
+      final search = c['search'] as String?;
+      if (search != null && search.trim().isNotEmpty) {
+        parts.add(search.trim());
+      }
+    }
+    return parts.isEmpty ? '全部题目' : parts.join(' · ');
+  }
+
+  /// searchContext（A6）：行点按时拼的查询描述——学科名 / 错因名 /
+  /// 状态 / 搜索关键词，非空部分用 ` · ` 连接；全空为「全部题目」。
+  /// 错因名取 filterCauseName（报告深链）或 filterErrorType
+  ///（错误类型筛选），状态取 filterCauseStatus 的中文。
+  String _searchContext() {
+    final parts = <String>[];
+    if (_s.subjectId != null) {
+      parts.add(_s.subjectOf(_s.subjectId!).name);
+    }
+    final cause = _s.filterCauseName ?? _s.filterErrorType;
+    if (cause != null) parts.add(cause);
+    if (_s.filterCauseStatus != 'all') {
+      parts.add(
+        switch (_s.filterCauseStatus) {
+          'pending' => '待解决',
+          'inProgress' => '解决中',
+          'solved' => '已解决',
+          'recheck' => '待复查',
+          _ => _s.filterCauseStatus,
+        },
+      );
+    }
+    if (_s.search.trim().isNotEmpty) parts.add(_s.search.trim());
+    return parts.isEmpty ? '全部题目' : parts.join(' · ');
+  }
+
+  /// 导出模式控制区（板子 §1.6 的入口已搬走）：平时不画东西——
+  /// 入口「导出打印」在结果头那一行，与排序/筛选/批量操作并排
+  /// （二十一批 D-243，Meng 2026-11-22）；模式里：`取消` +
+  /// `导出（n）`（n=0 置灰）+ 黄色提示条（`导出模式中：点一行即选中
+  /// （不会进详情），选中行蓝底、右端出现 ✓；再点一次取消。`）。
+  /// 入口按钮 key 沿用 `export-selected-toolbar`（旧测试按 key 找
+  /// 入口，现落在结果头的 chip 上）；提示条 key 沿用 `export-mode-hint`。
+  Widget _buildExportToggle() {
+    final scale = qmScaleOf(context);
+    if (_s.inBookArchived) return const SizedBox.shrink();
+    if (_exportMode) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Wrap(
+            spacing: 8 * scale,
+            runSpacing: 8 * scale,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            children: [
               QmButton(
                 key: const Key('export-mode-cancel'),
                 label: '取消',
@@ -468,20 +1283,49 @@ extension _WrongbookListBuild on _WrongbookViewState {
                     ? null
                     : _openExportConfirm,
               ),
-              Text(
-                '导出模式：点一行即选中，再点取消选中',
-                key: const Key('export-mode-hint'),
-                style: TextStyle(fontSize: 12.5, color: palette.muted),
-              ),
-            ] else
-              QmButton(
-                key: const Key('export-selected-toolbar'),
-                label: '导出',
-                variant: QmButtonVariant.secondary,
-                size: QmButtonSize.small,
-                onPressed: _enterExportMode,
-              ),
+            ],
+          ),
+          Container(
+            key: const Key('export-mode-hint'),
+            margin: EdgeInsets.only(top: 10 * scale, bottom: 10 * scale),
+            padding: EdgeInsets.symmetric(
+              horizontal: 12 * scale,
+              vertical: 6 * scale,
+            ),
+            decoration: BoxDecoration(
+              color: const Color(0xFFFFF4D6),
+              borderRadius: BorderRadius.circular(8 * scale),
+            ),
+            child: const Text(
+              '导出模式中：点一行即选中（不会进详情），选中行蓝底、右端出现 ✓；再点一次取消。',
+              style: TextStyle(fontSize: 13, color: Color(0xFF8A6D00)),
+            ),
+          ),
         ],
+      );
+    }
+    // 二十一批 D-243：入口已搬进结果头（「导出打印」chip），
+    // 平时这里不画东西；模式里的取消/导出（n）+ 提示条见上。
+    return const SizedBox.shrink();
+  }
+
+  /// 命令面板（十九批 A4）：本页内呼出（大搜索框 Ctrl+K kbd、
+  /// scope-note kbd）；选中后直接应用（已在错题本，不用走
+  /// app 层的 pending 机制），toast 用板子文案。
+  void _openCommandPalette() {
+    unawaited(
+      showDialog<void>(
+        context: context,
+        barrierColor: const Color.fromRGBO(15, 23, 42, 0.45),
+        barrierDismissible: true,
+        builder: (dctx) => CommandPalette(
+          repo: ref.read(repositoryProvider),
+          onApply: (conditions, label) => _applySearchConditions(
+            conditions,
+            label: label,
+            toast: '已用命令面板打开查找：$label',
+          ),
+        ),
       ),
     );
   }
@@ -533,7 +1377,17 @@ extension _WrongbookListBuild on _WrongbookViewState {
         borderRadius: BorderRadius.circular(DesignTokens.radiusLg * scale),
       ),
       child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          // 十九批 A5：书架 / 目录视图保留，从 L1 筛选面板顶部进入
+          //（`/wrongbook` 默认落点是 L1 列表，不再默认进目录）。
+          QmButton(
+            label: '📚 书架（按学科浏览）',
+            variant: QmButtonVariant.plain,
+            size: QmButtonSize.small,
+            onPressed: _openShelf,
+          ),
+          SizedBox(height: 10 * scale),
           LayoutBuilder(
             builder: (context, constraints) {
               final cols = constraints.maxWidth > 700 ? 4 : 2;
@@ -555,7 +1409,7 @@ extension _WrongbookListBuild on _WrongbookViewState {
                   ),
                 ),
                 cell(
-                  '错误类型',
+                  '错因',
                   _styledDropdown<String>(
                     value: effectiveErrorType,
                     items: [
@@ -702,6 +1556,10 @@ extension _WrongbookListBuild on _WrongbookViewState {
                 selected: _s.inBookArchived,
                 onTap: () => _n.toggleInBookArchived(),
               ),
+              // 十九批 A1：旧工具栏的「重置」随工具栏一起拆了，功能
+              // 挪到筛选面板「只看」行末尾（清搜索与筛选、排序回
+              // 时间新→旧，SR-P2-58）。
+              QmChip(label: '重置', onTap: _resetFilters),
             ],
           ),
         ],
@@ -980,345 +1838,6 @@ extension _WrongbookListBuild on _WrongbookViewState {
     );
   }
 
-  /// 大卡片一题一行：卡片本身就是整题切片（外层无背景 / 无边框 /
-  /// 无阴影 / 无内边距；切片白底 + 细边框，封顶 160px、按比例缩放
-  /// 绝不裁切）；左上角蓝色序号圆盘；卡片上不显示题名 / 学科 /
-  /// 错误类型 / 标签 / 下次复习时间 / 收藏星。
-  ///
-  /// B8-9：不再用固定高度内部滚动容器（>2 张卡也一样）：整页只有
-  /// 一个 SingleChildScrollView，卡片全部建出来、随页滚动。
-  /// A 留白卡片：每张卡独立一张白卡，14px 间距。
-  Widget _buildLargeCards(List<Question> items, List<String> orderIds) {
-    final scale = qmScaleOf(context);
-    final cards = <Widget>[
-      for (var i = 0; i < items.length; i++)
-        // 序号 = 本页内的位置（1, 2, 3…），随排序 / 筛选 / 分页重编号。
-        _buildLargeCard(items[i], i + 1, orderIds),
-    ];
-    final palette = DesignTokens.of(Theme.of(context).brightness);
-    return Column(
-      children: [
-        for (var i = 0; i < cards.length; i++) ...[
-          if (i > 0) SizedBox(height: 14 * scale),
-          Container(
-            // 十六批 B（D-190）：勾过的卡片边框加粗变主色（与紧凑行
-            // 高亮同款语义）。
-            key: ValueKey('export-card-${items[i].id}'),
-            padding: EdgeInsets.all(12 * scale),
-            decoration: BoxDecoration(
-              color: _s.exportSelected.contains(items[i].id)
-                  ? palette.accentSoft
-                  : palette.surface,
-              border: Border.all(
-                color: _s.exportSelected.contains(items[i].id)
-                    ? palette.accent
-                    : palette.line,
-                width: _s.exportSelected.contains(items[i].id) ? 2 : 1,
-              ),
-              borderRadius: BorderRadius.circular(DesignTokens.radius * scale),
-              boxShadow: palette.shadow,
-            ),
-            child: cards[i],
-          ),
-        ],
-      ],
-    );
-  }
-
-  /// 大卡片一题一行：卡片本身就是整题切片（外层无背景 / 无边框 /
-  /// 无阴影 / 无内边距；切片白底 + 细边框，封顶 160px、按比例缩放
-  /// 绝不裁切）；左上角蓝色序号圆盘；卡片上不显示题名 / 学科 /
-  /// 错误类型 / 标签 / 下次复习时间 / 收藏星。
-  Widget _buildLargeCard(Question q, int number, List<String> orderIds) {
-    final scale = qmScaleOf(context);
-    final palette = DesignTokens.of(Theme.of(context).brightness);
-    return Stack(
-      children: [
-        QuestionSlice(
-          question: q,
-          subject: _s.subjectOf(q.subjectId),
-          maxHeight: 160 * scale,
-          fixedHeight: true,
-          onTap: () async {
-            // 十七批 P2（D-208）：导出模式里点卡片即切换导出选中，
-            // 不进详情；模式外照常进详情。
-            if (_exportMode) {
-              _toggleExportSelected(q.id);
-              return;
-            }
-            await widget.onOpenDetail(q, orderIds);
-            await _n.load();
-          },
-        ),
-        Positioned(
-          top: 7 * scale,
-          left: 7 * scale,
-          child: IgnorePointer(
-            child: Container(
-              constraints: BoxConstraints(
-                minWidth: DesignTokens.seqBadgeSize * scale,
-              ),
-              height: DesignTokens.seqBadgeSize * scale,
-              padding: EdgeInsets.symmetric(horizontal: 7 * scale),
-              decoration: BoxDecoration(
-                color: palette.accent,
-                borderRadius: BorderRadius.circular(999 * scale),
-                border: Border.all(color: palette.surface, width: 2 * scale),
-                boxShadow: const [
-                  BoxShadow(
-                    offset: Offset(0, 2),
-                    blurRadius: 6,
-                    color: Color.fromRGBO(23, 35, 59, 0.28),
-                  ),
-                ],
-              ),
-              alignment: Alignment.center,
-              child: Text(
-                '$number',
-                style: TextStyle(
-                  fontSize: DesignTokens.seqBadgeFontSize,
-                  fontWeight: FontWeight.w800,
-                  color: palette.accentInk,
-                  height: 1,
-                ),
-              ),
-            ),
-          ),
-        ),
-        if (_s.batchMode)
-          Positioned(
-            top: 9 * scale,
-            left: DesignTokens.cardCheckLeft * scale,
-            child: Container(
-              decoration: BoxDecoration(
-                color: palette.surface,
-                borderRadius: BorderRadius.circular(5 * scale),
-              ),
-              child: Checkbox(
-                value: _s.selected.contains(q.id),
-                onChanged: (v) => _n.toggleSelected(q.id, v == true),
-              ),
-            ),
-          ),
-        // 十七批 P2（D-208）：常驻导出方框已废（平时列表无方框）；
-        // 选中的卡片右上角一个小 ✓（原来方框的位置附近），蓝底 +
-        // 主色加粗边框见外层容器（_buildLargeCards）。
-        if (_s.exportSelected.contains(q.id))
-          Positioned(
-            top: 9 * scale,
-            right: 9 * scale,
-            child: Container(
-              key: ValueKey('export-mark-${q.id}'),
-              padding: EdgeInsets.all(3 * scale),
-              decoration: BoxDecoration(
-                color: palette.accent,
-                shape: BoxShape.circle,
-              ),
-              child: Text(
-                '✓',
-                style: TextStyle(
-                  fontSize: 13,
-                  fontWeight: FontWeight.w800,
-                  color: palette.accentInk,
-                  height: 1,
-                ),
-              ),
-            ),
-          ),
-      ],
-    );
-  }
-
-  Widget _buildCompactRows(List<Question> items, List<String> orderIds) {
-    final scale = qmScaleOf(context);
-    const lineKind = QmRowLineKind.line;
-    return Column(
-      children: [
-        for (var i = 0; i < items.length; i++) ...[
-          if (i > 0) QmRowLine(kind: lineKind),
-          _buildCompactRow(items[i], orderIds),
-        ],
-        SizedBox(height: 4 * scale),
-      ],
-    );
-  }
-
-  Widget _buildCompactRow(Question q, List<String> orderIds) {
-    final scale = qmScaleOf(context);
-    final palette = DesignTokens.of(Theme.of(context).brightness);
-    final nextRecheck = _s.nextRecheckOf(q);
-    // 十六批 B（D-190）：勾过的行一直高亮（浅底），与批量勾选无关。
-    final exportChecked = _s.exportSelected.contains(q.id);
-    return InkWell(
-      onTap: () async {
-        // 十七批 P2（D-208）：导出模式里点行即切换导出选中，不进
-        // 详情；模式外照常进详情。
-        if (_exportMode) {
-          _toggleExportSelected(q.id);
-          return;
-        }
-        await widget.onOpenDetail(q, orderIds);
-        await _n.load();
-      },
-      borderRadius: BorderRadius.circular(6 * scale),
-      child: Container(
-        key: ValueKey('export-row-${q.id}'),
-        decoration: BoxDecoration(
-          color: exportChecked ? palette.accentSoft : Colors.transparent,
-          borderRadius: BorderRadius.circular(6 * scale),
-        ),
-        child: Padding(
-          padding: EdgeInsets.fromLTRB(
-            DesignTokens.prowPaddingLeft * scale,
-            DesignTokens.prowPaddingV * scale,
-            DesignTokens.prowPaddingH * scale,
-            DesignTokens.prowPaddingV * scale,
-          ),
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              if (_s.batchMode)
-                Padding(
-                  padding: EdgeInsets.only(right: 8 * scale),
-                  child: Checkbox(
-                    value: _s.selected.contains(q.id),
-                    onChanged: (v) => _n.toggleSelected(q.id, v == true),
-                  ),
-                ),
-              // 十七批 P2（D-208）：常驻导出方框已废，紧凑行平时无
-              // 方框；选中行的 ✓ 在行右端（见行尾）。
-              GestureDetector(
-                onTap: () => showQuestionZoomDialog(context, q),
-                child: CompactSliceThumb(
-                  question: q,
-                  subject: _s.subjectOf(q.subjectId),
-                ),
-              ),
-            SizedBox(width: 12 * scale),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    q.title,
-                    style: TextStyle(
-                      fontSize: DesignTokens.prowTitleFontSize,
-                      fontWeight: FontWeight.w700,
-                      color: palette.paperInk,
-                    ),
-                  ),
-                  SizedBox(height: 2 * scale),
-                  _prowMetaLine(q),
-                  SizedBox(height: 4 * scale),
-                  Wrap(
-                    spacing: 6 * scale,
-                    runSpacing: 4 * scale,
-                    crossAxisAlignment: WrapCrossAlignment.center,
-                    children: [
-                      for (final (cause, status) in _s.causeStatusesOf(q))
-                        _causePill(cause, status),
-                      Text(
-                        '下次复查 ${nextRecheck == null ? '—' : '${nextRecheck.month}月${nextRecheck.day}日'}',
-                        style: TextStyle(
-                          fontSize: DesignTokens.prowDetailFontSize,
-                          color: palette.paperMuted,
-                        ),
-                      ),
-                    ],
-                  ),
-                ],
-              ),
-            ),
-            SizedBox(width: 8 * scale),
-            _PaperStarButton(
-              favorite: q.isFavorite,
-              onPressed: () => _toggleFavorite(q),
-            ),
-            SizedBox(width: 4 * scale),
-            Text(
-              '›',
-              style: TextStyle(
-                fontSize: 18,
-                color: palette.paperMuted,
-                height: 1,
-              ),
-            ),
-            // 十七批 P2（D-208）：选中行的 ✓ 在行右端（蓝底见行容器）。
-            if (exportChecked) ...[
-              SizedBox(width: 4 * scale),
-              Text(
-                '✓',
-                key: ValueKey('export-mark-${q.id}'),
-                style: TextStyle(
-                  fontSize: 16,
-                  fontWeight: FontWeight.w800,
-                  color: palette.accent,
-                  height: 1,
-                ),
-              ),
-            ],
-          ],
-        ),
-      ),
-      ),
-    );
-  }
-
-  /// 紧凑行 / 归档行明细行（HTML `.nb-prow .d`）：学科名着学科色
-  ///（纸面取浅色档），其余取纸面次级色。学科取库里的 `_s.subjects`
-  ///（B2 补充；以前 `Subject.byId` 未知 id 回退到数学名 +
-  /// `subjectInk` 不传存色落到数学色）。
-  Widget _prowMetaLine(Question q) {
-    final palette = DesignTokens.of(Theme.of(context).brightness);
-    final subject = _s.subjects.firstWhere(
-      (s) => s.id == q.subjectId,
-      orElse: () => Subject.byId(q.subjectId),
-    );
-    final subjectInk = DesignTokens.subjectInk(
-      q.subjectId,
-      Brightness.light,
-      subject.color,
-    );
-    return RichText(
-      maxLines: 1,
-      overflow: TextOverflow.ellipsis,
-      text: TextSpan(
-        style: TextStyle(
-          fontSize: DesignTokens.prowDetailFontSize,
-          color: palette.paperMuted,
-        ),
-        children: [
-          TextSpan(
-            text: subject.name,
-            style: TextStyle(color: subjectInk),
-          ),
-          TextSpan(
-            text:
-                ' · 错误类型：${q.allCauses.isEmpty ? '—' : q.allCauses.join('、')} · 标签：${q.tags.isEmpty ? '—' : q.tags.join('、')}',
-          ),
-        ],
-      ),
-    );
-  }
-
-  /// 紧凑行里的错因 pill：「错因·状态」，颜色与错因四态一致。
-  Widget _causePill(String cause, String status) {
-    final palette = DesignTokens.of(Theme.of(context).brightness);
-    final (bg, fg) = switch (status) {
-      'pending' => (palette.warnBg, palette.warnInk),
-      'inProgress' => (palette.infoBg, palette.infoInk),
-      'solved' => (palette.accentSoft, palette.accentText),
-      _ => (palette.errBg, palette.errInk),
-    };
-    final label = switch (status) {
-      'pending' => '待解决',
-      'inProgress' => '解决中',
-      'solved' => '已解决',
-      _ => '复查',
-    };
-    return QmStatusPill(label: '$cause·$label', background: bg, foreground: fg);
-  }
-
   Widget _buildArchivedRows(List<Question> items, List<String> orderIds) {
     final scale = qmScaleOf(context);
     const lineKind = QmRowLineKind.line;
@@ -1326,7 +1845,11 @@ extension _WrongbookListBuild on _WrongbookViewState {
       children: [
         for (var i = 0; i < items.length; i++) ...[
           if (i > 0) QmRowLine(kind: lineKind),
-          _buildArchivedRow(items[i], orderIds),
+          // 二十二批 D-247：行轻微错开入场（行号 × 30ms，上限 8 行）。
+          EntranceFadeSlide(
+            delay: Duration(milliseconds: (i > 8 ? 8 : i) * 30),
+            child: _buildArchivedRow(items[i], orderIds),
+          ),
         ],
         SizedBox(height: 4 * scale),
       ],
@@ -1338,7 +1861,11 @@ extension _WrongbookListBuild on _WrongbookViewState {
     final palette = DesignTokens.of(Theme.of(context).brightness);
     return InkWell(
       onTap: () async {
-        await widget.onOpenDetail(q, orderIds);
+        await widget.onOpenDetail(
+          q,
+          orderIds,
+          searchContext: _searchContext(),
+        );
         await _n.load();
       },
       borderRadius: BorderRadius.circular(6 * scale),
@@ -1353,7 +1880,7 @@ extension _WrongbookListBuild on _WrongbookViewState {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             GestureDetector(
-              onTap: () => showQuestionZoomDialog(context, q),
+              onTap: () => showQuestionZoomDialog(context, q, returnLabel: '错题本'),
               child: CompactSliceThumb(
                 question: q,
                 subject: _s.subjectOf(q.subjectId),
@@ -1368,7 +1895,7 @@ extension _WrongbookListBuild on _WrongbookViewState {
                     children: [
                       Expanded(
                         child: Text(
-                          q.title,
+                          rowDisplayTitle(q),
                           style: TextStyle(
                             fontSize: DesignTokens.prowTitleFontSize,
                             fontWeight: FontWeight.w700,
@@ -1381,7 +1908,10 @@ extension _WrongbookListBuild on _WrongbookViewState {
                     ],
                   ),
                   SizedBox(height: 2 * scale),
-                  _prowMetaLine(q),
+                  _metaLine(
+                    q,
+                    _s.search.trim().isEmpty ? null : _s.search.trim(),
+                  ),
                 ],
               ),
             ),
@@ -1398,6 +1928,10 @@ extension _WrongbookListBuild on _WrongbookViewState {
     );
   }
 
+  /// 分页行（十九批 A1，板子 §1.5）：右对齐、无数字页码按钮——
+  /// `每页 [N▾] 道 · 第 X/Y 页　上一页　下一页`（第 X/Y 页与上一页
+  /// 之间是全角空格）。每页条数下拉保留现版 10/20/30/40/50、
+  /// 默认 10；上一页 / 下一页到边界置灰。
   Widget _buildPagination(int total, int totalPages, int page) {
     final scale = qmScaleOf(context);
     final palette = DesignTokens.of(Theme.of(context).brightness);
@@ -1408,15 +1942,8 @@ extension _WrongbookListBuild on _WrongbookViewState {
         border: Border(top: BorderSide(color: palette.line)),
       ),
       child: Row(
+        mainAxisAlignment: MainAxisAlignment.end,
         children: [
-          Text(
-            '共 $total 道 · 第 ${page + 1} / $totalPages 页',
-            style: TextStyle(
-              fontSize: DesignTokens.pagerFontSize,
-              color: palette.muted,
-            ),
-          ),
-          SizedBox(width: 10 * scale),
           const Text('每页', style: TextStyle(fontSize: 13.5)),
           SizedBox(width: 4 * scale),
           SizedBox(
@@ -1432,8 +1959,13 @@ extension _WrongbookListBuild on _WrongbookViewState {
             ),
           ),
           SizedBox(width: 4 * scale),
-          const Text('道', style: TextStyle(fontSize: 13.5)),
-          const Spacer(),
+          Text(
+            '道 · 第 ${page + 1}/$totalPages 页　',
+            style: TextStyle(
+              fontSize: DesignTokens.pagerFontSize,
+              color: palette.muted,
+            ),
+          ),
           QmButton(
             label: '上一页',
             variant: QmButtonVariant.plain,
@@ -1443,18 +1975,6 @@ extension _WrongbookListBuild on _WrongbookViewState {
                 : null,
           ),
           SizedBox(width: 6 * scale),
-          if (totalPages > 1)
-            for (var i = 0; i < totalPages; i++) ...[
-              if (i > 0) SizedBox(width: 6 * scale),
-              _pageNumButton(
-                i + 1,
-                selected: i == page,
-                onTap: () {
-                  _n.update((st) => st.copyWith(page: i));
-                },
-              ),
-            ],
-          if (totalPages > 1) SizedBox(width: 6 * scale),
           QmButton(
             label: '下一页',
             variant: QmButtonVariant.plain,

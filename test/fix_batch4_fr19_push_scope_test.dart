@@ -98,6 +98,20 @@ class Fr19FakeRepo extends QuestionRepository {
   @override
   Future<List<({Question question, DateTime viewedAt})>>
   recentlyViewedQuestions() async => const [];
+
+  /// B11-10：OrganizeNotifier 只在队列已空且库里有题时读今日已整理
+  /// 数（今日小结行用）；返回 0，不碰真实库（见 D-88）。
+  @override
+  Future<int> organizedTodayCount({DateTime? now}) async => 0;
+
+  /// 十三批 M5：OCR 状态是 best-effort 加载（不 await）；返回空任务行
+  /// 与“无 key”，不碰真实库（见 D-88）。
+  @override
+  Future<List<OcrJob>> ocrJobsForQuestion(String questionId) async =>
+      const [];
+
+  @override
+  Future<bool> hasOcrApiKey() async => false;
 }
 
 /// 根 Scope + push：点按钮进嵌套 ProviderScope 包裹的路由，路由内

@@ -9,6 +9,7 @@ import 'package:quiz_master2/data/repository.dart';
 import 'package:quiz_master2/models/models.dart';
 import 'package:quiz_master2/modules/wrongbook/wrongbook_page.dart';
 import 'package:quiz_master2/theme/app_theme.dart';
+import 'package:quiz_master2/widgets/uikit.dart';
 import 'package:quiz_master2/widgets/widgets.dart';
 
 Question wbq(
@@ -16,7 +17,11 @@ Question wbq(
   String title, {
   String subjectId = 'math',
   String sliceKind = 'limit',
-  String sliceText = '题：求极限',
+  // 二十一批 D-244 配套：默认题干从标题派生（'题：<标题>'），不再是
+  // 所有题共用 '题：求极限'——否则行标题改显示题干后，多道题的行
+  // 显示同一文字，boardRow 按显示文字找行会撞车。显式传 sliceText
+  // 的题不受影响。
+  String? sliceText,
   List<String> folderIds = const [],
   String? examId,
   List<String> errorTypes = const [],
@@ -36,7 +41,7 @@ Question wbq(
   customErrorTypes: customErrorTypes,
   tags: tags,
   sliceKind: sliceKind,
-  sliceText: sliceText,
+  sliceText: sliceText ?? '题：$title',
   createdAt: createdAt ?? DateTime.now().subtract(const Duration(days: 2)),
   isOrganized: isOrganized,
   isArchived: isArchived,
@@ -94,6 +99,24 @@ class FakeWrongbookRepo extends QuestionRepository {
 
   /// SR-P2-36：整科同名预检（按 fake 的 folderList 实扫，与真实
   /// AppDatabase.folderNameExistsInSubjectFrom 同语义）。
+  /// 十九批 A3：内存版已存查找（不碰真实库）。
+  final List<SavedSearch> savedSearchList = [];
+
+  @override
+  Future<List<SavedSearch>> savedSearches() async =>
+      List.of(savedSearchList);
+
+  @override
+  Future<void> saveSavedSearch(SavedSearch search) async {
+    savedSearchList.removeWhere((s) => s.id == search.id);
+    savedSearchList.add(search);
+  }
+
+  @override
+  Future<void> deleteSavedSearch(String id) async {
+    savedSearchList.removeWhere((s) => s.id == id);
+  }
+
   @override
   Future<bool> folderNameExistsInSubject(
     String subjectId,
@@ -415,7 +438,11 @@ Future<void> pumpWrongbook(
   Brightness brightness = Brightness.light,
   double scale = 1.0,
   Key? pageKey,
-  Future<void> Function(Question q, List<String> orderIds)? onOpenDetail,
+  Future<void> Function(
+    Question q,
+    List<String> orderIds, {
+    String? searchContext,
+  })? onOpenDetail,
   void Function({String? subjectId})? onGoReview,
   VoidCallback? onGoCollect,
   VoidCallback? onGoOrganize,
@@ -424,6 +451,12 @@ Future<void> pumpWrongbook(
   tester.view.devicePixelRatio = 1.0;
   addTearDown(tester.view.resetPhysicalSize);
   addTearDown(tester.view.resetDevicePixelRatio);
+  // 十九批 A5：key 必须在 pumpWidget 之前只造一次——原来写在 Builder
+  // 闭包里（`pageKey ?? UniqueKey()`），窗口 resize 触发 MediaQuery
+  // 重建时闭包重跑、key 换新，WrongbookPage 被重挂、notifier 重建、
+  // 落点回到默认（旧默认是书架所以基线没爆；现默认是列表，B8-8 的
+  // 900 宽断言就丢了书架）。
+  final pageWidgetKey = pageKey ?? UniqueKey();
   await tester.pumpWidget(
     MaterialApp(
       theme: AppTheme.light(scale: scale),
@@ -438,7 +471,7 @@ Future<void> pumpWrongbook(
             data: data.copyWith(textScaler: TextScaler.linear(scale)),
             child: Scaffold(
               body: WrongbookPage(
-                key: pageKey ?? UniqueKey(),
+                key: pageWidgetKey,
                 repo: repo ?? threeSubjectRepo(),
                 initialSubjectId: initialSubjectId,
                 filterCause: filterCause,
@@ -446,7 +479,7 @@ Future<void> pumpWrongbook(
                 onOpenHome: () {},
                 onGoCollect: onGoCollect,
                 onGoOrganize: onGoOrganize,
-                onOpenDetail: onOpenDetail ?? (_, __) async {},
+                onOpenDetail: onOpenDetail ?? (_, __, {String? searchContext}) async {},
                 onGoReview: onGoReview ?? ({String? subjectId}) {},
               ),
             ),
@@ -463,17 +496,93 @@ Future<void> pumpWrongbook(
 Finder plainText(String s) =>
     find.byWidgetPredicate((w) => w is Text && w.data == s);
 
+/// 从默认落点（L1 列表）进数学列表：筛选面板顶部
+///「📚 书架（按学科浏览）」→ 点数学封面进目录 → 全部题目
+///（十九批 A5：/wrongbook 默认落点改为 L1 列表，目录不再是落点）。
 Future<void> openMathList(WidgetTester tester) async {
+  await openShelfFromList(tester);
   await tester.tap(find.text('数学'));
   await tester.pumpAndSettle();
   await tester.tap(find.text('全部题目'));
   await tester.pumpAndSettle();
 }
 
+/// 从 L1 列表进书架（筛选面板顶部入口，十九批 A5）。
+Future<void> openShelfFromList(WidgetTester tester) async {
+  // 面板可能已开着（前面刚设过筛选）：已开就不再点 chip（再点会关掉）。
+  if (find.text('📚 书架（按学科浏览）').evaluate().isEmpty) {
+    // 筛选 chip 的文案带计数后缀（有筛选时「筛选（已选 N） ▾」），
+    // 按 QmChip.label 定位，不按固定文案。
+    final chip = find.byWidgetPredicate(
+      (w) => w is QmChip && w.label.startsWith('筛选'),
+    );
+    await tester.tap(chip);
+    await tester.pumpAndSettle();
+  }
+  await tester.tap(find.text('📚 书架（按学科浏览）'));
+  await tester.pumpAndSettle();
+}
+
+/// 从 L1 列表进数学目录（筛选面板 → 书架 → 数学封面）。
+Future<void> openMathDirectory(WidgetTester tester) async {
+  await openShelfFromList(tester);
+  await tester.tap(find.text('数学'));
+  await tester.pumpAndSettle();
+}
+
+/// 十九批 A1：紧凑列表已随视图切换去掉，旧 helper 改名义——
+/// 只表示“进数学列表”（b11_6 等旧调用方不用改名）。
 Future<void> openMathListCompact(WidgetTester tester) async {
   await openMathList(tester);
-  await tester.tap(find.text('紧凑列表'));
-  await tester.pumpAndSettle();
+}
+
+/// 板子行标题是 RichText（不是普通 Text）：按题名找行。
+/// 板子行（按显示文字找行）：二十一批 D-244 起行标题改显示题干
+/// （2026-11-22 11:32 修订：取消 15 字限制，完整显示、自动换行），
+/// 标题本身不再画在行里，boardRow 按显示文字找。映射只覆盖已知题干：
+/// 三科测试库 8 道用真实题干全文；显式 sliceText 的题按其题干；
+/// b19 接线测试的 q() 不设 sliceText（空 → 回退标题），按标题本身找；
+/// 其余 wbq 默认题干 '题：<标题>'（D-244 配套），按 '题：<标题>' 找。
+const _displayTitleByTitle = <String, String>{
+  '函数极限': '题：lim(x→0) sin 3x / x 单调递增',
+  '导数综合': '题：设 f(x) = x³ − 3x² + 2，求单调区间',
+  '定积分': '题：求阴影面积',
+  '阅读主旨': '题：The evidence ______ the hypothesis.',
+  '图表作文': '题：Describe the chart.',
+  '极限已掌握': '题：已掌握的极限题',
+  '旧题': '题：已归档的旧题',
+  '未整理题': '题：还没整理的题',
+  '数学概念不清题': '题：求极限',
+  '数学计算错误题': '题：求导数',
+  '英语概念不清题': '题：英语词汇',
+  '数学极限题': '题：求极限',
+  '数学导数题': '题：求导数',
+  '洛必达法则': '洛必达法则',
+  '泰勒公式': '泰勒公式',
+};
+
+Finder boardRow(String title) => find.textContaining(
+      _displayTitleByTitle[title] ?? '题：$title',
+      findRichText: true,
+    );
+
+/// 板子行容器（按题 id 找 key）：点按行、断言行存在用。
+Finder boardRowKey(String id) =>
+    find.byKey(ValueKey('export-row-$id'));
+
+/// 板子行学科圆点颜色（9px 圆 Container 的 BoxDecoration.color）。
+/// 十九批 C：大卡片 / 紧凑行已去掉，学科同步断言改到板子行圆点上。
+Color boardRowDotColor(WidgetTester tester, String id) {
+  final containers = tester.widgetList<Container>(
+    find.descendant(
+      of: boardRowKey(id),
+      matching: find.byType(Container),
+    ),
+  );
+  final dot = containers.firstWhere(
+    (c) => (c.decoration as BoxDecoration?)?.shape == BoxShape.circle,
+  );
+  return (dot.decoration as BoxDecoration).color!;
 }
 
 /// 紧凑列表第一个缩略图的纸面色（根 Container 的 BoxDecoration.color）。
@@ -493,6 +602,7 @@ void main() {
   group('书架', () {
     testWidgets('三科封面 + 计数牌 + 开始复习，无搜索/筛选', (tester) async {
       await pumpWrongbook(tester);
+      await openShelfFromList(tester);
       expect(find.text('错题本'), findsOneWidget);
       expect(find.text('一科一本错题本，点一本打开看这一科的错题。'), findsOneWidget);
       expect(find.text('数学'), findsOneWidget);
@@ -535,6 +645,7 @@ void main() {
         wbq('q9', '化学平衡', subjectId: 'chemistry'),
       ];
       await pumpWrongbook(tester, repo: repo);
+      await openShelfFromList(tester);
       expect(find.text('数学'), findsOneWidget);
       expect(find.text('英语'), findsOneWidget);
       expect(find.text('政治'), findsOneWidget);
@@ -549,6 +660,7 @@ void main() {
 
     testWidgets('书架封面按预览画法：名下移、书页边/内阴影/折角/虚线框齐全', (tester) async {
       await pumpWrongbook(tester);
+      await openShelfFromList(tester);
       // 顶部无英文行（Meng 2026-11-14 决定；预览里的英文是有意的不同点）。
       expect(find.text('MATHEMATICS'), findsNothing);
       expect(find.text('ENGLISH'), findsNothing);
@@ -592,6 +704,7 @@ void main() {
 
     testWidgets('B8-8 封面固定 300×376：窗口变窄只改每行本数，不改封面尺寸', (tester) async {
       await pumpWrongbook(tester);
+      await openShelfFromList(tester);
       // 按学科名找各自的封面盒子（_buildBook 的 AnimatedContainer）。
       Finder bookBox(String name) => find.ancestor(
         of: find.text(name),
@@ -628,6 +741,7 @@ void main() {
       final oneRepo = threeSubjectRepo();
       oneRepo.subjectsValue = [Subject.math];
       await pumpWrongbook(tester, repo: oneRepo);
+      await openShelfFromList(tester);
       expect(find.text('数学'), findsOneWidget);
       expect(find.text('英语'), findsNothing);
       expect(tester.getSize(bookBox('数学')), const Size(300, 376));
@@ -635,6 +749,7 @@ void main() {
 
     testWidgets('书脊贴着封面左边缘、通顶通底（与预览一致）', (tester) async {
       await pumpWrongbook(tester);
+      await openShelfFromList(tester);
       // 书脊：黑 .20 + 右白 .25 竖线（与计数条区分：计数条是
       // 黑 .20 + 圆角 12 全边框）。
       final spineFinder = find.byWidgetPredicate(
@@ -682,6 +797,7 @@ void main() {
         tester,
         onGoReview: ({String? subjectId}) => reviewSubject = subjectId,
       );
+      await openShelfFromList(tester);
       await tester.tap(find.text('开始复习').first);
       await tester.pumpAndSettle();
       expect(reviewSubject, 'math');
@@ -696,10 +812,12 @@ void main() {
     testWidgets('书架顶部已归档入口：跨学科归档列表，可恢复', (tester) async {
       final repo = threeSubjectRepo();
       await pumpWrongbook(tester, repo: repo);
+      await openShelfFromList(tester);
       await tester.tap(find.text('已归档（1）'));
       await tester.pumpAndSettle();
       expect(find.text('已归档'), findsWidgets);
-      expect(find.text('旧题'), findsOneWidget);
+      // D-244：已归档行也显示题干（'题：已归档的旧题'），不再显示标题。
+      expect(boardRow('旧题'), findsOneWidget);
       expect(find.text('恢复到错题本'), findsOneWidget);
       await tester.tap(find.text('恢复到错题本'));
       await tester.pumpAndSettle();
@@ -711,6 +829,7 @@ void main() {
   group('目录页', () {
     testWidgets('文件夹树：全部题目在上、题数含子文件夹、空文件夹显示 0', (tester) async {
       await pumpWrongbook(tester, initialSubjectId: 'math');
+      await openMathDirectory(tester);
       expect(find.text('数学 · 错题本'), findsOneWidget);
       expect(find.text('返回书架'), findsOneWidget);
       expect(find.text('全部题目'), findsOneWidget);
@@ -729,6 +848,7 @@ void main() {
 
     testWidgets('展开块点展/收；回目录后展开状态不记住', (tester) async {
       await pumpWrongbook(tester, initialSubjectId: 'math');
+      await openMathDirectory(tester);
       await tester.tap(find.text('▸'));
       await tester.pumpAndSettle();
       expect(find.text('期中试卷'), findsOneWidget);
@@ -738,26 +858,29 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.text('期中试卷'), findsNothing);
       // 展开后进列表再回目录，展开状态已重置。
+      // 十九批收尾：页头「← 目录」已删，回目录走筛选面板→书架→数学。
       await tester.tap(find.text('▸'));
       await tester.pumpAndSettle();
       await tester.tap(find.text('全部题目'));
       await tester.pumpAndSettle();
-      await tester.tap(find.text('← 目录'));
-      await tester.pumpAndSettle();
+      await openMathDirectory(tester);
       expect(find.text('期中试卷'), findsNothing);
     });
 
     testWidgets('点文件夹行进该文件夹的题列表；点其余部分才进，展开块不进', (tester) async {
       await pumpWrongbook(tester, initialSubjectId: 'math');
+      await openMathDirectory(tester);
       await tester.tap(find.text('平时作业'));
       await tester.pumpAndSettle();
-      // 大卡片模式不显示题名：只有 1 张卡。
-      expect(find.byType(QuestionSlice), findsOneWidget);
-      expect(find.text('共 1 道 · 第 1 / 1 页'), findsOneWidget);
+      // 十九批 A1：板子行画题目标题（平时作业只有导数综合 1 道）。
+      expect(boardRow('导数综合'), findsOneWidget);
+      expect(find.text('共 1 道 · 按收集时间 新 → 旧'), findsOneWidget);
+      expect(find.textContaining('第 1/1 页'), findsOneWidget);
     });
 
     testWidgets('搜索文件夹：搜到子文件夹自动展开父级；无匹配提示', (tester) async {
       await pumpWrongbook(tester, initialSubjectId: 'math');
+      await openMathDirectory(tester);
       await tester.enterText(find.byType(TextField).first, '期中');
       await tester.pumpAndSettle();
       expect(find.text('期中试卷'), findsOneWidget);
@@ -770,6 +893,7 @@ void main() {
     testWidgets('内联新建文件夹；重名拦下', (tester) async {
       final repo = threeSubjectRepo();
       await pumpWrongbook(tester, repo: repo, initialSubjectId: 'math');
+      await openMathDirectory(tester);
       final fields = find.byType(TextField);
       await tester.enterText(fields.at(1), '月考卷');
       await tester.tap(find.text('加文件夹'));
@@ -781,12 +905,13 @@ void main() {
       await tester.enterText(fields.at(1), '试卷');
       await tester.tap(find.text('加文件夹'));
       await tester.pumpAndSettle();
-      expect(find.text('已经有了'), findsOneWidget);
+      expect(find.text('已经有了这个文件夹'), findsOneWidget);
     });
 
     testWidgets('内联改名', (tester) async {
       final repo = threeSubjectRepo();
       await pumpWrongbook(tester, repo: repo, initialSubjectId: 'math');
+      await openMathDirectory(tester);
       await tester.tap(find.text('改名').first);
       await tester.pumpAndSettle();
       await tester.enterText(find.byType(TextField).last, '月考卷');
@@ -802,18 +927,20 @@ void main() {
       testWidgets('新建：子文件夹已有的名字，在顶层新建也拦下', (tester) async {
         final repo = threeSubjectRepo();
         await pumpWrongbook(tester, repo: repo, initialSubjectId: 'math');
+      await openMathDirectory(tester);
         final fields = find.byType(TextField);
         // “期中试卷”只在子文件夹 f1s 里，顶层没有——旧的只查同层会放行。
         await tester.enterText(fields.at(1), '期中试卷');
         await tester.tap(find.text('加文件夹'));
         await tester.pumpAndSettle();
-        expect(find.text('已经有了'), findsOneWidget);
+        expect(find.text('已经有了这个文件夹'), findsOneWidget);
         expect(repo.savedFolders.any((f) => f.name == '期中试卷'), isFalse);
       });
 
       testWidgets('新建：别科同名不拦', (tester) async {
         final repo = threeSubjectRepo();
         await pumpWrongbook(tester, repo: repo, initialSubjectId: 'math');
+      await openMathDirectory(tester);
         final fields = find.byType(TextField);
         // “模拟卷”只在政治科 f5 里，数学科没有——整科判重只看本科。
         await tester.enterText(fields.at(1), '模拟卷');
@@ -830,13 +957,14 @@ void main() {
       testWidgets('改名：改成别层级已有的名字拦下', (tester) async {
         final repo = threeSubjectRepo();
         await pumpWrongbook(tester, repo: repo, initialSubjectId: 'math');
+      await openMathDirectory(tester);
         // 第二个“改名”是顶层 f2“平时作业”的；改成子文件夹 f1s 已有的名字。
         await tester.tap(find.text('改名').at(1));
         await tester.pumpAndSettle();
         await tester.enterText(find.byType(TextField).last, '期中试卷');
         await tester.tap(find.text('保存'));
         await tester.pumpAndSettle();
-        expect(find.text('已经有了'), findsOneWidget);
+        expect(find.text('已经有了这个文件夹'), findsOneWidget);
         expect(
           repo.savedFolders.any((f) => f.id == 'f2' && f.name == '期中试卷'),
           isFalse,
@@ -855,6 +983,7 @@ void main() {
           ),
         );
         await pumpWrongbook(tester, repo: repo, initialSubjectId: 'math');
+      await openMathDirectory(tester);
         await tester.tap(find.text('选择文件夹'));
         await tester.pumpAndSettle();
         await tester.tap(find.text('期中试卷'));
@@ -878,18 +1007,20 @@ void main() {
         final repo = threeSubjectRepo();
         repo.saveFolderError = StateError('已经有了：同一学科下已有同名文件夹“全新名”');
         await pumpWrongbook(tester, repo: repo, initialSubjectId: 'math');
+      await openMathDirectory(tester);
         final fields = find.byType(TextField);
         // 预检放行（全新名），保存时防线抛错——页内须捕获转提示、不崩页。
         await tester.enterText(fields.at(1), '全新名');
         await tester.tap(find.text('加文件夹'));
         await tester.pumpAndSettle();
-        expect(find.text('已经有了'), findsOneWidget);
+        expect(find.text('已经有了这个文件夹'), findsOneWidget);
       });
     });
 
     testWidgets('删除确认文案带数：只在该文件夹的题 + 子文件夹一起删', (tester) async {
       final repo = threeSubjectRepo();
       await pumpWrongbook(tester, repo: repo, initialSubjectId: 'math');
+      await openMathDirectory(tester);
       await tester.tap(find.text('删除').first);
       await tester.pumpAndSettle();
       expect(find.textContaining('会删掉其中 4 道题（只在这个文件夹里的）'), findsOneWidget);
@@ -903,6 +1034,7 @@ void main() {
     testWidgets('选择模式：点行勾选不进列表；移动禁则拦下带子文件夹的一级文件夹', (tester) async {
       final repo = threeSubjectRepo();
       await pumpWrongbook(tester, repo: repo, initialSubjectId: 'math');
+      await openMathDirectory(tester);
       await tester.tap(find.text('选择文件夹'));
       await tester.pumpAndSettle();
       expect(find.text('已选 0 个文件夹'), findsOneWidget);
@@ -927,17 +1059,21 @@ void main() {
 
     testWidgets('选择模式：点「全部题目」仍进列表（与 HTML 一致，全部题目不可选）', (tester) async {
       await pumpWrongbook(tester, initialSubjectId: 'math');
+      await openMathDirectory(tester);
       await tester.tap(find.text('选择文件夹'));
       await tester.pumpAndSettle();
       await tester.tap(find.text('全部题目'));
       await tester.pumpAndSettle();
-      // 全部题目不参与勾选，点它仍进列表（数学已整理 3 道进大卡片）。
-      expect(find.byType(QuestionSlice), findsNWidgets(3));
+      // 全部题目不参与勾选，点它仍进列表（数学已整理 3 道，板子行）。
+      expect(boardRow('函数极限'), findsOneWidget);
+      expect(boardRow('导数综合'), findsOneWidget);
+      expect(boardRow('定积分'), findsOneWidget);
     });
 
     testWidgets('选择模式：子文件夹可移回顶层', (tester) async {
       final repo = threeSubjectRepo();
       await pumpWrongbook(tester, repo: repo, initialSubjectId: 'math');
+      await openMathDirectory(tester);
       await tester.tap(find.text('▸'));
       await tester.pumpAndSettle();
       await tester.tap(find.text('选择文件夹'));
@@ -956,6 +1092,7 @@ void main() {
 
     testWidgets('SR2-7：A 科选了移动目标，进 B 科开移动条不断言、回落到顶层', (tester) async {
       await pumpWrongbook(tester, initialSubjectId: 'math');
+      await openMathDirectory(tester);
       await tester.tap(find.text('选择文件夹'));
       await tester.pumpAndSettle();
       // 数学顶层目标选「平时作业」（f2，另一科没有这个 id）。
@@ -985,6 +1122,7 @@ void main() {
     testWidgets('SR2-7：选定移动目标后删掉它，移动条不断言、回落到顶层', (tester) async {
       final repo = threeSubjectRepo();
       await pumpWrongbook(tester, repo: repo, initialSubjectId: 'math');
+      await openMathDirectory(tester);
       await tester.tap(find.text('选择文件夹'));
       await tester.pumpAndSettle();
       await tester.tap(find.byType(DropdownButton<String>));
@@ -1011,81 +1149,94 @@ void main() {
   });
 
   group('列表页', () {
-    testWidgets('书头 + 副标题 + 目录/合上；默认隐藏已掌握', (tester) async {
+    testWidgets('结果头＋无页头；默认隐藏已掌握', (tester) async {
       await pumpWrongbook(tester);
       await openMathListCompact(tester);
-      expect(find.text('数学 · 错题本'), findsOneWidget);
-      expect(
-        find.text('这一科的题目列表，点一道题进题目详情；筛选里没有文件夹，文件夹在目录页选。'),
-        findsOneWidget,
-      );
-      expect(find.text('← 目录'), findsOneWidget);
-      expect(find.text('合上 ✕'), findsOneWidget);
-      expect(find.text('函数极限'), findsOneWidget);
-      expect(find.text('导数综合'), findsOneWidget);
-      expect(find.text('定积分'), findsOneWidget);
+      // 十九批收尾：L1 页头（标题＋←目录／合上 ✕）已删（板子 §1.1），
+      // 页面从大搜索框开始；回书架走筛选面板顶部入口。
+      expect(find.text('数学 · 错题本'), findsNothing);
+      expect(find.text('← 目录'), findsNothing);
+      expect(find.text('合上 ✕'), findsNothing);
+      expect(find.byKey(const ValueKey('big-search')), findsOneWidget);
+      // 十九批 A1：旧副标题文案随工具栏一起拆了；结果头是
+      //「全部题目」+ 计数「共 3 道 · 按收集时间 新 → 旧」。
+      expect(find.text('全部题目'), findsOneWidget);
+      expect(find.text('共 3 道 · 按收集时间 新 → 旧'), findsOneWidget);
+      expect(boardRow('函数极限'), findsOneWidget);
+      expect(boardRow('导数综合'), findsOneWidget);
+      expect(boardRow('定积分'), findsOneWidget);
       // q7 已掌握，默认不显示。
-      expect(find.text('极限已掌握'), findsNothing);
+      expect(boardRow('极限已掌握'), findsNothing);
       // 隐藏提示行。
       expect(find.textContaining('错因已全部解决 1 道默认不显示'), findsOneWidget);
-      // 合上回书架。
-      await tester.tap(find.text('合上 ✕'));
-      await tester.pumpAndSettle();
+      // 筛选面板书架入口回书架。
+      await openShelfFromList(tester);
       expect(find.text('一科一本错题本，点一本打开看这一科的错题。'), findsOneWidget);
     });
 
-    testWidgets('大卡片：一题一行整题切片，无题名/学科/错误类型/标签/收藏星', (tester) async {
+    // 十九批 A1：大卡片 / 紧凑列表视图切换去掉，只剩板子一种行设计——
+    // 标题 + meta 归属行 + 状态 pill，无整题切片、无收藏星、无序号圆盘。
+    testWidgets('板子行：标题 + meta 归属行 + 状态 pill，无切片/星标/序号', (tester) async {
       await pumpWrongbook(tester);
       await openMathList(tester);
-      expect(find.byType(QuestionSlice), findsNWidgets(3));
-      expect(find.text('函数极限'), findsNothing);
-      expect(find.text('数学'), findsNothing);
-      expect(find.text('概念不清'), findsNothing);
-      expect(find.text('易错'), findsNothing);
+      expect(find.byType(QuestionSlice), findsNothing);
+      expect(boardRow('函数极限'), findsOneWidget);
+      expect(boardRow('导数综合'), findsOneWidget);
+      expect(boardRow('定积分'), findsOneWidget);
+      // 状态 pill：q1/q2 待解决，q3 解决中 · ✓1/2（cureChecks=2）。
+      expect(find.text('待解决'), findsNWidgets(2));
+      expect(find.text('解决中 · ✓1/2'), findsOneWidget);
       expect(find.text('★'), findsNothing);
       expect(find.text('☆'), findsNothing);
-      // 序号圆盘：本页 1、2、3。
-      expect(find.text('1'), findsOneWidget);
-      expect(find.text('2'), findsOneWidget);
-      expect(find.text('3'), findsOneWidget);
-      expect(find.text('共 3 道 · 第 1 / 1 页'), findsOneWidget);
+      // meta 行是 RichText：q1 的标签易错、q3 的错因计算错误各只一处。
+      expect(
+        find.textContaining('标签 易错', findRichText: true),
+        findsOneWidget,
+      );
+      expect(
+        find.textContaining('错因 计算错误', findRichText: true),
+        findsOneWidget,
+      );
+      expect(find.text('共 3 道 · 按收集时间 新 → 旧'), findsOneWidget);
+      expect(find.textContaining('第 1/1 页'), findsOneWidget);
     });
 
-    // B8-9：内部滚动容器已删除——>2 张卡也不再套固定高度 ListView，
-    // 整页只有一个 SingleChildScrollView，卡片全部建出来、随页滚动。
-    testWidgets('B8-9：>2 张卡也不用固定高度内部滚动容器；≤2 张同样无 ListView', (tester) async {
+    // B8-9：内部滚动容器已删除——>2 行也不再套固定高度 ListView，
+    // 整页只有一个 SingleChildScrollView，行全部建出来、随页滚动。
+    testWidgets('B8-9：>2 行也不用固定高度内部滚动容器；≤2 行同样无 ListView', (tester) async {
       await pumpWrongbook(tester);
       await openMathList(tester);
-      // 数学 3 张卡：无内部 ListView，3 张卡一次建齐。
+      // 数学 3 行：无内部 ListView，3 行一次建齐。
       expect(find.byType(ListView), findsNothing);
-      expect(find.byType(QuestionSlice), findsNWidgets(3));
-      // 英语 2 张卡：同样无内部 ListView。
-      await tester.tap(find.text('← 目录'));
-      await tester.pumpAndSettle();
-      await tester.tap(find.text('返回书架'));
-      await tester.pumpAndSettle();
+      expect(boardRow('函数极限'), findsOneWidget);
+      expect(boardRow('导数综合'), findsOneWidget);
+      expect(boardRow('定积分'), findsOneWidget);
+      // 英语 2 行：同样无内部 ListView。
+      // 十九批收尾：页头「← 目录」已删，回书架走筛选面板书架入口。
+      await openShelfFromList(tester);
       await tester.tap(find.text('英语'));
       await tester.pumpAndSettle();
       await tester.tap(find.text('全部题目'));
       await tester.pumpAndSettle();
       expect(find.byType(ListView), findsNothing);
-      expect(find.byType(QuestionSlice), findsNWidgets(2));
+      expect(boardRow('阅读主旨'), findsOneWidget);
+      expect(boardRow('图表作文'), findsOneWidget);
     });
 
     testWidgets('序号随排序重编号：时间新→旧首题 q1，旧→新首题 q2', (tester) async {
       Question? opened;
-      await pumpWrongbook(tester, onOpenDetail: (q, _) async => opened = q);
+      await pumpWrongbook(tester, onOpenDetail: (q, _, {String? searchContext}) async => opened = q);
       await openMathList(tester);
-      await tester.tap(find.byType(QuestionSlice).first);
+      await tester.tap(boardRow('函数极限'));
       await tester.pumpAndSettle();
       expect(opened?.id, 'q1');
       // 切旧→新。
       await tester.tap(find.byType(DropdownButton<String>));
       await tester.pumpAndSettle();
-      await tester.tap(find.text('排序：时间 旧 → 新').last);
+      await tester.tap(find.text('排序：时间旧 → 新').last);
       await tester.pumpAndSettle();
       opened = null;
-      await tester.tap(find.byType(QuestionSlice).first);
+      await tester.tap(boardRow('导数综合'));
       await tester.pumpAndSettle();
       expect(opened?.id, 'q2');
     });
@@ -1123,11 +1274,11 @@ void main() {
         tester,
         repo: repo,
         filterCause: '概念不清',
-        onOpenDetail: (q, _) async => opened = q,
+        onOpenDetail: (q, _, {String? searchContext}) async => opened = q,
       );
       // 若 _sort 仍是 'subject'，DropdownButton 在 build 时即断言失败。
       expect(find.text('排序：学科首字母 A → Z'), findsOneWidget);
-      await tester.tap(find.byType(QuestionSlice).first);
+      await tester.tap(boardRow('数学题'));
       await tester.pumpAndSettle();
       expect(opened?.id, 'qm');
     });
@@ -1159,66 +1310,107 @@ void main() {
         tester,
         repo: repo,
         filterCause: '概念不清',
-        onOpenDetail: (q, _) async => opened = q,
+        onOpenDetail: (q, _, {String? searchContext}) async => opened = q,
       );
-      expect(find.text('排序：时间 新 → 旧'), findsOneWidget);
-      await tester.tap(find.byType(QuestionSlice).first);
+      expect(find.text('排序：时间新 → 旧'), findsOneWidget);
+      await tester.tap(boardRow('英语题'));
       await tester.pumpAndSettle();
       expect(opened?.id, 'qe');
     });
 
-    testWidgets('紧凑列表：缩略图 + 题名 + 学科·错误类型·标签 + 错因 pill + 收藏星', (tester) async {
+    // 十九批 A1：紧凑列表已随视图切换去掉，板子行是唯一形态——
+    // 标题 + meta 归属行 + 状态 pill，无缩略图、无收藏星、无复查行。
+    testWidgets('板子行：题名 + meta 归属行 + 状态 pill，无缩略图/星标', (tester) async {
       await pumpWrongbook(tester);
       await openMathListCompact(tester);
-      expect(find.byType(CompactSliceThumb), findsNWidgets(3));
-      // 明细行是 RichText（学科名着学科色），textContaining 默认不匹配
-      // 独立 RichText，需 findRichText: true。
+      expect(find.byType(CompactSliceThumb), findsNothing);
+      expect(boardRow('函数极限'), findsOneWidget);
+      expect(boardRow('导数综合'), findsOneWidget);
+      expect(boardRow('定积分'), findsOneWidget);
+      // meta 行是 RichText：文件夹 / 错因 / 标签各取只出现一次的字段断言。
       expect(
-        find.textContaining('数学 · 错误类型：概念不清 · 标签：易错', findRichText: true),
+        find.textContaining('文件夹 平时作业', findRichText: true),
         findsOneWidget,
-      );
-      expect(find.text('概念不清·待解决'), findsOneWidget);
-      expect(find.text('计算错误·解决中'), findsOneWidget);
-      expect(find.text('★'), findsOneWidget); // q1 已收藏
-      expect(find.text('☆'), findsNWidgets(2));
-      expect(find.text('下次复查 —'), findsNWidgets(3)); // 无复查日期
+      ); // q2 独占 f2
+      expect(
+        find.textContaining('错因 计算错误', findRichText: true),
+        findsOneWidget,
+      ); // q3
+      expect(
+        find.textContaining('标签 易错', findRichText: true),
+        findsOneWidget,
+      ); // q1
+      expect(
+        find.textContaining('高等数学期末试卷', findRichText: true),
+        findsOneWidget,
+      ); // q1 的试卷
+      expect(find.text('待解决'), findsNWidgets(2)); // q1、q2
+      expect(find.text('解决中 · ✓1/2'), findsOneWidget); // q3
+      expect(find.text('★'), findsNothing); // q1 已收藏也不画星
+      expect(find.text('☆'), findsNothing);
     });
 
-    testWidgets('紧凑列表缩略图：亮色纸面 #FFFDF4、深色纸面 #D8DCE2，与大卡片一致', (tester) async {
+    testWidgets('归档行缩略图：亮色纸面 #FFFFFF、深色纸面 #D8DCE2，与大卡片一致', (tester) async {
       // S8A2（A2 项）：旧代码写死 Colors.white，深色下仍是纯白；
-      // 改后与 QuestionSlice 同取 palette.paper。
-      await pumpWrongbook(tester);
-      await openMathListCompact(tester);
-      expect(find.byType(CompactSliceThumb), findsNWidgets(3));
-      expect(_thumbPaperColor(tester), const Color(0xFFFFFDF4));
-      await pumpWrongbook(tester, brightness: Brightness.dark);
-      await openMathListCompact(tester);
+      // 改后与 QuestionSlice 同取 palette.paper。十九批 A1：L1 板子行
+      // 无缩略图，CompactSliceThumb 只剩归档行用，改到归档视图断言。
+      final repo = threeSubjectRepo();
+      await pumpWrongbook(tester, repo: repo, initialSubjectId: 'math');
+      await tester.tap(find.text('筛选 ▾'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('已归档'));
+      await tester.pumpAndSettle();
+      expect(find.byType(CompactSliceThumb), findsOneWidget);
+      expect(_thumbPaperColor(tester), const Color(0xFFFFFFFF));
+      await pumpWrongbook(
+        tester,
+        repo: repo,
+        brightness: Brightness.dark,
+        initialSubjectId: 'math',
+      );
+      await tester.tap(find.text('筛选 ▾'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('已归档'));
+      await tester.pumpAndSettle();
       expect(_thumbPaperColor(tester), const Color(0xFFD8DCE2));
     });
 
-    testWidgets('点紧凑行收藏星切换收藏', (tester) async {
+    // 十九批 A1：板子行无收藏星，收藏只在详情页切；行上只断言无星，
+    // 收藏过滤仍走「仅收藏」筛选（q1 已收藏、q2 未收藏）。
+    testWidgets('板子行无收藏星；仅收藏筛选仍按收藏过滤', (tester) async {
       final repo = threeSubjectRepo();
       await pumpWrongbook(tester, repo: repo);
       await openMathListCompact(tester);
-      await tester.tap(find.text('☆').last);
+      expect(find.text('★'), findsNothing);
+      expect(find.text('☆'), findsNothing);
+      await tester.tap(find.text('筛选 ▾'));
       await tester.pumpAndSettle();
-      expect(repo.toggledFavoriteIds, contains('q2'));
+      await tester.tap(find.text('仅收藏'));
+      await tester.pumpAndSettle();
+      expect(boardRow('函数极限'), findsOneWidget); // q1 已收藏
+      expect(boardRow('导数综合'), findsNothing); // q2 未收藏
+      expect(boardRow('定积分'), findsNothing);
     });
 
-    testWidgets('搜索只查元数据：搜题干词无匹配，搜标签/题名有匹配', (tester) async {
+    testWidgets('搜索查内容：搜题干词有匹配，搜标签/题名也有匹配（D-241）', (tester) async {
       await pumpWrongbook(tester);
       await openMathListCompact(tester);
-      // “单调”只在 q1/q2 的题干切片里，不在元数据里。
+      // 二十一批 D-241：内容搜索——“单调”在 q1/q2 的题干切片里，
+      // 旧“只查元数据”已废（Meng 2026-11-22 改为内容搜索）。
       await tester.enterText(find.byType(TextField).first, '单调');
       await tester.pumpAndSettle();
-      expect(find.text('没找到这道题，换个词试试'), findsOneWidget);
+      expect(boardRow('函数极限'), findsOneWidget);
+      expect(boardRow('导数综合'), findsOneWidget);
+      expect(boardRow('定积分'), findsNothing);
       await tester.enterText(find.byType(TextField).first, '易错');
       await tester.pumpAndSettle();
-      expect(plainText('函数极限'), findsOneWidget);
-      expect(find.text('导数综合'), findsNothing);
+      // 十九批 A1：标题是 RichText，plainText（只匹配 Text）永远
+      // 找不到，改用 boardRow。
+      expect(boardRow('函数极限'), findsOneWidget);
+      expect(boardRow('导数综合'), findsNothing);
       await tester.enterText(find.byType(TextField).first, '函数极限');
       await tester.pumpAndSettle();
-      expect(plainText('函数极限'), findsOneWidget);
+      expect(boardRowKey('q1'), findsOneWidget);
     });
 
     testWidgets('筛选面板无学科/文件夹下拉；四下拉 + 标签行 + 只看行', (tester) async {
@@ -1227,7 +1419,7 @@ void main() {
       await tester.tap(find.text('筛选 ▾'));
       await tester.pumpAndSettle();
       expect(find.text('试卷（来源）'), findsOneWidget);
-      expect(find.text('错误类型'), findsOneWidget);
+      expect(find.text('错因'), findsOneWidget);
       expect(find.text('收集时间'), findsOneWidget);
       expect(find.text('错因状态'), findsOneWidget);
       expect(find.text('标签'), findsOneWidget);
@@ -1251,15 +1443,16 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(find.text('方法不会').last);
       await tester.pumpAndSettle();
-      expect(find.text('导数综合'), findsOneWidget);
-      expect(find.text('函数极限'), findsNothing);
+      expect(boardRow('导数综合'), findsOneWidget);
+      expect(boardRow('函数极限'), findsNothing);
       // 按钮文案含箭头「筛选（已选 1） ▴」，用 textContaining 匹配。
       expect(find.textContaining('筛选（已选 1）'), findsOneWidget);
+      // 十九批 A1：「重置」挪到筛选面板「只看」行末尾，面板正开着可直接点。
       await tester.tap(find.text('重置'));
       await tester.pumpAndSettle();
-      expect(find.text('函数极限'), findsOneWidget);
-      expect(find.text('导数综合'), findsOneWidget);
-      expect(find.text('定积分'), findsOneWidget);
+      expect(boardRow('函数极限'), findsOneWidget);
+      expect(boardRow('导数综合'), findsOneWidget);
+      expect(boardRow('定积分'), findsOneWidget);
     });
 
     testWidgets('筛选：错因状态“已解决”才显示已掌握题', (tester) async {
@@ -1271,8 +1464,8 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(find.text('已解决').last);
       await tester.pumpAndSettle();
-      expect(find.text('极限已掌握'), findsOneWidget);
-      expect(find.text('函数极限'), findsNothing);
+      expect(boardRow('极限已掌握'), findsOneWidget);
+      expect(boardRow('函数极限'), findsNothing);
     });
 
     testWidgets('筛选：收集时间“最近一周”排除 10 天前的题', (tester) async {
@@ -1284,36 +1477,34 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(find.text('最近一周').last);
       await tester.pumpAndSettle();
-      expect(find.text('函数极限'), findsOneWidget);
-      expect(find.text('定积分'), findsOneWidget);
-      expect(find.text('导数综合'), findsNothing);
+      expect(boardRow('函数极限'), findsOneWidget);
+      expect(boardRow('定积分'), findsOneWidget);
+      expect(boardRow('导数综合'), findsNothing);
     });
 
     testWidgets('筛选：仅逾期只显示复查到期的题', (tester) async {
+      // 十九批 A5：initialSubjectId 直接落按学科筛选的列表，
+      // 不再经过目录页。
       await pumpWrongbook(tester, initialSubjectId: 'english');
-      await tester.tap(find.text('全部题目'));
-      await tester.pumpAndSettle();
-      await tester.tap(find.text('紧凑列表'));
-      await tester.pumpAndSettle();
       await tester.tap(find.text('筛选 ▾'));
       await tester.pumpAndSettle();
       await tester.tap(find.text('仅逾期'));
       await tester.pumpAndSettle();
-      expect(find.text('图表作文'), findsOneWidget);
-      expect(find.text('阅读主旨'), findsNothing);
+      expect(boardRow('图表作文'), findsOneWidget);
+      expect(boardRow('阅读主旨'), findsNothing);
     });
 
     testWidgets('本学科已归档视图：archbar + 恢复入口', (tester) async {
       final repo = threeSubjectRepo();
+      // 十九批 A5：initialSubjectId 直接落列表，不再经过目录页。
       await pumpWrongbook(tester, repo: repo, initialSubjectId: 'math');
-      await tester.tap(find.text('全部题目'));
-      await tester.pumpAndSettle();
       await tester.tap(find.text('筛选 ▾'));
       await tester.pumpAndSettle();
       await tester.tap(find.text('已归档'));
       await tester.pumpAndSettle();
       expect(find.textContaining('已归档 · 共 1 道'), findsOneWidget);
-      expect(find.text('旧题'), findsOneWidget);
+      // D-244：已归档行显示题干，不再显示标题。
+      expect(boardRow('旧题'), findsOneWidget);
       // HTML 归档条按钮文案就是「← 返回题目列表」。
       expect(find.text('← 返回题目列表'), findsOneWidget);
       await tester.tap(find.text('恢复到错题本'));
@@ -1321,7 +1512,7 @@ void main() {
       expect(repo.archivedChanges, contains(('q5', false)));
     });
 
-    testWidgets('FR-17：无学科的书内已归档视图标题是“已归档 · 错题本”', (tester) async {
+    testWidgets('FR-17：无学科的书内已归档视图无页头标题，不留悬空“ · ”', (tester) async {
       final repo = threeSubjectRepo();
       // D-50 深链路：只带错因筛选、不带学科，直达列表（subjectId 为 null）。
       await pumpWrongbook(tester, repo: repo, filterCause: '概念不清');
@@ -1330,8 +1521,13 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(find.text('已归档'));
       await tester.pumpAndSettle();
-      expect(find.text('已归档 · 错题本'), findsOneWidget);
+      // 十九批收尾：L1 页头已删（板子 §1.1），已归档视图不再以
+      // “已归档 · 错题本”为标题；归档条与返回入口仍在，证明视图正常渲染
+      // （归档条计数受当前错因筛选影响，不断言具体数字）。
+      expect(find.text('已归档 · 错题本'), findsNothing);
       expect(find.text(' · 错题本'), findsNothing);
+      expect(find.textContaining('已归档 · 共'), findsOneWidget);
+      expect(find.text('← 返回题目列表'), findsOneWidget);
     });
   });
 
@@ -1353,9 +1549,12 @@ void main() {
         counts: const {'math': (0, 0, 0)},
       );
       await pumpWrongbook(tester, repo: repo, initialSubjectId: 'math');
+      // 十九批 A5：initialSubjectId 落列表，进目录再点文件夹。
+      await openMathDirectory(tester);
       await tester.tap(find.text('空文件夹'));
       await tester.pumpAndSettle();
-      expect(find.text('数学 · 空文件夹'), findsOneWidget);
+      // 十九批收尾：页头已删，文件夹名不再以页头标题呈现。
+      expect(find.text('数学 · 空文件夹'), findsNothing);
       expect(find.text('这个文件夹还是空的'), findsOneWidget);
       expect(find.textContaining('去收集中心拍一道题'), findsOneWidget);
       expect(find.textContaining('去整理工作台'), findsOneWidget);
@@ -1391,6 +1590,8 @@ void main() {
         onGoCollect: () => wentCollect = true,
         onGoOrganize: () => wentOrganize = true,
       );
+      // 十九批 A5：initialSubjectId 落列表，进目录再点文件夹。
+      await openMathDirectory(tester);
       await tester.tap(find.text('空文件夹'));
       await tester.pumpAndSettle();
       expect(find.text('这个文件夹还是空的'), findsOneWidget);
@@ -1453,6 +1654,8 @@ void main() {
         counts: const {'math': (0, 0, 0)},
       );
       await pumpWrongbook(tester, repo: repo, initialSubjectId: 'math');
+      // 十九批 A5：initialSubjectId 落列表，进目录再点文件夹。
+      await openMathDirectory(tester);
       await tester.tap(find.text('试卷'));
       await tester.pumpAndSettle();
       expect(find.text('这里的题错因都已解决'), findsOneWidget);
@@ -1460,7 +1663,7 @@ void main() {
       expect(find.text('看看已解决的题'), findsOneWidget);
       await tester.tap(find.text('看看已解决的题'));
       await tester.pumpAndSettle();
-      expect(find.byType(QuestionSlice), findsOneWidget);
+      expect(boardRow('已掌握的题'), findsOneWidget);
     });
 
     testWidgets('定稿 A 也含空状态修复：文件夹为空文案一致', (tester) async {
@@ -1480,18 +1683,23 @@ void main() {
         counts: const {'math': (0, 0, 0)},
       );
       await pumpWrongbook(tester, repo: repo, initialSubjectId: 'math');
+      // 十九批 A5：initialSubjectId 落列表，进目录再点文件夹。
+      await openMathDirectory(tester);
       await tester.tap(find.text('空文件夹'));
       await tester.pumpAndSettle();
       expect(find.text('这个文件夹还是空的'), findsOneWidget);
       expect(find.text('没找到这道题，换个词试试'), findsNothing);
     });
 
-    testWidgets('定稿 A 列表能渲染：大卡片 3 张、序号圆盘、分页都在', (tester) async {
+    // 十九批 A1：大卡片与序号圆盘随视图切换一起去掉；板子行 3 行 + 分页。
+    testWidgets('定稿 A 列表能渲染：板子行 3 行、分页都在', (tester) async {
       await pumpWrongbook(tester);
       await openMathList(tester);
-      expect(find.byType(QuestionSlice), findsNWidgets(3));
-      expect(find.text('1'), findsOneWidget);
-      expect(find.text('共 3 道 · 第 1 / 1 页'), findsOneWidget);
+      expect(boardRow('函数极限'), findsOneWidget);
+      expect(boardRow('导数综合'), findsOneWidget);
+      expect(boardRow('定积分'), findsOneWidget);
+      expect(find.text('共 3 道 · 按收集时间 新 → 旧'), findsOneWidget);
+      expect(find.textContaining('第 1/1 页'), findsOneWidget);
       expect(find.byType(ListView), findsNothing);
     });
   });
@@ -1503,17 +1711,21 @@ void main() {
       await pumpWrongbook(
         tester,
         repo: repo,
-        onOpenDetail: (q, _) async {
+        onOpenDetail: (q, _, {String? searchContext}) async {
           opened = q;
           await repo.delete(q);
         },
       );
       await openMathList(tester);
-      expect(find.byType(QuestionSlice), findsNWidgets(3));
-      await tester.tap(find.byType(QuestionSlice).first);
+      expect(boardRow('函数极限'), findsOneWidget);
+      expect(boardRow('导数综合'), findsOneWidget);
+      expect(boardRow('定积分'), findsOneWidget);
+      await tester.tap(boardRow('函数极限'));
       await tester.pumpAndSettle();
       expect(opened?.id, 'q1');
-      expect(find.byType(QuestionSlice), findsNWidgets(2));
+      expect(boardRow('函数极限'), findsNothing);
+      expect(boardRow('导数综合'), findsOneWidget);
+      expect(boardRow('定积分'), findsOneWidget);
     });
 
     testWidgets('SR2-34：错误类型筛自定义错因，详情里删掉唯一带它的题，'
@@ -1533,7 +1745,7 @@ void main() {
       await pumpWrongbook(
         tester,
         repo: repo,
-        onOpenDetail: (q, _) async => repo.delete(q),
+        onOpenDetail: (q, _, {String? searchContext}) async => repo.delete(q),
       );
       await openMathListCompact(tester);
       await tester.tap(find.text('筛选 ▾'));
@@ -1544,11 +1756,11 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(find.text('粗心大意').last);
       await tester.pumpAndSettle();
-      expect(find.text('粗心大意题'), findsOneWidget);
-      expect(find.text('函数极限'), findsNothing);
+      expect(boardRow('粗心大意题'), findsOneWidget);
+      expect(boardRow('函数极限'), findsNothing);
       // 进详情删掉 q9 再返回：_load 后选项里已无“粗心大意”，
       // 未修时旧值会让 DropdownButton 断言。
-      await tester.tap(find.text('粗心大意题'));
+      await tester.tap(boardRow('粗心大意题'));
       await tester.pumpAndSettle();
       expect(repo.deletedIds, contains('q9'));
       expect(
@@ -1559,53 +1771,63 @@ void main() {
             .value,
         isNull,
       );
-      expect(find.text('函数极限'), findsOneWidget);
-      expect(find.text('导数综合'), findsOneWidget);
+      expect(boardRow('函数极限'), findsOneWidget);
+      expect(boardRow('导数综合'), findsOneWidget);
     });
 
-    testWidgets('紧凑列表：详情里改收藏，返回后星标出现', (tester) async {
+    // 十九批 A1：板子行无收藏星，改用「仅收藏」筛选验证返回刷新——
+    // 进详情前仅收藏只剩 q1，详情里把 q2 收藏后返回，仅收藏里出现 q2。
+    testWidgets('板子行：详情里改收藏，返回后仅收藏筛选里出现', (tester) async {
       final repo = threeSubjectRepo();
       Question? opened;
       await pumpWrongbook(
         tester,
         repo: repo,
-        onOpenDetail: (q, _) async {
+        onOpenDetail: (q, _, {String? searchContext}) async {
           opened = q;
           await repo.toggleFavorite(q);
         },
       );
       await openMathListCompact(tester);
-      expect(find.text('★'), findsOneWidget); // 只有 q1 已收藏
-      await tester.tap(find.text('导数综合'));
+      await tester.tap(find.text('筛选 ▾'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('仅收藏'));
+      await tester.pumpAndSettle();
+      expect(boardRow('函数极限'), findsOneWidget); // 只有 q1 已收藏
+      expect(boardRow('导数综合'), findsNothing);
+      await tester.tap(find.text('仅收藏')); // 先关掉筛选
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('筛选 ▴')); // 再合上面板，行回到可点位置
+      await tester.pumpAndSettle();
+      await tester.tap(boardRow('导数综合'));
       await tester.pumpAndSettle();
       expect(opened?.id, 'q2');
-      // 注意：_load 会把视图重置为设置里的默认视图（大卡片），这是
-      // _load 的既有行为（行内点星 _toggleFavorite 同样走 _load），
-      // 与本次修的“返回刷新”无关；切回紧凑列表再断言星标。
-      await tester.tap(find.text('紧凑列表'));
+      await tester.tap(find.text('筛选 ▾'));
       await tester.pumpAndSettle();
-      expect(find.text('★'), findsNWidgets(2));
-      expect(find.text('☆'), findsOneWidget);
+      await tester.tap(find.text('仅收藏'));
+      await tester.pumpAndSettle();
+      expect(boardRow('函数极限'), findsOneWidget);
+      expect(boardRow('导数综合'), findsOneWidget);
     });
 
     testWidgets('已归档行：详情里恢复归档，返回后该行消失', (tester) async {
       final repo = threeSubjectRepo();
+      // 十九批 A5：initialSubjectId 直接落列表，不再经过目录页。
       await pumpWrongbook(
         tester,
         repo: repo,
         initialSubjectId: 'math',
-        onOpenDetail: (q, _) async => repo.archive(q, archived: false),
+        onOpenDetail: (q, _, {String? searchContext}) async => repo.archive(q, archived: false),
       );
-      await tester.tap(find.text('全部题目'));
-      await tester.pumpAndSettle();
       await tester.tap(find.text('筛选 ▾'));
       await tester.pumpAndSettle();
       await tester.tap(find.text('已归档'));
       await tester.pumpAndSettle();
-      expect(find.text('旧题'), findsOneWidget);
-      await tester.tap(find.text('旧题'));
+      // D-244：已归档行显示题干（'题：已归档的旧题'），点行进详情恢复。
+      expect(boardRow('旧题'), findsOneWidget);
+      await tester.tap(boardRow('旧题'));
       await tester.pumpAndSettle();
-      expect(find.text('旧题'), findsNothing);
+      expect(boardRow('旧题'), findsNothing);
     });
   });
 
@@ -1673,51 +1895,47 @@ void main() {
   });
 
   group('分页', () {
-    testWidgets('12 道题：每页 10，第一页序号 1–10，第二页重编号为 1、2', (tester) async {
+    // 十九批 A1：序号圆盘与数字页码按钮随视图 / 分页改版一起去掉；
+    // 分页断言改为结果头计数 + 分页行「第 X/Y 页」+ 各页题名。
+    testWidgets('12 道题：每页 10，第一页数学题 0–9，第二页数学题 10–11', (tester) async {
       final repo = manyQuestionRepo();
       await pumpWrongbook(tester, repo: repo, initialSubjectId: 'math');
-      await tester.tap(find.text('全部题目'));
-      await tester.pumpAndSettle();
-      expect(find.text('共 12 道 · 第 1 / 2 页'), findsOneWidget);
-      // B8-9：卡片不再懒加载（Column 全量建出），'9' 不用滚到底就有；
-      // 序号按页重编号，第一页是 1–10；用 '9' 校验（'10' 会同时命中
-      // 每页下拉的显示值）。
-      expect(find.text('9'), findsOneWidget);
+      expect(find.text('共 12 道 · 按收集时间 新 → 旧'), findsOneWidget);
+      expect(find.textContaining('第 1/2 页'), findsOneWidget);
+      // B8-9：行不再懒加载（Column 全量建出），'数学题 9' 不用滚到底就有。
+      expect(boardRow('数学题 9'), findsOneWidget);
+      expect(boardRow('数学题 10'), findsNothing);
       await tester.ensureVisible(find.text('下一页'));
       await tester.pumpAndSettle();
       await tester.tap(find.text('下一页'));
       await tester.pumpAndSettle();
-      expect(find.text('共 12 道 · 第 2 / 2 页'), findsOneWidget);
-      expect(find.byType(QuestionSlice), findsNWidgets(2));
-      // 序号重编号：页码钮与序号圆盘各一份 '1'/'2'。
-      expect(find.text('1'), findsNWidgets(2));
-      expect(find.text('2'), findsNWidgets(2));
-      expect(find.text('12'), findsNothing);
+      expect(find.textContaining('第 2/2 页'), findsOneWidget);
+      expect(boardRow('数学题 10'), findsOneWidget);
+      expect(boardRow('数学题 11'), findsOneWidget);
+      expect(boardRow('数学题 9'), findsNothing);
     });
 
     testWidgets('每页数量可改 10/20/30/40/50', (tester) async {
       final repo = manyQuestionRepo();
       await pumpWrongbook(tester, repo: repo, initialSubjectId: 'math');
-      await tester.tap(find.text('全部题目'));
-      await tester.pumpAndSettle();
-      // B8-9：12 张大卡片随页排布，分页器在首屏外；先滚出来再点下拉。
+      // B8-9：12 行随页排布，分页器在首屏外；先滚出来再点下拉。
       await tester.ensureVisible(find.byType(DropdownButton<int>));
       await tester.pumpAndSettle();
       await tester.tap(find.byType(DropdownButton<int>));
       await tester.pumpAndSettle();
       await tester.tap(find.text('20').last);
       await tester.pumpAndSettle();
-      expect(find.text('共 12 道 · 第 1 / 1 页'), findsOneWidget);
-      // 12 道同在一页：第 12 张卡在页底部，用 dragUntilVisible
-      // 逐步滚到底（一次大 drag 在 12 张卡时不一定触底）。
+      expect(find.textContaining('第 1/1 页'), findsOneWidget);
+      // 12 道同在一页：第 12 行在页底部，用 dragUntilVisible
+      // 逐步滚到底（一次大 drag 在 12 行时不一定触底）。
       // B8-9：内部 ListView 已删，滚页面的 SingleChildScrollView。
       await tester.dragUntilVisible(
-        find.text('12'),
+        boardRow('数学题 11'),
         find.byType(SingleChildScrollView),
         const Offset(0, -300),
       );
       await tester.pumpAndSettle();
-      expect(find.text('12'), findsOneWidget);
+      expect(boardRow('数学题 11'), findsOneWidget);
     });
 
     testWidgets('S8A6 大库 54 道：五档页数与末页题数', (tester) async {
@@ -1743,11 +1961,9 @@ void main() {
         ],
         counts: const {'math': (0, 0, 0)},
       );
+      // 十九批 A1：紧凑列表已去掉，板子行标题就是题名（RichText），
+      // 可直接断言；不再经过目录页。
       await pumpWrongbook(tester, repo: repo, initialSubjectId: 'math');
-      await tester.tap(find.text('全部题目'));
-      await tester.pumpAndSettle();
-      await tester.tap(find.text('紧凑列表'));
-      await tester.pumpAndSettle();
       // 每档：每页数 → 总页数 / 末页首题 / 上一页首题（不在末页）。
       const cases = [
         (10, 6, '分页题 3', '分页题 4'),
@@ -1776,7 +1992,8 @@ void main() {
         await tester.pumpAndSettle();
         await tester.tap(item);
         await tester.pumpAndSettle();
-        expect(find.text('共 54 道 · 第 1 / $pages 页'), findsOneWidget);
+        expect(find.text('共 54 道 · 按收集时间 新 → 旧'), findsOneWidget);
+        expect(find.textContaining('第 1/$pages 页'), findsOneWidget);
         // 翻到末页：点 (pages - 1) 次下一页。
         for (var p = 1; p < pages; p++) {
           await tester.ensureVisible(find.text('下一页'));
@@ -1784,11 +2001,11 @@ void main() {
           await tester.tap(find.text('下一页'));
           await tester.pumpAndSettle();
         }
-        expect(find.text('共 54 道 · 第 $pages / $pages 页'), findsOneWidget);
+        expect(find.textContaining('第 $pages/$pages 页'), findsOneWidget);
         // 末页首题与最末题都在；上一页首题不在本页。
-        expect(find.text(first), findsOneWidget);
-        expect(find.text('分页题 0'), findsOneWidget);
-        expect(find.text(before), findsNothing);
+        expect(boardRow(first), findsOneWidget);
+        expect(boardRow('分页题 0'), findsOneWidget);
+        expect(boardRow(before), findsNothing);
       }
     });
   });
@@ -1797,37 +2014,36 @@ void main() {
     testWidgets('排序改成旧→新后进详情返回，仍是旧→新', (tester) async {
       await pumpWrongbook(tester);
       await openMathList(tester);
-      expect(find.text('排序：时间 新 → 旧'), findsOneWidget);
+      expect(find.text('排序：时间新 → 旧'), findsOneWidget);
       await tester.tap(find.byType(DropdownButton<String>));
       await tester.pumpAndSettle();
-      await tester.tap(find.text('排序：时间 旧 → 新').last);
+      await tester.tap(find.text('排序：时间旧 → 新').last);
       await tester.pumpAndSettle();
-      expect(find.text('排序：时间 旧 → 新'), findsOneWidget);
+      expect(find.text('排序：时间旧 → 新'), findsOneWidget);
       // 进详情再返回：行 onTap 里 onOpenDetail 之后会 await _load()，
       // 旧代码会在此把 _sort 弹回设置默认值（新→旧）。
-      await tester.tap(find.byType(QuestionSlice).first);
+      await tester.tap(boardRow('函数极限'));
       await tester.pumpAndSettle();
-      expect(find.text('排序：时间 旧 → 新'), findsOneWidget);
+      expect(find.text('排序：时间旧 → 新'), findsOneWidget);
     });
 
     testWidgets('每页改成 20 后进详情返回，仍是每页 20', (tester) async {
       final repo = manyQuestionRepo();
       await pumpWrongbook(tester, repo: repo, initialSubjectId: 'math');
-      await tester.tap(find.text('全部题目'));
-      await tester.pumpAndSettle();
-      expect(find.text('共 12 道 · 第 1 / 2 页'), findsOneWidget);
-      // B8-9：12 张大卡片随页排布，分页器在首屏外；先滚出来再点下拉。
+      expect(find.text('共 12 道 · 按收集时间 新 → 旧'), findsOneWidget);
+      expect(find.textContaining('第 1/2 页'), findsOneWidget);
+      // B8-9：12 行随页排布，分页器在首屏外；先滚出来再点下拉。
       await tester.ensureVisible(find.byType(DropdownButton<int>));
       await tester.pumpAndSettle();
       await tester.tap(find.byType(DropdownButton<int>));
       await tester.pumpAndSettle();
       await tester.tap(find.text('20').last);
       await tester.pumpAndSettle();
-      expect(find.text('共 12 道 · 第 1 / 1 页'), findsOneWidget);
+      expect(find.textContaining('第 1/1 页'), findsOneWidget);
       // 进详情再返回：_load() 旧代码会把 _pageSize 弹回设置默认值 10。
-      await tester.tap(find.byType(QuestionSlice).first);
+      await tester.tap(boardRow('数学题 0'));
       await tester.pumpAndSettle();
-      expect(find.text('共 12 道 · 第 1 / 1 页'), findsOneWidget);
+      expect(find.textContaining('第 1/1 页'), findsOneWidget);
     });
   });
 
@@ -1856,6 +2072,8 @@ void main() {
       for (final brightness in [Brightness.light, Brightness.dark]) {
         for (final scale in [1.0, 1.15, 1.3]) {
           await pumpWrongbook(tester, brightness: brightness, scale: scale);
+          // 十九批 A5：默认落点改 L1，进书架再断言。
+          await openShelfFromList(tester);
           expect(find.text('错题本'), findsOneWidget);
           expect(tester.takeException(), isNull);
         }
@@ -1871,9 +2089,10 @@ void main() {
             scale: scale,
             initialSubjectId: 'math',
           );
-          await tester.tap(find.text('全部题目'));
-          await tester.pumpAndSettle();
-          expect(find.byType(QuestionSlice), findsNWidgets(3));
+          // 十九批 A5：initialSubjectId 直接落列表。
+          expect(boardRow('函数极限'), findsOneWidget);
+          expect(boardRow('导数综合'), findsOneWidget);
+          expect(boardRow('定积分'), findsOneWidget);
           expect(tester.takeException(), isNull);
         }
       }
@@ -1888,6 +2107,8 @@ void main() {
             scale: scale,
             initialSubjectId: 'math',
           );
+          // 十九批 A5：initialSubjectId 落列表，进目录再展开。
+          await openMathDirectory(tester);
           await tester.tap(find.text('▸'));
           await tester.pumpAndSettle();
           expect(find.text('期中试卷'), findsOneWidget);
@@ -1990,9 +2211,9 @@ void main() {
         tester,
         repo: repo,
         filterCause: '概念不清',
-        onOpenDetail: (q, _) async => opened = q,
+        onOpenDetail: (q, _, {String? searchContext}) async => opened = q,
       );
-      await tester.tap(find.byType(QuestionSlice).first);
+      await tester.tap(boardRowKey('q-chem'));
       await tester.pumpAndSettle();
       expect(opened?.id, 'q-chem');
     });
@@ -2004,9 +2225,9 @@ void main() {
         tester,
         repo: repo,
         filterCause: '概念不清',
-        onOpenDetail: (q, _) async => opened = q,
+        onOpenDetail: (q, _, {String? searchContext}) async => opened = q,
       );
-      await tester.tap(find.byType(QuestionSlice).first);
+      await tester.tap(boardRowKey('q-pol'));
       await tester.pumpAndSettle();
       expect(opened?.id, 'q-pol');
     });
@@ -2048,9 +2269,9 @@ void main() {
         tester,
         repo: repo,
         filterCause: '概念不清',
-        onOpenDetail: (q, _) async => opened = q,
+        onOpenDetail: (q, _, {String? searchContext}) async => opened = q,
       );
-      await tester.tap(find.byType(QuestionSlice).first);
+      await tester.tap(boardRowKey('q-bio'));
       await tester.pumpAndSettle();
       expect(opened?.id, 'q-bio');
     });
@@ -2092,9 +2313,9 @@ void main() {
         tester,
         repo: repo,
         filterCause: '概念不清',
-        onOpenDetail: (q, _) async => opened = q,
+        onOpenDetail: (q, _, {String? searchContext}) async => opened = q,
       );
-      await tester.tap(find.byType(QuestionSlice).first);
+      await tester.tap(boardRowKey('q-math'));
       await tester.pumpAndSettle();
       expect(opened?.id, 'q-math');
     });
@@ -2130,23 +2351,28 @@ void main() {
         tester,
         repo: repo,
         filterCause: '概念不清',
-        onOpenDetail: (q, _) async => opened = q,
+        onOpenDetail: (q, _, {String? searchContext}) async => opened = q,
       );
-      await tester.tap(find.byType(QuestionSlice).first);
+      await tester.tap(boardRowKey('q-math'));
       await tester.pumpAndSettle();
       expect(opened?.id, 'q-math');
     });
 
-    testWidgets('SR-P2-38/53 文件夹列表标题带文件夹名；已掌握提示按当前文件夹计', (tester) async {
+    testWidgets('SR-P2-38/53 已掌握提示按当前文件夹计', (tester) async {
       await pumpWrongbook(tester, initialSubjectId: 'math');
+      // 十九批 A5：initialSubjectId 落 L1 列表，先进目录再点文件夹。
+      await openMathDirectory(tester);
       await tester.tap(find.text('试卷'));
       await tester.pumpAndSettle();
-      expect(find.text('数学 · 试卷'), findsOneWidget);
+      // 十九批收尾：页头已删，文件夹名不再以页头标题呈现；已掌握
+      // 提示仍按当前文件夹计。
+      expect(find.text('数学 · 试卷'), findsNothing);
       expect(find.textContaining('这个文件夹里错因已全部解决 1 道默认不显示'), findsOneWidget);
     });
 
     testWidgets('SR-P2-38 没有已掌握题的文件夹不显示提示', (tester) async {
       await pumpWrongbook(tester, initialSubjectId: 'math');
+      await openMathDirectory(tester);
       await tester.tap(find.text('平时作业'));
       await tester.pumpAndSettle();
       expect(find.textContaining('错因已全部解决'), findsNothing);
@@ -2194,7 +2420,7 @@ void main() {
       await pumpWrongbook(
         tester,
         repo: repo,
-        onOpenDetail: (q, _) async {
+        onOpenDetail: (q, _, {String? searchContext}) async {
           opened = q;
           await repo.delete(q);
         },
@@ -2205,7 +2431,7 @@ void main() {
       await tester.tap(find.text('全选当前结果'));
       await tester.pumpAndSettle();
       expect(find.text('已选 3 道'), findsOneWidget);
-      await tester.tap(find.byType(QuestionSlice).first);
+      await tester.tap(boardRowKey('q1'));
       await tester.pumpAndSettle();
       expect(opened?.id, 'q1');
       await tester.tap(find.text('批量收藏'));
@@ -2224,6 +2450,8 @@ void main() {
     testWidgets('SR-P2-42 拖拽调顺序：往下拖一格不动；拖到末尾换位', (tester) async {
       final repo = threeSubjectRepo();
       await pumpWrongbook(tester, repo: repo, initialSubjectId: 'math');
+      // 十九批 A5：initialSubjectId 落 L1 列表，拖拽在目录里做。
+      await openMathDirectory(tester);
       Folder lastSave(String id) =>
           repo.savedFolders.lastWhere((f) => f.id == id);
       // 拖“试卷”到它与“平时作业”之间的缝隙（gap1）：删前下标 1，
@@ -2246,6 +2474,7 @@ void main() {
         const Folder(id: 'f6', name: '模拟卷', subjectId: 'math', sortOrder: 20),
       );
       await pumpWrongbook(tester, repo: repo, initialSubjectId: 'math');
+      await openMathDirectory(tester);
       await tester.enterText(find.byType(TextField).first, '卷');
       await tester.pumpAndSettle();
       expect(find.text('平时作业'), findsNothing);
@@ -2260,6 +2489,7 @@ void main() {
     testWidgets('SR3-18 搜索文件夹时显示“不能调顺序”提示，清空后消失', (tester) async {
       final repo = threeSubjectRepo();
       await pumpWrongbook(tester, repo: repo, initialSubjectId: 'math');
+      await openMathDirectory(tester);
       expect(find.text('搜索时不能调顺序，先清空搜索'), findsNothing);
       await tester.enterText(find.byType(TextField).first, '卷');
       await tester.pumpAndSettle();
@@ -2274,8 +2504,10 @@ void main() {
       await openMathListCompact(tester);
       await tester.enterText(find.byType(TextField).first, '函数极限');
       await tester.pumpAndSettle();
-      expect(plainText('函数极限'), findsOneWidget);
-      expect(find.text('导数综合'), findsNothing);
+      // 十九批 A1：行标题是带命中高亮的 RichText；且搜后结果头标题
+      // 与搜索框里也含该词，boardRow 会命中 3 处，改按行 key 断言。
+      expect(boardRowKey('q1'), findsOneWidget);
+      expect(boardRow('导数综合'), findsNothing);
       // SR2-52：换科前再设一个筛选（错误类型“计算错误”），换科后它也
       // 要回到默认值“全部”，不只搜索清零。筛选与搜索无交集时列表为空。
       await tester.tap(find.text('筛选 ▾'));
@@ -2284,21 +2516,23 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(find.text('计算错误').last);
       await tester.pumpAndSettle();
-      // 用 plainText：find.text 也会命中搜索框自身的 EditableText，
-      // 而搜索框里本来就留着“函数极限”。
-      expect(plainText('函数极限'), findsNothing);
-      expect(plainText('定积分'), findsNothing);
-      await tester.tap(find.text('← 目录'));
-      await tester.pumpAndSettle();
-      await tester.tap(find.text('返回书架'));
-      await tester.pumpAndSettle();
+      // 搜索框里还留着“函数极限”，结果头标题也是
+      // 「「函数极限」的结果」——boardRow（textContaining）会同时
+      // 命中搜索框与结果头，改按行 key 断言行不在。
+      expect(boardRowKey('q1'), findsNothing);
+      expect(boardRowKey('q3'), findsNothing);
+      // 十九批收尾：页头「← 目录」已删，回书架走筛选面板书架入口。
+      await openShelfFromList(tester);
       await tester.tap(find.text('英语'));
       await tester.pumpAndSettle();
       await tester.tap(find.text('全部题目'));
       await tester.pumpAndSettle();
-      expect(find.text('阅读主旨'), findsOneWidget);
-      expect(find.text('图表作文'), findsOneWidget);
-      // 错误类型下拉回到“全部”（value 为 null），筛选面板仍开着可直接读值。
+      expect(boardRow('阅读主旨'), findsOneWidget);
+      expect(boardRow('图表作文'), findsOneWidget);
+      // 错误类型下拉回到“全部”（value 为 null）：换科导航关了面板
+      //（D-225），重开面板再读值。
+      await tester.tap(find.text('筛选 ▾'));
+      await tester.pumpAndSettle();
       expect(
         tester
             .widget<DropdownButton<String>>(
@@ -2333,18 +2567,15 @@ void main() {
         ],
       );
       await pumpWrongbook(tester, repo: repo, initialSubjectId: 'math');
-      await tester.tap(find.text('全部题目'));
-      await tester.pumpAndSettle();
-      await tester.tap(find.text('紧凑列表'));
-      await tester.pumpAndSettle();
+      // 十九批 A5：initialSubjectId 直接落 L1 列表（标题即行标题）。
       await tester.tap(find.text('筛选 ▾'));
       await tester.pumpAndSettle();
       await tester.tap(find.byType(DropdownButton<String>).at(3));
       await tester.pumpAndSettle();
       await tester.tap(find.text('最近一周').last);
       await tester.pumpAndSettle();
-      expect(find.text('六天前'), findsOneWidget);
-      expect(find.text('七天前'), findsNothing);
+      expect(boardRow('六天前'), findsOneWidget);
+      expect(boardRow('七天前'), findsNothing);
     });
 
     testWidgets('SR2-76 月筛选 “最近 30 天”：29 天前在内，30 天前在外', (tester) async {
@@ -2373,18 +2604,14 @@ void main() {
         ],
       );
       await pumpWrongbook(tester, repo: repo, initialSubjectId: 'math');
-      await tester.tap(find.text('全部题目'));
-      await tester.pumpAndSettle();
-      await tester.tap(find.text('紧凑列表'));
-      await tester.pumpAndSettle();
       await tester.tap(find.text('筛选 ▾'));
       await tester.pumpAndSettle();
       await tester.tap(find.byType(DropdownButton<String>).at(3));
       await tester.pumpAndSettle();
       await tester.tap(find.text('最近 30 天').last);
       await tester.pumpAndSettle();
-      expect(find.text('二十九天前'), findsOneWidget);
-      expect(find.text('三十天前'), findsNothing);
+      expect(boardRow('二十九天前'), findsOneWidget);
+      expect(boardRow('三十天前'), findsNothing);
     });
 
     testWidgets('SR-P2-45 日期搜索：补零与不补零两种写法都搜到', (tester) async {
@@ -2410,18 +2637,14 @@ void main() {
         ],
       );
       await pumpWrongbook(tester, repo: repo, initialSubjectId: 'math');
-      await tester.tap(find.text('全部题目'));
-      await tester.pumpAndSettle();
-      await tester.tap(find.text('紧凑列表'));
-      await tester.pumpAndSettle();
       await tester.enterText(find.byType(TextField).first, '2026-11-05');
       await tester.pumpAndSettle();
-      expect(find.text('指定日期题'), findsOneWidget);
-      expect(find.text('六天前'), findsNothing);
+      expect(boardRow('指定日期题'), findsOneWidget);
+      expect(boardRow('六天前'), findsNothing);
       await tester.enterText(find.byType(TextField).first, '2026-11-5');
       await tester.pumpAndSettle();
-      expect(find.text('指定日期题'), findsOneWidget);
-      expect(find.text('六天前'), findsNothing);
+      expect(boardRow('指定日期题'), findsOneWidget);
+      expect(boardRow('六天前'), findsNothing);
     });
 
     testWidgets('SR-P2-46 书架顶部跨学科已归档视图分页：12 道两页', (tester) async {
@@ -2443,16 +2666,19 @@ void main() {
         ],
       );
       await pumpWrongbook(tester, repo: repo);
+      // 十九批 A5：默认落点改 L1，已归档入口在书架顶部。
+      await openShelfFromList(tester);
       expect(find.text('已归档（12）'), findsOneWidget);
       await tester.tap(find.text('已归档（12）'));
       await tester.pumpAndSettle();
-      expect(find.text('共 12 道 · 第 1 / 2 页'), findsOneWidget);
+      expect(find.text('12 道题'), findsOneWidget);
+      expect(find.textContaining('第 1/2 页'), findsOneWidget);
       expect(find.text('恢复到错题本'), findsNWidgets(10));
       await tester.ensureVisible(find.text('下一页'));
       await tester.pumpAndSettle();
       await tester.tap(find.text('下一页'));
       await tester.pumpAndSettle();
-      expect(find.text('共 12 道 · 第 2 / 2 页'), findsOneWidget);
+      expect(find.textContaining('第 2/2 页'), findsOneWidget);
       expect(find.text('恢复到错题本'), findsNWidgets(2));
     });
 
@@ -2462,16 +2688,13 @@ void main() {
       // 渲染按 clamp 回落到第 1 页（不是空白页）。
       final repo = manyQuestionRepo();
       await pumpWrongbook(tester, repo: repo, initialSubjectId: 'math');
-      await tester.tap(find.text('全部题目'));
-      await tester.pumpAndSettle();
-      await tester.tap(find.text('紧凑列表'));
-      await tester.pumpAndSettle();
-      expect(find.text('共 12 道 · 第 1 / 2 页'), findsOneWidget);
+      expect(find.text('共 12 道 · 按收集时间 新 → 旧'), findsOneWidget);
+      expect(find.textContaining('第 1/2 页'), findsOneWidget);
       await tester.ensureVisible(find.text('下一页'));
       await tester.pumpAndSettle();
       await tester.tap(find.text('下一页'));
       await tester.pumpAndSettle();
-      expect(find.text('共 12 道 · 第 2 / 2 页'), findsOneWidget);
+      expect(find.textContaining('第 2/2 页'), findsOneWidget);
       await tester.tap(find.text('批量操作'));
       await tester.pumpAndSettle();
       // 第 0 个 Checkbox 是批量条的全选框；每行只剩批量复选框
@@ -2483,27 +2706,27 @@ void main() {
       expect(find.text('已选 2 道'), findsOneWidget);
       await tester.tap(find.text('批量归档'));
       await tester.pumpAndSettle();
-      expect(find.text('共 10 道 · 第 1 / 1 页'), findsOneWidget);
+      expect(find.text('共 10 道 · 按收集时间 新 → 旧'), findsOneWidget);
+      expect(find.textContaining('第 1/1 页'), findsOneWidget);
       expect(repo.archivedChanges.length, 2);
     });
 
     testWidgets('SR2-76 每页条数切换后页码复位到第 1 页', (tester) async {
       final repo = manyQuestionRepo();
       await pumpWrongbook(tester, repo: repo, initialSubjectId: 'math');
-      await tester.tap(find.text('全部题目'));
-      await tester.pumpAndSettle();
-      expect(find.text('共 12 道 · 第 1 / 2 页'), findsOneWidget);
+      expect(find.text('共 12 道 · 按收集时间 新 → 旧'), findsOneWidget);
+      expect(find.textContaining('第 1/2 页'), findsOneWidget);
       await tester.ensureVisible(find.text('下一页'));
       await tester.pumpAndSettle();
       await tester.tap(find.text('下一页'));
       await tester.pumpAndSettle();
-      expect(find.text('共 12 道 · 第 2 / 2 页'), findsOneWidget);
+      expect(find.textContaining('第 2/2 页'), findsOneWidget);
       // 每页 10 → 20 条：只有 1 页了，页码回到第 1 页。
       await tester.tap(find.byType(DropdownButton<int>));
       await tester.pumpAndSettle();
       await tester.tap(find.text('20').last);
       await tester.pumpAndSettle();
-      expect(find.text('共 12 道 · 第 1 / 1 页'), findsOneWidget);
+      expect(find.textContaining('第 1/1 页'), findsOneWidget);
     });
 
     testWidgets('SR-P2-48 读库失败出错误横幅；重试失败仍在，成功后恢复', (tester) async {
@@ -2518,11 +2741,14 @@ void main() {
       repo.throwOnLoad = false;
       await tester.tap(find.text('重试'));
       await tester.pumpAndSettle();
-      expect(find.text('数学'), findsOneWidget);
+      // 十九批 A1：L1 上没有裸「数学」Text，行标题是 RichText。
+      expect(boardRow('函数极限'), findsOneWidget);
     });
 
     testWidgets('SR-P2-52 封面“错 题 本”字距跟全局字号缩放', (tester) async {
       await pumpWrongbook(tester, scale: 1.3);
+      // 十九批 A5：默认落点改 L1，封面在书架。
+      await openShelfFromList(tester);
       final w = tester.getSize(find.text('错 题 本').first).width;
       expect(w, greaterThan(185));
     });
@@ -2552,16 +2778,19 @@ void main() {
       repo.settingsValue = const AppSettings(wrongbookSort: 'old');
       await pumpWrongbook(tester, repo: repo);
       await openMathList(tester);
-      expect(find.text('排序：时间 旧 → 新'), findsOneWidget);
+      expect(find.text('排序：时间旧 → 新'), findsOneWidget);
+      // 十九批 A1：重置在筛选面板的只看行里，先开面板。
+      await tester.tap(find.text('筛选 ▾'));
+      await tester.pumpAndSettle();
       await tester.tap(find.text('重置'));
       await tester.pumpAndSettle();
-      expect(find.text('排序：时间 新 → 旧'), findsOneWidget);
+      expect(find.text('排序：时间新 → 旧'), findsOneWidget);
     });
   });
 
   group('D-50 报告深链路', () {
     testWidgets('学科 + 错因直达已筛选列表，不经过目录页', (tester) async {
-      // 大卡片默认视图不画题目标题，只画题干切片文字：用 sliceText 区分。
+      // 十九批 A1：板子行画题目标题（RichText），不再画题干切片文字。
       final repo = FakeWrongbookRepo(
         questions: [
           wbq('m1', '数学概念不清题', sliceText: '题：求极限', errorTypes: const ['概念不清']),
@@ -2584,12 +2813,13 @@ void main() {
         initialSubjectId: 'math',
         filterCause: '概念不清',
       );
-      // 直接落在列表页：页头是“← 目录”，不是目录页的“全部题目”行。
-      expect(find.text('← 目录'), findsOneWidget);
-      expect(find.text('全部题目'), findsNothing);
-      expect(find.text('题：求极限'), findsOneWidget);
-      expect(find.text('题：求导数'), findsNothing);
-      expect(find.text('题：英语词汇'), findsNothing);
+      // 直接落在列表页：无页头（十九批收尾，板子 §1.1）；结果头标题是
+      // 按错因筛选的「概念不清」的结果（不再是“全部题目”，A1 标题推导规则）。
+      expect(find.text('← 目录'), findsNothing);
+      expect(find.text('「概念不清」的结果'), findsOneWidget);
+      expect(boardRow('数学概念不清题'), findsOneWidget);
+      expect(boardRow('数学计算错误题'), findsNothing);
+      expect(boardRow('英语概念不清题'), findsNothing);
     });
 
     testWidgets('学科 + 知识点直达已筛选列表', (tester) async {
@@ -2631,9 +2861,10 @@ void main() {
         initialSubjectId: 'math',
         filterKnowledgePointId: 'kp-math-limit',
       );
-      expect(find.text('← 目录'), findsOneWidget);
-      expect(find.text('题：求极限'), findsOneWidget);
-      expect(find.text('题：求导数'), findsNothing);
+      // 十九批收尾：页头已删。
+      expect(find.text('← 目录'), findsNothing);
+      expect(boardRow('数学极限题'), findsOneWidget);
+      expect(boardRow('数学导数题'), findsNothing);
     });
 
     testWidgets('深链路列表返回目录，再进列表筛选已清', (tester) async {
@@ -2652,19 +2883,19 @@ void main() {
         initialSubjectId: 'math',
         filterCause: '概念不清',
       );
-      expect(find.text('题：求极限'), findsOneWidget);
-      expect(find.text('题：求导数'), findsNothing);
-      // 返回路径：列表页头“← 目录”回数学目录（D-50 定：不回报告，
-      // 应用无路由栈，目录是书内一致的返回落点；报告在左导航一跳可达）。
-      await tester.tap(find.text('← 目录'));
-      await tester.pumpAndSettle();
+      expect(boardRow('数学概念不清题'), findsOneWidget);
+      expect(boardRow('数学计算错误题'), findsNothing);
+      // 返回路径：十九批收尾，页头「← 目录」已删，回数学目录走
+      // 筛选面板→书架→数学（D-50 定：不回报告，应用无路由栈，
+      // 目录是书内一致的返回落点；报告在左导航一跳可达）。
+      await openMathDirectory(tester);
       expect(find.text('全部题目'), findsOneWidget);
-      expect(find.text('题：求极限'), findsNothing);
+      expect(boardRow('数学概念不清题'), findsNothing);
       // 从目录再进列表：SR-P2-44 清筛选，深链路是一次性入口，不残留。
       await tester.tap(find.text('全部题目'));
       await tester.pumpAndSettle();
-      expect(find.text('题：求极限'), findsOneWidget);
-      expect(find.text('题：求导数'), findsOneWidget);
+      expect(boardRow('数学概念不清题'), findsOneWidget);
+      expect(boardRow('数学计算错误题'), findsOneWidget);
     });
   });
 }

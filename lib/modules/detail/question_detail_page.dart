@@ -1,23 +1,29 @@
-// 题目详情（R7 重建，方案 2 分段折叠式）。
+// 题目详情（十九批 D1 相关侧栏式，板子 §2 一比一复刻）。
 //
-// HTML 视觉基准 `viewDetail`（交互原型，SHA256 18c8c434…35e1）：
-// - 工具栏：`← 返回{来源}` + `第 N / M 题 · 按{来源}当前的顺序` +
-//   右上角 编辑 / 保存 / 取消；标题 `学科 · 题型｜题名 ★`，星可点；
-// - 副标题：学科只读说明 + 错因汇总（每错因一个状态 pill）；已归档黄色横幅；
-// - 整题大图在上（点图放大、滚轮缩放，无第 2 层高亮框）；图加载失败时
-//   显示学科图标 + 题型文字占位 + 错误横幅；
-// - 三段折叠 答案解析 / 题目信息 / 复习记录，每次进入默认全部折叠；
-// - 答案解析默认藏在「看答案」后，空显示可点「待补充 · 点这里补」；
-// - 编辑模式保存才生效，取消有改动时内联问是否保存；学科不可改；
-//   答案/解析在「题目信息」的编辑表单里改；
-// - 底部操作：返回 / 收藏 / 归档（已归档时变「恢复」）/ 复制图片 /
-//   保存图片 / 导出带答案版（B11-8，与收藏/归档/删除并列）/ 上一题 /
-//   下一题 / 删除；删除用模态弹窗确认（B3：`删了就没了，确定吗？`），
-// - 本页没有任何「开始复习」按钮；复习记录区只留「加入复习 /
-//   取消加入复习」（未整理题没有）、各错因状态、解决次数与全部解决记录；
-//   旧的复习状态下拉与下次复习日期输入已删，不复活翻卡模型。
+// 布局（板子 §2.1）：返回行 → 标题行 → 两栏（左栏自适应＋右栏固定
+// 302px、间距 14px、右栏 sticky；≤900px 变单栏，右栏落左栏下方）。
+// 左栏：题目纸面（整题图＋原图兜底行）→ 识别题干区 → 按钮行（看答案／
+// 纠错／重新框选）→ 答案区（默认隐藏）→ 题目信息 panel → 复习记录
+// panel → 底部操作卡片（复制图片／保存图片／导出带答案版）。
+// 右栏：同错因／同知识点／同文件夹三组（取数见 DetailNotifier 的
+// _refreshRelated：现有 repo.all()＋内存筛选，不新开取数口）。
 //
-// 颜色只取 DesignTokens；文字符号（D3），不用图标字体；
+// 保留清单（板子 §4.1，8 条全在）：题目渲染（公式走现版切片渲染、
+// 原图兜底行保留）、纠错入口、答案解析（默认隐藏）、题目信息
+// （学科固定、文件夹必填、知识点、错因、标签、备注、来源）、
+// 复习记录（按错因的状态、自查记录、复查时间）、加入/取消加入复习、
+// 收藏/归档/删除、上一题/下一题（已移页顶返回行）。
+//
+// 行为沿用现版，不改流程：编辑表单与底稿过期保护（stale＋SaveToken）、
+// 脏检查、纠错流程、重新框选流程、DataChangeBus 守门（R12：纠错编辑器
+// 开着时绝不 load()）、删除后切题／退出（B24）、最近查看只记一次
+// （B29）。题目信息与复习记录 panel 默认展开，仍可点标题折叠；
+// 编辑入口在题目信息 panel 底部，编辑态时标题行右侧显示保存／取消
+// 代替归档／删除。
+//
+// 颜色只取 DesignTokens；D1 板子色值（页面背景 #F7FAFD、卡片白底、
+// 纸面 #FFFFFF、答案区 #F2F8F0 等）浅色下按板子 §3，深色下回落
+// 到 DesignTokens；文字符号（D3），不用图标字体；
 // 三档缩放 1.00/1.15/1.30 由 app.dart TextScaler + qmScaleOf 统一做。
 import 'dart:async';
 import 'dart:io';
@@ -42,6 +48,7 @@ import '../../services/yolo_onnx_service.dart';
 import '../../state/detail_notifier.dart';
 import '../../state/repository_provider.dart';
 import '../../theme/design_tokens.dart';
+import '../../widgets/entrance_animation.dart';
 import '../../widgets/question_share_card.dart';
 import '../../widgets/uikit.dart';
 import '../../widgets/widgets.dart';
@@ -54,6 +61,9 @@ import '../collect/collect_page.dart';
 /// 三段头上各加一行摘要、底部操作收进卡片。
 /// 不改行为：三段默认折叠、答案藏在「看答案」后、学科不可改、
 /// 编辑/收藏/归档/删除/上下题与加入复习逻辑原样。
+/// 十九批 D1：A 的单栏布局已由两栏相关侧栏式取代（见文件头注释）；
+/// 标题旁学科图标章、底部操作卡片保留，信息条与三段摘要已随 D1 撤下
+///（内容进题目信息 / 复习记录 panel）。
 
 /// 表单字段（HTML `.form-grid` 的一格）：label 12.5px/700 ink-2，
 /// 值 14.5px；[hint] 是字段下的补充说明（`.ph` 12.5px muted）。
@@ -66,6 +76,19 @@ class _Field {
   final String? hint;
 }
 
+/// 十九批 D1：右栏「全部 ›」/「打开列表 ›」跳搜索结果的回调
+///（与 app.dart `_goWrongbookFiltered` 同款具名参数，另加 `folderId`：
+/// 同文件夹入口用）。可选：不传时点跳转入口退回底层搜索结果
+///（见 `_openCauseSearch` / `_openFolderSearch` 的回落）；
+/// app.dart 接线后走带筛选的搜索结果。
+typedef OpenWrongbookFiltered =
+    void Function({
+      String? subjectId,
+      String? cause,
+      String? knowledgePointId,
+      String? folderId,
+    });
+
 class QuestionDetailPage extends StatefulWidget {
   const QuestionDetailPage({
     super.key,
@@ -73,9 +96,11 @@ class QuestionDetailPage extends StatefulWidget {
     required this.questionId,
     required this.orderIds,
     this.sourceLabel = '错题本',
+    this.searchContext,
     this.imageFailed = false,
     this.exportService,
     this.onGoReview,
+    this.onOpenWrongbookFiltered,
   });
 
   final QuestionRepository repo;
@@ -86,6 +111,13 @@ class QuestionDetailPage extends StatefulWidget {
   /// 返回按钮与「第 N / M 题 · 按{来源}当前的顺序」用它；app.dart
   /// 按调用页传入，默认错题本。
   final String sourceLabel;
+
+  /// 十九批 D1（A/B 工人契约）：从哪条查询来的描述（A 工人在列表行
+  /// 点按处按当前筛选拼出，非空部分用 ` · ` 连接，全空则为 `全部题目`），
+  /// 如 `数学 · 概念不清 · 未解决`。非 null 时返回行显示
+  /// `‹ 返回搜索结果（{searchContext}，第 N/M 道）`；为 null 时沿用
+  /// 现版 `返回{sourceLabel}` 文案。
+  final String? searchContext;
 
   /// 图加载失败占位开关：应用内暂无真实图片通道，默认 false；
   /// 只供 widget 测试与截图对照验证失败占位（与 R5/R6 同款做法）。
@@ -99,6 +131,10 @@ class QuestionDetailPage extends StatefulWidget {
   /// _goReview，与首页/整理/报告页同款 onGoReview）。可选：不传时
   /// 不显示按钮（旧测试构造不传，保持兼容）。
   final VoidCallback? onGoReview;
+
+  /// 十九批 D1：右栏「全部 ›」/「打开列表 ›」跳搜索结果的回调
+  ///（app.dart 接 _goWrongbookFiltered；见 [OpenWrongbookFiltered]）。
+  final OpenWrongbookFiltered? onOpenWrongbookFiltered;
 
   @override
   @override
@@ -132,9 +168,11 @@ class _QuestionDetailPageState extends State<QuestionDetailPage> {
       ],
       child: _DetailView(
         sourceLabel: widget.sourceLabel,
+        searchContext: widget.searchContext,
         imageFailed: widget.imageFailed,
         exportService: _exportService,
         onGoReview: widget.onGoReview,
+        onOpenWrongbookFiltered: widget.onOpenWrongbookFiltered,
       ),
     );
   }
@@ -144,15 +182,19 @@ class _QuestionDetailPageState extends State<QuestionDetailPage> {
 class _DetailView extends ConsumerStatefulWidget {
   const _DetailView({
     required this.sourceLabel,
+    this.searchContext,
     required this.imageFailed,
     required this.exportService,
     this.onGoReview,
+    this.onOpenWrongbookFiltered,
   });
 
   final String sourceLabel;
+  final String? searchContext;
   final bool imageFailed;
   final QuestionExportService exportService;
   final VoidCallback? onGoReview;
+  final OpenWrongbookFiltered? onOpenWrongbookFiltered;
 
   @override
   ConsumerState<_DetailView> createState() => _DetailViewState();
@@ -184,7 +226,14 @@ class _DetailViewState extends ConsumerState<_DetailView> {
 
   // B3：删除确认已改模态弹窗（见 [_askDelete]），不再用内联确认框。
 
-  final Set<String> _expanded = {};
+  /// 十九批 D1：题目信息与复习记录 panel 默认展开（板子直接展示内容），
+  /// 仍可点标题折叠；答案区不走折叠段，由按钮行「看答案」控制显隐。
+  final Set<String> _expanded = {'info', 'review'};
+
+  /// 十九批 D1：纠错区（OcrStemSection）的定位键——按钮行「纠错
+  /// （改识别文字）」点后把纠错区滚到可见（OcrStemSection 自带
+  /// 「编辑题干」入口，本页不另开编辑器，只换位置）。
+  final _stemSectionKey = GlobalKey();
 
   final _titleCtrl = TextEditingController();
   final _answerCtrl = TextEditingController();
@@ -403,7 +452,7 @@ class _DetailViewState extends ConsumerState<_DetailView> {
       _editing = true;
       _dirty = false;
       _cancelAsk = false;
-      _expanded.addAll(['answer', 'info', 'review']);
+      _expanded.addAll(['info', 'review']);
     });
     if (focusField != null) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -643,11 +692,11 @@ class _DetailViewState extends ConsumerState<_DetailView> {
         st.editBase != null ? st.editQuestionType : st.question?.questionType;
     final message = switch (code) {
       'updated' => '已重新分类为${questionTypeDisplay(newType)}',
-      'unchanged' => '仍无法自动定型，请人工指定',
+      'unchanged' => '仍无法自动分类，请人工指定',
       'manual' => '题型为人工指定，不自动分类',
       'no_raw' => '本题还没有识别结果，无法分类',
       'save_failed' => '保存失败，请重试',
-      _ => '仍无法自动定型，请人工指定',
+      _ => '仍无法自动分类，请人工指定',
     };
     _snack(message);
   }
@@ -703,7 +752,7 @@ class _DetailViewState extends ConsumerState<_DetailView> {
       case ReworkOutcome.sliceUnavailable:
         _snack('切片写不进去：数据目录不可用');
       case ReworkOutcome.tmpWriteFailed:
-        _snack('重新框选失败：切片写不进去');
+        _snack('重新框选失败：切片写不进去，请重试，请重试，请重试，请重试');
       case ReworkOutcome.saveFailed:
         _snack('重新框选失败：保存失败，请重试');
       case ReworkOutcome.renameFailed:
@@ -811,7 +860,9 @@ class _DetailViewState extends ConsumerState<_DetailView> {
       if (!mounted) return;
       setState(() {
         _answerVisible = false;
-        _expanded.clear();
+        _expanded
+          ..clear()
+          ..addAll(['info', 'review']);
         _editing = false;
         _dirty = false;
       });
@@ -826,7 +877,9 @@ class _DetailViewState extends ConsumerState<_DetailView> {
       _dirty = false;
       _answerVisible = false;
       _cancelAsk = false;
-      _expanded.clear();
+      _expanded
+        ..clear()
+        ..addAll(['info', 'review']);
     });
     _notifier.goTo(id);
   }
@@ -835,7 +888,7 @@ class _DetailViewState extends ConsumerState<_DetailView> {
     if (_st.question == null) return;
     final ok = await _notifier.toggleReviewJoined();
     if (!ok) {
-      _snack('先补错误类型');
+      _snack('先补错因');
       return;
     }
   }
@@ -1008,7 +1061,7 @@ class _DetailViewState extends ConsumerState<_DetailView> {
     }
     final id = await _notifier.submitNewFolder(name, parentId);
     if (id == null) {
-      if (mounted) _snack('已经有了');
+      if (mounted) _snack('已经有了这个文件夹');
       return;
     }
     _markDirty();
@@ -1082,7 +1135,7 @@ class _DetailViewState extends ConsumerState<_DetailView> {
   }
 
   Future<void> _newCustomErrorType() async {
-    final name = await _askText('自定义错误类型');
+    final name = await _askText('自定义错因');
     if (name == null) return;
     // §6 第 4 条：自定义错因名禁逗号与竖线。
     if (hasBannedNameSeparator(name)) {
@@ -1093,7 +1146,7 @@ class _DetailViewState extends ConsumerState<_DetailView> {
     //（否则保存时被 customNew 滤掉、错因静默消失；整理页还会造成
     // allCauses 重复）。
     final wasFixed = _notifier.addCustomType(name);
-    if (wasFixed) _snack('“$name”是固定错误类型，已帮你选中');
+    if (wasFixed) _snack('“$name”是固定错因，已帮你选中');
     _markDirty();
   }
 
@@ -1118,18 +1171,17 @@ class _DetailViewState extends ConsumerState<_DetailView> {
         if (mounted) _syncFormFromState(ref.read(detailProvider));
       });
     }
-    final palette = DesignTokens.of(Theme.of(context).brightness);
     final scale = qmScaleOf(context);
     if (st.loading) {
       return Scaffold(
-        backgroundColor: palette.surface,
+        backgroundColor: _d1PageBg(),
         body: const Center(child: CircularProgressIndicator()),
       );
     }
     final q = st.question;
     if (q == null) {
       return Scaffold(
-        backgroundColor: palette.surface,
+        backgroundColor: _d1PageBg(),
         body: SingleChildScrollView(
           padding: DesignTokens.scaled(scale).contentPadding,
           child: const EmptyState(message: '这道题不存在了'),
@@ -1140,10 +1192,12 @@ class _DetailViewState extends ConsumerState<_DetailView> {
     final hasPrev = idx > 0;
     final hasNext = idx >= 0 && idx + 1 < _st.orderIds.length;
     final subject = st.subjectOf(q.subjectId);
-    // B8-7（A 紧凑）：内容宽 1160；P1-2：整题图按内容高度自适应、上限 460。
+    // 十九批 D1：内容宽 1160；P1-2：整题图按内容高度自适应、上限 460。
     const contentMaxWidth = 1160.0;
     const imageMaxHeight = 460.0;
-    return PopScope(
+    // 二十二批 D-247：详情页入场上移淡入。
+    return EntranceFadeSlide(
+        child: PopScope(
       canPop: false,
       onPopInvokedWithResult: (didPop, _) async {
         if (didPop) return;
@@ -1152,102 +1206,184 @@ class _DetailViewState extends ConsumerState<_DetailView> {
         }
       },
       child: Scaffold(
-        backgroundColor: palette.surface,
-        body: SingleChildScrollView(
-          padding: DesignTokens.scaled(scale).contentPadding,
-          child: Center(
-            child: ConstrainedBox(
-              constraints: BoxConstraints(maxWidth: contentMaxWidth * scale),
-              child: Column(
+        backgroundColor: _d1PageBg(),
+        body: LayoutBuilder(
+          builder: (context, constraints) {
+            // 板子 §2.1：≤900px 变单栏，右栏落左栏下方；宽屏右栏固定
+            // 302px、间距 14px；右栏自带滚动，滚动时不跟左栏走
+            //（sticky top 12px 的同款效果：右栏常驻可见）。
+            final wide = constraints.maxWidth > 900;
+            final leftChildren = _buildLeftColumn(st, q, imageMaxHeight);
+            final relatedPanels = _buildRelatedPanels(st);
+            final Widget body;
+            if (wide) {
+              body = Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  _buildToolbar(q, idx),
-                  SizedBox(height: 10 * scale),
-                  // B8-7（A 紧凑）：标题 + 两行副标题 + 信息条。
-                  _buildTitle(q, subject),
-                  SizedBox(height: 6 * scale),
-                  _buildSubtitle(q),
-                  // B8-7：信息条只读展示编辑前的值；编辑态不显示
-                  //（编辑中改文件夹/标签时条会过期，编辑表单里自有芯片）。
-                  if (!_editing) ...[
-                    SizedBox(height: 10 * scale),
-                    _buildMetaStrip(q),
-                  ],
-                  if (q.isArchived) ...[
-                    SizedBox(height: 12 * scale),
-                    const QmBanner(
-                      tone: QmBannerTone.warning,
-                      message: '这道题已归档：不在错题本列表里显示。点下方「恢复」可以回到错题本。',
-                    ),
-                  ],
-                  if (!_editing && _isEmptyText(q)) ...[
-                    SizedBox(height: 12 * scale),
-                    const QmBanner(
-                      tone: QmBannerTone.warning,
-                      message:
-                          '这道题还没有补充任何文字内容：答案、解析均显示「待补充」，点「待补充」或右上角「编辑」就能补。',
-                    ),
-                  ],
-                  if (widget.imageFailed) ...[
-                    SizedBox(height: 12 * scale),
-                    QmBanner(
-                      tone: QmBannerTone.error,
-                      message:
-                          '这道题的图片读取失败，下面按学科图标 + 题型显示占位，题目信息仍可查看与编辑。可返回${widget.sourceLabel}后重试，或重启应用。',
-                    ),
-                  ],
-                  SizedBox(height: 12 * scale),
-                  _buildImageBlock(q, imageMaxHeight),
-                  // 十三批 P1-2 任务 a：重框成功但 OCR 未入队时的横幅——
-                  // 框选结果已保留（题图与切片都是新的），只说明 OCR
-                  // 没排上，并给“重新入队”重试入口。不要让页面把
-                  // “已重新框选，切片已更新”等同于“OCR 已排队”。
-                  if (st.ocrEnqueueFailed) ...[
-                    SizedBox(height: 12 * scale),
-                    _ocrEnqueueFailedBanner(scale),
-                  ],
-                  SizedBox(height: 12 * scale),
-                  // 十三批 M5：识别题干区——在题目图下方，长期可用，
-                  // 与整理工作台共用同一套 [OcrStemSection]。
-                  // Key 按题 id：换题时编辑器收起、草稿不跨题。
-                  OcrStemSection(
-                    key: ValueKey('ocr-stem-${q.id}'),
-                    question: q,
-                    jobs: st.ocrJobs,
-                    hasApiKey: st.hasOcrApiKey,
-                    candidateStemOverride: _stemEditorQuestionId == q.id
-                        ? _candidateWhileEditing
-                        : null,
-                    onSaveEdited: _saveStemEdit,
-                    onAcceptCandidate: _acceptOcrCandidate,
-                    onDismissCandidate: _dismissOcrCandidate,
-                    onRerecognize: _rerecognizeStem,
-                    onCancelOcr: _cancelOcr,
-                    onDeleteFigure: _deleteFigure,
-                    onReorderFigure: _reorderFigure,
-                    onEditingChanged: (open) {
-                      setState(() {
-                        _stemEditorOpen = open;
-                        _stemEditorQuestionId = open ? q.id : null;
-                        if (!open) _candidateWhileEditing = null;
-                      });
-                    },
+                  _buildReturnRow(
+                    q,
+                    idx,
+                    hasPrev: hasPrev,
+                    hasNext: hasNext,
                   ),
+                  SizedBox(height: 10 * scale),
+                  _buildTitleRow(q, subject),
                   SizedBox(height: 12 * scale),
-                  _buildSection('answer', '答案解析', _buildAnswerSection(q)),
-                  SizedBox(height: 12 * scale),
-                  _buildSection('info', '题目信息', _buildInfoSection(q)),
-                  SizedBox(height: 12 * scale),
-                  _buildSection('review', '复习记录', _buildReviewSection(q)),
-                  _buildWorkActs(q, hasPrev: hasPrev, hasNext: hasNext),
-                  SizedBox(height: 8 * scale),
+                  Expanded(
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Expanded(
+                          child: SingleChildScrollView(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: leftChildren,
+                            ),
+                          ),
+                        ),
+                        if (relatedPanels.isNotEmpty) ...[
+                          SizedBox(width: 14 * scale),
+                          SizedBox(
+                            key: const Key('detail-right-302'),
+                            width: 302,
+                            child: SingleChildScrollView(
+                              child: Column(
+                                crossAxisAlignment:
+                                    CrossAxisAlignment.stretch,
+                                children: relatedPanels,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
                 ],
+              );
+            } else {
+              body = SingleChildScrollView(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    _buildReturnRow(
+                      q,
+                      idx,
+                      hasPrev: hasPrev,
+                      hasNext: hasNext,
+                    ),
+                    SizedBox(height: 10 * scale),
+                    _buildTitleRow(q, subject),
+                    SizedBox(height: 12 * scale),
+                    ...leftChildren,
+                    if (relatedPanels.isNotEmpty) ...[
+                      SizedBox(height: 12 * scale),
+                      ...relatedPanels,
+                    ],
+                  ],
+                ),
+              );
+            }
+            return Center(
+              child: ConstrainedBox(
+                constraints: BoxConstraints(
+                  maxWidth: contentMaxWidth * scale,
+                ),
+                child: Padding(
+                  padding: DesignTokens.scaled(scale).contentPadding,
+                  child: body,
+                ),
               ),
-            ),
-          ),
+            );
+          },
         ),
       ),
-    );
+    ));
+  }
+
+  /// 十九批 D1 左栏（自上而下）：横幅 → 题目纸面 → 重框入队失败横幅 →
+  /// 识别题干区 → 按钮行 → 答案区 → 题目信息 panel → 复习记录 panel →
+  /// 底部操作卡片。
+  List<Widget> _buildLeftColumn(
+    DetailState st,
+    Question q,
+    double imageMaxHeight,
+  ) {
+    final scale = qmScaleOf(context);
+    return [
+      if (q.isArchived) ...[
+        const QmBanner(
+          tone: QmBannerTone.warning,
+          message: '这道题已归档：不在错题本列表里显示。点标题行「恢复」可以回到错题本。',
+        ),
+        SizedBox(height: 12 * scale),
+      ],
+      if (!_editing && _isEmptyText(q)) ...[
+        const QmBanner(
+          tone: QmBannerTone.warning,
+          message:
+              '这道题还没有补充任何文字内容：答案、解析均显示「待补充」，点「待补充」或题目信息里的「编辑」就能补。',
+        ),
+        SizedBox(height: 12 * scale),
+      ],
+      if (widget.imageFailed) ...[
+        QmBanner(
+          tone: QmBannerTone.error,
+          message:
+              '这道题的图片读取失败，下面按学科图标 + 题型显示占位，题目信息仍可查看与编辑。可返回${widget.sourceLabel}后重试，或重启应用。',
+        ),
+        SizedBox(height: 12 * scale),
+      ],
+      _buildPaper(q, imageMaxHeight),
+      // 十三批 P1-2 任务 a：重框成功但 OCR 未入队时的横幅——
+      // 框选结果已保留（题图与切片都是新的），只说明 OCR
+      // 没排上，并给“重新入队”重试入口。不要让页面把
+      // “已重新框选，切片已更新”等同于“OCR 已排队”。
+      if (st.ocrEnqueueFailed) ...[
+        SizedBox(height: 12 * scale),
+        _ocrEnqueueFailedBanner(scale),
+      ],
+      SizedBox(height: 12 * scale),
+      // 十三批 M5：识别题干区——在题目纸面正下方（按钮行之上），
+      // 长期可用，与整理工作台共用同一套 [OcrStemSection]。
+      // Key 按题 id：换题时编辑器收起、草稿不跨题。
+      Container(
+        key: _stemSectionKey,
+        child: OcrStemSection(
+          key: ValueKey('ocr-stem-${q.id}'),
+          question: q,
+          jobs: st.ocrJobs,
+          hasApiKey: st.hasOcrApiKey,
+          candidateStemOverride: _stemEditorQuestionId == q.id
+              ? _candidateWhileEditing
+              : null,
+          onSaveEdited: _saveStemEdit,
+          onAcceptCandidate: _acceptOcrCandidate,
+          onDismissCandidate: _dismissOcrCandidate,
+          onRerecognize: _rerecognizeStem,
+          onCancelOcr: _cancelOcr,
+          onDeleteFigure: _deleteFigure,
+          onReorderFigure: _reorderFigure,
+          onEditingChanged: (open) {
+            setState(() {
+              _stemEditorOpen = open;
+              _stemEditorQuestionId = open ? q.id : null;
+              if (!open) _candidateWhileEditing = null;
+            });
+          },
+        ),
+      ),
+      if (!_editing) ...[
+        SizedBox(height: 10 * scale),
+        _buildButtonRow(q),
+      ],
+      ..._answerArea(q),
+      SizedBox(height: 12 * scale),
+      _buildPanel('info', '题目信息', _buildInfoSection(q)),
+      SizedBox(height: 12 * scale),
+      _buildPanel('review', '复习记录', _buildReviewSection(q)),
+      _buildWorkActs(q),
+      SizedBox(height: 8 * scale),
+    ];
   }
 
   /// 十三批 P1-2 任务 a：重框入队失败横幅——“题目已更新，OCR 未入队”
@@ -1290,95 +1426,459 @@ class _DetailViewState extends ConsumerState<_DetailView> {
     );
   }
 
-  /// B8-7：整题图 + 图下提示。
+  // ---------- 十九批 D1：板子色值（浅色按板子 §3，深色回落到
+  // DesignTokens，避免浅色卡片在深色下不可读） ----------
+
+  AppPalette get _d1Palette =>
+      DesignTokens.of(Theme.of(context).brightness);
+
+  bool get _isDark => Theme.of(context).brightness == Brightness.dark;
+
+  /// 页面背景：板子 `--bg` #F7FAFD。
+  Color _d1PageBg() =>
+      _isDark ? _d1Palette.background : const Color(0xFFF7FAFD);
+
+  /// 卡片白底（板子 `--card` #FFFFFE）。
+  Color _d1CardBg() => _isDark ? _d1Palette.surface : Colors.white;
+
+  /// 卡片边框（板子 `--line` #E3E8F0）。
+  Color _d1CardLine() =>
+      _isDark ? _d1Palette.line : const Color(0xFFE3E8F0);
+
+  /// 题目纸面底：板子 `--paper` #FFFFFF（与 DesignTokens.paper
+  /// 浅色值一致）。
+  Color _d1PaperBg() => _d1Palette.paper;
+
+  /// 纸面边框（token paperLine）。
+  Color _d1PaperLine() => _d1Palette.paperLine;
+
+  /// 答案区底 #F2F8F0 / 边 #CBE5C4。
+  Color _d1AnswerBg() =>
+      _isDark ? _d1Palette.surface2 : const Color(0xFFF2F8F0);
+  Color _d1AnswerLine() =>
+      _isDark ? _d1Palette.line : const Color(0xFFCBE5C4);
+
+  /// 原图兜底行：底 #EFF4FA / 边 #DCE4EF / 字 #5F718E。
+  Color _d1FigNoteBg() =>
+      _isDark ? _d1Palette.surface2 : const Color(0xFFEFF4FA);
+  Color _d1FigNoteLine() =>
+      _isDark ? _d1Palette.line : const Color(0xFFDCE4EF);
+  Color _d1FigNoteInk() =>
+      _isDark ? _d1Palette.muted : const Color(0xFF5F718E);
+
+  /// 板子主色 #2E7CF6（链接 / 跳转文字）。
+  Color _d1Link() => _isDark ? _d1Palette.accent : const Color(0xFF2E7CF6);
+
+  /// 相关行悬停 #F1F5FA / 分隔线 #EEF2F7。
+  Color _d1HoverBg() =>
+      _isDark ? _d1Palette.surface2 : const Color(0xFFF1F5FA);
+  Color _d1RelDivider() =>
+      _isDark ? _d1Palette.line : const Color(0xFFEEF2F7);
+
+  /// 题目整体错因状态（与 Notifier 的 [overallCauseStatusLabel]
+  /// 同口径，转现版 [QmStatusPill.cause] 显示）。
+  QmCauseStatus _overallStatus(Question q) {
+    return switch (overallCauseStatusLabel(q, _st.records)) {
+      '待复查' => QmCauseStatus.recheck,
+      '已解决' => QmCauseStatus.solved,
+      '解决中' => QmCauseStatus.inProgress,
+      _ => QmCauseStatus.pending,
+    };
+  }
+
+  /// D1 panel（题目信息 / 复习记录 / 右栏三组共用样式）：
+  /// 白底、#E3E8F0 边、圆角 10px、内边距 14px；标题 14.5px 700。
+  /// [foldKey] 非空时标题可点折叠（左栏两 panel 用，右栏不用）。
+  Widget _buildPanelCard({
+    required Widget header,
+    required Widget body,
+    Key? key,
+  }) {
+    final scale = qmScaleOf(context);
+    return Container(
+      key: key,
+      width: double.infinity,
+      decoration: BoxDecoration(
+        color: _d1CardBg(),
+        border: Border.all(color: _d1CardLine()),
+        borderRadius: BorderRadius.circular(10 * scale),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [header, body],
+      ),
+    );
+  }
+
+  /// 左栏 panel：标题行可点折叠，默认展开（见 [_expanded]）。
+  Widget _buildPanel(String key, String title, Widget body) {
+    final open = _expanded.contains(key);
+    final scale = qmScaleOf(context);
+    final palette = _d1Palette;
+    return _buildPanelCard(
+      key: Key('detail-panel-$key'),
+      header: InkWell(
+        onTap: () => setState(() {
+          if (open) {
+            _expanded.remove(key);
+          } else {
+            _expanded.add(key);
+          }
+        }),
+        borderRadius: BorderRadius.circular(10 * scale),
+        child: Padding(
+          padding: EdgeInsets.all(14 * scale),
+          child: Row(
+            children: [
+              Text(
+                title,
+                style: TextStyle(
+                  fontSize: 14.5,
+                  fontWeight: FontWeight.w700,
+                  color: palette.ink,
+                ),
+              ),
+              const Spacer(),
+              Text(
+                open ? '▾' : '▸',
+                style: TextStyle(fontSize: 13, color: palette.muted),
+              ),
+            ],
+          ),
+        ),
+      ),
+      body: open
+          ? Padding(
+              padding: EdgeInsets.fromLTRB(
+                14 * scale,
+                0,
+                14 * scale,
+                14 * scale,
+              ),
+              child: body,
+            )
+          : const SizedBox.shrink(),
+    );
+  }
+
+  /// 板子 kv 行（`.kv`：64px 标签列 + 1fr 值列，13.5px，间距 5px）。
+  Widget _kvRow(String label, Widget value) {
+    final palette = _d1Palette;
+    final scale = qmScaleOf(context);
+    return Padding(
+      padding: EdgeInsets.only(bottom: 5 * scale),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: 64,
+            child: Text(
+              label,
+              style: TextStyle(
+                fontSize: 13.5,
+                color: palette.muted,
+                height: DesignTokens.bodyLineHeight,
+              ),
+            ),
+          ),
+          SizedBox(width: 10 * scale),
+          Expanded(child: value),
+        ],
+      ),
+    );
+  }
+
+  /// kv 值文字（13.5px）。
+  Widget _kvText(String text) {
+    final palette = _d1Palette;
+    return Text(
+      text,
+      style: TextStyle(
+        fontSize: 13.5,
+        color: palette.ink,
+        height: DesignTokens.bodyLineHeight,
+      ),
+    );
+  }
+
+  /// 十九批 D1：题目纸面（板子 §2.4.1）——纸面底、paperLine 边、圆角
+  /// 8px、内边距 14×16；里面是现版整题图（题干＋选项行、公式走现版
+  /// 切片渲染）＋原图兜底行。
   /// P1-2：题图区按内容高度自适应、上限 460 不变。QuestionSlice 的占位
   /// Center 会撑满有界高度约束（演示题小图只占 460 盒子约 15%，首屏近半
   /// 米色空白），包一层 IntrinsicHeight 让盒子高度取内容固有高度；大图
   /// 仍由 QuestionSlice 自身的 maxHeight 460 限高。
-  Widget _buildImageBlock(Question q, double imageMaxHeight) {
-    final palette = DesignTokens.of(Theme.of(context).brightness);
+  Widget _buildPaper(Question q, double imageMaxHeight) {
     final scale = qmScaleOf(context);
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        IntrinsicHeight(
-          child: widget.imageFailed
-              ? QuestionSlice(
-                  question: q,
-                  subject: _st.subjectOf(q.subjectId),
-                  failed: true,
-                  maxHeight: imageMaxHeight,
-                  onTap: _showZoom,
-                )
-              : QuestionSlice(
-                  question: q,
-                  subject: _st.subjectOf(q.subjectId),
-                  maxHeight: imageMaxHeight,
-                  onTap: _showZoom,
-                ),
-        ),
-        SizedBox(height: 6 * scale),
-        Text(
-          '整题图（完整题目就是最小单位）：点一下弹出大图浮层，浮层里滚轮放大 / 缩小、按住拖动看图，点图、点关闭或按 Esc 回来',
-          style: TextStyle(
-            fontSize: DesignTokens.detailHintFontSize,
-            color: palette.muted,
-            height: DesignTokens.bodyLineHeight,
+    return Container(
+      width: double.infinity,
+      padding: EdgeInsets.symmetric(
+        horizontal: 16 * scale,
+        vertical: 14 * scale,
+      ),
+      decoration: BoxDecoration(
+        color: _d1PaperBg(),
+        border: Border.all(color: _d1PaperLine()),
+        borderRadius: BorderRadius.circular(8 * scale),
+        boxShadow: const [
+          BoxShadow(
+            offset: Offset(0, 1),
+            blurRadius: 3,
+            color: Color.fromRGBO(23, 35, 59, 0.08),
           ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          IntrinsicHeight(
+            child: widget.imageFailed
+                ? QuestionSlice(
+                    question: q,
+                    subject: _st.subjectOf(q.subjectId),
+                    failed: true,
+                    maxHeight: imageMaxHeight,
+                    onTap: _showZoom,
+                  )
+                : QuestionSlice(
+                    question: q,
+                    subject: _st.subjectOf(q.subjectId),
+                    maxHeight: imageMaxHeight,
+                    onTap: _showZoom,
+                  ),
+          ),
+          SizedBox(height: 10 * scale),
+          _buildFigNote(),
+        ],
+      ),
+    );
+  }
+
+  /// 原图兜底行（板子 §2.4.1 `.fig-note`）：「点此查看原图」走现版
+  /// 放大查看（[_showZoom]）；「识别纠错入口 ›」滚到纸面正下方的
+  /// 纠错区（OcrStemSection 自带「编辑题干」入口）。
+  /// 注：Flutter 边框画不出虚线，这里用同色实线边（与板子色值一致，
+  /// 线型有出入）。
+  Widget _buildFigNote() {
+    final scale = qmScaleOf(context);
+    final style = TextStyle(
+      fontSize: 12.5,
+      color: _d1FigNoteInk(),
+      height: DesignTokens.bodyLineHeight,
+    );
+    final linkStyle = style.copyWith(
+      color: _d1Link(),
+      fontWeight: FontWeight.w600,
+    );
+    return Container(
+      width: double.infinity,
+      padding: EdgeInsets.symmetric(
+        horizontal: 12 * scale,
+        vertical: 8 * scale,
+      ),
+      decoration: BoxDecoration(
+        color: _d1FigNoteBg(),
+        border: Border.all(color: _d1FigNoteLine()),
+        borderRadius: BorderRadius.circular(8 * scale),
+      ),
+      child: Wrap(
+        children: [
+          Text('原图兜底：这道题有拍照原图，', style: style),
+          GestureDetector(
+            onTap: _showZoom,
+            child: Text('点此查看原图', style: linkStyle),
+          ),
+          Text('（识别有误时以原图为准）· ', style: style),
+          GestureDetector(
+            onTap: _scrollToStemSection,
+            child: Text('识别纠错入口 ›', style: linkStyle),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 按钮行「纠错（改识别文字）」：把纠错区滚到可见（纠错编辑器
+  /// 本身由 OcrStemSection 自带的「编辑题干」打开）。
+  void _scrollToStemSection() {
+    final ctx = _stemSectionKey.currentContext;
+    if (ctx != null) {
+      unawaited(
+        Scrollable.ensureVisible(
+          ctx,
+          duration: const Duration(milliseconds: 300),
+        ),
+      );
+    }
+  }
+
+  /// 纸面下方按钮行（板子 §2.4.2）：看答案／纠错（改识别文字）／
+  /// 重新框选，ghost 样式；编辑态不显示（编辑时答案在题目信息表单里改）。
+  /// 重新框选只在有页图的题上出现（现版口径）。
+  Widget _buildButtonRow(Question q) {
+    final scale = qmScaleOf(context);
+    return Wrap(
+      spacing: 8 * scale,
+      runSpacing: 8 * scale,
+      children: [
+        QmButton(
+          label: _answerVisible ? '收起答案' : '看答案',
+          variant: QmButtonVariant.plain,
+          size: QmButtonSize.small,
+          onPressed: () => setState(() => _answerVisible = !_answerVisible),
+        ),
+        QmButton(
+          label: '纠错（改识别文字）',
+          variant: QmButtonVariant.plain,
+          size: QmButtonSize.small,
+          onPressed: _scrollToStemSection,
+        ),
+        if (q.pageImagePath != null)
+          QmButton(
+            label: '重新框选',
+            variant: QmButtonVariant.plain,
+            size: QmButtonSize.small,
+            onPressed: _reworkBoxes,
+          ),
+      ],
+    );
+  }
+
+  /// 答案区：编辑态只留提示（答案在题目信息表单里改）；查看态默认
+  /// 隐藏，点「看答案」后出现（#F2F8F0 底、#CBE5C4 边、圆角 8px）。
+  List<Widget> _answerArea(Question q) {
+    final scale = qmScaleOf(context);
+    if (_editing) {
+      return [
+        SizedBox(height: 10 * scale),
+        _buildAnswerSection(q),
+      ];
+    }
+    if (!_answerVisible) return const [];
+    return [
+      SizedBox(height: 10 * scale),
+      Container(
+        width: double.infinity,
+        padding: EdgeInsets.symmetric(
+          horizontal: 12 * scale,
+          vertical: 10 * scale,
+        ),
+        decoration: BoxDecoration(
+          color: _d1AnswerBg(),
+          border: Border.all(color: _d1AnswerLine()),
+          borderRadius: BorderRadius.circular(8 * scale),
+        ),
+        child: _buildAnswerSection(q),
+      ),
+    ];
+  }
+
+  /// 十九批 D1 返回行（板子 §2.2）：左为返回链接，右为上一题 / 下一题。
+  ///
+  /// searchContext 非 null（从列表查询进来，A 工人拼好传进来）：
+  /// `‹ 返回搜索结果（{searchContext}，第 N/M 道）`；
+  /// 为 null 时沿用现版 `返回{sourceLabel}`＋`第 N / M 题 ·
+  /// 按{来源}当前的顺序`。上一题 / 下一题按 orderIds 走（现版
+  /// _goTo 逻辑不变），首末禁用。
+  Widget _buildReturnRow(
+    Question q,
+    int idx, {
+    required bool hasPrev,
+    required bool hasNext,
+  }) {
+    final palette = _d1Palette;
+    final scale = qmScaleOf(context);
+    final ctx = widget.searchContext;
+    Future<void> pop() async {
+      if (await _onPop() && mounted) Navigator.of(context).pop();
+    }
+
+    return Row(
+      children: [
+        if (ctx != null)
+          Flexible(
+            child: GestureDetector(
+              key: const Key('detail-back'),
+              onTap: pop,
+              child: Text(
+                idx >= 0
+                    ? '‹ 返回搜索结果（$ctx，第 ${idx + 1}/${_st.orderIds.length} 道）'
+                    : '‹ 返回搜索结果（$ctx）',
+                style: TextStyle(
+                  fontSize: 13.5,
+                  color: _d1Link(),
+                  fontWeight: FontWeight.w600,
+                ),
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+          )
+        else ...[
+          QmButton(
+            label: '返回${widget.sourceLabel}',
+            leadingGlyph: QmGlyphs.back,
+            variant: QmButtonVariant.plain,
+            size: QmButtonSize.small,
+            onPressed: pop,
+          ),
+          if (idx >= 0) ...[
+            SizedBox(width: 12 * scale),
+            Flexible(
+              child: Text(
+                '第 ${idx + 1} / ${_st.orderIds.length} 题 · 按${widget.sourceLabel}当前的顺序',
+                style: TextStyle(fontSize: 13, color: palette.muted),
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+          ],
+        ],
+        const Spacer(),
+        _posButton(
+          '上一题 ↑',
+          const Key('detail-prev'),
+          hasPrev,
+          hasPrev
+              ? () {
+                  final i = _st.orderIds.indexOf(q.id);
+                  _goTo(_st.orderIds[i - 1]);
+                }
+              : null,
+        ),
+        Text(' · ', style: TextStyle(fontSize: 13, color: palette.muted)),
+        _posButton(
+          '下一题 ↓',
+          const Key('detail-next'),
+          hasNext,
+          hasNext
+              ? () {
+                  final i = _st.orderIds.indexOf(q.id);
+                  _goTo(_st.orderIds[i + 1]);
+                }
+              : null,
         ),
       ],
     );
   }
 
-  /// 工具栏：`← 返回{来源}` + `第 N / M 题 · 按{来源}当前的顺序` +
-  /// 右上角 编辑 / 保存 / 取消（HTML `.toolbar`）。
-  Widget _buildToolbar(Question q, int idx) {
-    final palette = DesignTokens.of(Theme.of(context).brightness);
-    final scale = qmScaleOf(context);
-    final posTxt = idx >= 0
-        ? '第 ${idx + 1} / ${_st.orderIds.length} 题 · 按${widget.sourceLabel}当前的顺序'
-        : '';
-    return Row(
-      children: [
-        QmButton(
-          label: '返回${widget.sourceLabel}',
-          leadingGlyph: QmGlyphs.back,
-          variant: QmButtonVariant.plain,
-          size: QmButtonSize.small,
-          onPressed: () async {
-            if (await _onPop() && mounted) {
-              Navigator.of(context).pop();
-            }
-          },
+  /// 返回行右侧的上一题 / 下一题（板子 `.pos`：13px 灰字，无按钮样式；
+  /// 禁用时半透明、点按无反应）。
+  Widget _posButton(
+    String label,
+    Key key,
+    bool enabled,
+    VoidCallback? onTap,
+  ) {
+    final palette = _d1Palette;
+    return Opacity(
+      opacity: enabled ? 1 : 0.45,
+      child: GestureDetector(
+        key: key,
+        onTap: onTap,
+        child: Text(
+          label,
+          style: TextStyle(fontSize: 13, color: palette.muted),
         ),
-        if (posTxt.isNotEmpty) ...[
-          SizedBox(width: 12 * scale),
-          Flexible(
-            child: Text(
-              posTxt,
-              style: TextStyle(fontSize: 13, color: palette.muted),
-              overflow: TextOverflow.ellipsis,
-            ),
-          ),
-        ],
-        const Spacer(),
-        if (!_editing)
-          QmButton(
-            label: '编辑',
-            size: QmButtonSize.small,
-            onPressed: () => _enterEdit(),
-          )
-        else ...[
-          QmButton(label: '保存', size: QmButtonSize.small, onPressed: _saveEdit),
-          SizedBox(width: 8 * scale),
-          QmButton(
-            label: '取消',
-            variant: QmButtonVariant.plain,
-            size: QmButtonSize.small,
-            onPressed: _requestCancelEdit,
-          ),
-        ],
-      ],
+      ),
     );
   }
 
@@ -1406,17 +1906,19 @@ class _DetailViewState extends ConsumerState<_DetailView> {
     );
   }
 
-  /// 标题：`学科 · 题型｜题名 ★`（HTML `h3.pt` 24px/800 + `.dt-star`）。
-  /// B8-7：标题前加学科图标章；编辑态时标题换成题名输入框（基线行为保留）。
-  Widget _buildTitle(Question q, Subject subject, {double badgeSize = 34}) {
-    final palette = DesignTokens.of(Theme.of(context).brightness);
+  /// 十九批 D1 标题行（板子 §2.3 `.dtitle`）：学科 chip（34×34）＋
+  /// 标题（18px 700）＋状态 pill（现版状态口径）＋收藏星 ★＋
+  /// 右侧归档／删除（红字）；编辑态时右侧显示保存／取消代替归档／
+  /// 删除，标题换成题名输入框（基线行为保留）。
+  Widget _buildTitleRow(Question q, Subject subject) {
+    final palette = _d1Palette;
     final scale = qmScaleOf(context);
-    if (_editing) {
-      return Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          _subjectBadge(subject, badgeSize),
-          SizedBox(width: 10 * scale),
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _subjectBadge(subject, 34),
+        SizedBox(width: 10 * scale),
+        if (_editing)
           Expanded(
             child: TextField(
               controller: _titleCtrl,
@@ -1429,192 +1931,81 @@ class _DetailViewState extends ConsumerState<_DetailView> {
               ),
               onChanged: (_) => _markDirty(),
             ),
-          ),
-        ],
-      );
-    }
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        _subjectBadge(subject, badgeSize),
-        SizedBox(width: 10 * scale),
-        Expanded(
-          child: Text(
-            '${subject.name} · ${sliceKindLabel(q.sliceKind)}｜${q.title}',
-            style: TextStyle(
-              fontSize: DesignTokens.pageTitleFontSize,
-              fontWeight: DesignTokens.pageTitleFontWeight,
-              color: palette.ink,
-              height: 1.3,
-            ),
-          ),
-        ),
-        SizedBox(width: 8 * scale),
-        Tooltip(
-          message: q.isFavorite ? '已收藏（点击取消）' : '收藏',
-          child: GestureDetector(
-            onTap: _toggleFavorite,
+          )
+        else ...[
+          Expanded(
             child: Padding(
-              padding: EdgeInsets.symmetric(
-                horizontal: 6 * scale,
-                vertical: 4 * scale,
-              ),
+              padding: EdgeInsets.only(top: 5 * scale),
               child: Text(
-                q.isFavorite ? '★' : '☆',
+                q.title,
                 style: TextStyle(
-                  fontSize: DesignTokens.detailStarFontSize,
-                  color: q.isFavorite
-                      ? palette.paperStarOn
-                      : palette.lineStrong,
-                  height: 1,
+                  fontSize: 18,
+                  fontWeight: FontWeight.w700,
+                  color: palette.ink,
+                  height: 1.3,
                 ),
               ),
             ),
           ),
-        ),
+          SizedBox(width: 8 * scale),
+          Padding(
+            padding: EdgeInsets.only(top: 6 * scale),
+            child: QmStatusPill.cause(_overallStatus(q)),
+          ),
+          SizedBox(width: 8 * scale),
+          Tooltip(
+            message: q.isFavorite ? '已收藏（点击取消）' : '收藏',
+            child: GestureDetector(
+              onTap: _toggleFavorite,
+              child: Padding(
+                padding: EdgeInsets.symmetric(
+                  horizontal: 6 * scale,
+                  vertical: 4 * scale,
+                ),
+                child: Text(
+                  q.isFavorite ? '★' : '☆',
+                  style: TextStyle(
+                    fontSize: DesignTokens.detailStarFontSize,
+                    color: q.isFavorite
+                        ? palette.paperStarOn
+                        : palette.lineStrong,
+                    height: 1,
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ],
+        SizedBox(width: 8 * scale),
+        if (_editing) ...[
+          QmButton(
+            label: '保存',
+            size: QmButtonSize.small,
+            onPressed: _saveEdit,
+          ),
+          SizedBox(width: 8 * scale),
+          QmButton(
+            label: '取消',
+            variant: QmButtonVariant.plain,
+            size: QmButtonSize.small,
+            onPressed: _requestCancelEdit,
+          ),
+        ] else ...[
+          QmButton(
+            label: q.isArchived ? '恢复' : '归档',
+            variant: QmButtonVariant.plain,
+            size: QmButtonSize.small,
+            onPressed: _toggleArchive,
+          ),
+          SizedBox(width: 8 * scale),
+          QmButton(
+            label: '删除',
+            variant: QmButtonVariant.danger,
+            size: QmButtonSize.small,
+            onPressed: _askDelete,
+          ),
+        ],
       ],
-    );
-  }
-
-  /// 副标题第一行（HTML `.psub`，中性表述——原型里的“选错自己承担”不抄）：
-  /// 学科只读说明 + 错因汇总（每错因一个状态 pill）+ 已归档 pill。
-  /// B8-7：从旧 _buildSubtitle 拆出来，文字与顺序原样，只拆行，
-  /// 让标题下先看到学科与错因状态，补充说明另起一行小字。
-  Widget _buildSubtitleCauseLine(Question q) {
-    final palette = DesignTokens.of(Theme.of(context).brightness);
-    final scale = qmScaleOf(context);
-    final subject = _st.subjectOf(q.subjectId);
-    final style = TextStyle(
-      fontSize: DesignTokens.bodyFontSize,
-      color: palette.muted,
-      height: DesignTokens.bodyLineHeight,
-    );
-    final bold = TextStyle(
-      fontSize: DesignTokens.bodyFontSize,
-      fontWeight: FontWeight.w700,
-      color: palette.ink2,
-      height: DesignTokens.bodyLineHeight,
-    );
-    final children = <Widget>[
-      Text('学科：', style: style),
-      Text(subject.name, style: bold),
-    ];
-    if (q.isArchived) {
-      children.addAll([
-        Text(' · ', style: style),
-        QmStatusPill.tone(label: '已归档', tone: QmTone.warn),
-      ]);
-    }
-    children.add(Text(' · ', style: style));
-    if (q.allCauses.isEmpty) {
-      children.add(Text('错因：还没填错误类型', style: style));
-    } else {
-      children.add(Text('错因：', style: style));
-      for (var i = 0; i < q.allCauses.length; i++) {
-        final cause = q.allCauses[i];
-        final record = _st.records.where((r) => r.cause == cause).firstOrNull;
-        if (i > 0) children.add(Text('、', style: style));
-        children.add(Text(cause, style: bold));
-        children.add(Text(' · ', style: style));
-        children.add(QmStatusPill.cause(_causePillStatus(record)));
-      }
-    }
-    return Wrap(
-      crossAxisAlignment: WrapCrossAlignment.center,
-      runSpacing: 4 * scale,
-      children: children,
-    );
-  }
-
-  /// 副标题第二行：只读说明的补充句（旧副标题里的两段文字，原样），
-  /// 小字 muted，不跟第一行抢层级。
-  Widget _buildSubtitleNote() {
-    final palette = DesignTokens.of(Theme.of(context).brightness);
-    final style = TextStyle(
-      fontSize: DesignTokens.captionFontSize,
-      color: palette.muted,
-      height: DesignTokens.bodyLineHeight,
-    );
-    return Wrap(
-      children: [
-        Text('（只显示，不能改——导入时选定，详情和整理台都不能改）', style: style),
-        Text(' · 其他字段点右上角「编辑」改，点「保存」才生效', style: style),
-      ],
-    );
-  }
-
-  /// 副标题（两行）：第一行学科 + 错因 pill，第二行补充说明小字。
-  Widget _buildSubtitle(Question q) {
-    final scale = qmScaleOf(context);
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        _buildSubtitleCauseLine(q),
-        SizedBox(height: 4 * scale),
-        _buildSubtitleNote(),
-      ],
-    );
-  }
-
-  /// B8-7 信息条：文件夹 chip（学科 tint）+ 标签 chip + 加入复习状态
-  /// pill；只读展示。错因名不进信息条（副标题 pill 已有，测试按
-  /// 错因名计数，重复会出现两个同名文本）。
-  Widget _buildMetaStrip(Question q) {
-    final scale = qmScaleOf(context);
-    final subject = _st.subjectOf(q.subjectId);
-    final folders = _st.folders
-        .where((f) => q.folderIds.contains(f.id))
-        .toList();
-    final chips = <Widget>[
-      for (final f in folders)
-        _metaChip(f.name, tinted: true, subject: subject),
-      for (final t in q.tags) _metaChip('#$t', tinted: false),
-    ];
-    final canJoin = q.isOrganized || q.isArchived;
-    final reviewPill = q.reviewJoined
-        ? QmStatusPill.tone(label: '已加入复习', tone: QmTone.info)
-        : canJoin
-        ? QmStatusPill.tone(label: '未加入复习', tone: QmTone.warn)
-        : null;
-    if (chips.isEmpty && reviewPill == null) return const SizedBox.shrink();
-    return Wrap(
-      spacing: 8 * scale,
-      runSpacing: 8 * scale,
-      crossAxisAlignment: WrapCrossAlignment.center,
-      children: [...chips, if (reviewPill != null) reviewPill],
-    );
-  }
-
-  /// 信息条里的小 chip：圆角 pill，文件夹用学科 tint，标签用中性底。
-  Widget _metaChip(String label, {required bool tinted, Subject? subject}) {
-    final palette = DesignTokens.of(Theme.of(context).brightness);
-    final scale = qmScaleOf(context);
-    final color = subject?.color;
-    return Container(
-      padding: EdgeInsets.symmetric(
-        horizontal: 10 * scale,
-        vertical: 5 * scale,
-      ),
-      decoration: BoxDecoration(
-        color: tinted
-            ? (color?.withValues(alpha: 0.10) ?? palette.surface2)
-            : palette.surface2,
-        border: Border.all(
-          color: tinted
-              ? (color?.withValues(alpha: 0.35) ?? palette.line)
-              : palette.line,
-        ),
-        borderRadius: BorderRadius.circular(999),
-      ),
-      child: Text(
-        label,
-        style: TextStyle(
-          fontSize: 13,
-          fontWeight: FontWeight.w700,
-          color: palette.ink2,
-          height: 1.2,
-        ),
-      ),
     );
   }
 
@@ -1628,55 +2019,6 @@ class _DetailViewState extends ConsumerState<_DetailView> {
       CauseStatus.inProgress => QmCauseStatus.inProgress,
       CauseStatus.solved => QmCauseStatus.solved,
     };
-  }
-
-  /// B8-7：三段头上的摘要行（折叠态也能看到段内概况；文案特意避开
-  /// 测试按精确文本计数的词——「看答案」「加入复习」「概念不清」
-  /// 「解决中」等都不出现在摘要里）。
-  String? _sectionSubtitle(String key, Question q) {
-    if (_editing) return null;
-    switch (key) {
-      case 'answer':
-        final hasAnswer = (q.answer ?? '').trim().isNotEmpty;
-        final hasExplanation = (q.explanation ?? '').trim().isNotEmpty;
-        return hasAnswer || hasExplanation ? '已填答案与解析' : '答案与解析待填写';
-      case 'info':
-        final nFolders = q.folderIds.length;
-        final nKps = q.knowledgePointIds.length;
-        final nTags = q.tags.length;
-        if (nFolders == 0 && nKps == 0 && nTags == 0) return '信息待补充';
-        return '文件夹 $nFolders · 知识点 $nKps · 标签 $nTags';
-      case 'review':
-        final canJoin = q.isOrganized || q.isArchived;
-        if (!q.reviewJoined) {
-          return canJoin ? '未加入复习' : '未整理，不能加入复习';
-        }
-        final pending = q.allCauses.where((c) {
-          final r = _st.records.where((x) => x.cause == c).firstOrNull;
-          return r == null || r.status != CauseStatus.solved;
-        }).length;
-        return '已加入复习 · 待解决 $pending 个错因';
-    }
-    return null;
-  }
-
-  Widget _buildSection(String key, String title, Widget body) {
-    final open = _expanded.contains(key);
-    final q = _st.question;
-    return QmFoldSection(
-      variant: QmFoldVariant.detail,
-      title: title,
-      subtitle: q == null ? null : _sectionSubtitle(key, q),
-      expanded: open,
-      onToggle: () => setState(() {
-        if (open) {
-          _expanded.remove(key);
-        } else {
-          _expanded.add(key);
-        }
-      }),
-      child: body,
-    );
   }
 
   /// 未填字段的可点「待补充」（HTML `.status.todo.dt-miss`）：
@@ -1778,9 +2120,11 @@ class _DetailViewState extends ConsumerState<_DetailView> {
     );
   }
 
+  /// 答案区内容：编辑态只留提示（答案和解析在题目信息表单里改）；
+  /// 查看态由按钮行「看答案／收起答案」控制显隐（[_answerArea] 包
+  /// 绿底容器、[_answerVisible] 为 false 时不渲染本段）。
   Widget _buildAnswerSection(Question q) {
     final palette = DesignTokens.of(Theme.of(context).brightness);
-    final scale = qmScaleOf(context);
     if (_editing) {
       // HTML：编辑态答案和解析在「题目信息」的编辑表单里改，这里只留提示。
       return Text(
@@ -1792,58 +2136,30 @@ class _DetailViewState extends ConsumerState<_DetailView> {
         ),
       );
     }
-    if (!_answerVisible) {
-      return Row(
-        children: [
-          QmButton(
-            label: '看答案',
-            onPressed: () => setState(() => _answerVisible = true),
-          ),
-          SizedBox(width: 10 * scale),
-          Flexible(
-            child: Text(
-              '答案和解析默认藏起来，先自己想，再点开看',
-              style: TextStyle(fontSize: 13, color: palette.muted),
-            ),
-          ),
-        ],
-      );
-    }
+    if (!_answerVisible) return const SizedBox.shrink();
     // 十四批 M3：答案与解析分别展示、分别标状态——待重新核对时显示
     // “标准答案待重新核对”/“解析待重新核对”，不显示旧文本为有效答案
     //（effective* 在待核对时一律返回 null）。
     final hasAnswer = (q.effectiveAnswer ?? '').trim().isNotEmpty;
     final hasExplanation = (q.effectiveExplanation ?? '').trim().isNotEmpty;
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        _formGrid([
-          _Field(
-            '答案',
-            q.answerPendingRecheck
-                ? _pendingPill('answer', '标准答案待重新核对 · 点这里确认')
-                : (hasAnswer
-                    ? _valueText(q.effectiveAnswer!)
-                    : _supplement('answer')),
-          ),
-          _Field(
-            '解析',
-            q.answerPendingRecheck
-                ? _pendingPill('explanation', '解析待重新核对 · 点这里确认')
-                : (hasExplanation
-                    ? _valueText(q.effectiveExplanation!)
-                    : _supplement('explanation')),
-          ),
-        ]),
-        SizedBox(height: 8 * scale),
-        QmButton(
-          label: '收起答案',
-          variant: QmButtonVariant.plain,
-          size: QmButtonSize.small,
-          onPressed: () => setState(() => _answerVisible = false),
-        ),
-      ],
-    );
+    return _formGrid([
+      _Field(
+        '答案',
+        q.answerPendingRecheck
+            ? _pendingPill('answer', '标准答案待重新核对 · 点这里确认')
+            : (hasAnswer
+                ? _valueText(q.effectiveAnswer!)
+                : _supplement('answer')),
+      ),
+      _Field(
+        '解析',
+        q.answerPendingRecheck
+            ? _pendingPill('explanation', '解析待重新核对 · 点这里确认')
+            : (hasExplanation
+                ? _valueText(q.effectiveExplanation!)
+                : _supplement('explanation')),
+      ),
+    ]);
   }
 
   /// WP-A #1 收尾：切分器检测到的选项字母序列（见
@@ -1897,86 +2213,91 @@ class _DetailViewState extends ConsumerState<_DetailView> {
         .where((k) => q.knowledgePointIds.contains(k.id))
         .toList();
     final subject = _st.subjectOf(q.subjectId);
-    final grid = _formGrid([
-      _Field('学科（不能改）', _valueText(subject.name), hint: '导入时选定，详情和整理台都不能改'),
-      _Field(
-        '文件夹（归类）',
-        folders.isEmpty
-            ? _supplement('folders')
-            : _valueText(folders.map((f) => f.name).join('、')),
-      ),
-      // 十四批 M1：题型 chip（查看态点开直接改，立即保存）。
-      // Win11 包 4：芯片行 + 重新分类按钮 + 切分诊断小字。
-      _Field(
-        '题型',
-        _typeFieldChild(
-          q,
-          questionTypeChip(type: q.questionType, onTap: _pickQuestionType),
-          q.questionType,
-        ),
-        hint: '点芯片可改 · 改后不再自动分类',
-      ),
-      _Field(
-        '知识点',
-        kps.isEmpty
-            ? _supplement('knowledgePoints')
-            : _valueText(
-                // FR-16：信息区与编辑芯片同款，补章节（学科 › 章节 · 知识点名）；
-                // 章节为空时回落到只有知识点名，不留悬空的“·”。
-                kps
-                    .map(
-                      (k) => k.chapter.isEmpty
-                          ? '${subject.name} › ${k.name}'
-                          : '${subject.name} › ${k.chapter} · ${k.name}',
-                    )
-                    .join('；'),
+    // 十九批 D1：查看态按板子 kv 表排（学科／文件夹／题型／知识点／
+    // 错因／标签／来源／备注；题型是现版行为，插在文件夹后）。
+    final kv = Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _kvRow(
+          '学科',
+          Row(
+            children: [
+              Flexible(child: _kvText(subject.name)),
+              Text(
+                '（导入时已选定，不可更改）',
+                style: TextStyle(
+                  fontSize: 12.5,
+                  color: _d1Palette.muted,
+                  height: DesignTokens.bodyLineHeight,
+                ),
               ),
-      ),
-      _Field(
-        '错误类型',
-        q.allCauses.isEmpty
-            ? _supplement('errorTypes')
-            : _valueText(q.allCauses.join('、')),
-      ),
-      _Field(
-        '标签',
-        q.tags.isEmpty
-            ? _supplement('tags')
-            : _valueText(q.tags.map((t) => '#$t').join(' ')),
-      ),
-      _Field(
-        '备注（笔记）',
-        (q.notes ?? '').trim().isEmpty
-            ? _supplement('notes')
-            : _valueText(q.notes!),
-      ),
-      _Field(
-        '来源',
-        Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            _valueText(
-              '来自试卷：${exam == null || exam.name.isEmpty ? '未归属试卷' : exam.name}',
-            ),
-            _valueText('收集时间：${_fmtDate(q.createdAt)}'),
-          ],
-        ),
-        full: true,
-      ),
-      // §1.5.1：真实题可重新框选（同页其他题的框只读展示）；
-      // 演示题/老题没有页图，不显示。
-      if (q.pageImagePath != null)
-        _Field(
-          '重新框选',
-          QmButton(
-            label: '重新框选这道题',
-            variant: QmButtonVariant.plain,
-            size: QmButtonSize.small,
-            onPressed: _reworkBoxes,
+            ],
           ),
-          hint: '框错了可以重框：同页其他题的框只读，取消不改动',
         ),
-    ]);
+        _kvRow(
+          '文件夹',
+          folders.isEmpty
+              ? _supplement('folders')
+              : _kvText(folders.map((f) => f.name).join('、')),
+        ),
+        // 十四批 M1：题型 chip（查看态点开直接改，立即保存）。
+        // Win11 包 4：芯片行 + 重新分类按钮 + 切分诊断小字。
+        _kvRow(
+          '题型',
+          _typeFieldChild(
+            q,
+            questionTypeChip(type: q.questionType, onTap: _pickQuestionType),
+            q.questionType,
+          ),
+        ),
+        _kvRow(
+          '知识点',
+          kps.isEmpty
+              ? _supplement('knowledgePoints')
+              : _kvText(
+                  // FR-16：信息区与编辑芯片同款，补章节（学科 › 章节 · 知识点名）；
+                  // 章节为空时回落到只有知识点名，不留悬空的“·”。
+                  kps
+                      .map(
+                        (k) => k.chapter.isEmpty
+                            ? '${subject.name} › ${k.name}'
+                            : '${subject.name} › ${k.chapter} · ${k.name}',
+                      )
+                      .join('；'),
+                ),
+        ),
+        _kvRow(
+          '错因',
+          q.allCauses.isEmpty
+              ? _supplement('errorTypes')
+              : _kvText(q.allCauses.join('、')),
+        ),
+        _kvRow(
+          '标签',
+          q.tags.isEmpty
+              ? _supplement('tags')
+              : _kvText(q.tags.map((t) => '#$t').join(' ')),
+        ),
+        _kvRow(
+          '来源',
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              _kvText(
+                '来自试卷：${exam == null || exam.name.isEmpty ? '未归属试卷' : exam.name}',
+              ),
+              _kvText('收集时间：${_fmtDate(q.createdAt)}'),
+            ],
+          ),
+        ),
+        _kvRow(
+          '备注',
+          (q.notes ?? '').trim().isEmpty
+              ? _supplement('notes')
+              : _kvText(q.notes!),
+        ),
+      ],
+    );
     // 十四批 M3：选项标签确认编辑器（查看态，题型区；正确选项点选
     // 立即保存，标签改动点「确认选项」保存——与题型 chip 的即时保存
     // 口径一致；复习页“补全标签”跳转落在这里）。
@@ -1987,7 +2308,7 @@ class _DetailViewState extends ConsumerState<_DetailView> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        grid,
+        kv,
         SizedBox(height: 12 * scale),
         AnswerOptionEditor(
           key: ValueKey(q.id),
@@ -2033,6 +2354,15 @@ class _DetailViewState extends ConsumerState<_DetailView> {
           ),
           correctOptionSavesImmediately: true,
         ),
+        // 十九批 D1：编辑入口在题目信息 panel 底部（同一表单、同一
+        // 保存／取消与脏检查；编辑态时标题行右侧显示保存／取消）。
+        SizedBox(height: 12 * scale),
+        QmButton(
+          label: '编辑',
+          variant: QmButtonVariant.plain,
+          size: QmButtonSize.small,
+          onPressed: () => _enterEdit(),
+        ),
       ],
     );
   }
@@ -2063,7 +2393,7 @@ class _DetailViewState extends ConsumerState<_DetailView> {
           _Field(
             '学科（不能改）',
             _valueText(_st.subjectOf(q.subjectId).name),
-            hint: '导入时选定，详情和整理台都不能改',
+            hint: '导入时选定，详情和整理工作台都不能改',
           ),
           _Field(
             '试卷（来源）',
@@ -2118,10 +2448,10 @@ class _DetailViewState extends ConsumerState<_DetailView> {
               ),
               _st.editQuestionType,
             ),
-            hint: '点芯片可改 · 改后不再自动分类',
+            hint: '点一下可改 · 改后不再自动分类',
           ),
           _Field(
-            '文件夹（归类 · 可多选，题只存一份 · 只列本题科目自己的文件夹）',
+            '文件夹（归类 · 可多选，题只存一份 · 只列本学科自己的文件夹）',
             Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
@@ -2150,7 +2480,7 @@ class _DetailViewState extends ConsumerState<_DetailView> {
               ],
             ),
             full: true,
-            hint: '新建的文件夹只加进本题科目自己的文件夹列表、只在这一科出现，建完直接选上',
+            hint: '新建的文件夹只加进本学科的文件夹列表、只在这一科出现，建完直接选上',
           ),
           _Field(
             '知识点（可多选、不限个数）',
@@ -2186,7 +2516,7 @@ class _DetailViewState extends ConsumerState<_DetailView> {
                 '在这里新建的知识点会加进「${_st.subjectOf(q.subjectId).name}」的知识点树（自定义一类），之后整理和筛选都能选，不用去学科管理',
           ),
           _Field(
-            '错误类型（固定枚举多选 + 自定义）',
+            '错因（固定多选 + 自定义）',
             Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
@@ -2220,7 +2550,7 @@ class _DetailViewState extends ConsumerState<_DetailView> {
                 ),
                 SizedBox(height: 8 * scale),
                 QmButton(
-                  label: '＋ 新建错误类型',
+                  label: '＋ 自定义错因',
                   variant: QmButtonVariant.plain,
                   size: QmButtonSize.small,
                   onPressed: _newCustomErrorType,
@@ -2228,7 +2558,7 @@ class _DetailViewState extends ConsumerState<_DetailView> {
               ],
             ),
             full: true,
-            hint: '自定义类型只跟这道题，下次编辑时还能再选',
+            hint: '自定义错因只跟这道题，下次编辑时还能再选',
           ),
           _Field(
             '标签（不限个数）',
@@ -2429,7 +2759,7 @@ class _DetailViewState extends ConsumerState<_DetailView> {
     if (q.allCauses.isEmpty) {
       causeRows.add(
         Text(
-          '还没填错误类型，先在上面的编辑里补上',
+          '还没填错因，先在上面的编辑里补上',
           style: TextStyle(
             fontSize: DesignTokens.detailFieldValueFontSize,
             color: palette.ink,
@@ -2501,9 +2831,54 @@ class _DetailViewState extends ConsumerState<_DetailView> {
         }
       }
     }
-    return _formGrid([
-      _Field(
-        '复习',
+    // 十九批 D1：复习记录 panel 按板子 kv 排（整体状态／错因状态／
+    // 解决次数／复查时间／解决记录）＋底部加入／取消加入复习蓝按钮。
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _kvRow('整体状态', QmStatusPill.cause(_overallStatus(q))),
+        _kvRow(
+          '错因状态',
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: causeRows,
+          ),
+        ),
+        _kvRow(
+          '解决次数',
+          _kvText(
+            '共自查 ${_st.history.length} 次 · 自查「已解决」$nOk 次 · 「未解决 / 不确定」$nBad 次（自查「已解决」达到设置次数才算已解决）',
+          ),
+        ),
+        _kvRow(
+          '复查时间',
+          _kvText('治愈后 +${_st.recheckIntervalDays} 天（按设置）'),
+        ),
+        _kvRow(
+          '解决记录',
+          _st.history.isEmpty
+              ? _buildEmptyHistory()
+              : Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    for (final h in _st.history)
+                      Padding(
+                        padding: EdgeInsets.symmetric(vertical: 2 * scale),
+                        child: Text(
+                          '${_fmtDate(h.reviewedAt)} · ${_historyLabel(h.result)}',
+                          style: TextStyle(
+                            fontSize: DesignTokens.detailRevLogFontSize,
+                            color: palette.muted,
+                            height: DesignTokens.bodyLineHeight,
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+        ),
+        SizedBox(height: 12 * scale),
+        // 未整理题没有加入/取消按钮（基线口径：已整理或已归档才有）；
+        // 已归档的题也有按钮（归档期间不出现在复习列表里，恢复后按加入状态回来）。
         canJoin
             ? _buildJoinReview(q)
             : Text(
@@ -2514,43 +2889,8 @@ class _DetailViewState extends ConsumerState<_DetailView> {
                   height: DesignTokens.bodyLineHeight,
                 ),
               ),
-      ),
-      _Field(
-        '错因状态',
-        Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: causeRows,
-        ),
-      ),
-      _Field(
-        '解决次数',
-        _valueText(
-          '共自查 ${_st.history.length} 次 · 自查「已解决」$nOk 次 · 「未解决 / 不确定」$nBad 次（同一错因在同一道题上两次「已解决」算已解决）',
-        ),
-      ),
-      _Field(
-        '解决记录（全部）',
-        _st.history.isEmpty
-            ? _buildEmptyHistory()
-            : Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  for (final h in _st.history)
-                    Padding(
-                      padding: EdgeInsets.symmetric(vertical: 2 * scale),
-                      child: Text(
-                        '${_fmtDate(h.reviewedAt)} · ${_historyLabel(h.result)}',
-                        style: TextStyle(
-                          fontSize: DesignTokens.detailRevLogFontSize,
-                          color: palette.muted,
-                          height: DesignTokens.bodyLineHeight,
-                        ),
-                      ),
-                    ),
-                ],
-              ),
-      ),
-    ]);
+      ],
+    );
   }
 
   /// B11-11 顺手活：复习记录空状态——文字说明不变，有 onGoReview
@@ -2588,6 +2928,7 @@ class _DetailViewState extends ConsumerState<_DetailView> {
   };
 
   /// 加入 / 取消加入复习（HTML `detailJoinRevHTML`）。
+  /// 十九批 D1：蓝底主按钮（板子 `.abtn`），放在复习记录 panel 底部。
   Widget _buildJoinReview(Question q) {
     final palette = DesignTokens.of(Theme.of(context).brightness);
     final scale = qmScaleOf(context);
@@ -2606,7 +2947,6 @@ class _DetailViewState extends ConsumerState<_DetailView> {
           SizedBox(height: 8 * scale),
           QmButton(
             label: '取消加入复习',
-            variant: QmButtonVariant.plain,
             size: QmButtonSize.small,
             onPressed: _toggleReviewJoined,
           ),
@@ -2629,7 +2969,7 @@ class _DetailViewState extends ConsumerState<_DetailView> {
         SizedBox(height: 4 * scale),
         Text(
           q.allCauses.isEmpty
-              ? '加入后，这道题的错因会按加入顺序出现在复习页的待解决列表里，按错因解决；这道题还没填错误类型，先在上面的编辑里补上错误类型，加入后才有可解决的错因'
+              ? '加入后，这道题的错因会按加入顺序出现在复习页的待解决列表里，按错因解决；这道题还没填错因，先在上面的编辑里补上错因，加入后才有可解决的错因'
               : '加入后，这道题的错因会按加入顺序出现在复习页的待解决列表里，按错因解决',
           style: TextStyle(fontSize: 12.5, color: palette.muted),
         ),
@@ -2637,17 +2977,319 @@ class _DetailViewState extends ConsumerState<_DetailView> {
     );
   }
 
-  /// 底部操作行（HTML `.work-acts`）：返回 / 收藏 / 归档 / 复制图片 /
-  /// 保存图片 / 导出带答案版（B11-8）/ 上一题 / 下一题 /
-  ///（编辑态：保存 / 取消）/ 删除。本页无「开始复习」按钮。
-  /// B8-7：收进一张卡片（中性底），不再是白底上一条分隔线 + 漂浮按钮，
-  /// 页面收尾有落点；按钮与文案原样。
-  Widget _buildWorkActs(
-    Question q, {
-    required bool hasPrev,
-    required bool hasNext,
+  // ---------- 十九批 D1：右栏三组 ----------
+
+  /// 右栏三组面板（板子 §2.5）：同错因／同知识点／同文件夹。
+  /// 空组不显示；三组都空时右栏不占位。取数在 DetailNotifier
+  ///（_refreshRelated），计数以后端真实计数为准。
+  List<Widget> _buildRelatedPanels(DetailState st) {
+    final q = st.question;
+    if (q == null) return const [];
+    final scale = qmScaleOf(context);
+    final panels = <Widget>[];
+    if (st.related.sameCause.isNotEmpty) {
+      panels.add(_buildSameCausePanel(st, q));
+    }
+    if (st.related.sameKp.isNotEmpty) {
+      panels.add(_buildSameKpPanel(st, q));
+    }
+    if (st.related.folder != null) {
+      panels.add(_buildSameFolderPanel(st, q, st.related.folder!));
+    }
+    final out = <Widget>[];
+    for (var i = 0; i < panels.length; i++) {
+      if (i > 0) out.add(SizedBox(height: 12 * scale));
+      out.add(panels[i]);
+    }
+    return out;
+  }
+
+  /// 右栏 panel（不折叠）：白底卡片＋14.5px 700 标题＋内容。
+  Widget _buildRelatedPanel({
+    required Key key,
+    required String title,
+    required List<Widget> children,
   }) {
-    final palette = DesignTokens.of(Theme.of(context).brightness);
+    final scale = qmScaleOf(context);
+    final palette = _d1Palette;
+    return _buildPanelCard(
+      key: key,
+      header: Padding(
+        padding: EdgeInsets.fromLTRB(
+          14 * scale,
+          14 * scale,
+          14 * scale,
+          8 * scale,
+        ),
+        child: Text(
+          title,
+          style: TextStyle(
+            fontSize: 14.5,
+            fontWeight: FontWeight.w700,
+            color: palette.ink,
+          ),
+        ),
+      ),
+      body: Padding(
+        padding: EdgeInsets.fromLTRB(14 * scale, 0, 14 * scale, 14 * scale),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: _withDividers(children),
+        ),
+      ),
+    );
+  }
+
+  /// 相关行通用结构（板子 §2.5.4 `.rel-row`）：标题 13.5px 600＋
+  /// 副行 12px 灰＋右侧蓝字跳转，悬停 #F1F5FA，行间分隔线。
+  Widget _buildRelRow({
+    Key? key,
+    Color? dotColor,
+    required String title,
+    required String subtitle,
+    required String goLabel,
+    required VoidCallback onTap,
+  }) {
+    final scale = qmScaleOf(context);
+    final palette = _d1Palette;
+    return InkWell(
+      key: key,
+      onTap: onTap,
+      hoverColor: _d1HoverBg(),
+      borderRadius: BorderRadius.circular(8 * scale),
+      child: Padding(
+        padding: EdgeInsets.all(8 * scale),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            if (dotColor != null) ...[
+              Container(
+                width: 9,
+                height: 9,
+                margin: EdgeInsets.only(top: 5 * scale),
+                decoration: BoxDecoration(
+                  color: dotColor,
+                  shape: BoxShape.circle,
+                ),
+              ),
+              SizedBox(width: 6 * scale),
+            ],
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    title,
+                    style: TextStyle(
+                      fontSize: 13.5,
+                      fontWeight: FontWeight.w600,
+                      color: palette.ink,
+                      height: 1.45,
+                    ),
+                  ),
+                  SizedBox(height: 2 * scale),
+                  Text(
+                    subtitle,
+                    style: TextStyle(fontSize: 12, color: palette.muted),
+                  ),
+                ],
+              ),
+            ),
+            SizedBox(width: 9 * scale),
+            Padding(
+              padding: EdgeInsets.only(top: 2 * scale),
+              child: Text(
+                goLabel,
+                style: TextStyle(
+                  fontSize: 12.5,
+                  fontWeight: FontWeight.w600,
+                  color: _d1Link(),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// 行间分隔线（板子 `.rel-row + .rel-row` 上边框 #EEF2F7）。
+  List<Widget> _withDividers(List<Widget> rows) {
+    final out = <Widget>[];
+    for (var i = 0; i < rows.length; i++) {
+      if (i > 0) {
+        out.add(Divider(height: 1, thickness: 1, color: _d1RelDivider()));
+      }
+      out.add(rows[i]);
+    }
+    return out;
+  }
+
+  /// 同错因 panel（板子 §2.5.1）：1 道具体题＋「还有 N 道」汇总行
+  ///（N 含已展示的那道，协调员决策第 13 项；只有 1 道时不显示汇总行）。
+  Widget _buildSameCausePanel(DetailState st, Question q) {
+    final cause = q.allCauses.first;
+    final items = st.related.sameCause;
+    final first = items.first;
+    final firstSubject = st.subjectOf(first.question.subjectId);
+    final rows = <Widget>[
+      _buildRelRow(
+        key: Key('related-row-${first.question.id}'),
+        dotColor: firstSubject.color,
+        title: first.question.title,
+        subtitle:
+            '${firstSubject.name} · ${first.statusLabel} · 也栽在「$cause」上，可对照着看',
+        goLabel: '跳过去 ›',
+        onTap: () => _openRelated(
+          first.question,
+          items.map((e) => e.question.id).toList(),
+          '同错因 · $cause',
+        ),
+      ),
+    ];
+    if (items.length > 1) {
+      rows.add(
+        _buildRelRow(
+          key: const Key('related-same-cause-more'),
+          title: '还有 ${items.length} 道同错因的题',
+          subtitle: _subjectBreakdown(st, items),
+          goLabel: '全部 ›',
+          onTap: () => _openCauseSearch(cause),
+        ),
+      );
+    }
+    return _buildRelatedPanel(
+      key: const Key('related-same-cause'),
+      title: '同错因的其他题 · $cause',
+      children: rows,
+    );
+  }
+
+  /// 同知识点 panel（板子 §2.5.2）：最多 2 道具体题。
+  Widget _buildSameKpPanel(DetailState st, Question q) {
+    final kpNames = _st.kps
+        .where((k) => q.knowledgePointIds.contains(k.id))
+        .map((k) => k.name)
+        .toList();
+    final kpLabel = kpNames.join(' / ');
+    final items = st.related.sameKp.take(2).toList();
+    final rows = items.map((item) {
+      final subject = st.subjectOf(item.question.subjectId);
+      final cause = item.question.allCauses.isEmpty
+          ? ''
+          : item.question.allCauses.first;
+      return _buildRelRow(
+        key: Key('related-row-${item.question.id}'),
+        dotColor: subject.color,
+        title: item.question.title,
+        subtitle: cause.isEmpty
+            ? '${subject.name} · ${item.statusLabel}'
+            : '${subject.name} · ${item.statusLabel} · 错因 $cause',
+        goLabel: '跳过去 ›',
+        onTap: () => _openRelated(
+          item.question,
+          st.related.sameKp.map((e) => e.question.id).toList(),
+          '同知识点 · $kpLabel',
+        ),
+      );
+    }).toList();
+    return _buildRelatedPanel(
+      key: const Key('related-same-kp'),
+      title: '同知识点的题 · $kpLabel',
+      children: rows,
+    );
+  }
+
+  /// 同文件夹 panel（板子 §2.5.3）：标题含计数＋1 条入口行。
+  Widget _buildSameFolderPanel(
+    DetailState st,
+    Question q,
+    RelatedFolderInfo folder,
+  ) {
+    return _buildRelatedPanel(
+      key: const Key('related-same-folder'),
+      title: '同文件夹 · ${folder.name}（${folder.totalCount} 道）',
+      children: [
+        _buildRelRow(
+          key: const Key('related-folder-open'),
+          title: '按收集顺序继续看这个文件夹',
+          subtitle: '当前第 ${folder.currentPosition} 道 · 共 ${folder.totalCount} 道',
+          goLabel: '打开列表 ›',
+          onTap: () => _openFolderSearch(folder, q.subjectId),
+        ),
+      ],
+    );
+  }
+
+  /// 同错因汇总行的按学科计数（如 `数学 3 · 英语 1 · 政治 1`）：
+  /// 按题数从多到少，相同题数按学科名排序。
+  String _subjectBreakdown(DetailState st, List<RelatedItem> items) {
+    final counts = <String, int>{};
+    for (final item in items) {
+      final name = st.subjectOf(item.question.subjectId).name;
+      counts[name] = (counts[name] ?? 0) + 1;
+    }
+    final entries = counts.entries.toList()
+      ..sort((a, b) {
+        final byCount = b.value.compareTo(a.value);
+        return byCount != 0 ? byCount : a.key.compareTo(b.key);
+      });
+    return entries.map((e) => '${e.key} ${e.value}').join(' · ');
+  }
+
+  /// 相关题行 → 该题详情：新详情页的 orderIds 按来源分组全量
+  ///（R7：同错因行走同错因组全量，同知识点行走同知识点组全量），
+  ///返回行带分组上下文（见 [QuestionDetailPage.searchContext]）。
+  void _openRelated(
+    Question target,
+    List<String> groupOrderIds,
+    String searchContext,
+  ) {
+    unawaited(
+      Navigator.of(context).push(
+        MaterialPageRoute(
+          builder: (_) => QuestionDetailPage(
+            key: UniqueKey(),
+            repo: ref.read(repositoryProvider),
+            questionId: target.id,
+            orderIds: groupOrderIds,
+            sourceLabel: widget.sourceLabel,
+            searchContext: searchContext,
+            exportService: widget.exportService,
+            onGoReview: widget.onGoReview,
+            onOpenWrongbookFiltered: widget.onOpenWrongbookFiltered,
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// 「全部 ›」→ 同错因的搜索结果（走 app.dart 接线的回调；
+  /// 未接线时退回底层搜索结果——见 [OpenWrongbookFiltered]）。
+  void _openCauseSearch(String cause) {
+    final cb = widget.onOpenWrongbookFiltered;
+    if (cb != null) {
+      cb(cause: cause);
+      return;
+    }
+    if (mounted) Navigator.of(context).pop();
+  }
+
+  /// 「打开列表 ›」→ 该文件夹的搜索结果（同上）。
+  void _openFolderSearch(RelatedFolderInfo folder, String subjectId) {
+    final cb = widget.onOpenWrongbookFiltered;
+    if (cb != null) {
+      cb(folderId: folder.folderId, subjectId: subjectId);
+      return;
+    }
+    if (mounted) Navigator.of(context).pop();
+  }
+
+  /// 底部操作卡片（十九批 D1，B27）：只留复制图片／保存图片／
+  /// 导出带答案版（B11-8，现版逻辑不变）；上一题／下一题已移页顶
+  /// 返回行，返回／收藏／归档／删除已移标题行（收藏是标题行星标），
+  /// 这里不再重复。本页无「开始复习」按钮。
+  Widget _buildWorkActs(Question q) {
     final scale = qmScaleOf(context);
     return SizedBox(
       width: double.infinity,
@@ -2657,35 +3299,16 @@ class _DetailViewState extends ConsumerState<_DetailView> {
         ),
         padding: EdgeInsets.all(14 * scale),
         decoration: BoxDecoration(
-          color: palette.surface2,
-          border: Border.all(color: palette.line),
-          borderRadius: BorderRadius.circular(12 * scale),
+          color: _d1CardBg(),
+          border: Border.all(color: _d1CardLine()),
+          borderRadius: BorderRadius.circular(10 * scale),
         ),
         child: Wrap(
           spacing: 10 * scale,
           runSpacing: 10 * scale,
           crossAxisAlignment: WrapCrossAlignment.center,
           children: [
-            QmButton(
-              label: '返回${widget.sourceLabel}',
-              variant: QmButtonVariant.plain,
-              onPressed: () async {
-                if (await _onPop() && mounted) {
-                  Navigator.of(context).pop();
-                }
-              },
-            ),
-            QmButton(
-              label: q.isFavorite ? '★ 已收藏（点击取消）' : '☆ 收藏',
-              variant: QmButtonVariant.plain,
-              onPressed: _toggleFavorite,
-            ),
-            QmButton(
-              label: q.isArchived ? '恢复（取消归档）' : '归档',
-              variant: QmButtonVariant.plain,
-              onPressed: _toggleArchive,
-            ),
-            // B11-8：导出图片三动作，与收藏/归档/删除并列。
+            // B11-8：导出图片三动作。
             QmButton(
               label: '复制图片',
               variant: QmButtonVariant.plain,
@@ -2700,42 +3323,6 @@ class _DetailViewState extends ConsumerState<_DetailView> {
               label: '导出带答案版',
               variant: QmButtonVariant.plain,
               onPressed: _exportShareCard,
-            ),
-            SizedBox(width: 24 * scale),
-            QmButton(
-              label: '上一题',
-              leadingGlyph: QmGlyphs.back,
-              variant: QmButtonVariant.plain,
-              onPressed: hasPrev
-                  ? () {
-                      final idx = _st.orderIds.indexOf(q.id);
-                      _goTo(_st.orderIds[idx - 1]);
-                    }
-                  : null,
-            ),
-            QmButton(
-              label: '下一题',
-              trailingGlyph: '→',
-              variant: QmButtonVariant.plain,
-              onPressed: hasNext
-                  ? () {
-                      final idx = _st.orderIds.indexOf(q.id);
-                      _goTo(_st.orderIds[idx + 1]);
-                    }
-                  : null,
-            ),
-            if (_editing) ...[
-              QmButton(label: '保存', onPressed: _saveEdit),
-              QmButton(
-                label: '取消',
-                variant: QmButtonVariant.plain,
-                onPressed: _requestCancelEdit,
-              ),
-            ],
-            QmButton(
-              label: '删除',
-              variant: QmButtonVariant.plain,
-              onPressed: _askDelete,
             ),
           ],
         ),

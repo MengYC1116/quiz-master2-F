@@ -503,29 +503,31 @@ void main() {
         });
         await _pumpSection(tester, question: stored, sliceBytes: sliceBytes);
         expect(find.byType(FigureImageView), findsOneWidget);
-        // 内容序列：[文字, 公式 x², 文字(含第二段), 图块, 公式 y, 文字]——
-        // 图块在“第二段”文字之后、y 公式之前，不在序列末尾、不在开头。
+        // 内容序列：[文字第一段, 公式 x², 图块, 文字第二段, 公式 y,
+        // 文字第三段]——Q2 REV2 §1：md 锚定的图块按 md 引用位置插在
+        // 所属段落段尾（本例 md 里图引用在 x² 之后、第二段之前），
+        // 不在序列末尾、不在开头、不串位。
         final children = _rendererChildren(tester);
         expect(children.length, 6);
-        expect(children[0], isA<RichText>());
+        expect(children[0], isA<RichText>()); // 第一段文字
         expect(children[1], isA<Padding>()); // x² 公式
-        expect(children[2], isA<RichText>()); // 第二段文字
-        expect(children[3], isA<Padding>()); // 图块
+        expect(children[2], isA<Padding>()); // 图块
+        expect(children[3], isA<RichText>()); // 第二段文字
         expect(children[4], isA<Padding>()); // y 公式
-        expect(children[5], isA<RichText>());
-        final figurePadding = children[3] as Padding;
+        expect(children[5], isA<RichText>()); // 第三段文字
+        final figurePadding = children[2] as Padding;
         expect(figurePadding.child, isA<FigureImageView>());
-        // 几何顺序同样成立：图块中心在第二段文字之下、y 公式之上。
+        // 几何顺序同样成立：图块中心在 x² 公式之下、第二段文字之上。
         // （用根 Column 直系子 widget 定位：公式内部也有 RichText，
         // 不能按类型全局找下标。）
         final figureDy = tester.getCenter(find.byType(FigureImageView)).dy;
         expect(
           figureDy,
-          greaterThan(tester.getCenter(find.byWidget(children[2])).dy),
+          greaterThan(tester.getCenter(find.byWidget(children[1])).dy),
         );
         expect(
           figureDy,
-          lessThan(tester.getCenter(find.byWidget(children[4])).dy),
+          lessThan(tester.getCenter(find.byWidget(children[3])).dy),
         );
       } finally {
         await _dispose(tester);
@@ -622,7 +624,7 @@ void main() {
       }
     });
 
-    testWidgets('#9 位置未确认有标注：锚定失败的图块明确标“位置未确认”', (
+    testWidgets('#9 位置未确认不标不丢：锚定失败的图块放序列末尾照常展示、不标“位置未确认”', (
       tester,
     ) async {
       await _init(tester);
@@ -645,9 +647,11 @@ void main() {
           expect(figures.single.unconfirmed, isTrue);
         });
         await _pumpSection(tester, question: stored, sliceBytes: sliceBytes);
-        // 图块在，但明确标了位置未确认，不静默当成已确认顺序展示。
+        // Win11 反馈包 3：界面不再标“位置未确认”（全部关闭）；未锚定
+        // 图块默认放序列末尾、照常展示，不静默丢图。数据层仍记
+        // unconfirmed（见 figures.single.unconfirmed 断言）。
         expect(find.byType(FigureImageView), findsOneWidget);
-        expect(find.text('位置未确认'), findsOneWidget);
+        expect(find.text('位置未确认'), findsNothing);
         final children = _rendererChildren(tester);
         expect(children.last, isA<Padding>());
         expect((children.last as Padding).child, isA<FigureImageView>());

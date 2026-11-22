@@ -58,6 +58,7 @@ import '../pdf_export/slice_snapshot.dart';
 import '../pdf_export/slice_write_guard.dart';
 import '../pdf_export/snapshot_exceptions.dart';
 import 'word_content_builder.dart';
+import 'word_formula_baseline.dart';
 
 /// Word 生成 Isolate 看门狗超时（D-200：与 PDF D-183 的
 /// `kPdfGenerationWatchdogTimeout` 同值 60 s）。
@@ -474,6 +475,13 @@ class WordExportService {
         formulaVerdicts: raster.verdicts,
       );
       final bytes = await _exportInIsolate(content.document.build(), token);
+      // 十八批 P1（D-216）：C 路线行内公式基线对齐——导出后再注入
+      // run 级 w:position（见 word_formula_baseline.dart；无下移
+      // 项时原样返回，不碰字节；注入结构对不上时抛错，按生成失败处理）。
+      final shiftedBytes = applyWordFormulaBaselineShifts(
+        bytes,
+        content.drawingPositionHalfPoints,
+      );
       return _finishC(
         snapshot: snapshot,
         recordsById: recordsById,
@@ -481,7 +489,7 @@ class WordExportService {
         actualGuard: actualGuard,
         content: content,
         formulaSkipped: raster.skippedQuestionIds,
-        bytes: bytes,
+        bytes: shiftedBytes,
       );
     }
 

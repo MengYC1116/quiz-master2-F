@@ -14,6 +14,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:quiz_master2/data/database.dart';
 import 'package:quiz_master2/data/repository.dart';
+import 'package:quiz_master2/data/review_engine.dart';
+import 'package:quiz_master2/models/exam_event.dart';
 import 'package:quiz_master2/models/models.dart';
 import 'package:quiz_master2/modules/review/review_page.dart';
 import 'package:quiz_master2/modules/settings/settings_page.dart';
@@ -126,6 +128,29 @@ class FakeOwnerRepo extends QuestionRepository {
 
   @override
   Future<ReviewSessionState?> reviewState() async => null;
+
+  /// B11-9：考试事件内存版（设置页考试组打开时读；不覆盖会落到基类
+  /// 读真实库，fake async 里永不完成，见 D-88）。
+  @override
+  Future<List<ExamEvent>> examEvents() async => const [];
+
+  /// 复习 load() 只有在 reviewState() 返回非空会话时才调这三口
+  /// （M3-10 断点恢复校验）；本 Fake 的会话恒为 null，返回“无会话”
+  /// 默认值，不碰真实库（见 D-88）。
+  @override
+  Future<bool> hasSessionVerdict({
+    required String causeStableId,
+    required String sessionId,
+  }) async => false;
+
+  @override
+  Future<AttemptData?> loadAttempt({
+    required String sessionId,
+    required String questionId,
+  }) async => null;
+
+  @override
+  Future<void> clearReviewState() async {}
 }
 
 Future<void> pumpReview(
@@ -143,7 +168,7 @@ Future<void> pumpReview(
         body: ReviewPage(
           key: UniqueKey(),
           repo: repo,
-          onOpenDetail: (q, ids) async {},
+          onOpenDetail: (q, ids, {String? searchContext}) async {},
           onGoWrongbook: () {},
         ),
       ),

@@ -102,7 +102,7 @@ void main() {
         ),
       );
       final secondary = bodyDecoration(tester, '次按钮');
-      expect(secondary.color, const Color(0xFFFFFEF9));
+      expect(secondary.color, const Color(0xFFFFFFFF));
       expect((secondary.border as Border).top.color, const Color(0xFF2E7CF6));
       expect(
         tester.widget<Text>(find.text('次按钮')).style?.color,
@@ -125,8 +125,8 @@ void main() {
         QmButton(label: '返回', variant: QmButtonVariant.plain, onPressed: () {}),
       );
       final d = bodyDecoration(tester, '返回');
-      expect(d.color, const Color(0xFFFFFEF9));
-      expect((d.border as Border).top.color, const Color(0xFFCFC39E));
+      expect(d.color, const Color(0xFFFFFFFF));
+      expect((d.border as Border).top.color, const Color(0xFFB9C6D8));
       expect(
         tester.widget<Text>(find.text('返回')).style?.color,
         const Color(0xFF17233B),
@@ -408,8 +408,8 @@ void main() {
         ),
       );
       final unselected = bodyDecoration(tester, '易错');
-      expect(unselected.color, const Color(0xFFFFFEF9));
-      expect((unselected.border as Border).top.color, const Color(0xFFCFC39E));
+      expect(unselected.color, const Color(0xFFFFFFFF));
+      expect((unselected.border as Border).top.color, const Color(0xFFB9C6D8));
       expect(
         tester.widget<Text>(find.text('易错')).style?.color,
         const Color(0xFF3D4E6B),

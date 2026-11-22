@@ -2,7 +2,6 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
 
-import 'package:crypto/crypto.dart';
 import 'package:drift/drift.dart';
 import 'package:flutter/material.dart';
 import 'package:image/image.dart' as img;
@@ -13,7 +12,6 @@ import '../models/exam_event.dart';
 import '../models/models.dart';
 import '../services/glm_ocr_client.dart';
 import '../services/option_contents.dart';
-import '../services/page_image_pipeline.dart';
 import '../services/stem_splitter.dart';
 import '../services/zip_archive.dart';
 import 'data_change_events.dart';
@@ -38,6 +36,7 @@ part 'db_orphans.dart';
 part 'db_settings.dart';
 part 'db_recently_viewed.dart';
 part 'db_ocr_jobs.dart';
+part 'db_saved_searches.dart';
 part 'db_backup.dart';
 
 /// §2.2：老库处理失败（文件无法确认版本 / 删除失败）：调用方拒绝

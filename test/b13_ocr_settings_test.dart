@@ -9,6 +9,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:quiz_master2/data/database.dart';
 import 'package:quiz_master2/data/repository.dart';
+import 'package:quiz_master2/models/exam_event.dart';
 import 'package:quiz_master2/models/models.dart';
 import 'package:quiz_master2/modules/settings/settings_page.dart';
 import 'package:quiz_master2/services/ocr_key_store.dart';
@@ -65,6 +66,11 @@ class _FakeSettingsRepo extends QuestionRepository {
 
   @override
   Future<List<Question>> all({bool includeArchived = false}) async => [];
+
+  /// B11-9：考试事件内存版（设置页考试组打开时读；不覆盖会落到基类
+  /// 读真实库，fake async 里永不完成，见 D-88）。
+  @override
+  Future<List<ExamEvent>> examEvents() async => const [];
 }
 
 Future<void> _pumpSettings(
@@ -114,9 +120,9 @@ void main() {
     testWidgets('数据组默认折叠，打开后才出现 BigModel key 行', (tester) async {
       final store = OcrKeyStore(backend: _MemoryKeyBackend());
       await _pumpSettings(tester, keyStore: store);
-      expect(find.text('BigModel key'), findsNothing);
+      expect(find.text('BigModel API Key'), findsNothing);
       await _openDataGroup(tester);
-      expect(find.text('BigModel key'), findsOneWidget);
+      expect(find.text('BigModel API Key'), findsOneWidget);
     });
 
     testWidgets('未设置：显示“未设置”', (tester) async {
@@ -247,7 +253,7 @@ void main() {
         keyStore: store,
         initialOpenGroup: 'data',
       );
-      expect(find.text('BigModel key'), findsOneWidget);
+      expect(find.text('BigModel API Key'), findsOneWidget);
       expect(find.text('状态：已设置'), findsOneWidget);
     });
   });

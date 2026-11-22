@@ -415,7 +415,7 @@ class OcrWorker {
         job.id,
         availableAt: now.add(noKeyDelay),
         errorCode: OcrErrorCode.apiKeyMissing,
-        errorMessage: '未设置 BigModel API Key，等待用户在设置里填写',
+        errorMessage: '未设置 BigModel API Key，请在设置里填写',
         now: now,
         leaseToken: job.leaseToken,
       );
@@ -491,7 +491,7 @@ class OcrWorker {
         job.id,
         availableAt: _now().add(noKeyDelay),
         errorCode: OcrErrorCode.apiKeyMissing,
-        errorMessage: '未设置 BigModel API Key，等待用户在设置里填写',
+        errorMessage: '未设置 BigModel API Key，请在设置里填写',
         now: _now(),
         leaseToken: job.leaseToken,
       );

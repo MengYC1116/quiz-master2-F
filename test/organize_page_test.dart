@@ -176,6 +176,15 @@ class FakeOrganizeRepo extends QuestionRepository {
   @override
   Future<List<Question>> dueToday({bool includeArchived = false}) async =>
       List.of(dueTodayValue);
+
+  /// 十三批 M5：OCR 状态是 best-effort 加载（不 await）；返回空任务行
+  /// 与“无 key”，不碰真实库（见 D-88）。
+  @override
+  Future<List<OcrJob>> ocrJobsForQuestion(String questionId) async =>
+      const [];
+
+  @override
+  Future<bool> hasOcrApiKey() async => false;
 }
 
 FakeOrganizeRepo threeQuestionRepo() => FakeOrganizeRepo(
@@ -258,7 +267,7 @@ Future<void> pumpOrganize(
               body: OrganizePage(
                 key: pageKey,
                 repo: repo ?? threeQuestionRepo(),
-                onOpenDetail: (_, __) async {},
+                onOpenDetail: (_, __, {String? searchContext}) async {},
                 onGoReview: () {},
                 onGoCollect: () {},
                 imageFailed: imageFailed,
@@ -532,7 +541,7 @@ void main() {
       expect(find.textContaining('已选 1 个'), findsWidgets);
       // 自定义错误类型。
       final customField = find.byWidgetPredicate(
-        (w) => w is TextField && w.decoration?.hintText == '自定义错误类型…（枚举之外的情况）',
+        (w) => w is TextField && w.decoration?.hintText == '自定义错因…（固定错因之外的情况）',
       );
       await tester.enterText(customField, '公式记混');
       await tester.tap(find.text('添加并选上'));

@@ -2102,3 +2102,272 @@ unavailable），kill -9 后新进程可取锁——与实现依据一致。
 
 - 内容：A2 清零 analyze 后，被改的 4 个 `integration_test/b14_sim_*` 文件跑出 8 个失败，全部与 A2 改动无关、是十四批后 lib 变化导致的既存回归，十四批时这些文件全绿（A 7/7、B 10/10、C 7/8、D1 18/18）。A：4 败（3 个是 `user_version == 5` 断言 vs 当前 schema v6，1 个是恢复完成提示文案未出现）；C：2 败（#7b 内容序列期望 `RichText` 实际是 `Padding`，#9 期望文案「位置未确认」0 命中）；D1：2 败（#17 会话按钮 finder 为空致 RangeError，#18 标签未确认提示文案 0 命中）。A2 改动只删零引用代码、读同一字段，不可能导致这些失败。
 - 处理：不在十七批修，另立包（b14 sim 回归：schema v6 断言更新＋恢复／渲染／复习页行为复核）。注意 `integration_test/` 不在 `flutter test` 全量范围内，这 8 个失败不影响十七批全量结果；复测前先等并行包落定（C #7b/#9 与 D1 #17/#18 可能与并行改动有关）。日志：`~/workspace/batch17-work/b17_a2_sim_{a,c,d1}_run.log`。
+
+## D-215 — 十八批范围与批准（2026-11-21，Meng 2026-11-21 23:15 批准开工，23:59 追加完工样例交付）
+
+- 内容：十八批 = P1 导出公式基线对齐（D-216）＋ P2 批量与导出彻底互斥（D-217）。背景：Meng 真机验证十七批发现两处新缺陷——导出 PDF/Word 公式偏高、没和文字对齐（PDF 更明显）；批量模式开着时工具栏挂着"导出 (2)"；其余项都过了（"其他的没有问题"）。决策邮件已发，Meng 批"修，立十八批"。
+- 旧构建备注：P2 截图画面按推送代码（c086ca8d）画不出来，复现测试证实工具栏部分改动前即通过；真机症状最可能是旧构建，Win11 复核时先确认构建版本再测。
+- 完工样例（Meng 23:59 追加）：完工、全量通过后，用修好的代码导一份样例 PDF 和一份 Word 发给他看修好后的效果（公式多的题，放 `~/workspace/batch18-work/B18-SAMPLE.pdf`、`.docx`）。
+
+## D-216 — 十八批 P1：导出公式基线对齐（2026-11-21，Meng 2026-11-21 23:15 批准）
+
+- 栅格化器报每个公式的基线偏移 `baselineOffsetPt`（图顶到数学基线的距离，pt；原图降级时为 null，不猜数）。
+- PDF：`WidgetSpan(baseline: baselineOffsetPt − heightPt)`，使公式基线落在文字基线上，取代居中启发式；基线未知时保留旧居中。
+- Word：行内公式图下移 `heightPt − baselineOffsetPt`，落点为导出后在 `word/document.xml` 里给对应 run 注入 `w:position`（半磅，负值下移），图仍为 `wp:inline`，换行/绕排不变；下移表与 drawing 数不符时整单失败，不放出未对齐的文件。
+- 行高模型改为基线对齐式 `max(上升沿，基线偏移) + max(下降沿，高 − 基线偏移)`（Noto Sans SC 上升 1.16、下降 0.288），纯文本行高不变。
+- LibreOffice 忽略 drawing run 上的 `w:position`，Word 侧验证待 Win11 真机复核。
+- 测试：新增 `test/b18_p1_baseline_test.dart`（15 项：栅格化器 4、PDF 像素级 2、分页 3、Word 6）；反证：临时回退旧居中，对齐测试失败（偏差 11px，阈值 2px）；相关既有 b15_m1c 四文件 77/77、b15_m1e＋b16_word 六文件 53/53；analyze 限 8 个改动文件干净。
+
+## D-217 — 十八批 P2：批量操作与导出彻底互斥（2026-11-21，Meng 2026-11-21 23:15 批准）
+
+- 背景：Meng 真机截图——批量模式开着（黄色批量条、已选 6 道），工具栏还挂着「导出 (2)」。按十七批推送代码（c086ca8d）那个画面画不出来（进批量会退导出模式，工具栏只剩 plain「导出」），最可能是旧构建；但 D-209 的「取消保留已选」让导出已选在切模式时活下来，两个「已选」可以同时存在——这是设计本身的问题，本次修的是它。
+- 互斥做到底：进批量模式时清空导出已选（走 Notifier 的 `clearExportSelected`，后台盘点同步清空）；进导出模式时清空批量勾选（不变）。
+- D-209 的「取消保留已选」收窄：只适用于点工具栏「取消」退出导出模式；进批量模式不适用。
+- 模式外工具栏只显示 plain「导出」（现状保持）；导出已选清空后底部汇总条显示「已选 0 / 50 道」，其「导出」入口置灰。
+- Notifier 层语义不动：`exportSelected` 与批量 `selected` 仍各自独立；互斥只在页面层模式切换时强制执行。
+- 测试：新增 `test/b18_p2_mutual_exclusion_test.dart`（3 项，复现测试改动前 2 项失败、1 项通过）；`b17_export_mode_test.dart` 互斥组 1 项按新规则改期望；相关 7 文件合计 158/158，analyze 限 4 个改动文件干净。
+
+## D-218 — 十九批 A3：「我的查找」保存功能的存储方案（2026-11-22，协调员决策，Meng 2026-11-22 01:13 授权“需要他定的按 Muse 建议做”）
+
+- 新增 `saved_searches` 表（id、name、conditions JSON、created_at），不升 schemaVersion（仍为 v6）：DDL 同时进 `createTablesImpl`（新库）与 `_upgrade5To6` 末尾（v≤5→v6 迁移库与新库 sqlite_master 一致，b13/b14 迁移测试按此比对）；不进 `backupTables`——旧 v6 备份缺该 key 时 `validateBackupDataImpl` 会拒收；自愈：repo 方法每次操作前 `CREATE TABLE IF NOT EXISTS`（覆盖内存库 / openForTest / 直连 QuizDatabase）。代价：已存查找不随导出备份走，本地恢复时原表不被清空（不参与备份也不参与恢复清理），换库会丢。
+- 条件 JSON 只存非默认值，键：subjectId / folderId / cause / causeStatus / examId / errorType / questionType / timeRange / favorite / overdue / tags / kpIds / search；causeStatus ∈ pending/inProgress/solved/recheck，timeRange ∈ week/month，tags/kpIds 为字符串列表。归一化 / 判等 / 应用 / 计数共用 `WrongbookState` 上的 `normalizeConditions`、`conditionsKey`（键排序后 JSON）、`conditionsEqual`、`stateWithConditions`、`countQuestionsForConditions`（临时 State + 同口径 `filteredAll()`，含已掌握隐藏）。
+- 「最近搜过」只放内存（`WrongbookState.recentSearches`，上限 4、新在前、按 label+conditionsKey 去重、空条件不记）：大搜索框回车、chip 点按、命令面板应用时记；重启即空。
+- 测试影响：`test/b1_stage1_schema_test.dart` 的 `_expected` DDL 列表加 saved_searches 建表行，24→25。
+
+## D-219 — 十九批 A1：L1 列表页行设计与结果头（2026-11-22，协调员决策）
+
+- 只用板子一种行设计：白底、1px 边、圆角 10、内边距 10/12、行距 8；第一行学科圆点（9px）→ 标题（14.5px/600，单行省略）→ 状态 pill → 逾期红字 → 右侧 `MM-dd 收集`（12.5px）→ 导出 ✓（22px 蓝圆，仅选中行）；第二行 meta 归属行独占一行（12.5px，`文件夹 · 知识点 · 错因 · 标签 · 试卷`，缺失项省略）。大卡片 / 紧凑列表视图切换去掉（`AppSettings.wrongbookView` 仍存库不用，`load()` 的 viewModeInitialized 守门保留不动）；板子行无星标、无切片缩略图——收藏仍走详情页开关，不在行上标。
+- 状态 pill 是整题错因总状态（`causeStatusOf`），解决中带自查进度 `解决中 · ✓n/m`（n = 首个未治愈错因的 solvedCount，m = 设置 cureChecks，load 时每次读入 `WrongbookState.cureChecks`）；逾期红字 `逾期 N 天`（N = 到复查时间的错因里复查日距今天的最大天数）。
+- 命中高亮：搜索关键词在标题与 meta 字段里按大小写不敏感子串高亮（#FFF1B8 底）；只搜元数据口径不变（R6：同一 setSearch()、同一 haystack 白名单，绝不搜题干全文）。
+- 结果头标题不存 label、按当前状态推导：有搜索关键词 → 「「{关键词}」的结果」；有非范围筛选 → 「「{筛选描述}」的结果」（学科 / 文件夹归属范围不进标题，页头已显示）；否则「全部题目」。计数 `共 N 道 · 按{排序文案}`；排序下拉沿用现版 6 种（文案去掉空格与箭头，板子式 `时间新→旧`）。
+- 分页行右对齐、无数字页码按钮：`每页 [N▾] 道 · 第 X/Y 页　上一页　下一页`（第 X/Y 页与上一页之间是全角空格）；每页条数下拉保留 10/20/30/40/50、默认 10。
+- scope-note 文案：板子原文提到页面右下角的「试试命令面板」浮动按钮，该按钮是演示用呼出方式、不进应用（协调员决策），文案只保留“只搜元数据 + 点 Ctrl+K 呼出面板”两层意思，不留指向不存在按钮的文字。
+- 旧底部汇总条（常驻、含展开清单与后台盘点跳过信息）删掉：汇总条只在导出模式显示（见 D-220），后台盘点定时器与 `_exportSkipSummary`、`_removeExportSelected`、`_toggleFavorite`（只被大卡片用）一并删掉。
+
+## D-220 — 十九批 A2：导出模式按板子 §1.6 重做（2026-11-22，协调员决策）
+
+- 入口：结果头下方、列表上方，`▣ 预览导出模式`（虚线蓝边框、蓝字、圆角 10、13.5px/600；key 沿用 `export-selected-toolbar`）；模式里同一位置变 `取消` + `导出（n）`（n=0 置灰）+ 黄色提示条（key 沿用 `export-mode-hint`，文案逐字「导出模式中：点一行即选中（不会进详情），选中行蓝底、右端出现 ✓；再点一次取消。」）。进入时 toast「已进入导出模式：点题行选中，再点一次取消」。
+- 汇总条只在导出模式显示（平时不画）：深色底 `#17233B` 白字、圆角 10、上边距 12；左起 `已选 N 道：题名1、题名2…`（未选时 `已选 0 道`；key 沿用 `export-summary-numbers`）→ `全选本页` → `清空` → `退出导出` → `下一步：选版本与文件名 →`（主按钮蓝底）。「全选本页」逐个点选、到 50 上限弹一次提示就停；「下一步」走现版 ExportConfirmDialog（快照语义 R13 不变，未选时仍提示「先选要导出的题目」）。
+- 互斥规则不变（R1/R2、D-217）：进导出退批量保留导出已选；进批量退导出并清空导出已选；点「取消」退出保留已选；导出成功清空并退出。
+
+## D-221 — 十九批 A4：命令面板键盘与应用机制（2026-11-22，协调员决策）
+
+- 键盘拦截不用 Shortcuts/Focus：TextField 的默认快捷键会先吞掉方向键（SDK `default_text_editing_shortcuts.dart`），面板用 `HardwareKeyboard.instance.addHandler` 在焦点派发之前拦截 ↑↓/Enter/Esc；app 层全局 Ctrl+K/Cmd+K 同款（`_QuizMasterAppState` 的 HardwareKeyboard 监听，`CommandPalette.isOpen` 静态标志防叠开）。
+- 面板→错题本应用机制：app 持 `({conditions, label})? _pendingPaletteSearch`；`WrongbookPage` 增 `pendingSearch` + `onPendingSearchApplied` 参数；页面在 initState（新挂载）与 didUpdateWidget（已挂载、identity 守门防重建重复应用）里应用，应用完调回调让 app 清字段。页内呼出（大搜索框 / scope-note 的 Ctrl+K kbd）直接应用，不走 pending 机制。toast 区分：面板应用「已用命令面板打开查找：{名字}（结果在 L1 演示区）」改为「已用命令面板打开查找：{名字}」——括号里的“结果在 L1 演示区”是板子演示文案，不进应用；chip 应用「已应用查找：{名字}」。
+- 条目计数取真实后端数据（`countQuestionsForConditions`，与点进去看到的结果数同一口径）；分组：我的查找（★，无内容时整组不画）／文件夹（📁，hint `{学科} · N 道`）／错因（✕，固定枚举在前、自定义错因在后）／知识点（◆）／标签（＃，显示名 `标签：X`）／试卷（▤，hint `试卷 · N 道`）。
+
+## D-222 — 十九批 A5/A6：入口路由与 searchContext（2026-11-22，协调员决策）
+
+- `/wrongbook` 默认落点改为 L1 搜索结果页（`WrongbookState.build()` 恒为 list）；只带 subjectId 的深链落到按该学科筛选的列表；带 filterCause/filterKnowledgePointId 的不变；书架 / 目录视图保留，从 L1 筛选面板顶部「📚 书架（按学科浏览）」入口进入；`_go()` 清深链参数与 `WrongbookInitial` 只读一次的规则不变（R10）。
+- searchContext 契约：`app.dart:_openDetail` 与 `QuestionDetailPage` 各加可选命名参数 `String? searchContext`（只加参数＋转发）；L1 两处行点按（板子行、归档行）按当前筛选拼描述传入：非空部分用 ` · ` 连接（学科名／错因名／状态／搜索关键词；全空则为「全部题目」）；确认步的 onOpenQuestion 不传（导出确认的题单不是搜索结果）；详情页侧由 B 包实现（非 null 时显示 `‹ 返回搜索结果（{searchContext}，第 N/M 道）`）。
+
+## D-223 — 十九批 A：详情页右栏跳转接线（app ↔ 错题本）（2026-11-22，协调员追加，B 包回调契约已锁定）
+
+- B 包回调（`OpenWrongbookFiltered`，`question_detail_page.dart:83`）：`void Function({subjectId, cause, knowledgePointId, folderId})`；右栏「全部 ›」调它传 cause，「打开列表 ›」调它传 folderId + subjectId（参数由 `test/b19_detail_related_test.dart` 两个回调测试锁定，不改契约）。
+- app.dart：`_goWrongbookFiltered` 增加 `String? folderId` 参数；新增 `_folderArg` 字段，`_go()` 清深链参数处同清；WrongbookPage 构造处传 `folderId: _folderArg`；`_openDetail` 给 QuestionDetailPage 传 `onOpenWrongbookFiltered: _goWrongbookFiltered`。
+- Notifier：`WrongbookInitial` 增加 `filterFolderId`（==/hashCode 一并补）；`build()` 带 filterFolderId 时落到按该文件夹筛选的列表（学科范围取 subjectId），与 filterCause/filterKnowledgePointId 的落点模式一致。
+- 任务清单之外的两处补线（否则“落到带筛选的列表”做不到，见下）：
+  - pop：详情页压在根 Navigator 栈顶，`_goWrongbookFiltered` 只改底层路由不 pop，用户看到的仍是详情；回调里加 `_navigatorKey.currentState?.popUntil((route) => route.isFirst)`（报告页调进来时栈顶就是首页，是空操作）。
+  - 重挂载：已挂载的 notifier 不随 override 变化重建（D-50 锁定语义），只改参数不重挂，底层列表仍是旧筛选；WrongbookPage 的 key 带深链路参数 + 代次 `_wrongbookFilterGeneration`（`_goWrongbookFiltered` 每调一次 +1），参数变化或每次深链路调用都重挂载、notifier 读到新的 initial；参数不变的普通重建不重挂（列表状态保留）。普通导航清参数后 key 随之变化，同样重挂（与 `_go()` “普通导航一律清掉”的既有意图一致）。
+- 测试：`test/b19_a_wiring_test.dart`（整应用，内存库）：「全部 ›」→ 按错因筛选的列表；「打开列表 ›」→ 该文件夹的列表；普通导航后 `_folderArg` 已清（下次进错题本不再带文件夹筛选）。另有 notifier 层单测（`WrongbookInitial(filterFolderId:)` → build() 落点）。
+
+## D-224 — 十九批 A：_resultTitle 空条件标题 bug 与接线测试点按时序（2026-11-22，D-223 验证时发现）
+
+- `_resultTitle` 旧逻辑：`_describeConditions(includeScope: false, includeSearch: false)` 的返回值非空即拼「「{desc}」的结果」。但 `_describeConditions` 空条件时回退成「全部题目」当显示名（保存命名默认值与 searchContext 共用这个回退），desc 永不为空——无筛选列表的标题被拼成「「全部题目」的结果」。修法：标题是否「全部题目」改由“去掉范围键（subjectId/folderId）后还有没有条件”判断（`normalizeConditions` 只留非默认值，空搜索已剔掉）；`_describeConditions` 本身不动（保存命名与 searchContext 仍要「全部题目」这个回退）。
+- 接线测试（`test/b19_a_wiring_test.dart`）点右栏跳转入口时：`ensureVisible` 后只 pump 一次就点，滚动动画没跑完，点按被滚动吃掉、回调根本不触发（底层列表标题不变、详情不 pop）。修法：ensureVisible 后多 pump 几帧（5 × 200ms）等滚动动画完再点（B 测试用 `pumpAndSettle`，整应用测不能用它——应用永不静止）。另记：`find.text` 默认跳过 offstage，被详情盖住的底层列表本来就找不到，要用 `skipOffstage: false` 才看得到；`Text` 内部自带一个 RichText，`textContaining(findRichText: true)` 会把 Text 的内层 RichText 也算进去，计数时别认错。
+
+## D-225 — 十九批 A：跨视图导航关筛选面板 + 测试 helper 的 UniqueKey 陷阱（2026-11-22，相关测试回归时发现）
+
+- 筛选面板跨视图残留：A5 新增的书架入口在筛选面板顶部（「📚 书架（按学科浏览）」），经它进书架 → 目录 → 列表后 `filterOpen` 仍是 true，列表页头按钮显示「筛选 ▴」而不是「筛选 ▾」，还把列表内容顶出首屏、后续点按落空。旧流程不经面板，没这个问题。修法（生产）：`WrongbookNotifier.openList/openDirectory/openShelf` 三处导航 copyWith 里加 `filterOpen: false`——面板只属于列表页内，跨视图不保留展开态。调用方只有 page 层三个 `_open*` 包装，无其他影响。
+- 测试 helper 陷阱：`wrongbook_page_test.dart` 的 `pumpWrongbook` 把 `key: pageKey ?? UniqueKey()` 写在 Builder 闭包里，窗口 resize 触发 MediaQuery 重建时闭包重跑、key 换新，WrongbookPage 被重挂、notifier 重建、落点回到默认。旧默认落点是书架，重挂仍在书架所以基线没爆；现默认是列表，B8-8 的 900 宽断言就丢了书架。修法（测试）：key 在 `pumpWidget` 之前只造一次（`final pageWidgetKey = pageKey ?? UniqueKey()`），Builder 里只引用。
+- 另记：`_B8FakeRepo` 没覆写 `savedSearches()` 时，`load()` 走真实库永不完成，页面卡 loading 转圈、`pumpAndSettle` 超时——A3 起所有错题本 FakeRepo 都必须有内存版 `savedSearches()` 覆写（已补）。
+
+## D-226 — 十九批 B：D1 右栏三组＋相关题排序与计数口径（2026-11-22，协调员决策，板子 §2.5）
+
+- 任务简报写右栏两组（同错因／同知识点），板子 D1 实际是三组——加「同文件夹」；一比一复刻按板子三组做（`computeDetailRelated`，`lib/state/detail_notifier.dart`）。
+- 匹配：同错因 = 任一错因相同；同知识点 = 任一知识点相同；同文件夹 = 与当前题第一个文件夹相同。当前题与已归档题不进组。
+- 排序（协调员决策，板子未注明）：未解决优先 → 同科次之 → 收集时间新→旧。
+- 计数口径（以后端真实计数为准，不抄板子演示数）：同错因「还有 N 道」的 N 含已展示的那道（即同错因组全量）；同文件夹标题计数含当前题。
+- 跳转：相关题行 → 该题详情（`orderIds` 为同组全量，返回行带分组上下文）；「全部 ›」→ 同错因的搜索结果；「打开列表 ›」→ 该文件夹的搜索结果（接线见 D-223）。
+- 测试：`test/b19_detail_related_test.dart`（18 项）。
+
+## D-227 — 十九批 B：原图兜底行虚线边框改同色实线（2026-11-22，B 包实现偏差）
+
+- 板子 §2.4.1 `.fig-note` 边框是 `1px dashed #D8D2BC`；Flutter 边框画不出虚线，改用同色实线（色值与板子一致，只有线型有出入）。代码内有注释（`question_detail_page.dart:_buildFigNote`）。
+- 其余样式照板子：`#F4F1E6` 底、圆角 8、`12.5px #7A744F`、文案逐字；「点此查看原图」走现版放大查看，识别纠错入口滚到纸面正下方的纠错区。
+
+## D-228 — 十九批 B：D1 其余布局决策（2026-11-22，协调员决策，板子未注明项）
+
+- B27 三按钮（复制图片／保存图片／导出带答案版）保留，放在 D1 底部操作卡片里（现版逻辑不变）；上一题／下一题按板子移到页顶返回行（纯文本样式，无按钮样式），底部卡片不再重复。
+- D1 编辑入口：题目信息 panel 底部的「编辑」按钮进编辑模式（同一表单、同一保存／取消与脏检查）；编辑态时标题行右侧显示保存／取消（代替归档／删除），退出编辑态恢复。
+- D1 面板默认展开：题目信息与复习记录 panel 默认展开（板子直接展示内容）；答案解析仍默认隐藏在「看答案」后；保留点标题折叠的能力。
+- 纠错区位置：`OcrStemSection` 挂在 D1 左栏纸面正下方（按钮行之上），挂载条件与现版一致；按钮行「纠错（改识别文字）」点后把纠错区滚到可见。
+- 标题行按板子 §2.3：学科 chip（34×34）＋题名＋状态 pill（解决中不带 `· ✓n/m` 后缀）＋收藏星＋右侧归档／删除；旧拼串标题「学科 · 题型｜题名」随板子去掉，学科名与题型改到题目信息 panel 的 kv 行里（题型插在文件夹后，查看态点 chip 即时保存）。
+
+## D-229 — 十九批 A：L1 未注明项收尾（2026-11-22，协调员决策，板子未注明）
+
+- 左导航保留现版（mock 未画不是去掉）；应用顶栏：现版错题本无独立应用顶栏（页面内标题），保持。
+- 「筛选 ▾」点开形态：复用现版筛选面板（学科／文件夹／错因／知识点／状态／时间），以下拉 panel 形式挂在结果头右侧；面板顶部加「📚 书架（按学科浏览）」入口（书架／目录视图保留，从此进入）。
+- 大搜索框输入行为：输入即实时按元数据子串过滤；回车应用并聚焦结果；空查询 = 全部题目。
+- 平时批量入口保留现版批量模式入口，位置随 L1 布局落在结果头／工具栏区；与导出模式的互斥规则不变（D-217）。
+- 原图查看复用现版查看方式（点原图兜底行进入现版查看流程）；纠错／重新框选／编辑／归档／删除复用现版流程，仅按 D1 布局重新排布位置，不改流程本身。
+- 导出「下一步」之后复用现版选版本与文件名确认步；退出导出模式保留已选（D-208）。
+
+## D-230 — 十九批 C：集成验证修复（2026-11-22，C 包，全量首跑 3042/3058 后定位修复）
+
+- 全量首跑 16 项失败，定位三类（A/B 已锁定行为不动，只修定位到的 bug 与过时测试）：
+  - 产品 bug 1 项（B 包布局暴露的旧缺陷）：详情页拖图块落不下——D1 左栏滚动视口顶在返回行／标题行之下，纠错区起手点落在自动滚动顶缘区内，`StemEditor._maybeAutoScroll` 在拖拽起手更新时反复 `jumpTo`，内容被顶走、落点错位。修法（`lib/modules/ocr/stem_editor.dart`，整理页与详情页共用）：只在指针朝边缘方向移动时才自动滚动（朝上拖才滚上、朝下拖才滚下）；`b14_win11_pkg3` 详情页拖图块回归通过，整理页拖图块不受影响。
+  - 死代码 1 处（A 包删行视图后残留）：`_PaperStarButton`（`wrongbook_widgets.dart`）已无调用方，删掉，全量 `flutter analyze` 归零。
+  - 过时测试 14 项（按 A/B 已锁定行为改断言，不改产品）：旧拼串标题「学科 · 题型｜题名」断言 5 项（`p0b1_subject_sync`、`b8_1_subject_sweep`、`b14_win11_tail2_edit_stale` ×3）改到新标题行／题目信息行；大卡片／紧凑行断言 3 项（`s8b2_subject_sync_supplement`、`p0b1_archived_counts` ×2）改到板子行学科圆点色（新增 `boardRowDotColor` helper）；默认展开后误点折叠 3 项（`b5_p2_collect` 重新框选改点按钮行「重新框选」、`b14_win11_pkg4_two_column` ×2 去掉点「题目信息」展开）；两处 FakeRepo（`b7_p1_sr3_2` 的 `_StaleRepo`、`b15_m3_shelf` 的 `ShelfFakeRepo`）补内存版 `savedSearches()`（D-225 的陷阱，A 只补了自己碰到的文件），另两处进书架改走筛选面板顶部入口（默认落点已改列表）。
+- 复跑：10 个文件 128/128 通过；全量复跑 3058/3058 全过（日志 `~/workspace/batch19-work/full-suite-2026-11-22-rerun.log`）；演示库 md5 开工／完工一致（`8f7f9c64405dc6e484ac2bf8e5e1a807`）。
+
+## D-231 — 十九批 C：运行截图方法与旧演示库的两个发现（2026-11-22，C 包）
+
+- 构建环境：`libgtk-3-dev` 丢失（`dpkg` 状态 `un`），按 `~/workspace/TOOLS.md` 的既往办法重装：先装留档的改包 `~/workspace/libzstd-dev_1.5.5-hatch1-compat_amd64.deb`（Depends 放宽为 `>= 1.5.5`），再装 `libgtk-3-dev 3.24.41`；之后 `flutter build linux --release` 成功。改包与 libzstd1 本体未动。
+- 截图办法：Xvfb（1280×720 与 880×720）＋ Release 产物 ＋ python-xlib 点击／按键／`XGetImage` 抓图（`~/workspace/batch19-work/tmp/b19_shots.py`）；本机无 `import`/`scrot`/`xdotool`。窄屏须把内层 `quiz_master2` 渲染窗也缩到 880×720——只缩外层 GTK 窗不生效（Flutter 仍按 1280 布局、画面被裁）。
+- 演示库备份（`~/workspace/demo-db-backup/quiz-master2.db`，md5 `8f7f9c64405dc6e484ac2bf8e5e1a807`）是 `user_version=1` 的 v1 文件：直接装到 live 位置会被启动时的删老库逻辑（D-91）删掉、应用建空库（实测：首页／错题本全 0 道）。截图用的是工作副本（`~/workspace/batch19-work/tmp/b19-demo-v2.db`，转换脚本 `b19_demo_convert.py`）：只改副本——`user_version` 置 2（走 v2→v6 链式迁移，迁移后 user_version=6、9 道题完整）＋ `questions` 的 `folder_ids`／`knowledge_ids`／`error_types`／`tags` 由旧式纯文本（`'folder-…'`／`'易错,常考'`）转 JSON 数组（现版 `StringListConverter` 只认 JSON，纯文本会解码失败变 `[]`，导致 L1 元信息行只剩试卷名、D1 右栏三组全空不占位、命令面板文件夹计数全 0）。备份文件本身未动，md5 完工仍一致；截图完 live 库已恢复原空库（md5 `f8f66b68e674655c3378c75730e6bf30`）。
+- 附带发现（未修，留待以后批处理；非 B19 回归，B19 未动首页）：用迁移后的演示库跑应用时，首页报「首页数据读取失败，已显示上次成功加载的内容。」（`home_provider.dart:load()` 九路并行取数中某一路抛错，只翻 `loadError`），错题本 L1／详情页 D1 均正常加载；空库（全新 v6 库）首页正常。此为旧演示库迁移后的兼容问题，与 B19 无关。
+- 截图 8 张（`~/workspace/batch19-work/screenshots/`）：`b19-home-light-1280.png`（首页，带上述失败横幅）、`b19-l1-list-light-1280.png`（L1 默认搜索结果页，5 道）、`b19-d1-detail-light-1280.png`（D1 图表作文，右栏两组）、`b19-d1-related3-light-1280.png`（D1 马原，右栏三组齐全）、`b19-d1-palette-light-1280.png`（D1 上 Ctrl+K 命令面板）、`b19-l1-export-light-1280.png`（导出模式，已选 1 道）、`b19-l1-narrow-880.png`、`b19-d1-narrow-880.png`（880px 单栏；L1 结果头「共 5 道 · 按收集时间 新→旧」在窄宽下换行）。
+
+## D-232 — 二十批 P1：b14_sim 既存失败清零，测试按当前 lib 行为更新（2026-11-22，D-214）
+
+- D-214 的 8 项失败全部定性为测试侧过时、非产品回归；另补修十九批重设计导致的 B 文件 2 败与 A `#1` 烟囱，共 11 项用例改动，4 个 `b14_sim_*` 文件 43/43 全绿，`flutter analyze` 限改动文件干净。产品代码未动。
+- schema v5→v6：A `#30`／`#31`／seed 的 `user_version` 与 `schemaVersion` 断言改成 6。
+- A `#31` 夹具来源变更：应用数据目录下的 `quiz-master2.db` 现为 live v2 演示库，不再是 v1；v1 夹具改取 `~/workspace/demo-db-backup/quiz-master2.db`（`user_version` 1，9 道题），只读副本验证，原件 md5 不变。
+- D-173：恢复成功文案按恢复前有无未完成会话分支，`#29` 改成「恢复成功，已清除未完成的复习会话」。
+- Q2 REV2 §1：md 锚定图块按 md 引用位置插入段尾，C `#7b` 期望顺序改成 md 位置顺序。
+- Win11 反馈包 3：界面不再标「位置未确认」，C `#9` 改成断言无标注、图块放序列末尾照常展示。
+- REV5 R1-3：单选判分门禁不再读 `optionLabelsConfirmed` 列，D1 `#17` 第二例改走纸上作答、`#18` 第一例改成标签未确认不拦选项按钮。
+- 十九批 L1/D1：错题本默认落点是列表（书架走筛选面板顶部入口）、列表行只显示标题（RichText）、详情页面板默认展开；A `#1`、B `#4` 第二例、B `#5` 按新版导航／视图改写。
+- 注意：`integration_test/` 没有 `integration_test` dev 依赖，`flutter test integration_test/...` 跑不起来，沿用十七批做法——复制到 `tool/b20_p1_tmp_*_test.dart` 跑，完工时临时副本已删。
+
+## D-233 — 二十批 P2：A3 反方向，保存时 guard 标题与前文合并（2026-11-22）
+
+- 内容：D-211 末尾观察（未修）——用户在编辑器里主动删掉标题卡前一段的尾换行时，标题与前文拼在同一行、标题标记丢失。修法与 D-211 两层对称：① `blocksToMarkdown` 的 `HeadingBlock` 分支已有标题前补换行 guard，本次只用测试锁定，未改代码；② `StemEditor._draftsToMarkdown` 新增 `_startsWithHeadingLine`（首行 `^#{1,3}[ \t]`，与解析器判定一致），保存时标题草稿以标题行开头、且前一段缺尾换行时在标题行前补 `'\n'`（只改保存出的 markdown，不动编辑器显示文本、不动解析器与渲染层）；与 A3 的标题后补换行不重复补空行。标题在首段不补、标题在末段不加尾换行、连续标题只补一处、标题前是图块/代码块/公式段时行为合理（图块不拼回题干、不改变尾部状态）。
+- 测试：扩展 `test/b17_a3_title_draft_test.dart`（5 项 → 15 项：新增 5 项 `blocksToMarkdown` 锁定 + 5 项 `StemEditor` 反方向复现）；复现项修前 5 项失败、实际输出与观察逐字一致（`'前文# 标题\n后文'`），修后 15/15；Q1 既有 15/15、D-211 相关既有 127/127；六文件合跑 157/157，analyze 限 2 个改动文件干净。
+- 已知局限：同一 TextField 内行中手打 `# ` 不触发 guard（歧义文本，不改写），另定。
+
+## D-234 — FR-45 肇事测试定位到并修掉（2026-11-22，二十批 P3＋跟进包）
+
+- 肇事：`test/b13_stem_correction_test.dart` 第 36 号测试（详情页 Notifier saveEdit 保留 OCR 字段）。触发链：34 号测试 tearDown 的 `resetForTest()` 置 null（`testDataDirectory` + 单例 `_dbFuture`）→ 36 号 `notifier.load()` 内 `unawaited(_refreshRelated(q))` 调 `repo.all()` / `repo.causeRecords()`，`_FakeDetailRepo` 未覆写 → 真实 `QuestionRepository` → 单例 `db` getter → `_openDb()` 打开 live 库跑 v2→v6 迁移（94,208 → 188,416 字节，`user_version` 2 → 6，settings +1 行 `schemaVersion|6`，9 道题不变）。
+- 定位证据：strace 抓到 flutter_tester 主线程首次打开 live 库的调用序列，换算落在 36 号测试窗口；二分：1310 组单独、1239 组单独、37+38、34+36、34+35 均干净，34+36+39+40（F3）复现 DB 变化（md5 → `0a7e7dd0…`，与批量 2 逐字节相同）；34+36 干净是假阴性——迁移需约 4 秒，跑完两测试 isolate 即退出、首写来不及落盘，39/40 把 isolate 撑住才完成。
+- D-67 旧结论修正：肇事不是并行工作员的 GUI/应用真机运行，是测试本身；88 文件二分无复现是因为单文件跑完 isolate 即退出、4 秒迁移来不及落盘（假阴性），需后续测试撑住 isolate 才看得见。`load()` 里的 D-88 注释（“真实 Drift 在 fake async 里永不完成”）具有误导性——开库 + 迁移的副作用照样发生。
+- 修法（仅改测试文件，未动生产代码）：`_FakeDetailRepo` 补 `all() → List.of(questions)` 与 `causeRecords() → const []` 两个 override。验证：F3 组合 4/4 通过、DB 未变；全文件 41/41 通过、live DB 全程未变；`flutter analyze` 该文件无问题。
+- 跟进分诊：P3 称“两者都缺的 13 个”，重扫实为 19 文件 / 22 类（直接 `extends QuestionRepository` 76 个；另有单腿缺失的详情 fake 3 个，缺一腿同样可触发——`_refreshRelated` 先调 `all()` 再调 `causeRecords()`）。真触发仅 2 处，均已补桩（仅改测试文件）：`b12_history_refresh_test.dart` 的 `_RefreshFakeRepo` 补 `all()`（7/7）、`b5_p2_collect_test.dart` 的 `_DetailFakeRepo` 补 `all()` / `causeRecords()`（27/27）；两处整文件跑原先干净是假阴性——`load()` 都在 `testWidgets`（FakeAsync 拖住真实打开）且是文件最后一个测试，临时探针搬到 plain `test()` 即复现 live 库迁移（与 P3 指纹逐字节相同），补桩版探针则 IDENTICAL。其余 18 个两者都缺文件 + 2 个单腿文件无触发条件（无 null 窗口、或 fake 走不到详情 load），不补。第 4 类（触发存在但补桩改断言）本次为空；但 `detail_page` / `detail_notifier` 等 widget 文件若将来出现 null 窗口，不要无脑补桩：补桩会让 folder 组从无变有（q1 独占 f1，`totalCount: 1` 即渲染“同文件夹”面板），应优先关窗口或按 D-235 方案 A 把右栏断言一并改到位。
+- slices 污染堵上：7 个文件（`b13_p1_1`、`b13_ocr_queue`、`b13_stem`、`b14_win11_pkg3`、`b14_win11_tail1`、`b14_m5_fix2`、`b14_win11_pkg2`）的 setUp 在读 `dataDirectoryPath()` 前先给 `testDataDirectory` 指全新临时目录，tearDown 删掉；7 文件 132 项全过，前后快照 IDENTICAL，真实 slices 停在 487 不再涨。历史遗留的 487 个切片与 115 个 trash 未删，删不删由 Meng 定。
+- 守卫新增一条（已验证有效）：往后 `DetailNotifier.load()` 能跑到的测试 fake，必须覆写 `all()` 与 `causeRecords()`（或体首设内存库），否则即视为同类缺口。原守卫保持现状（`testExecutable` 兜底 + 每批全量前后核对 live 库 9 道题 + 备份 md5）。
+- 残留：`resetForTest()` 置 null 的系统性修法（改为重指全新临时目录）仍未做，改动面大，需全量验证，另立包；P3 未归因的 `pkg2` 批量 2 窗口 DB 变化仍未归因（跟进包 `pkg2` 整文件跑 18/18 IDENTICAL）；D-88 注释已由协调员在收尾时改掉（见 D-240）。
+
+## D-235 — 二十批 P4：FakeRepo 桩覆盖扫荡，详情 best-effort 两口定方案 B（2026-11-22，D-88 收尾）
+
+- 扫荡：`QuestionRepository` 共 93 个实例方法＋3 个纯静态方法（静态方法不读库，无须桩）；逐个抠出首页／详情／错题本／整理／复习／收集／报告／学科／设置 9 条 `load()` 路径的 awaited 调用与条件分支；test/ 下 78 个 FakeRepo 类、57 个文件逐类分诊。真缺口 77 处全部补齐（24 个文件，产品代码零改动）：A 类 awaited（`TimingFakeRepo` 缺 `settings()`；设置页 4 处缺 `examEvents()`，考试组打开时才调）；B 类条件分支（5 个整理 repo 缺 `organizedTodayCount()`／`causeRecords()`；5 个复习 repo 缺 `hasSessionVerdict()`／`loadAttempt()`／`clearReviewState()`）；C 类 unawaited best-effort（18 个 repo 补 OCR 对 `ocrJobsForQuestion()`→`[]`、`hasOcrApiKey()`→`false`；10 个详情 repo 补 `boxesForPageImage()`→`[]`）。重点新方法复核：`savedSearches`、`recentlyViewedQuestions`、`recordQuestionViewed`、`examEvents`、`homeRevCounts` 均无缺口。
+- SR-P2-3：滞后点按已是新文案（`确认重新框选`，与产品 `box_editor.dart:996` 一致），基线 1/1，补桩后整文件 27/27。
+- 验证：相关 24 文件串行 375/375，analyze 限改动文件干净。
+- 详情 best-effort 两口（`all()`／`causeRecords()`）定方案 B（协调员决策，Meng 01:13 授权）：19 个详情 FakeRepo 里仅 `_B19Repo` 覆写了这两口，其余 18 个缺桩时右栏恒空，测试不超时、也不报错；将来有测试断言右栏内容时，缺桩表现为右栏空白而非超时。方案 A（给 18 个全补内存版＋同步改右栏断言）改动面大、会改变右栏内容；方案 B 是维持现状，把“详情 best-effort 两口可缺桩”写进 D-88 教训条目，明确右栏测试必须用自带两口的 repo（如 `_B19Repo` 同款），并以 D-234 的新守卫兜底（`DetailNotifier.load()` 能跑到的 fake 必须覆写两口或体首设内存库）。另：`save()` 在 8 个无 `ocrRaw` 的文件里恒不可达（`reclassifyCurrent` 未到 `save` 即返回），未补；若将来有用例给题加 `ocrRaw`，对应 FakeRepo 须补 `save()` 桩。
+
+## D-236 — 二十批 P5：文案走查，统一错因／学科／无用文件／排序等 21 组文案（2026-11-22）
+
+- 改动：lib 文案字符串 81 处，同步测试断言 49 处（只改断言文本，不改测试逻辑／测试名）。分 21 组：错因为全应用规范词，取代整理表单、详情编辑表单、错题本筛选里的“错误类型”（16 处）；学科为规范词，取代用户可见文案里的“科目”（5 处）；无用文件为规范词，取代设置行标题“孤儿清理”与导入超限提示“先清理孤儿文件”（2 处）；文件夹重名提示由光秃的“已经有了”改为“已经有了这个文件夹”（8 处）；排序文案以设置页为准统一（箭头两侧加空格，导出文档页眉的“学科升序/降序”“错因状态升序/降序”改为直述，共 18 处）；BigModel key → BigModel API Key（3 处）；未设置 key 的两处说法统一为“未设置 BigModel API Key，请在设置里填写”；整理页截断句补全；收集页同句标点补句号；“仍无法自动定型”→“仍无法自动分类”（4 处）；重框失败补“请重试”；“整理台”→“整理工作台”（3 处，含错题本放大浮层返回标签误写“整理台”改“错题本”）；“通知提醒”→“复查提醒”；“不是本科”→“不是本学科的题”；“最常错的5个”→“最常错的 5 个”（4 处）；“目标文件夹已经不存在了”→“目标文件夹找不到了”；“重试失败，请再试一次”→“请稍后再试”；框选编辑器提示去掉内部阈值“（重叠度需超过 0.3）”（2 处）；“点芯片可改”→“点一下可改”（2 处）；“开始导入”引号改「」。
+- 残留 1 处由协调员收尾时补掉：`lib/data/db_backup.dart:2128` 同句仍是“请先清理孤儿文件”，该文件属 P6 避让范围 P5 未碰；已改成“清理无用文件”（与 `import_service.dart:168` 同款提示一致），`b2_restore_flow_test` 14/14 通过、analyze 干净。注释里的“整理台”“错误类型”残留有意未动（注释不在任务范围）。拿不准未改约 30 项已列清单（`p5-copy/STATUS.md`）。
+- 验证：触及的 10 个测试文件 353/353，analyze 限 24 个改动文件干净。
+
+## D-237 — 二十批 P6：备份派生引用只在文件存在时枚举（修法 A），删除 Q4 必需／可选分类（2026-11-22）
+
+- 门禁落点：`exportBackupZipFromWithReportImpl` 锁内快照之后、复制循环之前，对引用集里除直接引用与图块裁图之外的派生路径逐个查存在性，不在盘上的直接从备份清单去掉，不警告、不进 brokenFiles、不变 partial。
+- Q4 的 `_isOptionalNormalized` 分类（source_path 前缀 / PDF 后缀 / 状态 / EXIF 方向 / source_hash 复核）删除；备份不再为分类读原图 EXIF 头、不算哈希。
+- 底线不动：直接引用缺失仍整单抛错（D-155）；图块裁图缺失/损坏仍警告、不阻断（D-158）；任一真实警告仍记 partial；Q4 的 38/38 误报不回来。
+- 有意取舍：EXIF 方向 3/6/8 且哈希可信、但归一化副本缺失的情形不再警告——该信号在现有数据下无法区分真丢失与当初静默降级未生成（调查 §2.5），且副本可由原图再生（原图缺失即整单抛错），备份不丢不可替代数据；不为此加 schema v7。
+- “真丢仍警告”重新定义为：快照时已在盘上的派生文件在复制/组装阶段丢失，仍按通用派生口径警告；PDF 渲染页图不按 `page_count` 推导升级为必需警告（调查 O4，另议）。
+- 孤儿保护与恢复复核仍走 `_referencedRelativePaths` 原语义（行存在即保护），修法 A 只作用于备份清单。
+- 接续插曲：上一任的新测试文件 `test/b20_p6_backup_existence_gate_test.dart` 编译不过（`insertQuestion` 把 `String?` 传给非空 `String` 的 `Question.ocrFigures`），其 8 个用例此前从未真正跑过；本任修为 `ocrFigures ?? '[]'` 后 8/8 通过。
+- 验证：备份相关 14 个文件 138/138，analyze 限 5 个改动文件干净。
+
+## D-238 — 二十批 P7：十五批 #31「打开 PDF」按钮走 open_filex 5.0.0，桌面端仍走系统启动器（2026-11-22）
+
+- Android/iOS 打开 PDF 的唯一通道为 open_filex 5.0.0（`open_filex: ^5.0.0`，锁定 5.0.0）；桌面端不走它，仍用系统启动器打开，行为不变。
+- `PdfDeliveryService.openPdfWithResult` 为带明确失败原因的版本（无阅读器 / 无权限 / 文件不存在 / 通道报错均带回文案，不静默吞掉）；`openPdf` 只保留 bool 兼容旧调用方。
+- 完成界面按钮条件：仅 PDF 行已交付时 Android 出「分享」+「打开 PDF」（文案逐字「打开 PDF」）；Word 行、未交付行、整单失败/取消时不出现；桌面端仍为「打开文件 / 打开所在文件夹」。
+- 生产接线在 `wrongbook_page.dart`：`openPdfDetailed: delivery.openPdfWithResult`；未接入详细回调时 `openDeliveredPdf` 退回 bool 结果配通用文案。
+- 验证：新测试 16/16，相关既有 77/77（b15 交付／流程、b16 完成确认／直接导出、b17 Word 完成／导出模式），analyze 改动 5 文件干净。
+- 已知局限：iOS 落盘交付仍只支持 Windows 与 Android（`deliver` 既有语义），iOS 的 open_filex 通道只在 `openPdf` 层接好，未在真机验证；本仓库检出无 `android/` 目录，FileProvider 清单合并须打 APK 后复核。真机复核项：Android 真机点按钮确认调起查看器；无阅读器的机器应出「没有可打开 PDF 的应用…」SnackBar；Win11 桌面端仍只有「打开文件／打开所在文件夹」。
+
+## D-239 — 二十批 P8：v1 schema 标 v2 的旧库迁移补齐，首页横幅消除（2026-11-22，D-231）
+
+- 根因：演示库备份是 v1 文件，B19 转换脚本只改 user_version=2 与 JSON 字段，未补 v2 时代的列/表；“v1 schema + user_version=2”绕过 D-91 删 v1 守卫进 2→3 迁移，升到 user_version=6 但 schema 不是 v6。缺：questions 7 列（source_path、source_kind、source_page、page_image_path、slice_path、slice_width、slice_height）、collect_tasks 3 列（created_at、source_path、page_rotations）、question_boxes 表+4 索引。
+- 表现：8 路中仅 recentlyViewedQuestions 抛错（数据层唯一类型化 JOIN，按列名点名 questions 全列，报 no such column: questions.source_path），Future.wait 任一路抛错即整路失败、只翻 loadError；L1/D1 与其余 7 路走单表 `SELECT *`，缺列只读 NULL，故正常。
+- 附带：同一缺列导致 upsertQuestion / upsertCollectTask 写路径也炸，故只改 JOIN 查询不够，必须在迁移层补齐。
+- 修法：`_upgrade2To3` 开头新增 `_ensureV2Baseline()`，按 `PRAGMA table_info` / `sqlite_master` 查缺补漏（缺什么补什么，已有的不动；字面量与 createTablesImpl 一字不差）。真正 v2 库零操作。未动 `home_provider.dart` 与查询本身。
+- 验证：新回归测试 `test/b20_d231_home_migrated_db_test.dart` 2/2 通过（迁移后 DDL 与全新 v6 库逐字一致；load() 无 loadError、各区有数、写路径通、再打开幂等）；相关既有 9 文件 98/98 通过；analyze 干净。真实演示库副本探针：修后 loadError=false、totalDue=3。
+
+## D-240 — 二十批收尾：全量定位修复与批末核对（2026-11-22，协调员）
+
+- 全量首跑 3093/3094，1 败是十九批收尾的余波（非二十批的包）：`s8_chip_label_test`“错题本目录标题：化学书显示‘化学 · 错题本’”——十九批后 `/wrongbook` 默认落点改 L1 列表，收尾修掉 L1 页头后标题不在列表页了；测试断言的标题本在目录视图（`wrongbook_directory.dart:36`，代码未动）。修法（测试侧，沿用 P1 的 B-1/B-2 手法）：经筛选面板书架入口进书架、点化学封面进目录再断言；s8 文件 11/11 通过。
+- analyze 首跑 2 个问题是批前遗留：`database.dart` 里 `crypto` 与 `page_image_pipeline` 两个未用 import（该文件 mtime 是 11-21 17:21，二十批开工前，未动）；核对过 `restore_journal.dart` 自带 crypto import、`PageImagePipeline` 全仓零引用，删掉后 analyze 干净。
+- D-88 注释修正：`detail_notifier.dart` 的“真实 Drift 在 fake async 里永不完成”有误导性，改成“走真实库——fake async 里读不到结果（挂起），但开库建库／迁移真实演示库的副作用照样发生（FR-45，见 D-234）”。纯注释。
+- 全量重跑 **3094/3094 全过**（3058 基线 + P2 10 + P6 8 + P7 16 + P8 2），`flutter analyze` 全仓干净；live 库前后一致（md5 `9c5640bb66fc272e94d6b1f749495187`，9 道题，user_version=2），备份 md5 `8f7f9c…` 不变，真实 slices 停在 487 不再涨。
+- 批过程记录：守护进程重启导致 P1/P4/P5/P6/P7 五个包丢失（无重启检查点），已重派接续（残留复用，不重做）；重派的 P5 又在启动时因推理超时丢失一次，已第二次重派。多包并发跑测试时两次 OOM 杀掉 Dart 编译器、一次 flutter_tools 挂起约 16 分钟，改错峰单文件串行后稳定。
+- 未推送。真机复核项：P7 的 Android「打开 PDF」按钮（须打 APK 后查 FileProvider 清单合并＋真机点按）；P8 的迁移补齐已由回归测试覆盖，Win11 上用迁移后演示库跑首页应不再出横幅。另立包：`resetForTest()` 置 null 改重指全新临时目录的系统性修法；历史遗留的 487 个切片与 115 个 trash 删不删由 Meng 定；`pkg2` 批量 2 窗口 DB 变化仍未归因。
+
+## D-241 — 二十一批：搜索改为内容搜索，旧“只搜元数据”口径废止（2026-11-22，Meng）
+
+- Meng 2026-11-22：搜索也要能搜题干和选项。旧决定（十九批板子 §1.2 / `searchHaystack` 注释“搜索只查元数据，永不搜题干”）废止。
+- 修法只改内存 haystack（`state/wrongbook_notifier.dart` 的 `searchHaystack`，`filteredAll()` 的 `contains` 匹配不动）：原有元数据项（题名/学科/文件夹/标签/试卷/收集日期/知识点/错因）全保留，新增题干 OCR 文字（`sliceText`，即 `slice_text` 列）/ 选项文字（`optionContents` 的值，标签映射 JSON 的 value）/ 答案 / 解析 / 备注（`answer` / `explanation` / `notes`，可空）。不搜 `ocrRaw`（原始 md，与题干重复且含未解析杂项）。
+- 注意：选项未解析时 `optionContents` 为 NULL，选项文字可能已在题干文本里（autoSplit 外的切分不回填选项区），此时题干项已覆盖，不丢。
+- 文案同步：L1 范围说明行改成“可搜标题、题干、选项、答案、解析、备注，也搜文件夹、标签、错因、知识点、试卷。”；命令面板 placeholder 删掉“（只搜元数据）”（面板本身只搜导航目标名——文件夹/标签/错因/知识点/试卷，行为未变，括号里的旧口径已过时）。大搜索框 placeholder 不含旧口径，不动。
+- 整理工作台的搜索不动（另有口径，见 `organize_page_test.dart`“搜索只匹配题名/学科/试卷，不搜题干”）。
+
+## D-242 — 二十一批：L1 大搜索框内深色 Ctrl+K kbd 去掉（2026-11-22，Meng）
+
+- Meng 2026-11-22：搜索框里多个小框不好看。删掉框内 `Ctrl` + `K` 两个深色 kbd（`wrongbook_list.dart` 的 `_buildBigSearch`），框里只留放大镜 + 输入框。
+- 快捷键本身保留：Ctrl+K 仍呼出命令面板，入口在范围说明行的浅色 kbd（可点）；键盘 Ctrl+K 监听不动。
+
+## D-243 — 二十一批：导出入口改名「导出打印」，进结果头与排序/筛选/批量操作并排（2026-11-22，Meng）
+
+- Meng 2026-11-22：预览导出功能改成导出打印，并和批量操作等功能放同一行。入口从结果头下方的独立虚线行（`▣ 预览导出模式`，虚线蓝边框）移到结果头那一行，改成与同行一致的 `QmChip`「导出打印」，排在批量操作之后；非导出模式时才画。
+- 导出模式内行为不变：下方的 `取消` + `导出（n）`（n=0 置灰）+ 黄色提示条 + 底部汇总条原样保留；`_buildExportToggle` 平时分支改成空占位。
+- 入口 key 沿用 `export-selected-toolbar`（旧测试按 key 找入口，现落在结果头的 chip 上）。
+
+## D-244 — 二十一批：L1 行加黑标题改成题干（超 15 字截断），无题干回退标题（2026-11-22，Meng）
+
+- Meng 2026-11-22：截图里每道题加黑的那个小标题，改成题干。行内显示题干 OCR 文字（`slice_text`），先去换行/多余空白，超过 15 个字截断加省略号（…）；没有 OCR 文字（无题干）的题，行内先留着原来的标题字段兜底。
+- 只改 L1 列表行的显示（`wrongbook_list.dart` 的板子行与已归档行，顶层纯函数 `rowDisplayTitle`）：详情页标题栏与导出汇总里的标题不动（仍用 `q.title`）。收尾时把 `_rowDisplayTitle` / `_stripLatexForRow` 从 State 扩展方法抽成顶层公开纯函数 `rowDisplayTitle` / `stripLatexForRow`（行为不变），供单测直接调用。
+- 题干含公式 LaTeX 时行内只显示纯文本：`$…$` / `$$…$$` / `\(…\)` / `\[…\]` 整段去掉，不成对的 `$` 也去掉，不把 `$` 符号原样露出来；整段题干只剩公式时（去完为空）回退到标题字段。公式本身仍在详情页纸面与题干区正常渲染。简化口径：假定成对 `$` 都是公式定界符（题干里 `$` 作货币符的情形未见，遇上会误删中间文字）。
+- 搜索高亮仍对显示的文字生效（`_highlightSpans(rowDisplayTitle(q), keyword)`）；行内截断是数据层截断（15 字 + …），不是视觉省略。
+- 测试：`boardRow` 按显示文字找行（标题→显示文字映射在 `wrongbook_page_test.dart`）；新测试 `test/b21_row_title_test.dart` 覆盖回退、截断、LaTeX、空白折叠。
+- **修订（2026-11-22 11:32，Meng 改）：15 字限制取消，不设字数截断，题干完整显示、自动换行。详见 D-248。**
+
+## D-245 — 二十二批：浅色主题改蓝白经典，暖纸底色换掉（2026-11-22，Meng）
+
+- Meng 2026-11-22 09:47：本地还是暖色调，改成蓝白经典。
+- 修法只改浅色 palette（`lib/theme/design_tokens.dart` 的 light，深色一字未动）+ 镜像常量（`lib/theme/app_theme.dart`，两处同步是该文件自己的约定）：底色 #FDF8EC → #F7FAFD，surface 暖白 #FFFFFEF9 → 冷白 #FFFFFF，surface2 #FDF3D8 → 淡蓝 #EFF4FA（左导航底取 surface2，同步变冷），surface3 #F3E9C8 → #DCE8F5，line #E8DFC2 → #DCE4EF，lineStrong #CFC39E → #B9C6D8；纸页 #FFFFFDF4 → #FFFFFF（不再发黄），paperInk #22251F → 墨色 #17233B（= ink），paperLine #E3D9BE → #DCE4EF，paperBtnBorder #B9AE8E → #B9C6D8，paperBtnText #3D4438 → #3D4E6B（= ink2），纸纹微点 rgba(180,160,90,.07) → rgba(160,180,205,.05)。
+- 不变：ink/ink2/muted、强调蓝 #2E7CF6 全套、学科色、warn/err/info/keep/merge/cut（语义色）、paperMuted、paperStar、paperStarOn（琥珀星标是语义色，不是纸暖）。深色主题不动——但注意深色 palette 的 paperBtnBorder/paperBtnText 仍是旧暖值 #B9AE8E/#3D4438（与浅色旧值碰巧相同，本次只改浅色块，深色原样保留；`design_tokens.dart` 的字段注释已改口，不再说“亮/深取同一值”）。
+- 顺带去暖的硬编码色（D1 详情页本已是蓝白底 #F7FAFD，只剩纸面与兜底行发黄）：`_d1PaperLine` 浅色硬编码 #E8E2D2 删掉、直接用 token paperLine；原图兜底行 #F4F1E6/#D8D2BC/#7A744F → #EFF4FA/#DCE4EF/#5F718E；错题本封面折角渐变 #FFFDF4/#E9E2CC → #FFFFFF/#DCE8F5。答案区淡绿 #F2F8F0 是语义色，未动。
+- `docs/ui-replication/R1-TOKENS.md` 浅色对照值已同步；R0/R2/R7 报告是历史快照，不改。
+- 测试：只改断言旧暖色值的 6 个文件（theme_smoke、uikit、wrongbook_page 缩略图纸面、b14 答案区、b14 Q3 芯片、app_shell 导航字号），其余不动。
+
+## D-246 — 二十二批：左导航条目字号 14.5 → 15.5（2026-11-22，Meng）
+
+- Meng 2026-11-22 09:47：导航上的字号稍微大一点。
+- 只改 `DesignTokens.navItemFontSize` 14.5 → 15.5（`app_shell.dart:426` 用）；品牌 17、分组 12、徽标 11.5 不动。改完截图目视确认不大不小。
+
+## D-247 — 二十二批：入场上移淡入动效（2026-11-22，Meng）
+
+- Meng 2026-11-22 09:49：动效也做上。取组合器第六层默认：入场上移淡入。
+- 新 `lib/widgets/entrance_animation.dart`（`EntranceFadeSlide`）：挂载时 250ms、`Curves.easeOut`，透明度 0.01→1、上移 8px→0；可选 `delay` 供列表行错开。应用点：首页 `_buildBody`、错题本 build 的 `view` 返回处（列表/归档/书架/目录共用）、列表板子行与已归档行（delay = 行号 × 30ms，上限 8 行）、详情页 `_DetailViewState.build` 的 PopScope。
+- 淡入起点取 0.01 而非 0：`RenderOpacity` 在 alpha == 0 时不参与命中测试，0.01 视觉上与 0 无异、首帧仍可点按（单测覆盖“首帧仍可点按”）。
+- `MediaQuery.disableAnimations` 为真时直接渲染 child，不启动动画。不要翻卡/重铸动画（2026-11-11 已定去掉）。
+- 单测 `test/b22_entrance_animation_test.dart` 4/4：首帧 0.01→跑完 1.0 且无位移；delay 等待期内不动；disableAnimations 直接出内容；首帧可点按。测试侧经验：fake async 下 `Future.delayed` 在“跨过它”的那次 pump 里不触发，要再 pump 两次才 forward + 推进（探针实测）；`AnimatedBuilder findsNothing` 不能断言——MaterialApp 自带一个。
+
+## D-247 补记 — 入场动效 Timer 回归修法（2026-11-22）
+
+- 全量首跑 3114/3115，唯一失败 `b19_a_wiring_test`「普通导航后 _folderArg 已清」：`EntranceFadeSlide` 的 `Future.delayed` 在页面于 delay 内被释放时留下待触发 Timer，测试框架在树释放后报 `A Timer is still pending`（`timersPending`）。`mounted` 守门只能防回调里崩，不能消掉 Timer 本身。
+- 修法：错开不用 Timer——delay 折进一次性的 controller 总时长（delay + 250ms），用 `Interval(delay/total, 1.0, curve: easeOut)` 把动画压到后半段，前半段值恒为 0，与“等 delay 再播”视觉等价；释放时只需 dispose controller。`b19_a_wiring_test` 与相关集重跑通过。单测的 delay 中间态断言仍成立（Interval 下时间推进更确定，不再依赖 fake async 的 Timer 触发时机）。
+
+## D-248 — 二十二批：大搜索框占位改内容搜索版 + 行标题取消 15 字限制（D-244 修订）（2026-11-22，Meng）
+
+- Meng 2026-11-22 11:31：列表页大搜索框的占位还是旧的“搜文件夹、标签、错因、知识点、试卷…”，只列了元数据，和下面范围行对不上，顺手改了，并进二十二批。
+- 占位改法：L1 大搜索框 `hintText` 换成「搜标题、题干、选项、答案、解析、备注…」（`wrongbook_list.dart:737`），与范围行「可搜标题、题干、选项、答案、解析、备注，也搜文件夹、标签、错因、知识点、试卷。」一致。只改这一处占位：范围行不动；命令面板占位（`command_palette.dart:358`，同文案）不动。无测试断言该占位。
+- Meng 2026-11-22 11:32（针对二十一批第 4 件）：之前定的“列表行标题超 15 字截断加 …”取消，现在不设置字数限制。
+- 修法：`rowDisplayTitle` 去掉 15 字截断（`stem.length > 15` 一行删掉），题干完整显示；板子行 RichText 去掉 `maxLines: 1` + `TextOverflow.ellipsis`，自动换行（首行 Row 本就是 `CrossAxisAlignment.start`，多行时 pill/时间顶对齐）；已归档行 Text 本无 maxLines，不动。无题干回退标题、LaTeX 整段去掉这两条不变；`stripLatexForRow` 本身不含截断，不动。
+- 测试同步：`b21_row_title_test.dart` 截断用例改完整显示（16 字完整、30 字完整、含空格完整；高亮用例“阴影”由 1 处改 2 处——完整题干里“阴影”出现两次）；`b21_content_search_test.dart` 的 demoRow 截断串全换完整题干；`wrongbook_page_test.dart` 映射表 4 项换全文（函数极限/导数综合/阅读主旨/图表作文）。
+- 注意：`rowDisplayTitle` 的 `\s+` 折叠会把全角空格 U+3000 也折成半角空格——函数极限题干「（　）」渲染后是「（ ）」，期望里要用折叠后形式；liveDemoRepo 的 sliceText 原文（全角空格）是逐字抄自 live 库的原始 OCR 文字，不动。

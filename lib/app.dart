@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../data/database.dart';
@@ -13,6 +14,7 @@ import '../state/badge_counts_provider.dart';
 import '../state/settings_notifier.dart';
 import '../theme/app_theme.dart';
 import '../widgets/app_shell.dart';
+import '../widgets/command_palette.dart';
 import 'modules/collect/collect_page.dart';
 import 'modules/detail/question_detail_page.dart';
 import 'modules/home/home_page.dart';
@@ -86,6 +88,16 @@ class _QuizMasterAppState extends ConsumerState<QuizMasterApp> {
   String? _settingsGroupArg;
   String? _reportCauseArg; // 学习报告点弱点进错题本时的错因筛选
   String? _reportKpArg; // 学习报告点弱点进错题本时的知识点筛选
+  String? _folderArg; // 详情页右栏「打开列表 ›」进错题本时的文件夹筛选
+  // 十九批 A（D-223）：深链路跳错题本的挂载代次——_goWrongbookFiltered
+  // 每调一次 +1，进 WrongbookPage 的 key，强制重挂载（已挂载的
+  // notifier 不随 override 变化重建，D-50；不加代次时详情页内跳
+  // 进来只会看到旧筛选的列表）。
+  int _wrongbookFilterGeneration = 0;
+  // 十九批 A4：命令面板里选中的查找（条件 + 显示名）：选后先切到
+  // /wrongbook（已在错题本则只重建），由 WrongbookPage 在挂载 /
+  // 更新时应用并回调清掉（见 WrongbookPage.pendingSearch）。
+  ({Map<String, dynamic> conditions, String label})? _pendingPaletteSearch;
   final _navigatorKey = GlobalKey<NavigatorState>();
 
   late final QuestionRepository repo = QuestionRepository(AppDatabase.instance);
@@ -93,6 +105,10 @@ class _QuizMasterAppState extends ConsumerState<QuizMasterApp> {
   @override
   void initState() {
     super.initState();
+    // 十九批 A4：全局 Ctrl+K / Cmd+K 呼出命令面板（任意页面）。
+    // 不用 Shortcuts/Focus——文本框聚焦时方向键等会被文本框的
+    // 默认快捷键先吞掉；HardwareKeyboard 在焦点派发之前拦截。
+    HardwareKeyboard.instance.addHandler(_handleGlobalKey);
     // 十三批 M3：应用启动时启动 OCR 后台 worker（幂等；启动时回收过期租约）。
     // 启动失败不抛（worker 内部已兜底），绝不拖垮应用启动。
     // flutter test 下不启动（FLUTTER_TEST=true）：避免 widget 测试里
@@ -100,6 +116,56 @@ class _QuizMasterAppState extends ConsumerState<QuizMasterApp> {
     if (Platform.environment['FLUTTER_TEST'] != 'true') {
       unawaited(OcrWorker.ensureStarted());
     }
+  }
+
+  @override
+  void dispose() {
+    HardwareKeyboard.instance.removeHandler(_handleGlobalKey);
+    super.dispose();
+  }
+
+  /// 十九批 A4：全局 Ctrl+K / Cmd+K（KeyDown 才触发；面板已开时
+  /// 不再叠开一层）。可打印字符一律放行（返回 false）。
+  bool _handleGlobalKey(KeyEvent event) {
+    if (event is! KeyDownEvent) return false;
+    if (event.logicalKey != LogicalKeyboardKey.keyK) return false;
+    final kb = HardwareKeyboard.instance;
+    if (!kb.isControlPressed && !kb.isMetaPressed) return false;
+    if (!mounted || CommandPalette.isOpen) return true;
+    _openCommandPalette();
+    return true;
+  }
+
+  /// 十九批 A4：呼出命令面板（遮罩 rgba(15,23,42,.45)，见板子 §6.1）。
+  /// 选中一条后：记下待应用的查找，切到 /wrongbook（已在错题本则
+  /// 只重建触发 WrongbookPage 的 pending 应用）；应用本身由
+  /// WrongbookPage 在挂载 / 更新时做（条件 + 显示名一起传，
+  /// 显示名进「最近搜过」）。
+  void _openCommandPalette() {
+    final ctx = _navigatorKey.currentContext;
+    if (ctx == null || !ctx.mounted) return;
+    if (CommandPalette.isOpen) return;
+    unawaited(
+      showDialog<void>(
+        context: ctx,
+        barrierColor: const Color.fromRGBO(15, 23, 42, 0.45),
+        barrierDismissible: true,
+        builder: (dctx) => CommandPalette(
+          repo: repo,
+          onApply: (conditions, label) {
+            _pendingPaletteSearch = (
+              conditions: conditions,
+              label: label,
+            );
+            if (_route != '/wrongbook') {
+              _go('/wrongbook');
+            } else {
+              setState(() {});
+            }
+          },
+        ),
+      ),
+    );
   }
 
   /// B4.1：复查提醒一轮应用只判断一次（启动时；切页不重复弹）。
@@ -349,6 +415,7 @@ class _QuizMasterAppState extends ConsumerState<QuizMasterApp> {
       // 全新挂载：不清掉，下次普通进错题本会落在带筛选的列表而不是书架。
       _reportCauseArg = null;
       _reportKpArg = null;
+      _folderArg = null;
       // B11-9：普通入口进设置页时不预展开任何组。
       if (route != '/settings') _settingsGroupArg = null;
     });
@@ -383,21 +450,34 @@ class _QuizMasterAppState extends ConsumerState<QuizMasterApp> {
     String? subjectId,
     String? cause,
     String? knowledgePointId,
+    String? folderId,
   }) {
     _userNavigated = true;
+    // 十九批 A（D-223）：详情页右栏跳进来时详情还压在根 Navigator
+    // 栈顶——只改底层路由不 pop，用户看到的仍是详情；pop 到栈底才
+    // 看到带筛选的列表（报告页调进来时栈顶就是首页，popUntil 是空操作）。
+    // 代次 +1 强制 WrongbookPage 重挂载（见 _folderArg 注释），
+    // 否则已挂载的 notifier 不读新的 initial，列表仍是旧筛选。
+    _wrongbookFilterGeneration++;
     setState(() {
       _route = '/wrongbook';
       _subjectArg = subjectId;
       _reportCauseArg = cause;
       _reportKpArg = knowledgePointId;
+      _folderArg = folderId;
     });
     unawaited(repo.saveLastRoute('/wrongbook'));
+    _navigatorKey.currentState?.popUntil((route) => route.isFirst);
   }
 
   Future<void> _openDetail(
     Question q,
     List<String> orderIds, {
     String sourceLabel = '错题本',
+    // 十九批 A6：列表行点按时拼的查询描述（学科名 · 错因名 · 状态 ·
+    // 搜索关键词，全空为「全部题目」）；详情页 B 包在返回行展示，
+    // 不传时沿用现版「返回{sourceLabel}」文案。
+    String? searchContext,
   }) async {
     await _navigatorKey.currentState?.push(
       MaterialPageRoute(
@@ -406,6 +486,10 @@ class _QuizMasterAppState extends ConsumerState<QuizMasterApp> {
           questionId: q.id,
           orderIds: orderIds,
           sourceLabel: sourceLabel,
+          searchContext: searchContext,
+          // 十九批 A（D-223）：详情页右栏「全部 ›」/「打开列表 ›」
+          // 跳带筛选的错题本列表（见 _goWrongbookFiltered）。
+          onOpenWrongbookFiltered: _goWrongbookFiltered,
           // B11-11：复习记录空状态的“去复习”按钮去 /review。
           onGoReview: () => _goReview(),
         ),
@@ -430,15 +514,37 @@ class _QuizMasterAppState extends ConsumerState<QuizMasterApp> {
         );
       case '/wrongbook':
         return WrongbookPage(
+          // 十九批 A（D-223）：key 带深链路参数 + 代次——参数变化或
+          // _goWrongbookFiltered 每次调用都重挂载，notifier 读到新
+          // 的 initial；参数不变的普通重建不重挂（列表状态保留）。
+          key: ValueKey(
+            'wrongbook-$_wrongbookFilterGeneration-'
+            '${_subjectArg ?? ''}-${_reportCauseArg ?? ''}-'
+            '${_reportKpArg ?? ''}-${_folderArg ?? ''}',
+          ),
           repo: repo,
           initialSubjectId: _subjectArg,
           filterCause: _reportCauseArg,
           filterKnowledgePointId: _reportKpArg,
+          folderId: _folderArg,
+          // 十九批 A4：命令面板选中的查找（挂载 / 更新时应用，见
+          // WrongbookPage.pendingSearch）；应用后回调清掉。
+          pendingSearch: _pendingPaletteSearch,
+          onPendingSearchApplied: () {
+            if (mounted) {
+              setState(() => _pendingPaletteSearch = null);
+            }
+          },
           onOpenHome: () => _go('/home'),
           onGoSubjects: () => _go('/subjects'),
           onGoCollect: () => _go('/collect'),
           onGoOrganize: () => _go('/organize'),
-          onOpenDetail: (q, ids) => _openDetail(q, ids, sourceLabel: '错题本'),
+          onOpenDetail: (q, ids, {String? searchContext}) => _openDetail(
+            q,
+            ids,
+            sourceLabel: '错题本',
+            searchContext: searchContext,
+          ),
           onGoReview: ({String? subjectId}) => _goReview(subjectId: subjectId),
         );
       case '/review':

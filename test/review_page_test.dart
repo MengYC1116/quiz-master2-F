@@ -642,7 +642,7 @@ Future<void> pumpReview(
                 key: UniqueKey(),
                 repo: repo ?? reviewRepo(),
                 initialSubjectId: initialSubjectId,
-                onOpenDetail: (q, ids) async {
+                onOpenDetail: (q, ids, {String? searchContext}) async {
                   opened.add(q);
                   if (onOpenDetail != null) await onOpenDetail(q, ids);
                 },
@@ -1205,7 +1205,7 @@ void main() {
       await pumpReview(
         tester,
         repo: repo,
-        onOpenDetail: (q, ids) async {
+        onOpenDetail: (q, ids, {String? searchContext}) async {
           // 模拟详情页补全答案：填上正确答案 B（确认列不动，仍为 false）。
           final i = repo.questions.indexWhere((x) => x.id == q.id);
           repo.questions[i] = repo.questions[i].copyWith(correctOption: 'B');
@@ -1598,7 +1598,7 @@ void main() {
       await pumpReview(
         tester,
         repo: repo,
-        onOpenDetail: (q, ids) async {
+        onOpenDetail: (q, ids, {String? searchContext}) async {
           repo.questions.removeWhere((x) => x.id == q.id);
           repo.records.removeWhere((r) => r.questionId == q.id);
         },

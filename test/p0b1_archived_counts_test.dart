@@ -6,20 +6,17 @@
 // 会把归档题算进去，与复习列表对不上。改后三者默认排除归档
 //（includeArchived: false），取消归档后恢复计入。
 //
-// 错题本三处切片调用点（大卡片 QuestionSlice、紧凑列表两处
-// CompactSliceThumb）现传 `_subjectOf(q.subjectId)`；本文件用页级
-// 测试直接读树上 widget 的 subject 参数验证接线（错题本页本身不传
-// failed，失败占位靠 widget 的 failed 开关，已由
-// p0b1_subject_sync_test 的切片占位测试覆盖）。
+// 错题本板子行学科圆点现传 `_subjectOf(q.subjectId).color`；本文件
+// 用页级测试直接读板子行圆点的颜色验证接线（大卡片 / 紧凑列表
+// 已随视图切换去掉，旧三处切片调用点随之消失，见十九批 C）。
 import 'package:flutter_test/flutter_test.dart';
 import 'package:quiz_master2/data/database.dart';
 import 'package:quiz_master2/data/repository.dart';
 import 'package:quiz_master2/models/models.dart';
-import 'package:quiz_master2/widgets/widgets.dart';
 
-import 'p0b1_subject_sync_test.dart' show subjects4;
+import 'p0b1_subject_sync_test.dart' show chemPurple, subjects4;
 import 'wrongbook_page_test.dart'
-    show FakeWrongbookRepo, pumpWrongbook, wbq;
+    show FakeWrongbookRepo, boardRowDotColor, pumpWrongbook, wbq;
 
 class _ArchivedFakeRepo extends QuestionRepository {
   _ArchivedFakeRepo() : super(AppDatabase.instance);
@@ -156,8 +153,11 @@ void main() {
     });
   });
 
-  group('P0B1 错题本切片占位：三处调用点传了库里学科', () {
-    testWidgets('大卡片 QuestionSlice 拿到化学学科（非数学兜底）',
+  group('P0B1 错题本板子行：学科圆点传了库里学科', () {
+    // 十九批 C：大卡片 / 紧凑列表已随视图切换去掉（D-219），三处
+    // 切片调用点随之消失；学科同步断言改到板子行学科圆点上
+    //（圆点色 = subjectOf(q.subjectId).color，走库里学科的存色）。
+    testWidgets('板子行学科圆点拿到化学学科（非数学兜底）',
         (tester) async {
       final repo = FakeWrongbookRepo(
         questions: [
@@ -172,20 +172,12 @@ void main() {
         ],
         subjects: subjects4,
       );
-      await pumpWrongbook(tester, repo: repo);
-      await tester.tap(find.text('化学'));
-      await tester.pumpAndSettle();
-      await tester.tap(find.text('全部题目'));
-      await tester.pumpAndSettle();
-      final slice =
-          tester.widget<QuestionSlice>(find.byType(QuestionSlice).first);
-      expect(slice.subject?.id, 'subject-chem');
-      expect(slice.subject?.name, '化学');
-      expect(slice.subject?.icon, '化');
+      await pumpWrongbook(tester,
+          repo: repo, initialSubjectId: 'subject-chem');
+      expect(boardRowDotColor(tester, 'qc1'), chemPurple);
     });
 
-    testWidgets('紧凑列表 CompactSliceThumb 两处都拿到化学学科',
-        (tester) async {
+    testWidgets('板子行两道题的学科圆点都拿到化学学科', (tester) async {
       final repo = FakeWrongbookRepo(
         questions: [
           wbq('qc1', '化学平衡',
@@ -204,20 +196,10 @@ void main() {
         ],
         subjects: subjects4,
       );
-      await pumpWrongbook(tester, repo: repo);
-      await tester.tap(find.text('化学'));
-      await tester.pumpAndSettle();
-      await tester.tap(find.text('全部题目'));
-      await tester.pumpAndSettle();
-      await tester.tap(find.text('紧凑列表'));
-      await tester.pumpAndSettle();
-      final thumbs =
-          tester.widgetList<CompactSliceThumb>(find.byType(CompactSliceThumb));
-      expect(thumbs.length, 2);
-      for (final t in thumbs) {
-        expect(t.subject?.id, 'subject-chem');
-        expect(t.subject?.name, '化学');
-      }
+      await pumpWrongbook(tester,
+          repo: repo, initialSubjectId: 'subject-chem');
+      expect(boardRowDotColor(tester, 'qc1'), chemPurple);
+      expect(boardRowDotColor(tester, 'qc2'), chemPurple);
     });
   });
 }

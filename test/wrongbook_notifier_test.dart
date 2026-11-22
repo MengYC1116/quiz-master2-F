@@ -109,6 +109,24 @@ class FakeWrongbookNotifierRepo extends QuestionRepository {
   final List<Folder> savedFolders = [];
   final List<String> deletedFolderIds = [];
 
+  /// 十九批 A3：内存版已存查找（不碰真实库）。
+  final List<SavedSearch> savedSearchList = [];
+
+  @override
+  Future<List<SavedSearch>> savedSearches() async =>
+      List.of(savedSearchList);
+
+  @override
+  Future<void> saveSavedSearch(SavedSearch search) async {
+    savedSearchList.removeWhere((s) => s.id == search.id);
+    savedSearchList.add(search);
+  }
+
+  @override
+  Future<void> deleteSavedSearch(String id) async {
+    savedSearchList.removeWhere((s) => s.id == id);
+  }
+
   @override
   Future<bool> folderNameExistsInSubject(
     String subjectId,
@@ -282,12 +300,15 @@ void main() {
     expect(container.read(wrongbookProvider).loadError, isTrue);
   });
 
-  test('初始落点：带学科进目录，只带错因进列表，都不带是书架', () async {
+  // 十九批 A5（D-222）：/wrongbook 默认落点改为 L1 搜索结果页——
+  // 带学科、只带错因、都不带，全部进 list（带学科时按该学科筛选；
+  // 书架 / 目录只从 L1 筛选面板顶部入口进）。
+  test('初始落点：带学科、只带错因、都不带，全部进 L1 列表', () async {
     final (_, _, c1) = await _setUp(
       initial: const WrongbookInitial(subjectId: 'math'),
     );
     addTearDown(c1.dispose);
-    expect(c1.read(wrongbookProvider).view, WrongbookView.directory);
+    expect(c1.read(wrongbookProvider).view, WrongbookView.list);
     expect(c1.read(wrongbookProvider).subjectId, 'math');
 
     final (_, _, c2) = await _setUp(
@@ -299,7 +320,31 @@ void main() {
 
     final (_, _, c3) = await _setUp();
     addTearDown(c3.dispose);
-    expect(c3.read(wrongbookProvider).view, WrongbookView.shelf);
+    expect(c3.read(wrongbookProvider).view, WrongbookView.list);
+    expect(c3.read(wrongbookProvider).subjectId, isNull);
+  });
+
+  // 十九批 A（D-223）：详情页右栏「打开列表 ›」带文件夹 + 学科进来，
+  // 落到按该文件夹筛选的列表（学科只定范围）；f1 里是 q1/q2
+  //（q5 已归档、q6 未整理不进列表），f2 的 q3 不在。
+  test('初始落点：带文件夹筛选进该文件夹的列表', () async {
+    final (_, _, c) = await _setUp(
+      initial: const WrongbookInitial(
+        subjectId: 'math',
+        filterFolderId: 'f1',
+      ),
+    );
+    addTearDown(c.dispose);
+    final s = c.read(wrongbookProvider);
+    expect(s.view, WrongbookView.list);
+    expect(s.subjectId, 'math');
+    expect(s.folderId, 'f1');
+    final ids = s.filteredAll().map((q) => q.id).toSet();
+    // f1 里 q1 在、q2 已掌握默认隐藏、q5 已归档、q6 未整理；
+    // f2 的 q3 不在。
+    expect(ids, contains('q1'));
+    expect(ids, isNot(contains('q2')));
+    expect(ids, isNot(contains('q3')));
   });
 
   test('列表过滤：已掌握默认隐藏，筛已解决才出现；归档/未整理不进列表', () async {
@@ -317,6 +362,52 @@ void main() {
     notifier.setFilterCauseStatus('solved');
     ids = container.read(wrongbookProvider).filteredAll().map((q) => q.id);
     expect(ids, contains('q2'));
+  });
+
+  // 十九批 A3（D-218）：保存查找的增删应用（notifier 层）。
+  test('保存查找：空名拦下；保存后进列表与仓库；删除后两边都清', () async {
+    final (repo, notifier, c) = await _setUp();
+    addTearDown(c.dispose);
+    expect(await notifier.saveCurrentSearch('  '), '先给这次查找起个名字');
+    expect(c.read(wrongbookProvider).savedSearches, isEmpty);
+    notifier.applySearchConditions(const {'cause': '概念不清'});
+    expect(await notifier.saveCurrentSearch('概念不清题'), isNull);
+    final saved = c.read(wrongbookProvider).savedSearches;
+    expect(saved.map((s) => s.name), ['概念不清题']);
+    expect(saved.first.conditions['cause'], '概念不清');
+    expect(repo.savedSearchList.map((s) => s.name), ['概念不清题']);
+    await notifier.deleteSavedSearch(saved.first.id);
+    expect(c.read(wrongbookProvider).savedSearches, isEmpty);
+    expect(repo.savedSearchList, isEmpty);
+  });
+
+  test('保存查找：chip 点按应用条件；最近搜过只记非空、去重、上限 4', () async {
+    final (_, notifier, c) = await _setUp();
+    addTearDown(c.dispose);
+    notifier.applySavedSearch(
+      SavedSearch(
+        id: 'ss1',
+        name: '概念不清题',
+        conditions: const {'cause': '概念不清'},
+        createdAt: DateTime(2026, 11, 19),
+      ),
+    );
+    var s = c.read(wrongbookProvider);
+    expect(s.filterCauseName, '概念不清');
+    expect(s.filteredAll().map((q) => q.id), contains('q1'));
+    expect(s.recentSearches.map((r) => r.name), ['概念不清题']);
+    // 空条件不记；同 label 同条件去重顶到最前；超过 4 条只留最新 4 条。
+    notifier.recordRecentSearch('全部题目', const {});
+    expect(c.read(wrongbookProvider).recentSearches.length, 1);
+    for (var i = 0; i < 5; i++) {
+      notifier.recordRecentSearch('搜$i', {
+        'cause': '错因$i',
+      });
+    }
+    s = c.read(wrongbookProvider);
+    expect(s.recentSearches.length, 4);
+    expect(s.recentSearches.first.name, '搜4');
+    expect(s.recentSearches.map((r) => r.name), isNot(contains('概念不清题')));
   });
 
   test('文件夹范围：子树收题；目录计数只收已整理未归档未掌握', () async {
@@ -391,7 +482,7 @@ void main() {
     );
     addTearDown(container.dispose);
     expect(await notifier.addFolder(name: ''), '先写文件夹名称');
-    expect(await notifier.addFolder(name: '试卷'), '已经有了');
+    expect(await notifier.addFolder(name: '试卷'), '已经有了这个文件夹');
     expect(await notifier.addFolder(name: '错题集'), isNull);
     expect(repo.folderList.any((f) => f.name == '错题集'), isTrue);
     expect(container.read(wrongbookProvider).folders.length, 5);
@@ -490,7 +581,7 @@ void main() {
     addTearDown(container.dispose);
     final s = container.read(wrongbookProvider);
     final f2 = s.folders.firstWhere((f) => f.id == 'f2');
-    expect(await notifier.saveRename(f2, '试卷'), '已经有了');
+    expect(await notifier.saveRename(f2, '试卷'), '已经有了这个文件夹');
     expect(await notifier.saveRename(f2, '周末作业'), isNull);
     expect(
       container

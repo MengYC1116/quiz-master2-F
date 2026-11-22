@@ -685,8 +685,8 @@ void main() {
 
     testWidgets('窄窗口单列：两组弱点上下排，无溢出', (tester) async {
       await pumpReport(tester, width: 900);
-      expect(find.text('最常错的5个原因'), findsOneWidget);
-      expect(find.text('最常错的5个知识点'), findsOneWidget);
+      expect(find.text('最常错的 5 个原因'), findsOneWidget);
+      expect(find.text('最常错的 5 个知识点'), findsOneWidget);
       expect(tester.takeException(), isNull);
     });
   });

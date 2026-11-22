@@ -154,6 +154,7 @@ class FormulaRasterResult {
     required this.effectiveDpi,
     required this.shrunk,
     this.isOriginal = false,
+    this.baselineOffsetPt,
   });
 
   /// 公式标识。
@@ -178,6 +179,15 @@ class FormulaRasterResult {
 
   /// 是否为原图降级（渲染失败但裁剪成功）。
   final bool isOriginal;
+
+  /// 数学基线偏移（pt，十八批 P1 D-216：图片顶到数学 alphabetic
+  /// 基线的距离，离屏渲染时从 Math.tex 的 render 对象量得）。
+  ///
+  /// PDF 与 Word 的行内公式按此对齐文字基线（见 c_content_builder 与
+  /// word_formula_baseline）。为 null = 未知基线：原图降级（裁剪自
+  /// 题目照片，无栅格化结果）与量取失败时均为 null，调用方按旧行为
+  /// 处理（PDF 用居中启发式、Word 不下移），不得用猜的数。
+  final double? baselineOffsetPt;
 
   /// 像素数（guard 计入用，C-13）。
   int get pixelCount => pixelWidth * pixelHeight;
@@ -411,6 +421,19 @@ class FormulaRasterizer {
         request.displayMode &&
         attempt.naturalWidth != null &&
         attempt.naturalWidth! > PdfExportGeometry.contentWidthPt + 0.5;
+    // 十八批 P1（D-216）：基线偏移按同一缩小比例换算（行内公式不缩小，
+    // 比例恒为 1；独立公式被 FittedBox 等比缩小时基线同比缩放；
+    // 量不到基线时为 null，调用方按旧行为处理）。
+    final rawBaseline = attempt.baselineOffset;
+    double? baselineOffsetPt;
+    if (rawBaseline != null) {
+      var scale = 1.0;
+      if (shrunk && attempt.naturalWidth != null) {
+        scale =
+            PdfExportGeometry.contentWidthPt / attempt.naturalWidth!;
+      }
+      baselineOffsetPt = rawBaseline * scale;
+    }
     _check(FormulaRasterCheckpoint.beforeToImage);
     final boundary = attempt.boundary;
     if (boundary == null) {
@@ -482,6 +505,7 @@ class FormulaRasterizer {
         logicalHeightPt: boundarySize.height,
         effectiveDpi: image.width / (boundarySize.width / 72),
         shrunk: shrunk,
+        baselineOffsetPt: baselineOffsetPt,
       );
     } finally {
       // 编码完立即释放（一次只持有一个公式的 ui.Image）。
@@ -600,6 +624,9 @@ class FormulaRasterizer {
               ),
               shrunk: false,
               isOriginal: true,
+              // 十八批 P1（D-216）：原图降级无栅格化结果，基线偏移
+              // 未知（null）。PDF 按旧居中启发式放、Word 不下移；
+              // 不得用猜的数。
             ),
           ),
         );
@@ -642,6 +669,7 @@ class _RenderAttempt {
     this.boundary,
     this.boundarySize,
     this.naturalWidth,
+    this.baselineOffset,
   });
 
   /// 公式解析/构建是否失败（onErrorFallback 触发）。
@@ -655,6 +683,36 @@ class _RenderAttempt {
 
   /// 公式自然宽（pt；独立公式超宽判定时用）。
   final double? naturalWidth;
+
+  /// 数学 alphabetic 基线偏移（pt，Math.tex 顶到基线的距离；
+  /// 量不到时为 null，调用方按旧行为处理）。
+  final double? baselineOffset;
+}
+
+/// layout 期间量取子件 alphabetic 基线的包框（十八批 P1）。
+///
+/// `RenderBox.getDistanceToBaseline` 只能在 layout/paint 期间调用
+/// （帧回调里直接调会触 debug 断言）；本包框在自身 `performLayout`
+/// 内合法量取，量到的值存在字段里供帧回调读取。包框紧贴子件
+/// （RenderProxyBox，子件位于 (0, 0)），量到的偏移即子件顶到其
+/// 基线的距离；量不到（子件无基线）时为 null。
+class _BaselineMeasureBox extends SingleChildRenderObjectWidget {
+  const _BaselineMeasureBox({super.key, required super.child});
+
+  @override
+  RenderObject createRenderObject(BuildContext context) =>
+      _RenderBaselineMeasureBox();
+}
+
+class _RenderBaselineMeasureBox extends RenderProxyBox {
+  double? baselineOffset;
+
+  @override
+  void performLayout() {
+    super.performLayout();
+    baselineOffset =
+        child?.getDistanceToBaseline(TextBaseline.alphabetic);
+  }
 }
 
 /// 离屏渲染宿主（OverlayEntry 内，屏幕外定位）。
@@ -668,6 +726,7 @@ class _FormulaRenderHost extends StatefulWidget {
 class _FormulaRenderHostState extends State<_FormulaRenderHost> {
   final _boundaryKey = GlobalKey();
   final _mathKey = GlobalKey();
+  final _baselineKey = GlobalKey();
   FormulaRasterRequest? _request;
   var _failed = false;
   Completer<_RenderAttempt>? _completer;
@@ -688,12 +747,17 @@ class _FormulaRenderHostState extends State<_FormulaRenderHost> {
         return;
       }
       final mathSize = _mathKey.currentContext?.size;
+      final baseline =
+          (_baselineKey.currentContext?.findRenderObject()
+                  as _RenderBaselineMeasureBox?)
+              ?.baselineOffset;
       completer.complete(
         _RenderAttempt(
           failed: _failed,
           boundary: boundaryObject,
           boundarySize: boundaryObject.size,
           naturalWidth: mathSize?.width,
+          baselineOffset: baseline,
         ),
       );
     });
@@ -704,24 +768,29 @@ class _FormulaRenderHostState extends State<_FormulaRenderHost> {
   Widget build(BuildContext context) {
     final request = _request;
     if (request == null) return const SizedBox.shrink();
-    final math = Math.tex(
-      request.latex,
-      key: _mathKey,
-      mathStyle: request.displayMode ? MathStyle.display : MathStyle.text,
-      textStyle: TextStyle(
-        fontSize: request.fontSizePt,
-        // 十七批 P1：离屏渲染无 Material 祖先，Math.tex 会继承
-        // MaterialApp 的红色错误兜底样式 0xD0FF0000（w900 超粗）；
-        // 写死黑色 + 常规字重，字号仍按请求 pin。
-        color: Colors.black,
-        fontWeight: FontWeight.normal,
+    // 十八批 P1：Math.tex 外包一层基线量取框（不改变布局与绘制，
+    // 只在 performLayout 内量取 alphabetic 基线偏移）。
+    final math = _BaselineMeasureBox(
+      key: _baselineKey,
+      child: Math.tex(
+        request.latex,
+        key: _mathKey,
+        mathStyle: request.displayMode ? MathStyle.display : MathStyle.text,
+        textStyle: TextStyle(
+          fontSize: request.fontSizePt,
+          // 十七批 P1：离屏渲染无 Material 祖先，Math.tex 会继承
+          // MaterialApp 的红色错误兜底样式 0xD0FF0000（w900 超粗）；
+          // 写死黑色 + 常规字重，字号仍按请求 pin。
+          color: Colors.black,
+          fontWeight: FontWeight.normal,
+        ),
+        // 失败信号只记标志，不含源码；回退 widget 为空盒（调用方按
+        // 失败走降级链，不印失败占位）。
+        onErrorFallback: (_) {
+          _failed = true;
+          return const SizedBox.shrink();
+        },
       ),
-      // 失败信号只记标志，不含源码；回退 widget 为空盒（调用方按
-      // 失败走降级链，不印失败占位）。
-      onErrorFallback: (_) {
-        _failed = true;
-        return const SizedBox.shrink();
-      },
     );
     final Widget child;
     if (request.displayMode) {

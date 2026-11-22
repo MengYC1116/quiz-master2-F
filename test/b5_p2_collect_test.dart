@@ -705,8 +705,8 @@ void main() {
       final repo = _detailRepo();
       await _pumpDetail(tester, repo: repo);
       await _tapText(tester, '编辑');
-      await _tapText(tester, '＋ 新建错误类型');
-      expect(find.text('自定义错误类型'), findsOneWidget);
+      await _tapText(tester, '＋ 自定义错因');
+      expect(find.text('自定义错因'), findsOneWidget);
       await tester.enterText(
         find.descendant(
           of: find.byType(AlertDialog),
@@ -721,7 +721,7 @@ void main() {
         ),
       );
       await tester.pumpAndSettle();
-      expect(find.text('“其他”是固定错误类型，已帮你选中'), findsOneWidget);
+      expect(find.text('“其他”是固定错因，已帮你选中'), findsOneWidget);
       await _tapText(tester, '保存', first: true);
       final saved = repo.saved.last;
       expect(saved.errorTypes, containsAll(['概念不清', '其他']));
@@ -752,14 +752,14 @@ void main() {
       final field = find.byWidgetPredicate(
         (w) =>
             w is TextField &&
-            w.decoration?.hintText == '自定义错误类型…（枚举之外的情况）',
+            w.decoration?.hintText == '自定义错因…（固定错因之外的情况）',
       );
       await tester.ensureVisible(field);
       await tester.pumpAndSettle();
       await tester.enterText(field, '其他');
       await tester.pumpAndSettle();
       await _tapText(tester, '添加并选上');
-      expect(find.text('“其他”是固定错误类型，已帮你选中'), findsOneWidget);
+      expect(find.text('“其他”是固定错因，已帮你选中'), findsOneWidget);
       // 没有“其他（自定义）”芯片出现。
       expect(find.text('其他（自定义）'), findsNothing);
       await _tapText(tester, '保存草稿');
@@ -880,8 +880,9 @@ void main() {
       ];
       repo.replaceShouldThrow = true;
       await _pumpDetail(tester, repo: repo);
-      await _tapText(tester, '题目信息');
-      await _tapText(tester, '重新框选这道题');
+      // 十九批 C：题目信息 panel 默认展开（D1），不用先点开；旧字段按钮
+      // 「重新框选这道题」已随板子移到纸面按钮行，文案为「重新框选」。
+      await _tapText(tester, '重新框选');
       expect(find.textContaining('修框 ·'), findsOneWidget);
       // 真实裁剪 + 写盘须在 runAsync 内反复 pump 推进。
       await tester.runAsync(() async {
@@ -1160,7 +1161,7 @@ void main() {
         '试卷',
       );
       await _tapText(tester, '添加');
-      expect(find.text('已经有了'), findsOneWidget);
+      expect(find.text('已经有了这个文件夹'), findsOneWidget);
       expect(repo.folderList.where((f) => f.name == '试卷'), hasLength(2));
       expect(repo.savedFolders, isEmpty);
       // 跨层：数学只有子文件夹叫“错题精选”时，建同名顶层同样拦。
@@ -1179,7 +1180,7 @@ void main() {
         '错题精选',
       );
       await _tapText(tester, '添加');
-      expect(find.text('已经有了'), findsOneWidget);
+      expect(find.text('已经有了这个文件夹'), findsOneWidget);
       expect(repo.savedFolders, isEmpty);
     });
 
@@ -1204,7 +1205,7 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(find.text('顶层'));
       await tester.pumpAndSettle();
-      expect(find.text('已经有了'), findsOneWidget);
+      expect(find.text('已经有了这个文件夹'), findsOneWidget);
       expect(repo.folderList, hasLength(1));
     });
   });
@@ -1339,6 +1340,22 @@ class _DetailFakeRepo extends QuestionRepository {
   Future<Question?> questionById(String id) async =>
       questions.where((q) => q.id == id).firstOrNull;
 
+  // FR-45（二十批 P3 后续分诊）：DetailNotifier.load() 内 unawaited
+  // _refreshRelated 调 repo.all() + repo.causeRecords()；未覆写时走真实
+  // QuestionRepository → 单例 db getter → SR-P2-3 / SR-P2-22 测试的
+  // addTearDown 已把 testDataDirectory 置 null 的窗口里会打开真实演示库
+  // 跑 v2→v6 迁移（同款触发链见 P3 b13 36 号测试；本文件整文件跑干净只
+  // 因详情泵在 testWidgets（FakeAsync stalls 真实 Drift 打开）且
+  // SR-P2-36 详情测试是最后一个测试，见 batch20-work/p3-followup/STATUS.md）。
+  // 与 b13_stem_correction 的 _FakeDetailRepo 同款：直接读内存列表，
+  // 不碰单例。右栏无变化：本文件每次泵详情都只有 q1 一道题，related 恒空。
+  @override
+  Future<List<Question>> all({bool includeArchived = false}) async =>
+      List.of(questions);
+
+  @override
+  Future<List<CauseRecord>> causeRecords() async => const [];
+
   @override
   Future<List<Subject>> subjects() async => Subject.all;
 
@@ -1450,6 +1467,15 @@ class _DetailFakeRepo extends QuestionRepository {
   /// 基类读真实 Drift 库，fake async 里永不完成，见 D-88）。
   @override
   Future<void> recordQuestionViewed(String questionId) async {}
+
+  /// 十三批 M5：OCR 状态是 best-effort 加载（不 await）；返回空任务行
+  /// 与“无 key”，不碰真实库（见 D-88）。
+  @override
+  Future<List<OcrJob>> ocrJobsForQuestion(String questionId) async =>
+      const [];
+
+  @override
+  Future<bool> hasOcrApiKey() async => false;
 }
 
 _DetailFakeRepo _detailRepo({
@@ -1602,6 +1628,23 @@ class _OrganizeFakeRepo extends QuestionRepository {
   @override
   Future<List<QuestionBox>> boxesForPageImage(String pageImagePath) async =>
       const [];
+
+  /// B11-10：OrganizeNotifier 只在队列已空且库里有题时读这两个数
+  /// （今日小结行用）；返回 0 / 空，不碰真实库（见 D-88）。
+  @override
+  Future<int> organizedTodayCount({DateTime? now}) async => 0;
+
+  @override
+  Future<List<CauseRecord>> causeRecords() async => const [];
+
+  /// 十三批 M5：OCR 状态是 best-effort 加载（不 await）；返回空任务行
+  /// 与“无 key”，不碰真实库（见 D-88）。
+  @override
+  Future<List<OcrJob>> ocrJobsForQuestion(String questionId) async =>
+      const [];
+
+  @override
+  Future<bool> hasOcrApiKey() async => false;
 }
 
 _OrganizeFakeRepo _organizeRepo() => _OrganizeFakeRepo(
@@ -1646,7 +1689,7 @@ Future<void> _pumpOrganize(
       home: Scaffold(
         body: OrganizePage(
           repo: repo,
-          onOpenDetail: (_, __) async {},
+          onOpenDetail: (_, __, {String? searchContext}) async {},
           onGoReview: () {},
           onGoCollect: () {},
         ),

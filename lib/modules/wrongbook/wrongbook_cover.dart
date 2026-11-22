@@ -5,7 +5,7 @@ part of 'wrongbook_page.dart';
 
 /// 折角（HTML `.nb-book-fold`：右上角 34px 纸色折角）。
 /// 渐变 linear-gradient(225deg, transparent 49%, rgba(0,0,0,.16) 50%,
-/// #FFFDF4 52%, #E9E2CC 100%)，左下角圆角 8px，阴影 -2px 2px 4px / .18。
+/// #FFFFFF 52%, #DCE8F5 100%)，左下角圆角 8px，阴影 -2px 2px 4px / .18。
 /// 注意纸色区的形状：渐变只在 t>0.52 的区域显纸色，即 34×34 方块内
 /// 对角线 y=x 左下方的三角（顶点左上、左下、右下），不是旧代码的
 /// 右上三角——旧三角把纸色画在了渐变透明的那一半，看着像小三角旗。
@@ -52,8 +52,8 @@ class _CoverFoldPainter extends CustomPainter {
       colors: [
         Color.fromRGBO(0, 0, 0, 0),
         Color.fromRGBO(0, 0, 0, 0.16),
-        Color(0xFFFFFDF4),
-        Color(0xFFE9E2CC),
+        Color(0xFFFFFFFF),
+        Color(0xFFDCE8F5),
       ],
       stops: [0.49, 0.50, 0.52, 1.0],
     );

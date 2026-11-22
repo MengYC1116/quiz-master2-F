@@ -1403,10 +1403,14 @@ bool _decodableFigureBytes(List<int> bytes) {
 ///   的 source_path / page_image_path / slice_path / 图块裁图、
 ///   收集任务的 source_path、识别任务的 crop_path）缺失或无法读取
 ///   时备份直接失败（BackupRestoreException，指明题目/任务 ID 与
-///   相对路径），不生成看似成功实际不完整的备份；只在派生保护里
-///   （任务的 page-normalized.png、pages/ 下页图、original.* 枚举，
-///   未渲染过的任务本来就没有）的文件缺失/不可读时逐项警告、不阻断
-///   备份。图块损坏（读得出但解不出图）仍只警告、不阻断。
+///   相对路径），不生成看似成功实际不完整的备份；派生文件
+///   （任务的 page-normalized.png、pages/ 下页图、original.* 枚举）
+///   只在快照时点文件存在时才进清单（二十批 P6 修法 A，D-237 提案）——
+///   按构造从未生成的文件本来就不在清单里，不警告、不变 partial；
+///   快照时已在盘上的派生文件在复制/组装阶段缺失/不可读时逐项警告、
+///   不阻断备份。这不复活 D-155 已废止的旧口径：门禁只作用于 JSON
+///   从不引用的派生文件，直接引用缺失仍整单抛错。图块损坏
+///   （读得出但解不出图）仍只警告、不阻断。
 ///   十四批 M5 修复轮 3（D-155）：旧口径“非图块文件缺失静默不进包”
 ///   已废止——它与备份不变量（JSON 引用的文件都应在 ZIP 中）冲突。
 ///   十四批 M5 修复轮 4（D-159/D-160）：释锁后 ZIP 组装阶段暂存区
@@ -1452,86 +1456,27 @@ typedef _BackupIllegalRef = ({
 /// 备份（D-155 fail-closed），那种情况没有备份可记状态，不在此枚举。
 enum BackupExportStatus { complete, partial }
 
-/// Win11 后续修复 Round 3（Q4）：备份专用的 `page-normalized.png`
-/// 分类——某收集任务的归一化副本是“可选”还是“必需”。
+/// 二十批 P6 修法 A（D-237 提案）：派生引用只在文件存在时枚举。
 ///
-/// 只供备份枚举用；孤儿保护仍用 [_referencedRelativePaths] 原语义
-/// （行存在即保护），两者不共用（见
-/// `WIN11-Q4-BACKUP-RACE-INVESTIGATION.md` §3）。
+/// Q4 的逐类打补丁（`_isOptionalNormalized`：source_path 前缀 / PDF 后缀 /
+/// 状态 / EXIF 方向 / source_hash 复核）已随修法 A 删除——存在性门禁在
+/// 枚举阶段一次解决“按构造不该有”这一整类误报，不再逐类判定。门禁落点在
+/// [exportBackupZipFromWithReportImpl] 的锁内快照之后、复制循环之前：
+/// 引用集里除直接引用与图块裁图之外的派生路径，在快照时点逐个查存在性，
+/// 不在盘上的直接从备份清单里去掉，不警告、不进 brokenFiles、不变 partial。
+/// 直接引用（缺失仍整单抛错，D-155）与图块裁图（缺失仍警告，D-158）
+/// 不受门禁影响。门禁在同一锁内完成，枚举与复制之间插不进进程内删除；
+/// 孤儿保护仍用 [_referencedRelativePaths] 原语义（行存在即保护），
+/// 本门禁只作用于备份清单，不动 `db_orphans.dart`。
 ///
-/// 规则按顺序（§3.2）：
-/// 1. `source_path` 为空，或不在 `imports/<本行 id>/` 下 → 可选
-///    （拆分行与失败清引用行：按构造就没有自有目录，这是本次 38/38
-///    误报的消除项；判定用 `source_path` 前缀，不依赖 id 格式）；
-/// 2. PDF 行（`source_path` 否则 `file_name` 的 `.pdf` 后缀，与
-///    `ImportService.isPdfTask` 同口径）→ 可选（只走 `_importPdf`，
-///    无归一化步骤）；
-/// 3. `status` 为 `failed` / `importing` / `queued` → 可选（无期待）；
-/// 4. 图片行：读原图头解析 EXIF（复用 [readJpegExifOrientation]，
-///    只读文件头 128KB，不解码全文件）——方向 1 / 无 EXIF / 非 JPEG /
-///    镜像方向（2/4/5/7，导入即失败）→ 可选；方向 3/6/8 → 原则上必需。
-///
-/// O1/O3：方向 3/6/8 且归一化副本缺失时，才算原图全文件哈希复核
-/// `source_hash`；`source_hash` 为 NULL/空或与现算哈希不符 → EXIF
-/// 重读不可信 → 可选（宁漏一次真丢失警告，不造新误报）。副本在盘上
-/// 时不算哈希——文件本身就是“生成过”的铁证，暂存区丢失即真丢失。
-/// 原图缺失/不可读时备份本就因直接引用失败，不走到分类——此处按可选
-/// 返回，不抛错。
-/// 已知局限（§2.5 残差）：判必需但文件缺失时，可能是真丢失，也可能
-/// 是当初静默降级未生成（`import_service.dart:700-720`），现有数据
-/// 无法区分；警告文案如实注明该歧义，不为它加 schema v7。
-Future<bool> _isOptionalNormalized({
-  required String taskId,
-  required String sourcePath,
-  required String fileName,
-  required String status,
-  required String? sourceHash,
-  required String dataDir,
-}) async {
-  // 规则 1：没有自有目录 → 按构造不可能有归一化副本。
-  if (sourcePath.isEmpty || !sourcePath.startsWith('imports/$taskId/')) {
-    return true;
-  }
-  // 规则 2：PDF 行无归一化步骤（与 ImportService.isPdfTask 同口径）。
-  final name = sourcePath.isNotEmpty ? sourcePath : fileName;
-  if (name.toLowerCase().endsWith('.pdf')) return true;
-  // 规则 3：未走完导入管线的行对归一化副本无期待。
-  if (status == 'failed' || status == 'importing' || status == 'queued') {
-    return true;
-  }
-  // 规则 4：读原图头解析 EXIF。
-  final originalAbs = _resolveInsideDir(dataDir, sourcePath);
-  if (originalAbs == null) return true;
-  final originalFile = File(originalAbs);
-  int? orientation;
-  try {
-    final raf = originalFile.openSync(mode: FileMode.read);
-    try {
-      orientation = readJpegExifOrientation(raf.readSync(128 * 1024));
-    } finally {
-      raf.closeSync();
-    }
-  } catch (_) {
-    return true;
-  }
-  // 方向 1 / 无 EXIF / 非 JPEG / 镜像方向 → 从未生成过归一化副本。
-  if (orientation != 3 && orientation != 6 && orientation != 8) {
-    return true;
-  }
-  // 方向 3/6/8：原则上应生成过。副本在盘上时不算哈希（见函数注释）。
-  final normalizedRel = 'imports/$taskId/page-normalized.png';
-  final normalizedAbs = _resolveInsideDir(dataDir, normalizedRel);
-  if (normalizedAbs == null) return true;
-  if (File(normalizedAbs).existsSync()) return false;
-  // O1/O3：副本缺失时才算原图全文件哈希复核 source_hash。
-  if (sourceHash == null || sourceHash.isEmpty) return true;
-  try {
-    final digest = await sha256.bind(originalFile.openRead()).first;
-    return digest.toString() != sourceHash;
-  } catch (_) {
-    return true;
-  }
-}
+/// 有意的取舍：EXIF 方向 3/6/8 且哈希可信、但归一化副本缺失的情形，
+/// Q4 曾记一条注明歧义的警告（O2）；修法 A 下它不再警告。理由：
+/// (1) 该信号本身有歧义——真丢失与当初静默降级未生成在现有数据下
+/// 完全同构（`import_service.dart:700-720`，Q4 调查 §2.5）；
+/// (2) 归一化副本可由原图再生，而原图是直接引用、缺失即整单抛错，
+/// 备份里不丢任何不可替代的数据；显示时无副本回落到原图。
+/// 快照时已在盘上的派生文件若在复制/组装阶段丢失，仍按通用派生口径
+/// 警告（见复制循环与 ZIP 组装循环的派生分支）。
 
 Future<({List<int> bytes, List<String> warnings, List<String> brokenFiles, BackupExportStatus status})>
 exportBackupZipFromWithReportImpl(
@@ -1565,12 +1510,6 @@ exportBackupZipFromWithReportImpl(
   // 到 withLock 闭包外（与 directRefs 等一致），使释锁前的完整性
   // 检查能用同一快照的分类。
   var illegalRefs = <_BackupIllegalRef>[];
-  // Win11 后续修复 Round 3（Q4）：锁内快照产出的归一化副本分类集合
-  // （与 directRefs 等一致提升到 withLock 闭包外），使锁内复制循环
-  // 与释锁后 ZIP 组装循环按同一分类处理：optional 缺失静默跳过，
-  // required 缺失记警告、进 brokenFiles。
-  var optionalNormalizedRefs = <String>{};
-  var requiredNormalizedRefs = <String>{};
   try {
     await guard.withLock(() async {
       // 同一 DB 事务内完成 JSON 导出、引用集合读取与图块映射——
@@ -1588,11 +1527,6 @@ exportBackupZipFromWithReportImpl(
         final figureQuestions = <String, String>{};
         // 直接引用资产 → 归属文案（失败信息里指明题目/任务 ID 与相对路径）。
         final assetOwners = <String, String>{};
-        // Win11 后续修复 Round 3（Q4）：备份专用的归一化副本分类——
-        // 与同一快照同一时点算出（见 [_isOptionalNormalized]）；只供
-        // 备份枚举用，孤儿保护（_referencedRelativePaths）原语义不动。
-        final optionalNormalizedRefs = <String>{};
-        final requiredNormalizedRefs = <String>{};
         // 十四批 M5 修复轮 5（D-162，GPT fix4 §7 P1）：备份专用的
         // 非法引用收集——与 _directlyReferencedRelativePaths /
         // _referencedRelativePaths 并行走同一批库行，但保留
@@ -1712,22 +1646,6 @@ exportBackupZipFromWithReportImpl(
               !taskId.contains('/') &&
               !taskId.contains('\\')) {
             checkDerived('imports/$taskId/page-normalized.png', taskLabel);
-            // Q4：同一快照时点算该任务归一化副本的备份分类（与
-            // _referencedRelativePaths 的派生枚举同口径：任务 id
-            // 含分隔符时跳过）。
-            final normalizedRel = 'imports/$taskId/page-normalized.png';
-            if (await _isOptionalNormalized(
-              taskId: taskId,
-              sourcePath: row.sourcePath,
-              fileName: row.fileName,
-              status: row.status,
-              sourceHash: row.sourceHash,
-              dataDir: dir,
-            )) {
-              optionalNormalizedRefs.add(normalizedRel);
-            } else {
-              requiredNormalizedRefs.add(normalizedRel);
-            }
             final pagesDir = Directory(
               p.join(dir, 'imports', taskId, 'pages'),
             );
@@ -1768,8 +1686,6 @@ exportBackupZipFromWithReportImpl(
           assetOwners: assetOwners,
           illegalRefs: illegalRefs,
           unknownFigureRefs: unknownFigureRefs,
-          optionalNormalizedRefs: optionalNormalizedRefs,
-          requiredNormalizedRefs: requiredNormalizedRefs,
         );
       });
       json = snapshot.json;
@@ -1778,8 +1694,6 @@ exportBackupZipFromWithReportImpl(
       figureQuestions = snapshot.figureQuestions;
       assetOwners = snapshot.assetOwners;
       illegalRefs = snapshot.illegalRefs;
-      optionalNormalizedRefs = snapshot.optionalNormalizedRefs;
-      requiredNormalizedRefs = snapshot.requiredNormalizedRefs;
       // WP-C #8 U3-2：引用未知 → 图块可能未进备份，只记警告、不阻断。
       if (snapshot.unknownFigureRefs) {
         warnings.add('有题目的配图引用无法解析（配图数据损坏），配图可能未包含在备份中');
@@ -1817,7 +1731,24 @@ exportBackupZipFromWithReportImpl(
         warnings.add('${bad.owner}的派生文件 ${bad.raw} 路径非法，未包含在备份中');
         brokenFiles.add(bad.raw);
       }
-      final sorted = refs.toList()..sort();
+      // 二十批 P6 修法 A（D-237 提案）：派生引用只在文件存在时枚举——
+      // 锁内快照之后、复制循环之前，对引用集做存在性门禁：除直接引用
+      // 与图块裁图之外的派生路径（构造的 page-normalized.png，以及
+      // pages/ 与 original.* 的现存枚举），在此时点不在盘上的直接
+      // 从备份清单里去掉，不警告、不进 brokenFiles、不变 partial。
+      // 门禁放在锁内：枚举与复制在同一锁内完成，通过门禁的文件在复制
+      // 前不会被进程内删除者删掉；直接引用与图块裁图不受门禁影响
+      // （前者缺失仍整单抛错 D-155，后者缺失仍警告 D-158）。
+      // 路径本身无法解析（_resolveInsideDir 为 null）的不由门禁处理，
+      // 留给复制循环按 D-162 派生非法记警告。
+      final backupRefs = refs.where((rel) {
+        if (directRefs.contains(rel)) return true;
+        if (figureQuestions.containsKey(rel)) return true;
+        final abs = _resolveInsideDir(dir, rel);
+        if (abs == null) return true;
+        return File(abs).existsSync();
+      }).toSet();
+      final sorted = backupRefs.toList()..sort();
       // 暂存区名取毫秒时间戳；同毫秒已存在时 +1（仍是纯数字，
       // 符合启动清理的严格匹配规则；建目录在锁内，无竞态）。
       var ts = DateTime.now().millisecondsSinceEpoch;
@@ -1856,9 +1787,6 @@ exportBackupZipFromWithReportImpl(
               '备份失败：$owner 的文件路径非法（$rel），备份未生成',
             );
           }
-          // Q4：可选归一化副本路径非法也静默跳过（它按构造就不该有；
-          // 见 [_isOptionalNormalized]）。
-          if (optionalNormalizedRefs.contains(rel)) continue;
           // 十四批 M5 修复轮 4（D-160，GPT fix3 P1-2）：派生文件路径
           // 无法解析也不再静默跳过，记 warning、继续导出（文案与
           // “派生文件 $rel 缺失/无法读取，未包含在备份中”体系统一）。
@@ -1878,20 +1806,9 @@ exportBackupZipFromWithReportImpl(
               '备份失败：$owner 的文件缺失（$rel），备份未生成',
             );
           }
-          // Q4：可选归一化副本缺失是预期行为（按构造从未生成），静默
-          // 跳过——不警告、不进 brokenFiles、不变 partial。这消除
-          // 拆分行 / PDF 行 / EXIF == 1 行的系统性误报。
-          if (optionalNormalizedRefs.contains(rel)) continue;
-          // Q4（O2）：必需归一化副本缺失仍警告，但文案如实注明歧义——
-          // 可能是真丢失，也可能是当初静默降级未生成（§2.5 残差，
-          // 已知局限，不为它加 schema v7）。
-          if (requiredNormalizedRefs.contains(rel)) {
-            warnings.add(
-              '派生文件 $rel 缺失，未包含在备份中（该文件按原图方向应已生成，可能已丢失，也可能当初未生成）',
-            );
-            brokenFiles.add(rel);
-            continue;
-          }
+          // 二十批 P6 修法 A：派生文件在快照时已通过存在性门禁才进
+          // 清单，复制时缺失说明它在快照后丢了（门禁与复制同一锁内，
+          // 进程内删除插不进来，只剩锁外删除者），按通用派生口径警告。
           warnings.add('派生文件 $rel 缺失，未包含在备份中');
           brokenFiles.add(rel);
           continue;
@@ -1910,9 +1827,6 @@ exportBackupZipFromWithReportImpl(
               '备份失败：$owner 的文件无法读取（$rel），备份未生成',
             );
           }
-          // Q4：可选归一化副本无法读取也静默跳过（文件即使在盘上也
-          // 是按构造不该有的；显示会回落到原图，丢了也无损失）。
-          if (optionalNormalizedRefs.contains(rel)) continue;
           warnings.add('派生文件 $rel 无法读取，未包含在备份中');
           brokenFiles.add(rel);
           continue;
@@ -1957,9 +1871,9 @@ exportBackupZipFromWithReportImpl(
             '备份失败：$owner 的暂存区文件缺失（$rel），备份未生成',
           );
         }
-        // Q4：可选归一化副本在暂存区丢失也静默跳过（与锁内复制循环
-        // 同一分类；文件在快照时已按构造判定为不该有）。
-        if (optionalNormalizedRefs.contains(rel)) continue;
+        // 二十批 P6 修法 A：进暂存区即通过了快照时点的存在性门禁，
+        // 暂存区丢失是真实丢失，按通用派生口径警告（不再按 Q4 分类
+        // 静默跳过——快照时在盘上的文件本就该进包）。
         warnings.add('派生文件 $rel 暂存区文件缺失，未包含在备份中');
         brokenFiles.add(rel);
         continue;
@@ -1978,8 +1892,6 @@ exportBackupZipFromWithReportImpl(
             '备份失败：$owner 的暂存区文件无法读取（$rel），备份未生成',
           );
         }
-        // Q4：可选归一化副本在暂存区无法读取也静默跳过（同上）。
-        if (optionalNormalizedRefs.contains(rel)) continue;
         warnings.add('派生文件 $rel 暂存区文件无法读取，未包含在备份中');
         brokenFiles.add(rel);
         continue;
@@ -2213,7 +2125,7 @@ Future<List<String>> importBackupZipIntoImpl(
     throw BackupRestoreException(
       '这份备份恢复时峰值占用会超过 2GB 存储上限（现有 ${_formatBytes(usedBytes)}，'
       '数据库快照 ${_formatBytes(snapshotBytes)}，'
-      '恢复中峰值约 ${_formatBytes(peakBytes)}），请先清理孤儿文件或删掉'
+      '恢复中峰值约 ${_formatBytes(peakBytes)}），请先清理无用文件或删掉'
       '不需要的题目再恢复',
     );
   }

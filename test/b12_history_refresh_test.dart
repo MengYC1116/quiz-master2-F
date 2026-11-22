@@ -243,7 +243,7 @@ void main() {
               onGoOrganize: () {},
               onGoWrongbook: (_) {},
               onGoReview: () {},
-              onOpenDetail: (_, __) {},
+              onOpenDetail: (_, __, {String? searchContext}) {},
             ),
           ),
         ),
@@ -314,6 +314,20 @@ class _RefreshFakeRepo extends QuestionRepository {
   Future<List<Question>> dueToday({bool includeArchived = false}) async =>
       const [];
 
+  // FR-45（二十批 P3 后续分诊）：DetailNotifier.load() 内 unawaited
+  // _refreshRelated 调 repo.all() + repo.causeRecords()；未覆写时走真实
+  // QuestionRepository → 单例 db getter → 本文件数据层 tearDown 的
+  // resetForTest 已把 testDataDirectory 置 null 的窗口里会打开真实演示库
+  // 跑 v2→v6 迁移（探针 zz_probe_b12_test 复现：md5 9c5640… → 0a7e7dd0…，
+  // 见 batch20-work/p3-followup/STATUS.md）。本文件整文件跑干净只因
+  // load() 在 testWidgets（FakeAsync  stalls 真实 Drift 打开）且是最后
+  // 一个测试；改 plain load 或在后面加测试即会咬人。causeRecords() 本
+  // 文件已有桩；all() 补内存版。右栏无变化：本文件两题无共享错因 /
+  // 知识点 / 文件夹，related 恒空。
+  @override
+  Future<List<Question>> all({bool includeArchived = false}) async =>
+      List.of(questions);
+
   @override
   Future<List<CauseRecord>> causeRecords() async => const [];
 
@@ -381,4 +395,18 @@ class _RefreshFakeRepo extends QuestionRepository {
 
   @override
   Future<AppSettings> settings() async => AppSettings.defaults;
+
+  /// 十三批 M5：OCR 状态是 best-effort 加载（不 await）；返回空任务行
+  /// 与“无 key”，不碰真实库（见 D-88）。
+  @override
+  Future<List<OcrJob>> ocrJobsForQuestion(String questionId) async =>
+      const [];
+
+  @override
+  Future<bool> hasOcrApiKey() async => false;
+
+  /// 详情页自愈（_healSliceIfNeeded）读同页框：无框，不碰真实库（见 D-88）。
+  @override
+  Future<List<QuestionBox>> boxesForPageImage(String pageImagePath) async =>
+      const [];
 }

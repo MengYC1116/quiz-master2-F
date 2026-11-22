@@ -141,6 +141,162 @@ enum SaveEditOutcome {
   failed,
 }
 
+// ---------- 十九批 D1：右栏相关题 ----------
+
+/// 右栏相关题的一行：题目 + 按错因口径算出的状态文案 + 是否未解决
+///（排序用：未解决优先）。
+class RelatedItem {
+  const RelatedItem({
+    required this.question,
+    required this.statusLabel,
+    required this.unresolved,
+  });
+
+  final Question question;
+
+  /// 整体错因状态文案（见 [overallCauseStatusLabel]）：待解决 /
+  /// 解决中 / 已解决 / 待复查。
+  final String statusLabel;
+
+  /// 未解决 = 状态不是“已解决”（待复查也算要关注的，排在前面）。
+  final bool unresolved;
+}
+
+/// 同文件夹分组：标题计数 + 当前题在文件夹收集顺序里的位置。
+class RelatedFolderInfo {
+  const RelatedFolderInfo({
+    required this.folderId,
+    required this.name,
+    required this.totalCount,
+    required this.currentPosition,
+  });
+
+  final String folderId;
+  final String name;
+
+  /// 文件夹内题数（含当前题，未归档口径）。
+  final int totalCount;
+
+  /// 当前题按收集时间从旧到新的位置（1 起）。
+  final int currentPosition;
+}
+
+/// 右栏三组（同错因 / 同知识点 / 同文件夹），见板子 §2.5。
+class DetailRelated {
+  const DetailRelated({
+    this.sameCause = const [],
+    this.sameKp = const [],
+    this.folder,
+  });
+
+  /// 同错因的其他题（已按排序排好，不含当前题）。
+  final List<RelatedItem> sameCause;
+
+  /// 同知识点的其他题（已按排序排好，不含当前题）。
+  final List<RelatedItem> sameKp;
+
+  /// 同文件夹（当前题无文件夹时为 null，面板不显示）。
+  final RelatedFolderInfo? folder;
+}
+
+/// 题目整体错因状态文案（与详情页标题 pill、复习记录同口径）：
+/// 任一错因到了复查时间 → 待复查；全部错因都有已解决记录 → 已解决；
+/// 有错因解决中或已有已解决记录 → 解决中；其余（无记录/全待解决/
+/// 无错因）→ 待解决。
+String overallCauseStatusLabel(Question q, List<CauseRecord> records) {
+  final causes = q.allCauses;
+  if (causes.isEmpty) return '待解决';
+  var anySolved = false;
+  var anyProgress = false;
+  var allSolved = true;
+  for (final cause in causes) {
+    final r = records.where((x) => x.cause == cause).firstOrNull;
+    if (r == null) {
+      allSolved = false;
+      continue;
+    }
+    if (r.isRecheckDue) return '待复查';
+    if (r.status == CauseStatus.solved) {
+      anySolved = true;
+      continue;
+    }
+    allSolved = false;
+    if (r.status == CauseStatus.inProgress) anyProgress = true;
+  }
+  if (allSolved) return '已解决';
+  if (anyProgress || anySolved) return '解决中';
+  return '待解决';
+}
+
+/// 十九批 D1：右栏三组取数（纯函数，可单测）。
+///
+/// 匹配：同错因 = 任一错因相同；同知识点 = 任一知识点相同；
+/// 同文件夹 = 与当前题第一个文件夹相同。当前题与已归档题不进组。
+/// 排序（协调员决策）：未解决优先 → 同科次之 → 收集时间新→旧。
+/// 同文件夹计数含当前题；同错因「还有 N 道」的 N 含已展示的那道
+///（即同错因组全量，见 B19-DECISIONS.md 第 13 项）。
+DetailRelated computeDetailRelated({
+  required Question current,
+  required List<Question> all,
+  required Map<String, List<CauseRecord>> recordsByQuestion,
+  String folderName = '',
+}) {
+  RelatedItem item(Question c) {
+    final label = overallCauseStatusLabel(
+      c,
+      recordsByQuestion[c.id] ?? const [],
+    );
+    return RelatedItem(
+      question: c,
+      statusLabel: label,
+      unresolved: label != '已解决',
+    );
+  }
+
+  int compare(RelatedItem a, RelatedItem b) {
+    if (a.unresolved != b.unresolved) return a.unresolved ? -1 : 1;
+    final aSame = a.question.subjectId == current.subjectId;
+    final bSame = b.question.subjectId == current.subjectId;
+    if (aSame != bSame) return aSame ? -1 : 1;
+    return b.question.createdAt.compareTo(a.question.createdAt);
+  }
+
+  final others = all
+      .where((c) => c.id != current.id && !c.isArchived)
+      .toList();
+  final sameCause = others
+      .where((c) => c.allCauses.any(current.allCauses.contains))
+      .map(item)
+      .toList()
+    ..sort(compare);
+  final sameKp = others
+      .where(
+        (c) => c.knowledgePointIds.any(current.knowledgePointIds.contains),
+      )
+      .map(item)
+      .toList()
+    ..sort(compare);
+
+  RelatedFolderInfo? folder;
+  if (current.folderIds.isNotEmpty) {
+    final folderId = current.folderIds.first;
+    final inFolder = all
+        .where((c) => !c.isArchived && c.folderIds.contains(folderId))
+        .toList()
+      ..sort((a, b) => a.createdAt.compareTo(b.createdAt));
+    final pos = inFolder.indexWhere((c) => c.id == current.id);
+    if (pos >= 0) {
+      folder = RelatedFolderInfo(
+        folderId: folderId,
+        name: folderName,
+        totalCount: inFolder.length,
+        currentPosition: pos + 1,
+      );
+    }
+  }
+  return DetailRelated(sameCause: sameCause, sameKp: sameKp, folder: folder);
+}
+
 /// `copyWith` 里“显式置 null”与“不改”的区分标记。
 const _unset = Object();
 
@@ -188,6 +344,8 @@ class DetailState {
     // “题目已更新，OCR 未入队”横幅 + “重新入队”重试入口）；
     // 入队成功 / 无切片可入队 / 切到别的题时为假。
     this.ocrEnqueueFailed = false,
+    // 十九批 D1：右栏三组相关题（同错因 / 同知识点 / 同文件夹）。
+    this.related = const DetailRelated(),
   });
 
   /// 首查进行中（原 `_loading`；初始 true，首帧先出加载圈）。
@@ -230,6 +388,11 @@ class DetailState {
   /// 只属于置真时的那道题：[DetailNotifier.load] 只在同题重读时保留它，
   /// 切到别的题 / 题不存在时清掉；重试入队成功后也清掉。
   final bool ocrEnqueueFailed;
+
+  /// 十九批 D1：右栏三组相关题（见 [computeDetailRelated]；
+  /// [DetailNotifier.load] 后由 [_refreshRelated] best-effort 填入，
+  /// 读不到时为空，右栏对应面板不显示）。
+  final DetailRelated related;
 
   // ---- 编辑表单值（当前题；文本框内容在页面控制器里，不在这里） ----
 
@@ -303,6 +466,7 @@ class DetailState {
     List<OcrJob>? ocrJobs,
     bool? hasOcrApiKey,
     bool? ocrEnqueueFailed,
+    DetailRelated? related,
   }) {
     return DetailState(
       loading: loading ?? this.loading,
@@ -348,6 +512,7 @@ class DetailState {
       ocrJobs: ocrJobs ?? this.ocrJobs,
       hasOcrApiKey: hasOcrApiKey ?? this.hasOcrApiKey,
       ocrEnqueueFailed: ocrEnqueueFailed ?? this.ocrEnqueueFailed,
+      related: related ?? this.related,
     );
   }
 }
@@ -462,11 +627,20 @@ class DetailNotifier extends Notifier<DetailState> {
       recheckIntervalDays: settings.recheckIntervalDays,
       loading: false,
       ocrEnqueueFailed: keepEnqueueFailed,
+      // 十九批 D1：换题/重读先清空右栏，_refreshRelated 读到后再填
+      //（读不到时右栏留空，不挡详情）。
+      related: const DetailRelated(),
     );
     // 十三批 M5：读当前题的 OCR 任务行与 key 有无（状态推导用）。
     // 不 await：它是装饰性 best-effort 加载，失败/挂起都不能挡
     // 详情加载的后续流程（记查看、自愈）；读到了再更新 state。
     unawaited(_refreshOcrStatus(q));
+    // 十九批 D1：右栏三组相关题（同款 best-effort：取数用现有
+    // repo.all() + repo.causeRecords() 内存筛选，不新开取数口；
+    // FakeRepo 未覆写这两口时会走真实库——fake async 里读不到结果
+    // （挂起，见 D-88），但开库建库/迁移真实演示库的副作用照样发生
+    // （FR-45，见 D-234）——因此不 await，只在读到后更新 state）。
+    if (q != null) unawaited(_refreshRelated(q));
     // 十二批功能 4（D-91）：题目加载成功后记一次查看（同一题只留一条，
     // 时间更新为最后一次）。D-88：load() 本来就没有 try/catch，任一
     // repo 抛错都会停在 loading——记录失败必须自己吞掉，绝不能拖垮
@@ -674,6 +848,44 @@ class DetailNotifier extends Notifier<DetailState> {
       state = state.copyWith(ocrJobs: jobs, hasOcrApiKey: hasKey);
     } catch (_) {
       // OCR 状态读不到：界面按题本身的 OCR 字段推导，不挡详情。
+    }
+  }
+
+  /// 十九批 D1：右栏三组相关题（见 [computeDetailRelated]）。
+  /// 只重读全量题 + 全量错因记录、内存里分组排序，不新开取数口、
+  /// 不改 schema。失败/挂起时右栏留空，不抛、不挡详情加载；
+  /// 读到后当前题已换（切题/删除）时丢弃本次结果。
+  Future<void> _refreshRelated(Question current) async {
+    if (_disposed) return;
+    try {
+      final repo = _repo;
+      final all = await repo.all();
+      final records = await repo.causeRecords();
+      if (_disposed) return;
+      if (state.question?.id != current.id) return;
+      final recordsByQ = <String, List<CauseRecord>>{};
+      for (final r in records) {
+        (recordsByQ[r.questionId] ??= []).add(r);
+      }
+      var folderName = '';
+      if (current.folderIds.isNotEmpty) {
+        for (final f in state.folders) {
+          if (f.id == current.folderIds.first) {
+            folderName = f.name;
+            break;
+          }
+        }
+      }
+      final related = computeDetailRelated(
+        current: current,
+        all: all,
+        recordsByQuestion: recordsByQ,
+        folderName: folderName,
+      );
+      if (_disposed || state.question?.id != current.id) return;
+      state = state.copyWith(related: related);
+    } catch (_) {
+      // 相关题读不到：右栏留空，不挡详情。
     }
   }
 

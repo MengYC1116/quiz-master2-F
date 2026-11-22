@@ -36,15 +36,15 @@ HTML 来源：浅色 `:root`，深色 `@media (prefers-color-scheme: dark)`（�
 
 | token | 浅色 | 深色 | HTML 来源 | R0 旧值 → 差异 |
 |---|---|---|---|---|
-| `--bg` | #FDF8EC | #1E2228 | `:root` / dark | 与旧值一致 |
-| `--surface` | #FFFEF9 | #262B33 | 同上 | 与旧值一致 |
-| `--surface-2` | #FDF3D8 | #21262E | 同上 | 旧代码只有导航底用过，未成 token；现为正式 token |
-| `--surface-3` | #F3E9C8 | #333A45 | 同上 | 旧代码无此 token（深色 `darkElevated` #333A45 碰巧一致）；新增 |
+| `--bg` | #F7FAFD | #1E2228 | `:root` / dark | 二十二批：暖纸 #FDF8EC → 蓝白 #F7FAFD |
+| `--surface` | #FFFFFF | #262B33 | 同上 | 二十二批：暖白 #FFFEF9 → 冷白 #FFFFFF |
+| `--surface-2` | #EFF4FA | #21262E | 同上 | 二十二批：暖 #FDF3D8 → 淡蓝 #EFF4FA（导航底同值） |
+| `--surface-3` | #DCE8F5 | #333A45 | 同上 | 二十二批：暖 #F3E9C8 → 淡蓝 #DCE8F5 |
 | `--ink` | #17233B | #E9EDF3 | 同上 | 与旧值一致 |
 | `--ink-2` | #3D4E6B | #C6CEDA | 同上 | 旧代码无此 token；新增 |
 | `--muted` | #5F718E | #97A2B2 | 同上 | 浅色旧值 #5B6B84 → **#5F718E**（修正） |
-| `--line` | #E8DFC2 | #333B47 | 同上 | 与旧值一致 |
-| `--line-strong` | #CFC39E | #485364 | 同上 | 与旧值一致 |
+| `--line` | #DCE4EF | #333B47 | 同上 | 二十二批：暖 #E8DFC2 → 冷 #DCE4EF |
+| `--line-strong` | #B9C6D8 | #485364 | 同上 | 二十二批：暖 #CFC39E → 冷 #B9C6D8 |
 | `--accent` | #2E7CF6 | #7FA8D0 | 同上 | 浅色旧值 #2F7CF6 → **#2E7CF6**（1 位差修正）；深色旧值 #8AB6FF → **#7FA8D0**（冷雾蓝修正） |
 | `--accent-soft` | #E1EDFF | #2C3949 | 同上 | 与旧值一致（旧名 `lightFocusCard` / `darkFocusCard`） |
 | `--accent-ink` | #FFFFFF | #131A24 | 同上 | 旧代码无此 token；新增。深色主按钮文字用 #131A24（深字），不再是白字 |
@@ -65,9 +65,9 @@ HTML 来源：浅色 `:root`，深色 `@media (prefers-color-scheme: dark)`（�
 
 | token | 浅色 | 深色 | HTML 来源 | R0 旧值 → 差异 |
 |---|---|---|---|---|
-| `--paper` | #FFFDF4 | **#D8DCE2** | `:root` / dark | 深色旧值 #262B33（冷灰）→ **#D8DCE2（浅灰纸）**。深色下打开的书仍是浅灰纸页，纸面字 #232830、纸面线 #AEB6C2 |
-| `--paper-ink` | #22251F | #232830 | 同上 | 旧代码无此 token；新增 |
-| `--paper-line` | #E3D9BE | #AEB6C2 | 同上 | 与旧值一致（旧名 `lightPaperLine` / `darkPaperLine`） |
+| `--paper` | #FFFFFF | **#D8DCE2** | `:root` / dark | 二十二批：暖纸 #FFFDF4 → 冷白 #FFFFFF。深色旧值 #262B33（冷灰）→ **#D8DCE2（浅灰纸）**。深色下打开的书仍是浅灰纸页，纸面字 #232830、纸面线 #AEB6C2 |
+| `--paper-ink` | #17233B | #232830 | 同上 | 二十二批：暖黑 #22251F → 墨色 #17233B（与 `--ink` 同值） |
+| `--paper-line` | #DCE4EF | #AEB6C2 | 同上 | 二十二批：暖 #E3D9BE → 冷 #DCE4EF（与 `--line` 同值） |
 
 ### 2.4 区域色（两层框，旧代码无 token，新增）
 

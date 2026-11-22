@@ -170,6 +170,12 @@ void main() {
     fakeNow = DateTime(2026, 11, 18, 12, 0, 0);
     db = await AppDatabase.openForTest();
     AppDatabase.useDatabaseForTest(db);
+    // FR-45 后续（slices 污染）：tearDown 的 resetForTest() 把
+    // testDataDirectory 置 null；从第 2 个测试起 dataDirectoryPath()
+    // 读到真实目录，切片写进真实 slices/（P3 批量 2 实测 acc-del 进真实
+    // .trash）。setUp 先给 testDataDirectory 指全新临时目录，再读路径。
+    final tmpDataDir = await Directory.systemTemp.createTemp('qm2-p11-');
+    AppDatabase.testDataDirectory = tmpDataDir.path;
     dataDir = Directory(AppDatabase.dataDirectoryPath());
     await dataDir.create(recursive: true);
     keyBackend = _MemoryKeyBackend();
@@ -180,6 +186,10 @@ void main() {
   tearDown(() async {
     OcrWorker.resetInstanceForTest();
     await AppDatabase.resetForTest();
+    // setUp 指的临时数据目录用完即删，不留残留。
+    try {
+      if (await dataDir.exists()) await dataDir.delete(recursive: true);
+    } catch (_) {}
   });
 
   group('候选包身份字段（GlmOcrRawData）', () {

@@ -272,7 +272,7 @@ void main() {
       expect(DesignTokens.foldFormTitleFontSize, 14.5);
       expect(DesignTokens.largeButtonRadius, 14);
       expect(DesignTokens.controlLineHeight, 1.2);
-      expect(DesignTokens.navItemFontSize, 14.5);
+      expect(DesignTokens.navItemFontSize, 15.5);
       expect(DesignTokens.navBadgeFontSize, 11.5);
       expect(DesignTokens.navBrandFontSize, 17);
     });

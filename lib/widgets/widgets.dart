@@ -115,7 +115,7 @@ class QuestionSlice extends StatelessWidget {
         height: fixedHeight ? maxHeight : null,
         constraints: BoxConstraints(maxHeight: maxHeight),
         decoration: BoxDecoration(
-          // 纸面色取 token：亮色 #FFFDF4 / 深色 #D8DCE2（D1，HTML
+          // 纸面色取 token：亮色 #FFFFFF / 深色 #D8DCE2（D1，HTML
           // `--paper`），深色下不再是纯白——R7 详情大图与错题本大卡片
           // 同款；纸面字仍是黑字，#D8DCE2 上可读。
           color: palette.paper,
@@ -471,7 +471,7 @@ class CompactSliceThumb extends StatelessWidget {
       height: 48,
       padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 4),
       decoration: BoxDecoration(
-        // 纸面色取 token，与 QuestionSlice 一致：亮色 #FFFDF4 /
+        // 纸面色取 token，与 QuestionSlice 一致：亮色 #FFFFFF /
         // 深色 #D8DCE2（D1，HTML `--paper`）。旧代码写死 Colors.white，
         // 深色下仍是纯白（R11 §8.3），2026-11-13 修。
         color: DesignTokens.of(Theme.of(context).brightness).paper,
@@ -587,7 +587,7 @@ class SubjectLabel extends StatelessWidget {
 Future<void> showQuestionZoomDialog(
   BuildContext context,
   Question question, {
-  String returnLabel = '整理台',
+  String returnLabel = '整理工作台',
 }) {
   return showDialog<void>(
     context: context,

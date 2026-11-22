@@ -91,6 +91,11 @@ class _StaleRepo extends QuestionRepository {
   Future<Map<String, (int, int, int)>> subjectCounts(
           {bool includeArchived = false}) async =>
       const {};
+
+  // 十九批 C：内存版已存查找（A3 起 load() 读 savedSearches；不覆写
+  // 会走真实库、页面卡 loading、pumpAndSettle 超时，见 D-225）。
+  @override
+  Future<List<SavedSearch>> savedSearches() async => const [];
 }
 
 Future<void> _pumpReport(WidgetTester tester, _StaleRepo repo) async {
@@ -129,7 +134,7 @@ Future<void> _pumpWrongbook(WidgetTester tester, _StaleRepo repo) async {
         body: WrongbookPage(
           repo: repo,
           onOpenHome: () {},
-          onOpenDetail: (_, __) async {},
+          onOpenDetail: (_, __, {String? searchContext}) async {},
           onGoReview: ({String? subjectId}) {},
         ),
       ),
@@ -152,6 +157,14 @@ String _coverTotal(WidgetTester tester) {
   return texts.first.data!;
 }
 
+/// 从 L1 列表进书架（十九批 A5：默认落点是列表，书架在筛选面板顶部）。
+Future<void> _openShelf(WidgetTester tester) async {
+  await tester.tap(find.text('筛选 ▾'));
+  await tester.pumpAndSettle();
+  await tester.tap(find.text('📚 书架（按学科浏览）'));
+  await tester.pumpAndSettle();
+}
+
 void main() {
   group('SR3-2 陈旧记录：报告分布数 = 错题本封面数', () {
     testWidgets('路径 1（旧口径报告多算）：新错因无记录，已治愈的陈旧记录在——两边都判已掌握，分布 0 道、封面 0 道',
@@ -165,6 +178,7 @@ void main() {
       expect(tester.takeException(), isNull);
 
       await _pumpWrongbook(tester, repo);
+      await _openShelf(tester);
       expect(_coverTotal(tester), '0');
       expect(tester.takeException(), isNull);
     });
@@ -183,6 +197,7 @@ void main() {
       expect(tester.takeException(), isNull);
 
       await _pumpWrongbook(tester, repo);
+      await _openShelf(tester);
       expect(_coverTotal(tester), '1');
       expect(tester.takeException(), isNull);
     });

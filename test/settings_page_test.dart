@@ -10,6 +10,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:quiz_master2/data/database.dart';
 import 'package:quiz_master2/data/repository.dart';
+import 'package:quiz_master2/models/exam_event.dart';
 import 'package:quiz_master2/models/models.dart';
 import 'package:quiz_master2/modules/settings/settings_page.dart';
 import 'package:quiz_master2/state/repository_provider.dart';
@@ -84,6 +85,11 @@ class FakeSettingsRepo extends QuestionRepository {
           sliceText: '题',
         ),
       );
+
+  /// B11-9：考试事件内存版（设置页考试组打开时读；不覆盖会落到基类
+  /// 读真实库，fake async 里永不完成，见 D-88）。
+  @override
+  Future<List<ExamEvent>> examEvents() async => const [];
 }
 
 Future<List<AppSettings>> pumpSettings(
@@ -429,7 +435,7 @@ void main() {
       );
       await pumpSettings(tester, repo: repo);
       await openGroup(tester, '数据');
-      expect(find.text('孤儿清理'), findsOneWidget);
+      expect(find.text('无用文件清理'), findsOneWidget);
       expect(find.textContaining('发现 2 个无用文件'), findsOneWidget);
       expect(find.textContaining('共约 3.0 KB'), findsOneWidget);
       await tester.ensureVisible(find.text('清理无用文件'));

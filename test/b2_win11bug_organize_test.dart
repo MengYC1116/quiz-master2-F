@@ -83,6 +83,23 @@ class _FakeRepo extends QuestionRepository {
 
   @override
   Future<void> addExam(Exam exam) async {}
+
+  /// B11-10：OrganizeNotifier 只在队列已空且库里有题时读这两个数
+  /// （今日小结行用）；返回 0 / 空，不碰真实库（见 D-88）。
+  @override
+  Future<int> organizedTodayCount({DateTime? now}) async => 0;
+
+  @override
+  Future<List<CauseRecord>> causeRecords() async => const [];
+
+  /// 十三批 M5：OCR 状态是 best-effort 加载（不 await）；返回空任务行
+  /// 与“无 key”，不碰真实库（见 D-88）。
+  @override
+  Future<List<OcrJob>> ocrJobsForQuestion(String questionId) async =>
+      const [];
+
+  @override
+  Future<bool> hasOcrApiKey() async => false;
 }
 
 /// 带真实窄切片的题（复现 Win11 上报的那道：英语 gs_p018.png 第 1 页
@@ -143,7 +160,7 @@ Future<void> _pump(
       home: Scaffold(
         body: OrganizePage(
           repo: repo,
-          onOpenDetail: (_, __) async {},
+          onOpenDetail: (_, __, {String? searchContext}) async {},
           onGoReview: () {},
           onGoCollect: () {},
         ),

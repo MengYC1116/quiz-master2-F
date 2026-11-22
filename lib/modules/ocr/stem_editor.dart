@@ -369,6 +369,22 @@ class _StemEditorState extends State<StemEditor> {
     return text;
   }
 
+  /// 草稿文字是否以标题行开头（B20-P2 反方向，仅保存时用）。
+  ///
+  /// 与 [_terminateHeadingLine] 对称：标题行的语法是行首 `#{1,3}` +
+  /// 空格/制表符（与解析器 `_findNextHeading` 的判定一致）；草稿里
+  /// 的标题以 `'# 标题'` 形式存为纯文本。首行是标题行时返回 true；
+  /// 首行不是标题行、或标题行在段内第二行及之后时返回 false
+  ///（段内第二行起已有换行分隔，不缺行首换行）。
+  static bool _startsWithHeadingLine(String text) {
+    if (text.isEmpty) return false;
+    final firstBreak = text.indexOf('\n');
+    final firstLine = firstBreak < 0
+        ? text
+        : text.substring(0, firstBreak);
+    return RegExp(r'^#{1,3}[ \t]').hasMatch(firstLine);
+  }
+
   /// 草稿按块拼回题干（保存用）。空文字段跳过；恢复为原图的公式
   /// 从题干里拿掉（以原图显示，见文件头）；其余按 [blocksToMarkdown]。
   /// 图块不拼回题干（只存在 ocr_figures 里，见 question_content.dart）。
@@ -377,8 +393,21 @@ class _StemEditorState extends State<StemEditor> {
   /// 标题草稿（`'# 标题'` 形式的纯文本）末行是标题行时补一个尾换行
   ///（[_terminateHeadingLine]，A3）：标题行读到行尾为止，草稿里
   /// 标题行无尾换行，后文直接拼在同一行会被标题吞掉。
+  /// 标题草稿以标题行开头、且前一段尾换行被删掉时，在标题行前补
+  /// 一个换行（B20-P2 反方向，[_startsWithHeadingLine]）：标题须位
+  /// 于行首才能再解析出来，否则标题与前文拼在同一行、标题标记丢失。
   String _draftsToMarkdown() {
     final blocks = <QuestionContentBlock>[];
+    // B20-P2 反方向：记录已拼出内容的尾部状态，供标题行首 guard 用；
+    // 只跟踪保存输出，不动编辑器显示文本。图块不拼回题干，不改变状态。
+    var hasContent = false;
+    var endsWithNewline = false;
+    void noteRendered(String rendered) {
+      if (rendered.isEmpty) return;
+      hasContent = true;
+      endsWithNewline = rendered.endsWith('\n');
+    }
+
     void addDraft(_DraftBlock draft, {required bool isLast}) {
       switch (draft) {
         case _DraftText(:final controller):
@@ -387,11 +416,25 @@ class _StemEditorState extends State<StemEditor> {
           final text = isLast
               ? controller.text
               : _terminateHeadingLine(controller.text);
-          if (text.isNotEmpty) {
-            blocks.add(TextBlock(text));
+          // B20-P2 反方向：标题草稿须位于行首；前一段缺尾换行时
+          // （用户在编辑器里删掉了标题卡前一段的尾换行）在标题行
+          // 前补一个 '\n'，否则标题与前文拼在同一行、再解析时标题
+          // 标记丢失。已是输出开头、或前一段已以换行结尾时不补，
+          // 不多出空行；只改保存出的 markdown。
+          final guarded = _startsWithHeadingLine(text) &&
+                  hasContent &&
+                  !endsWithNewline
+              ? '\n$text'
+              : text;
+          if (guarded.isNotEmpty) {
+            blocks.add(TextBlock(guarded));
+            noteRendered(guarded);
           }
         case _DraftCode(:final controller, :final language):
           blocks.add(CodeBlock(controller.text, language: language));
+          // 围栏拼回以 ``` 收尾，不以换行结尾。
+          hasContent = true;
+          endsWithNewline = false;
         case _DraftFormula(
           :final latex,
           :final displayMode,
@@ -399,6 +442,9 @@ class _StemEditorState extends State<StemEditor> {
         ):
           if (!restoredAsImage) {
             blocks.add(FormulaBlock(latex, displayMode: displayMode));
+            // 行内/行间公式拼回均不以换行结尾。
+            hasContent = true;
+            endsWithNewline = false;
           }
         case _DraftParagraph(:final segments):
           for (var j = 0; j < segments.length; j++) {
@@ -511,7 +557,7 @@ class _StemEditorState extends State<StemEditor> {
         opacity: 0.4,
         child: Icon(Icons.drag_indicator, size: 20),
       ),
-      onDragUpdate: (details) => _maybeAutoScroll(details.globalPosition),
+      onDragUpdate: (details) => _maybeAutoScroll(details),
       child: const MouseRegion(
         cursor: SystemMouseCursors.grab,
         child: Icon(Icons.drag_indicator, size: 20),
@@ -522,7 +568,12 @@ class _StemEditorState extends State<StemEditor> {
   /// Win11 反馈包 3：拖到滚动区上下边缘时自动滚动（题干再长也能拖过去）。
   /// 滚速固定一小步（每收到一次拖动更新滚 24px），到顶/底即停；
   /// 外层没有可滚容器时静默不做（不抛、不拦拖动）。
-  void _maybeAutoScroll(Offset globalPosition) {
+  void _maybeAutoScroll(DragUpdateDetails details) {
+    final globalPosition = details.globalPosition;
+    // 十九批 C：只在指针朝边缘方向移动时才自动滚动。拖拽从边缘区内
+    // 起手时（例如详情页左栏滚动视口顶端、起手点距视口顶 < 64px），
+    // 不朝边缘移动的更新也会反复触发 jumpTo，内容被顶走、落点错位
+    //（b14_win11_pkg3 详情页拖图块回归）；朝上拖才滚上、朝下拖才滚下。
     final scrollable = Scrollable.maybeOf(context);
     if (scrollable == null) return;
     final position = scrollable.position;
@@ -534,13 +585,15 @@ class _StemEditorState extends State<StemEditor> {
     final viewportBottom = viewportTop + renderBox.size.height;
     const edgeDistance = 64.0;
     const step = 24.0;
-    if (globalPosition.dy < viewportTop + edgeDistance) {
+    if (globalPosition.dy < viewportTop + edgeDistance &&
+        details.delta.dy < 0) {
       final target = (position.pixels - step).clamp(
         position.minScrollExtent,
         position.maxScrollExtent,
       );
       if (target != position.pixels) position.jumpTo(target);
-    } else if (globalPosition.dy > viewportBottom - edgeDistance) {
+    } else if (globalPosition.dy > viewportBottom - edgeDistance &&
+        details.delta.dy > 0) {
       final target = (position.pixels + step).clamp(
         position.minScrollExtent,
         position.maxScrollExtent,

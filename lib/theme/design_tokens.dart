@@ -103,9 +103,9 @@ class AppPalette {
   final Color paper; // --paper 打开的书的纸页（深色下仍是浅灰纸）
   final Color paperInk; // --paper-ink 纸面上的字
   final Color paperLine; // --paper-line 纸面线
-  // 纸面次级色（HTML 错题本纸面上的固定值；纸在亮/深两套下都是浅色纸，
-  // 所以亮/深取同一值）：fcount / nb-paper-empty 说明文字 #5C6675；
-  // 目录行内操作按钮 .tbtn 边 #B9AE8E / 字 #3D4438；
+  // 纸面次级色：fcount / nb-paper-empty 说明文字 #5C6675（亮/深同值）；
+  // 目录行内操作按钮 .tbtn 边/字：亮色 #B9C6D8 / #3D4E6B（二十二批去暖，
+  // 与 line / ink2 同值），深色仍 #B9AE8E / #3D4438（深色不动）；
   // 紧凑行收藏星 .nb-prow .nb-star #B9C2CE / 已收藏 #E8A13A。
   final Color paperMuted;
   final Color paperBtnBorder;
@@ -181,15 +181,15 @@ class ScaledTokens {
 class DesignTokens {
   // ---------------------------------------------------------------- 亮色 --
   static const AppPalette light = AppPalette(
-    background: Color(0xFFFDF8EC),
-    surface: Color(0xFFFFFEF9),
-    surface2: Color(0xFFFDF3D8),
-    surface3: Color(0xFFF3E9C8),
+    background: Color(0xFFF7FAFD),
+    surface: Color(0xFFFFFFFF),
+    surface2: Color(0xFFEFF4FA),
+    surface3: Color(0xFFDCE8F5),
     ink: Color(0xFF17233B),
     ink2: Color(0xFF3D4E6B),
     muted: Color(0xFF5F718E),
-    line: Color(0xFFE8DFC2),
-    lineStrong: Color(0xFFCFC39E),
+    line: Color(0xFFDCE4EF),
+    lineStrong: Color(0xFFB9C6D8),
     accent: Color(0xFF2E7CF6),
     accentSoft: Color(0xFFE1EDFF),
     accentInk: Color(0xFFFFFFFF),
@@ -205,12 +205,12 @@ class DesignTokens {
     keep: Color(0xFF0E9F6E),
     merge: Color(0xFFB97A0A),
     cut: Color(0xFFD93A2B),
-    paper: Color(0xFFFFFDF4),
-    paperInk: Color(0xFF22251F),
-    paperLine: Color(0xFFE3D9BE),
+    paper: Color(0xFFFFFFFF),
+    paperInk: Color(0xFF17233B),
+    paperLine: Color(0xFFDCE4EF),
     paperMuted: Color(0xFF5C6675),
-    paperBtnBorder: Color(0xFFB9AE8E),
-    paperBtnText: Color(0xFF3D4438),
+    paperBtnBorder: Color(0xFFB9C6D8),
+    paperBtnText: Color(0xFF3D4E6B),
     paperStar: Color(0xFFB9C2CE),
     paperStarOn: Color(0xFFE8A13A),
     math: Color(0xFF2E7CF6),
@@ -239,7 +239,7 @@ class DesignTokens {
         color: Color.fromRGBO(23, 35, 59, 0.09),
       ),
     ],
-    paperDots: Color.fromRGBO(180, 160, 90, 0.07),
+    paperDots: Color.fromRGBO(160, 180, 205, 0.05),
   );
 
   // ---------------------------------------------------------------- 深色 --
@@ -802,9 +802,9 @@ class DesignTokens {
   // 品牌：.brand 17px/800；副标题 small 11.5px。
   static const double navBrandFontSize = 17;
   static const double navBrandSubFontSize = 11.5;
-  // 导航项：14.5px/600（选中 700）；角标 11.5px/700，
+  // 导航项：15.5px/600（选中 700）；角标 11.5px/700，
   // 最小宽 22px、高 20px；项内边距 10px 12px；外壳内边距 16px 12px。
-  static const double navItemFontSize = 14.5;
+  static const double navItemFontSize = 15.5;
   static const double navBadgeFontSize = 11.5;
   static const double navBadgeMinWidth = 22;
   static const double navBadgeHeight = 20;

@@ -156,6 +156,11 @@ class _Tail2Repo extends QuestionRepository {
   Future<void> syncCauseRecords(Question q) async {
     syncCauseRecordsCalls++;
   }
+
+  /// 详情页自愈（_healSliceIfNeeded）读同页框：无框，不碰真实库（见 D-88）。
+  @override
+  Future<List<QuestionBox>> boxesForPageImage(String pageImagePath) async =>
+      const [];
 }
 
 ProviderContainer _container(
@@ -396,7 +401,9 @@ void main() {
       await tester.enterText(find.byType(TextField).first, '函数极限改');
       await _tapText(tester, '保存', first: true);
       expect(find.text('内容已更新'), findsNothing);
-      expect(find.text('数学 · 极限题｜函数极限改'), findsOneWidget);
+      // 十九批 C：旧拼串标题「学科 · 题型｜题名」已随 D1 板子去掉，
+      // 保存后标题行只显示题名本身。
+      expect(find.text('函数极限改'), findsOneWidget);
       expect(repo.saved.last.title, '函数极限改');
       expect(find.text('编辑'), findsOneWidget);
     });
@@ -422,7 +429,8 @@ void main() {
       expect(find.text('保留我的编辑'), findsOneWidget);
       expect(find.text('用新内容'), findsOneWidget);
       await _tapText(tester, '保留我的编辑');
-      expect(find.text('数学 · 极限题｜函数极限改'), findsOneWidget);
+      // 十九批 C：旧拼串标题「学科 · 题型｜题名」已随 D1 板子去掉。
+      expect(find.text('函数极限改'), findsOneWidget);
       // 旧底稿写回：标题是表单改的，题型是旧底稿的（未定型）。
       expect(repo.saved.last.title, '函数极限改');
       expect(repo.saved.last.questionType, isNull);
@@ -447,8 +455,9 @@ void main() {
       expect(find.text('内容已更新'), findsOneWidget);
       await _tapText(tester, '用新内容');
       // 退出编辑、什么都没保存，页面仍显示旧标题（重算没改标题）。
+      // 十九批 C：旧拼串标题「学科 · 题型｜题名」已随 D1 板子去掉。
       expect(find.text('编辑'), findsOneWidget);
-      expect(find.text('数学 · 极限题｜函数极限'), findsOneWidget);
+      expect(find.text('函数极限'), findsOneWidget);
       expect(repo.saved, isEmpty);
       // 再进编辑：底稿已是新行（版本 1），直接保存不再弹框。
       await _tapText(tester, '编辑');
@@ -637,6 +646,20 @@ class _PageRepo extends QuestionRepository {
 
   @override
   Future<void> addExam(Exam e) async {}
+
+  /// 十三批 M5：OCR 状态是 best-effort 加载（不 await）；返回空任务行
+  /// 与“无 key”，不碰真实库（见 D-88）。
+  @override
+  Future<List<OcrJob>> ocrJobsForQuestion(String questionId) async =>
+      const [];
+
+  @override
+  Future<bool> hasOcrApiKey() async => false;
+
+  /// 详情页自愈（_healSliceIfNeeded）读同页框：无框，不碰真实库（见 D-88）。
+  @override
+  Future<List<QuestionBox>> boxesForPageImage(String pageImagePath) async =>
+      const [];
 }
 
 Future<void> _pumpDetail(

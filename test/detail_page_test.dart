@@ -1,4 +1,5 @@
-// R7 题目详情 widget 测试：方案 2 分段折叠式（默认全折叠）、
+// R7 题目详情 widget 测试：十九批 D1 相关侧栏式（两栏、返回行带上下文、
+// 标题行星标/归档/删除、题目信息与复习记录默认展开、答案默认隐藏）、
 // 看答案、待补充进编辑、编辑保存/取消内联确认、收藏/归档/删除
 //（模态弹窗确认，删后进下一题）、上一题/下一题顺序、加入/取消加入复习、
 // 未整理题无加入按钮、无「开始复习」、图加载失败占位、亮/深 × 三档无溢出、
@@ -174,6 +175,15 @@ class FakeDetailRepo extends QuestionRepository {
   /// 基类读真实 Drift 库，fake async 里永不完成，见 D-88）。
   @override
   Future<void> recordQuestionViewed(String questionId) async {}
+
+  /// 十三批 M5：OCR 状态是 best-effort 加载（不 await）；返回空任务行
+  /// 与“无 key”，不碰真实库（见 D-88）。
+  @override
+  Future<List<OcrJob>> ocrJobsForQuestion(String questionId) async =>
+      const [];
+
+  @override
+  Future<bool> hasOcrApiKey() async => false;
 
   @override
   Future<void> syncCauseRecords(Question q) async {}
@@ -424,10 +434,6 @@ Future<void> pumpDetail(
   await tester.pumpAndSettle();
 }
 
-Future<void> openSection(WidgetTester tester, String title) async {
-  await tapText(tester, title);
-}
-
 /// 点按前先滚到可见（详情页整页滚动，折叠头 / 底部操作行常在 720 高视口外，
 /// 直接 tap 会落空——见 R6 截图坐标教训同款问题）。
 Future<void> tapText(
@@ -517,42 +523,41 @@ void main() {
   });
 
   group('结构与默认态', () {
-    testWidgets('三段默认全折叠，标题 + 工具栏 + 无开始复习', (tester) async {
+    testWidgets('D1 默认态：标题行 + 返回行 + 两 panel 默认展开 + 答案默认隐藏', (tester) async {
       await pumpDetail(tester);
-      expect(find.text('数学 · 极限题｜函数极限'), findsOneWidget);
+      expect(find.text('函数极限'), findsOneWidget);
       expect(find.text('★'), findsOneWidget); // 已收藏
-      expect(find.text('返回错题本'), findsNWidgets(2)); // 工具栏 + 底部
+      expect(find.text('返回错题本'), findsOneWidget); // 只有返回行有
       expect(find.text('第 1 / 3 题 · 按错题本当前的顺序'), findsOneWidget);
-      expect(find.text('答案解析'), findsOneWidget);
+      expect(find.text('上一题 ↑'), findsOneWidget);
+      expect(find.text('下一题 ↓'), findsOneWidget);
       expect(find.text('题目信息'), findsOneWidget);
       expect(find.text('复习记录'), findsOneWidget);
-      expect(find.text('看答案'), findsNothing);
-      expect(find.text('加入复习'), findsNothing);
+      expect(find.text('看答案'), findsOneWidget); // 按钮行常驻
+      expect(find.text('1'), findsNothing); // 答案藏在看答案后
+      expect(find.text('取消加入复习'), findsOneWidget); // q1 已加入
       expect(find.text('开始复习'), findsNothing);
-      expect(find.text('编辑'), findsOneWidget);
+      expect(find.text('编辑'), findsOneWidget); // 题目信息 panel 底部
       expect(find.byType(Icon), findsNothing);
     });
 
     testWidgets('来源标签来自调用页：复习', (tester) async {
       await pumpDetail(tester, sourceLabel: '复习');
-      expect(find.text('返回复习'), findsNWidgets(2));
+      expect(find.text('返回复习'), findsOneWidget);
       expect(find.text('第 1 / 3 题 · 按复习当前的顺序'), findsOneWidget);
     });
 
-    testWidgets('副标题含学科只读说明与错因汇总 pill', (tester) async {
+    testWidgets('标题行状态 pill 与 panel 里的错因', (tester) async {
       await pumpDetail(tester);
-      expect(find.text('概念不清'), findsOneWidget); // 仅副标题可见，复习记录折叠
-      expect(find.text('解决中'), findsOneWidget); // 副标题里的错因状态 pill
-      expect(find.text('（只显示，不能改——导入时选定，详情和整理台都不能改）'), findsOneWidget);
+      expect(find.text('概念不清'), findsNWidgets(2)); // 信息错因行 + 复习错因行
+      expect(find.text('解决中'), findsNWidgets(3)); // 标题 pill + 整体状态 pill + 错因 pill
     });
   });
 
   group('答案解析', () {
-    testWidgets('展开后看答案，点开显示答案与解析，可收起', (tester) async {
+    testWidgets('看答案在按钮行，点开显示答案与解析，可收起', (tester) async {
       await pumpDetail(tester);
-      await openSection(tester, '答案解析');
       expect(find.text('看答案'), findsOneWidget);
-      expect(find.text('答案和解析默认藏起来，先自己想，再点开看'), findsOneWidget);
       await tapText(tester, '看答案');
       expect(find.text('1'), findsOneWidget);
       expect(find.text('lim(x→0) sin3x/x = 3。'), findsOneWidget);
@@ -563,11 +568,11 @@ void main() {
 
     testWidgets('空答案显示待补充，点它进编辑模式', (tester) async {
       await pumpDetail(tester, questionId: 'q2');
-      await openSection(tester, '答案解析');
       await tapText(tester, '看答案');
-      expect(find.text('待补充 · 点这里补'), findsNWidgets(2)); // 答案 + 解析
+      // D1：信息 panel 默认展开，q2 的备注也是空 → 答案 + 解析 + 备注共 3 处。
+      expect(find.text('待补充 · 点这里补'), findsNWidgets(3));
       await tapText(tester, '待补充 · 点这里补', first: true);
-      expect(find.text('保存'), findsNWidgets(2)); // 工具栏 + 底部
+      expect(find.text('保存'), findsOneWidget); // 标题行（编辑态）
       expect(find.textContaining('正在编辑这道题'), findsOneWidget);
     });
 
@@ -585,18 +590,18 @@ void main() {
   group('题目信息', () {
     testWidgets('查看态七行字段 + 来源行', (tester) async {
       await pumpDetail(tester);
-      await openSection(tester, '题目信息');
-      expect(find.text('学科（不能改）'), findsOneWidget);
-      expect(find.text('文件夹（归类）'), findsOneWidget);
+      // 两 panel 默认展开，不用先点标题。
+      expect(find.text('学科'), findsOneWidget);
+      expect(find.text('文件夹'), findsOneWidget);
       expect(find.text('知识点'), findsOneWidget);
-      expect(find.text('错误类型'), findsOneWidget);
+      expect(find.text('错因'), findsOneWidget);
       expect(find.text('标签'), findsOneWidget);
-      expect(find.text('备注（笔记）'), findsOneWidget);
+      expect(find.text('备注'), findsOneWidget);
       expect(find.text('来源'), findsOneWidget);
       expect(find.text('来自试卷：高等数学期末试卷'), findsOneWidget);
       expect(find.text('#易错 #常考'), findsOneWidget);
       expect(find.text('数学 › 第一章 函数与极限 · 函数极限'), findsOneWidget);
-      expect(find.text('概念不清'), findsNWidgets(2)); // 副标题 + 错误类型行
+      expect(find.text('概念不清'), findsNWidgets(2)); // 信息错因行 + 复习错因行
     });
 
     testWidgets('FR-16：章节为空时知识点只显示“学科 › 知识点名”', (tester) async {
@@ -608,13 +613,11 @@ void main() {
         name: '函数极限',
       );
       await pumpDetail(tester, repo: repo);
-      await openSection(tester, '题目信息');
       expect(find.text('数学 › 函数极限'), findsOneWidget);
     });
 
     testWidgets('空字段显示待补充', (tester) async {
       await pumpDetail(tester, questionId: 'q2');
-      await openSection(tester, '题目信息');
       // q2 有文件夹/知识点/错误类型/标签，无备注 → 只有备注是待补充
       expect(find.text('待补充 · 点这里补'), findsOneWidget);
     });
@@ -623,16 +626,15 @@ void main() {
   group('复习记录', () {
     testWidgets('已加入题：取消加入 + 错因状态 + 解决次数 + 全部记录', (tester) async {
       await pumpDetail(tester);
-      await openSection(tester, '复习记录');
       expect(find.text('取消加入复习'), findsOneWidget);
       expect(find.text('已加入复习 · 还有 1 个错因未解决'), findsOneWidget);
       expect(find.text('取消加入不会删解决记录，再加入时接着上次解决，不用从头来'), findsOneWidget);
       expect(find.text('错因状态'), findsOneWidget);
-      expect(find.text('概念不清'), findsNWidgets(2)); // 副标题 + 复习记录行
-      expect(find.text('解决中'), findsNWidgets(2)); // 副标题 pill + 复习记录 pill
+      expect(find.text('概念不清'), findsNWidgets(2)); // 信息错因行 + 复习错因行
+      expect(find.text('解决中'), findsNWidgets(3)); // 标题 pill + 整体状态 pill + 错因 pill
       expect(find.text('解决次数 1'), findsOneWidget);
       expect(find.textContaining('共自查 2 次 · 自查「已解决」1 次'), findsOneWidget);
-      expect(find.text('解决记录（全部）'), findsOneWidget);
+      expect(find.text('解决记录'), findsOneWidget);
       expect(find.textContaining('已解决'), findsWidgets);
       expect(find.textContaining('未解决'), findsWidgets);
     });
@@ -648,7 +650,6 @@ void main() {
         recheckIntervalDays: 3,
       );
       await pumpDetail(tester, repo: repo);
-      await openSection(tester, '复习记录');
       expect(find.text('已加入复习 · 错因已全部解决，满 3 天自动回来复查'), findsOneWidget);
       expect(find.textContaining('满 7 天自动回来复查'), findsNothing);
     });
@@ -660,14 +661,12 @@ void main() {
         solvedCount: 2,
       );
       await pumpDetail(tester, repo: repo);
-      await openSection(tester, '复习记录');
       expect(find.text('已加入复习 · 错因已全部解决，满 7 天自动回来复查'), findsOneWidget);
     });
 
     testWidgets('未加入题：加入复习，点后变取消加入复习', (tester) async {
       final repo = detailRepo();
       await pumpDetail(tester, repo: repo, questionId: 'q2');
-      await openSection(tester, '复习记录');
       expect(find.text('加入复习'), findsOneWidget);
       await tapText(tester, '加入复习');
       expect(find.text('取消加入复习'), findsOneWidget);
@@ -676,7 +675,6 @@ void main() {
 
     testWidgets('未整理题没有加入复习按钮', (tester) async {
       await pumpDetail(tester, questionId: 'q3');
-      await openSection(tester, '复习记录');
       expect(find.text('加入复习'), findsNothing);
       expect(find.text('取消加入复习'), findsNothing);
       expect(find.text('未整理的题不能加入复习'), findsOneWidget);
@@ -684,11 +682,10 @@ void main() {
 
     testWidgets('无错因题加入时提示先补错误类型', (tester) async {
       await pumpDetail(tester, questionId: 'q5');
-      await openSection(tester, '复习记录');
       expect(find.text('加入复习'), findsOneWidget);
       await tapText(tester, '加入复习');
       await tester.pump();
-      expect(find.text('先补错误类型'), findsOneWidget);
+      expect(find.text('先补错因'), findsOneWidget);
     });
   });
 
@@ -700,7 +697,7 @@ void main() {
       expect(find.textContaining('正在编辑这道题'), findsOneWidget);
       await tester.enterText(find.byType(TextField).first, '函数极限改');
       await tapText(tester, '保存', first: true);
-      expect(find.text('数学 · 极限题｜函数极限改'), findsOneWidget);
+      expect(find.text('函数极限改'), findsOneWidget);
       expect(repo.saved.last.title, '函数极限改');
       expect(find.text('编辑'), findsOneWidget);
     });
@@ -718,8 +715,7 @@ void main() {
         ],
       );
       await pumpDetail(tester, repo: repo);
-      // 查看态：展开「题目信息」后编辑器初始位就是检测到的两项。
-      await tapText(tester, '题目信息');
+      // 查看态：题目信息 panel 默认展开，编辑器初始位就是检测到的两项。
       expect(find.widgetWithText(QmChip, 'A'), findsOneWidget);
       expect(find.widgetWithText(QmChip, 'B'), findsOneWidget);
       expect(find.widgetWithText(QmChip, 'C'), findsNothing);
@@ -790,18 +786,18 @@ void main() {
       expect(find.text('继续编辑'), findsOneWidget);
       // 继续编辑：仍在编辑态
       await tapText(tester, '继续编辑');
-      expect(find.text('保存'), findsNWidgets(2));
+      expect(find.text('保存'), findsOneWidget); // 标题行（编辑态）
       // 不保存：退出编辑，标题未变
       await tapText(tester, '取消', first: true);
       await tapText(tester, '不保存，丢弃改动');
-      expect(find.text('数学 · 极限题｜函数极限'), findsOneWidget);
+      expect(find.text('函数极限'), findsOneWidget);
       expect(repo.saved, isEmpty);
       // 保存并退出：保存且退出编辑
       await tapText(tester, '编辑');
       await tester.enterText(find.byType(TextField).first, '函数极限改');
       await tapText(tester, '取消', first: true);
       await tapText(tester, '保存并退出');
-      expect(find.text('数学 · 极限题｜函数极限改'), findsOneWidget);
+      expect(find.text('函数极限改'), findsOneWidget);
       expect(repo.saved.last.title, '函数极限改');
     });
 
@@ -810,25 +806,24 @@ void main() {
       await tapText(tester, '编辑');
       expect(find.text('学科（不能改）'), findsOneWidget);
       expect(find.text('试卷（来源）'), findsOneWidget);
-      expect(find.text('文件夹（归类 · 可多选，题只存一份 · 只列本题科目自己的文件夹）'), findsOneWidget);
+      expect(find.text('文件夹（归类 · 可多选，题只存一份 · 只列本学科自己的文件夹）'), findsOneWidget);
       expect(find.text('知识点（可多选、不限个数）'), findsOneWidget);
-      expect(find.text('错误类型（固定枚举多选 + 自定义）'), findsOneWidget);
+      expect(find.text('错因（固定多选 + 自定义）'), findsOneWidget);
       expect(find.text('标签（不限个数）'), findsOneWidget);
       expect(find.text('＋ 新建文件夹'), findsOneWidget);
       expect(find.text('＋ 新建知识点'), findsOneWidget);
-      expect(find.text('＋ 新建错误类型'), findsOneWidget);
+      expect(find.text('＋ 自定义错因'), findsOneWidget);
       expect(find.text('＋ 新建标签'), findsOneWidget);
     });
   });
 
   group('收藏 / 归档 / 删除 / 上一题 / 下一题', () {
-    testWidgets('收藏切换：☆ 收藏 → ★ 已收藏', (tester) async {
+    testWidgets('收藏切换：标题行星标 ☆ → ★', (tester) async {
       final repo = detailRepo();
       await pumpDetail(tester, repo: repo, questionId: 'q2');
       expect(find.text('☆'), findsOneWidget);
-      await tapText(tester, '☆ 收藏');
+      await tapText(tester, '☆');
       expect(find.text('★'), findsOneWidget);
-      expect(find.text('★ 已收藏（点击取消）'), findsOneWidget);
       expect(repo.saved.last.isFavorite, isTrue);
     });
 
@@ -836,7 +831,7 @@ void main() {
       final repo = detailRepo();
       await pumpDetail(tester, repo: repo);
       await tapText(tester, '归档');
-      expect(find.text('恢复（取消归档）'), findsOneWidget);
+      expect(find.text('恢复'), findsOneWidget);
       expect(find.textContaining('这道题已归档：不在错题本列表里显示。'), findsOneWidget);
       expect(repo.saved.last.isArchived, isTrue);
     });
@@ -848,12 +843,12 @@ void main() {
       expect(find.textContaining('删了就没了，确定吗？'), findsOneWidget);
       expect(find.textContaining('整题图与全部补充内容一并删除，不可恢复。'), findsOneWidget);
       await tapText(tester, '取消', first: true);
-      expect(find.text('数学 · 极限题｜函数极限'), findsOneWidget);
+      expect(find.text('函数极限'), findsOneWidget);
       expect(repo.deletedIds, isEmpty);
       await tapText(tester, '删除');
       await tapText(tester, '确认删除');
       expect(repo.deletedIds, ['q1']);
-      expect(find.text('数学 · 函数题｜导数应用综合'), findsOneWidget);
+      expect(find.text('导数应用综合'), findsOneWidget);
       // 删掉 q1 后列表剩 2 项，q2 排第 1 位。
       expect(find.text('第 1 / 2 题 · 按错题本当前的顺序'), findsOneWidget);
     });
@@ -861,18 +856,18 @@ void main() {
     testWidgets('上一题 / 下一题按来源列表顺序，首末禁用', (tester) async {
       await pumpDetail(tester);
       // 首题：上一题点按无反应
-      await tapText(tester, '上一题');
-      expect(find.text('数学 · 极限题｜函数极限'), findsOneWidget);
-      await tapText(tester, '下一题');
-      expect(find.text('数学 · 函数题｜导数应用综合'), findsOneWidget);
-      await tapText(tester, '上一题');
-      expect(find.text('数学 · 极限题｜函数极限'), findsOneWidget);
+      await tapText(tester, '上一题 ↑');
+      expect(find.text('函数极限'), findsOneWidget);
+      await tapText(tester, '下一题 ↓');
+      expect(find.text('导数应用综合'), findsOneWidget);
+      await tapText(tester, '上一题 ↑');
+      expect(find.text('函数极限'), findsOneWidget);
       // 到末题：下一题点按无反应
-      await tapText(tester, '下一题');
-      await tapText(tester, '下一题');
-      expect(find.text('数学 · 图表题｜定积分阴影面积'), findsOneWidget);
-      await tapText(tester, '下一题');
-      expect(find.text('数学 · 图表题｜定积分阴影面积'), findsOneWidget);
+      await tapText(tester, '下一题 ↓');
+      await tapText(tester, '下一题 ↓');
+      expect(find.text('定积分阴影面积'), findsOneWidget);
+      await tapText(tester, '下一题 ↓');
+      expect(find.text('定积分阴影面积'), findsOneWidget);
     });
   });
 
@@ -927,9 +922,8 @@ void main() {
         ),
       ];
       await pumpDetail(tester, repo: repo);
-      await openSection(tester, '题目信息');
-      expect(find.text('重新框选这道题'), findsOneWidget);
-      await tapText(tester, '重新框选这道题');
+      expect(find.text('重新框选'), findsOneWidget);
+      await tapText(tester, '重新框选');
       expect(find.textContaining('修框 ·'), findsOneWidget);
       // 同页他题的框只读展示，目标题的框可编辑。
       expect(find.text('其他题 · 只读'), findsOneWidget);
@@ -993,8 +987,7 @@ void main() {
         ),
       ];
       await pumpDetail(tester, repo: repo);
-      await openSection(tester, '题目信息');
-      await tapText(tester, '重新框选这道题');
+      await tapText(tester, '重新框选');
       await tester.runAsync(() async {
         await tester.tap(find.text('确认重新框选'));
         for (var i = 0; i < 50; i++) {
@@ -1092,8 +1085,7 @@ void main() {
         ),
       ];
       await pumpDetail(tester, repo: repo);
-      await openSection(tester, '题目信息');
-      await tapText(tester, '重新框选这道题');
+      await tapText(tester, '重新框选');
       await tester.runAsync(() async {
         await tester.tap(find.text('确认重新框选'));
         // 十三批 P1-2：applyReworkBoxes 现在 await 入队（确认任务已持久化
@@ -1201,8 +1193,7 @@ void main() {
       // 自愈会调一次 repo.save（把库里尺寸改成重裁尺寸），清掉它，
       // 后面“事务失败不存题”的断言才只量本次重框。
       repo.saved.clear();
-      await openSection(tester, '题目信息');
-      await tapText(tester, '重新框选这道题');
+      await tapText(tester, '重新框选');
       expect(find.textContaining('修框 ·'), findsOneWidget);
       // D-38：确认后的失败路径含真实文件 IO + 临时文件异步清理，
       // 固定等 4 秒在全量负载下会抖（失败提示已出、清理还没落定）。
@@ -1268,8 +1259,7 @@ void main() {
         ),
       ];
       await pumpDetail(tester, repo: repo);
-      await openSection(tester, '题目信息');
-      await tapText(tester, '重新框选这道题');
+      await tapText(tester, '重新框选');
       expect(find.textContaining('修框 ·'), findsOneWidget);
       // 标题仍显示真实源页码（第 2 页）。
       expect(find.textContaining('第2页'), findsOneWidget);
@@ -1306,8 +1296,7 @@ void main() {
 
     testWidgets('无页图的题：不显示重新框选入口', (tester) async {
       await pumpDetail(tester, repo: detailRepo());
-      await openSection(tester, '题目信息');
-      expect(find.text('重新框选这道题'), findsNothing);
+      expect(find.text('重新框选'), findsNothing);
     });
 
     testWidgets('FR-04(a) 重框模式禁画新框：右键/触摸都画不出新框，确认后仍一框', (tester) async {
@@ -1344,8 +1333,7 @@ void main() {
         ),
       ];
       await pumpDetail(tester, repo: repo);
-      await openSection(tester, '题目信息');
-      await tapText(tester, '重新框选这道题');
+      await tapText(tester, '重新框选');
       expect(find.textContaining('修框 ·'), findsOneWidget);
       // 右键画框与相关提示在重框下隐藏：工具条与底部提示不再写右键画框。
       expect(find.textContaining('右键拖出新框'), findsNothing);
@@ -1504,8 +1492,7 @@ void main() {
         ),
       ];
       await pumpDetail(tester, repo: repo);
-      await openSection(tester, '题目信息');
-      await tapText(tester, '重新框选这道题');
+      await tapText(tester, '重新框选');
       expect(find.textContaining('修框 ·'), findsOneWidget);
       // 先让编辑器的页图加载完成并进图片缓存（真实文件 IO + 解码，
       // 须在 runAsync 内推进），再写坏文件——否则编辑器待决的图片
@@ -1548,11 +1535,9 @@ void main() {
       for (final brightness in [Brightness.light, Brightness.dark]) {
         for (final scale in [1.0, 1.15, 1.3]) {
           await pumpDetail(tester, brightness: brightness, scale: scale);
-          await openSection(tester, '答案解析');
+          // D1：两 panel 默认展开，答案点「看答案」即显。
           await tapText(tester, '看答案');
-          await openSection(tester, '题目信息');
-          await openSection(tester, '复习记录');
-          expect(find.text('数学 · 极限题｜函数极限'), findsOneWidget);
+          expect(find.text('函数极限'), findsOneWidget);
           expect(tester.takeException(), isNull);
         }
       }
@@ -1571,20 +1556,21 @@ void main() {
   });
 
   group('B8-7 重新设计', () {
-    testWidgets('默认 A：信息条显示文件夹 + 标签 + 已加入复习', (tester) async {
+    testWidgets('D1：题目信息 panel 显示文件夹 + 标签，复习 panel 显示已加入', (tester) async {
       await pumpDetail(tester);
-      // 折叠态：信息条是唯一出现这些文本的地方（题目信息段未展开）。
+      // 两 panel 默认展开：kv 值与加入状态直接可见。
       expect(find.text('试卷'), findsOneWidget);
-      expect(find.text('#易错'), findsOneWidget);
-      expect(find.text('#常考'), findsOneWidget);
-      expect(find.text('已加入复习'), findsOneWidget);
+      expect(find.text('#易错 #常考'), findsOneWidget);
+      expect(find.text('已加入复习 · 还有 1 个错因未解决'), findsOneWidget);
     });
 
-    testWidgets('默认 A：三段头带摘要', (tester) async {
+    testWidgets('D1：题目信息与复习记录默认展开，答案默认隐藏', (tester) async {
       await pumpDetail(tester);
-      expect(find.text('已填答案与解析'), findsOneWidget);
-      expect(find.text('文件夹 1 · 知识点 1 · 标签 2'), findsOneWidget);
-      expect(find.text('已加入复习 · 待解决 1 个错因'), findsOneWidget);
+      expect(find.text('学科'), findsOneWidget);
+      expect(find.text('错因状态'), findsOneWidget);
+      expect(find.text('1'), findsNothing); // 答案 '1' 藏在看答案后
+      await tapText(tester, '看答案');
+      expect(find.text('1'), findsOneWidget);
     });
 
     testWidgets('默认 A：整题图限高 460', (tester) async {
@@ -1627,19 +1613,21 @@ void main() {
       expect(size.height, 460);
     });
 
-    testWidgets('默认 A：编辑态不显示信息条', (tester) async {
+    testWidgets('D1：编辑态标题行显示保存/取消代替归档/删除', (tester) async {
       await pumpDetail(tester);
       await tapText(tester, '编辑');
-      // 编辑表单里文件夹以芯片出现，但只读信息条的「已加入复习」pill 不应再出现。
-      expect(find.text('已加入复习'), findsNothing);
+      expect(find.text('保存'), findsOneWidget);
+      expect(find.text('取消'), findsOneWidget);
+      expect(find.text('归档'), findsNothing);
+      expect(find.text('删除'), findsNothing);
+      expect(find.text('编辑'), findsNothing);
     });
 
     testWidgets('A 紧凑：亮/深 × 1.30 无溢出', (tester) async {
       for (final brightness in [Brightness.light, Brightness.dark]) {
         await pumpDetail(tester, brightness: brightness, scale: 1.3);
-        await openSection(tester, '答案解析');
-        await openSection(tester, '题目信息');
-        await openSection(tester, '复习记录');
+        // D1：两 panel 默认展开，答案点「看答案」即显。
+        await tapText(tester, '看答案');
         expect(tester.takeException(), isNull);
       }
     });

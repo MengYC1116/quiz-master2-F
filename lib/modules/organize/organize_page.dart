@@ -537,7 +537,7 @@ class _OrganizeViewState extends ConsumerState<_OrganizeView> {
     if (!mounted) return;
     // 整科同名：Notifier 返回 null，提示“已经有了”。
     if (folder == null) {
-      _snack('已经有了');
+      _snack('已经有了这个文件夹');
       return;
     }
     setState(() {
@@ -584,7 +584,7 @@ class _OrganizeViewState extends ConsumerState<_OrganizeView> {
     }
     final wasFixed = _notifier.addCustomType(name);
     if (wasFixed) {
-      _snack('“$name”是固定错误类型，已帮你选中');
+      _snack('“$name”是固定错因，已帮你选中');
     }
     _customTypeCtrl.clear();
   }
@@ -1045,7 +1045,7 @@ class _OrganizeViewState extends ConsumerState<_OrganizeView> {
         SizedBox(height: DesignTokens.organizeSectionGap * scale),
         QmFoldSection(
           title: '分类补充（可选）',
-          subtitle: '知识点 · 错误类型 · 标签',
+          subtitle: '知识点 · 错因 · 标签',
           expanded: _classifyOpen,
           onToggle: () => _toggleRightSection(_RightSection.classify),
           variant: QmFoldVariant.form,
@@ -1113,7 +1113,7 @@ class _OrganizeViewState extends ConsumerState<_OrganizeView> {
                       },
                   ),
                   const TextSpan(
-                    text: '（点一下跳到那一栏）——只有必填没齐才提示；答案、解析、知识点、错误类型、试卷、标签、笔记都是可选，填不填都不算、不提示',
+                    text: '（点一下跳到那一栏）——只有必填没齐才提示；答案、解析、知识点、错因、试卷、标签、笔记都是可选，填不填都不算、不提示',
                   ),
                 ],
               ),
@@ -1141,7 +1141,7 @@ class _OrganizeViewState extends ConsumerState<_OrganizeView> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        _fieldLabel('题型', hint: '点芯片可改 · 改后不再自动分类'),
+        _fieldLabel('题型', hint: '点一下可改 · 改后不再自动分类'),
         Row(
           children: [
             questionTypeChip(
@@ -1179,11 +1179,11 @@ class _OrganizeViewState extends ConsumerState<_OrganizeView> {
     final message = switch (code) {
       'updated' =>
         '已重新分类为${questionTypeDisplay(ref.read(organizeProvider).questionType)}',
-      'unchanged' => '仍无法自动定型，请人工指定',
+      'unchanged' => '仍无法自动分类，请人工指定',
       'manual' => '题型为人工指定，不自动分类',
       'no_raw' => '本题还没有识别结果，无法分类',
       'save_failed' => '保存失败，请重试',
-      _ => '仍无法自动定型，请人工指定',
+      _ => '仍无法自动分类，请人工指定',
     };
     _snack(message);
   }
@@ -1381,7 +1381,7 @@ class _OrganizeViewState extends ConsumerState<_OrganizeView> {
             ),
           ),
         _helperText(
-          '只列「${subject.name}」自己的文件夹（预置：试卷 / 平时作业 / 模拟卷），在这一科新建的文件夹只出现在这一科，不会出现在其他科目；改名 / 建子文件夹在错题本目录页里做。',
+          '只列「${subject.name}」自己的文件夹（预置：试卷 / 平时作业 / 模拟卷），在这一科新建的文件夹只出现在这一科，不会出现在其他学科；改名 / 建子文件夹在错题本目录页里做。',
         ),
       ],
     );
@@ -1528,7 +1528,7 @@ class _OrganizeViewState extends ConsumerState<_OrganizeView> {
           padding: const EdgeInsets.symmetric(vertical: 12),
           child: QmRowLine(kind: QmRowLineKind.line),
         ),
-        _fieldLabel('错误类型', hint: '可选 · 多选，想选几个选几个'),
+        _fieldLabel('错因', hint: '可选 · 多选不限个数'),
         Row(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -1540,7 +1540,7 @@ class _OrganizeViewState extends ConsumerState<_OrganizeView> {
             Expanded(
               child: st.errorTypes.isEmpty && st.customTypes.isEmpty
                   ? Text(
-                      '还没选错误类型',
+                      '还没选错因',
                       style: TextStyle(
                         fontSize: 13,
                         color: palette.muted,
@@ -1594,7 +1594,7 @@ class _OrganizeViewState extends ConsumerState<_OrganizeView> {
               child: TextField(
                 controller: _customTypeCtrl,
                 decoration: const InputDecoration(
-                  hintText: '自定义错误类型…（枚举之外的情况）',
+                  hintText: '自定义错因…（固定错因之外的情况）',
                 ),
                 onSubmitted: (_) => _addCustomType(),
               ),
@@ -1609,13 +1609,13 @@ class _OrganizeViewState extends ConsumerState<_OrganizeView> {
           ],
         ),
         _helperText(
-          '固定枚举：审题失误 / 概念不清 / 计算错误 / 方法不会 / 其他。自定义类型只跟这道题留着，下次整理还能再选到它，不进全局枚举；报告仍按固定枚举归因',
+          '固定错因：审题失误 / 概念不清 / 计算错误 / 方法不会 / 其他。自定义错因只跟这道题留着，下次整理还能再选到它，不进全局错因；报告仍按固定错因归因',
         ),
         Padding(
           padding: const EdgeInsets.symmetric(vertical: 12),
           child: QmRowLine(kind: QmRowLineKind.line),
         ),
-        _fieldLabel('标签', hint: '可选 · 不限个数'),
+        _fieldLabel('标签', hint: '可选 · 多选不限个数'),
         Wrap(
           spacing: 6,
           runSpacing: 6,
@@ -1992,7 +1992,7 @@ class _OrganizeViewState extends ConsumerState<_OrganizeView> {
               SizedBox(width: 10 * scale),
               Expanded(
                 child: Text(
-                  '整理到一半切到别的题，这里填的全都自动保存、不会丢，切回来接着填 · 确认整理后这道题进错题本，在题目详情里点「加入复习」才会进复习列表，按错因四步',
+                  '整理到一半切到别的题，这里填的全都自动保存、不会丢，切回来接着填 · 确认整理后这道题进错题本，在题目详情里点「加入复习」才会进复习列表，按错因四步复习这道题复习这道题复习这道题复习这道题复习这道题',
                   style: TextStyle(
                     fontSize: 12.5,
                     color: palette.muted,
@@ -2054,7 +2054,7 @@ class _OrganizeViewState extends ConsumerState<_OrganizeView> {
           ),
           SizedBox(height: 8 * scale),
           Text(
-            '点完自动跳下一道待整理题，这道题归档到错题本；在题目详情里点「加入复习」后，按错因四步这道题',
+            '点完自动跳下一道待整理题，这道题归档到错题本；在题目详情里点「加入复习」后，按错因四步复习这道题',
             textAlign: TextAlign.center,
             style: TextStyle(
               fontSize: 12.5,
@@ -2669,7 +2669,7 @@ class _QueuePopupState extends State<_QueuePopup> {
     });
     widget.onNotify(
       result.skipped > 0
-          ? '已加入 ${result.applied} 道，${result.skipped} 道不是本科，跳过'
+          ? '已加入 ${result.applied} 道，${result.skipped} 道不是本学科的题，跳过'
           : '已加入文件夹',
     );
   }
@@ -2685,7 +2685,7 @@ class _QueuePopupState extends State<_QueuePopup> {
       _folders.length,
     );
     if (folder == null) {
-      widget.onNotify('已经有了');
+      widget.onNotify('已经有了这个文件夹');
       return;
     }
     if (!mounted) return;

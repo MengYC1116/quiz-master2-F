@@ -57,6 +57,11 @@ class ShelfFakeRepo extends QuestionRepository {
 
   @override
   Future<AppSettings> settings() async => const AppSettings();
+
+  // 十九批 C：内存版已存查找（A3 起 load() 读 savedSearches；不覆写
+  // 会走真实库、页面卡 loading、pumpAndSettle 超时，见 D-225）。
+  @override
+  Future<List<SavedSearch>> savedSearches() async => const [];
 }
 
 Future<void> pumpShelf(WidgetTester tester, ShelfFakeRepo repo) async {
@@ -68,12 +73,17 @@ Future<void> pumpShelf(WidgetTester tester, ShelfFakeRepo repo) async {
         body: WrongbookPage(
           repo: repo,
           onOpenHome: () {},
-          onOpenDetail: (_, __) async {},
+          onOpenDetail: (_, __, {String? searchContext}) async {},
           onGoReview: ({String? subjectId}) {},
         ),
       ),
     ),
   );
+  await tester.pumpAndSettle();
+  // 十九批 C：默认落点已改 L1 列表（D-222），书架在筛选面板顶部进入。
+  await tester.tap(find.text('筛选 ▾'));
+  await tester.pumpAndSettle();
+  await tester.tap(find.text('📚 书架（按学科浏览）'));
   await tester.pumpAndSettle();
 }
 

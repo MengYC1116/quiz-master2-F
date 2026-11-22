@@ -1,16 +1,17 @@
-// B2 leftover：错题本视图模式（大卡片 / 紧凑列表）在 _load() 刷新后保留。
-// 回归：_load() 曾每次都用 settings.wrongbookView 覆盖 _viewMode，
-// 从题目详情返回（以及点星、批量操作等刷新）都会把用户切好的紧凑
-// 列表弹回默认大卡片。修法：只在首次 _load() 应用设置默认值。
+// B2 leftover → 十九批 A1（D-219）：视图切换（大卡片 / 紧凑列表）已
+// 去掉，只剩板子一种行设计；但 AppSettings.wrongbookView 与 load()
+// 的“首次才取设置默认值”守门（R4）仍在——本文件改写为状态层测试：
+// setViewMode 后再 load() 不弹回设置默认值；全新 notifier 重新读
+// 设置默认值。旧的 widget 层切换断言（点「大卡片」「紧凑列表」）
+// 随切换入口一起删除（入口已不存在）。
 // 用独立 FakeRepo（不碰真实数据库），只覆盖本文件用到的 repository 调用。
-import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:quiz_master2/data/database.dart';
 import 'package:quiz_master2/data/repository.dart';
 import 'package:quiz_master2/models/models.dart';
-import 'package:quiz_master2/modules/wrongbook/wrongbook_page.dart';
-import 'package:quiz_master2/theme/app_theme.dart';
-import 'package:quiz_master2/widgets/widgets.dart';
+import 'package:quiz_master2/state/repository_provider.dart';
+import 'package:quiz_master2/state/wrongbook_notifier.dart';
 
 Question _q(
   String id,
@@ -50,6 +51,24 @@ class FakeViewRepo extends QuestionRepository {
 
   AppSettings settingsValue;
   List<Question> questions;
+
+  /// 十九批 A3：内存版已存查找（不碰真实库）。
+  final List<SavedSearch> savedSearchList = [];
+
+  @override
+  Future<List<SavedSearch>> savedSearches() async =>
+      List.of(savedSearchList);
+
+  @override
+  Future<void> saveSavedSearch(SavedSearch search) async {
+    savedSearchList.removeWhere((s) => s.id == search.id);
+    savedSearchList.add(search);
+  }
+
+  @override
+  Future<void> deleteSavedSearch(String id) async {
+    savedSearchList.removeWhere((s) => s.id == id);
+  }
 
   @override
   Future<List<Subject>> subjects() async =>
@@ -96,120 +115,54 @@ class FakeViewRepo extends QuestionRepository {
   }
 }
 
-Future<void> _pump(
-  WidgetTester tester, {
-  required FakeViewRepo repo,
-  Future<void> Function(Question q, List<String> orderIds)? onOpenDetail,
+Future<(FakeViewRepo, WrongbookNotifier, ProviderContainer)> _setUp({
+  AppSettings settings = const AppSettings(),
 }) async {
-  tester.view.physicalSize = const Size(1280, 720);
-  tester.view.devicePixelRatio = 1.0;
-  addTearDown(tester.view.resetPhysicalSize);
-  addTearDown(tester.view.resetDevicePixelRatio);
-  await tester.pumpWidget(
-    MaterialApp(
-      theme: AppTheme.light(scale: 1.0),
-      home: Scaffold(
-        body: WrongbookPage(
-          key: UniqueKey(),
-          repo: repo,
-          onOpenHome: () {},
-          onOpenDetail: onOpenDetail ?? (_, __) async {},
-          onGoReview: ({String? subjectId}) {},
-        ),
-      ),
-    ),
+  final repo = FakeViewRepo(settingsValue: settings);
+  final container = ProviderContainer.test(
+    overrides: [repositoryProvider.overrideWithValue(repo)],
   );
-  await tester.pumpAndSettle();
-}
-
-Future<void> _openMathList(WidgetTester tester) async {
-  await tester.tap(find.text('数学'));
-  await tester.pumpAndSettle();
-  await tester.tap(find.text('全部题目'));
-  await tester.pumpAndSettle();
+  final notifier = container.read(wrongbookProvider.notifier);
+  await notifier.load();
+  return (repo, notifier, container);
 }
 
 void main() {
-  group('B2 leftover：视图模式跨 _load() 保留', () {
-    testWidgets('首次进入用设置默认值：默认 large 显示大卡片', (tester) async {
-      await _pump(tester, repo: FakeViewRepo());
-      await _openMathList(tester);
-      expect(find.byType(QuestionSlice), findsNWidgets(3));
-      expect(find.byType(CompactSliceThumb), findsNothing);
-    });
+  group('B2 leftover：viewMode 跨 load() 保留（状态层）', () {
+    test('首次 load 取设置默认值：默认 large；设置 compact 则 compact', () async {
+      final (_, _, c1) = await _setUp();
+      addTearDown(c1.dispose);
+      expect(c1.read(wrongbookProvider).viewMode, 'large');
 
-    testWidgets('首次进入用设置默认值：设置 compact 则默认紧凑列表',
-        (tester) async {
-      await _pump(
-        tester,
-        repo: FakeViewRepo(
-          settingsValue: const AppSettings(wrongbookView: 'compact'),
-        ),
+      final (_, _, c2) = await _setUp(
+        settings: const AppSettings(wrongbookView: 'compact'),
       );
-      await _openMathList(tester);
-      expect(find.byType(CompactSliceThumb), findsNWidgets(3));
-      expect(find.byType(QuestionSlice), findsNothing);
+      addTearDown(c2.dispose);
+      expect(c2.read(wrongbookProvider).viewMode, 'compact');
     });
 
-    testWidgets('切到紧凑列表后从详情返回，仍是紧凑列表', (tester) async {
-      await _pump(tester, repo: FakeViewRepo());
-      await _openMathList(tester);
-      await tester.tap(find.text('紧凑列表'));
-      await tester.pumpAndSettle();
-      expect(find.byType(CompactSliceThumb), findsNWidgets(3));
-      // 进详情再返回：行 onTap 里 onOpenDetail 之后会 await _load()。
-      await tester.tap(find.text('导数综合'));
-      await tester.pumpAndSettle();
-      expect(find.byType(CompactSliceThumb), findsNWidgets(3));
-      expect(find.byType(QuestionSlice), findsNothing);
+    test('setViewMode 后再 load，不弹回设置默认值（双向）', () async {
+      final (_, notifier, c) = await _setUp();
+      addTearDown(c.dispose);
+      expect(c.read(wrongbookProvider).viewMode, 'large');
+      // 模拟“从详情返回 / 点星 / 批量操作后刷新”：load() 再跑一次。
+      notifier.setViewMode('compact');
+      await notifier.load();
+      expect(c.read(wrongbookProvider).viewMode, 'compact');
+      notifier.setViewMode('large');
+      await notifier.load();
+      expect(c.read(wrongbookProvider).viewMode, 'large');
     });
 
-    testWidgets('切到紧凑列表后点星刷新，仍是紧凑列表', (tester) async {
-      final repo = FakeViewRepo();
-      await _pump(tester, repo: repo);
-      await _openMathList(tester);
-      await tester.tap(find.text('紧凑列表'));
-      await tester.pumpAndSettle();
-      // 行内点星走 _toggleFavorite → _load()。
-      await tester.tap(find.text('☆').last);
-      await tester.pumpAndSettle();
-      expect(find.byType(CompactSliceThumb), findsNWidgets(3));
-      expect(find.byType(QuestionSlice), findsNothing);
-    });
-
-    testWidgets('切到大卡片后从详情返回，仍是大卡片（双向保留）',
-        (tester) async {
-      await _pump(
-        tester,
-        repo: FakeViewRepo(
-          settingsValue: const AppSettings(wrongbookView: 'compact'),
-        ),
+    test('全新 notifier 重新读设置默认值', () async {
+      final (_, _, c1) = await _setUp(
+        settings: const AppSettings(wrongbookView: 'compact'),
       );
-      await _openMathList(tester);
-      expect(find.byType(CompactSliceThumb), findsNWidgets(3));
-      await tester.tap(find.text('大卡片'));
-      await tester.pumpAndSettle();
-      expect(find.byType(QuestionSlice), findsNWidgets(3));
-      await tester.tap(find.byType(QuestionSlice).first);
-      await tester.pumpAndSettle();
-      expect(find.byType(QuestionSlice), findsNWidgets(3));
-      expect(find.byType(CompactSliceThumb), findsNothing);
-    });
-
-    testWidgets('新进错题本重新读设置默认值', (tester) async {
-      await _pump(
-        tester,
-        repo: FakeViewRepo(
-          settingsValue: const AppSettings(wrongbookView: 'compact'),
-        ),
-      );
-      await _openMathList(tester);
-      expect(find.byType(CompactSliceThumb), findsNWidgets(3));
-      // 全新页面实例（新 State，标志位复位）读另一份设置的默认值。
-      await _pump(tester, repo: FakeViewRepo());
-      await _openMathList(tester);
-      expect(find.byType(QuestionSlice), findsNWidgets(3));
-      expect(find.byType(CompactSliceThumb), findsNothing);
+      addTearDown(c1.dispose);
+      expect(c1.read(wrongbookProvider).viewMode, 'compact');
+      final (_, _, c2) = await _setUp();
+      addTearDown(c2.dispose);
+      expect(c2.read(wrongbookProvider).viewMode, 'large');
     });
   });
 }

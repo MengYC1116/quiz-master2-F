@@ -57,7 +57,6 @@ import 'package:quiz_master2/services/glm_ocr_client.dart';
 import 'package:quiz_master2/services/ocr_key_store.dart';
 import 'package:quiz_master2/services/ocr_queue.dart';
 import 'package:quiz_master2/theme/app_theme.dart';
-import 'package:quiz_master2/widgets/widgets.dart';
 
 class _MemoryKeyBackend implements OcrKeyStorageBackend {
   final _map = <String, String>{};
@@ -305,7 +304,7 @@ Future<void> _pumpOrganize(
         body: OrganizePage(
           key: UniqueKey(),
           repo: _repo,
-          onOpenDetail: (_, __) async {},
+          onOpenDetail: (_, __, {String? searchContext}) async {},
           onGoReview: () {},
           onGoCollect: () {},
         ),
@@ -360,7 +359,7 @@ Future<void> _pumpWrongbook(WidgetTester tester) async {
           key: UniqueKey(),
           repo: _repo,
           onOpenHome: () {},
-          onOpenDetail: (_, __) async {},
+          onOpenDetail: (_, __, {String? searchContext}) async {},
           onGoReview: ({String? subjectId}) {},
         ),
       ),
@@ -368,25 +367,22 @@ Future<void> _pumpWrongbook(WidgetTester tester) async {
   );
   await _pumpUntil(
     tester,
-    () => find.text('数学').evaluate().isNotEmpty,
-    reason: '错题本书架未出现数学',
+    () => find.text('全部题目').evaluate().isNotEmpty,
+    reason: '错题本 L1 列表未出现全部题目',
   );
 }
 
 Future<void> _openMathList(WidgetTester tester) async {
-  await tester.tap(find.text('数学').first);
+  // 十九批 L1：错题本默认落点就是列表（板子行，标题为 RichText），
+  // 大卡片 / 紧凑行已去掉；种子全是数学题，列表即数学列表。
   await _pumpUntil(
     tester,
-    () => find.text('全部题目').evaluate().isNotEmpty,
-    reason: '数学目录页未出现全部题目',
-  );
-  await tester.tap(find.text('全部题目'));
-  // 大卡片上不显示题名（见 wrongbook_list.dart _buildLargeCard 注释），
-  // 就绪条件用卡片出现而不用题名；题名断言须先切到紧凑列表。
-  await _pumpUntil(
-    tester,
-    () => find.byType(QuestionSlice).evaluate().isNotEmpty,
-    reason: '错题本列表未出现题目卡片',
+    () =>
+        find
+            .textContaining('单选示例题', findRichText: true)
+            .evaluate()
+            .isNotEmpty,
+    reason: '错题本列表未出现题目',
   );
 }
 
@@ -642,8 +638,8 @@ void main() {
         md: _calcMd,
       );
       expect((await _dbQuestion(tester, 'q1')).questionType, 'calculation');
-      // 详情页三段默认全部折叠：题型 chip 在“题目信息”区内，须先等区头
-      // 出现、点开折叠，再等 chip。
+      // 十九批 D1：题目信息与复习记录 panel 默认展开（点标题会折叠），
+      // 题型 chip 在“题目信息”区内，等区头出现后直接等 chip。
       await _pumpDetail(
         tester,
         'q1',
@@ -651,13 +647,10 @@ void main() {
         ready: find.text('题目信息'),
         readyReason: '详情页未加载出题目信息区',
       );
-      await tester.ensureVisible(find.text('题目信息'));
-      await tester.tap(find.text('题目信息'));
-      await _settle(tester, rounds: 8);
       await _pumpUntil(
         tester,
         () => find.text('计算题').evaluate().isNotEmpty,
-        reason: '展开题目信息后未出现计算题 chip',
+        reason: '题目信息区未出现计算题 chip',
       );
       await _pickTypeFromChip(tester, '计算题', '简答题');
       // 详情页查看态改题型立即保存：等 chip 变成简答题再断言落盘。
@@ -809,16 +802,19 @@ void main() {
       expect((await _dbQuestion(tester, 'q-unconf')).questionType, isNull);
       await _pumpWrongbook(tester);
       await _openMathList(tester);
-      // 切紧凑列表：大卡片只显示切片图不显示题名，题名只在紧凑行里。
-      await tester.tap(find.text('紧凑列表'));
-      await _pumpUntil(
-        tester,
-        () => find.text('单选示例题').evaluate().isNotEmpty,
-        reason: '切紧凑列表后未出现题名',
+      // 板子行标题是 RichText，用 findRichText 找题名。
+      expect(
+        find.textContaining('单选示例题', findRichText: true),
+        findsOneWidget,
       );
-      expect(find.text('单选示例题'), findsOneWidget);
-      expect(find.text('计算示例题'), findsOneWidget);
-      expect(find.text('未定型示例题'), findsOneWidget);
+      expect(
+        find.textContaining('计算示例题', findRichText: true),
+        findsOneWidget,
+      );
+      expect(
+        find.textContaining('未定型示例题', findRichText: true),
+        findsOneWidget,
+      );
       // 打开筛选面板：题型下拉是面板里最后一个 String 下拉。
       await tester.tap(find.text('筛选 ▾'));
       await _settle(tester);
@@ -831,17 +827,44 @@ void main() {
       }
 
       await selectType('单项选择');
-      expect(find.text('单选示例题'), findsOneWidget);
-      expect(find.text('计算示例题'), findsNothing);
-      expect(find.text('未定型示例题'), findsNothing);
+      expect(
+        find.textContaining('单选示例题', findRichText: true),
+        findsOneWidget,
+      );
+      expect(
+        find.textContaining('计算示例题', findRichText: true),
+        findsNothing,
+      );
+      expect(
+        find.textContaining('未定型示例题', findRichText: true),
+        findsNothing,
+      );
       await selectType('待确认');
-      expect(find.text('单选示例题'), findsNothing);
-      expect(find.text('计算示例题'), findsNothing);
-      expect(find.text('未定型示例题'), findsOneWidget);
+      expect(
+        find.textContaining('单选示例题', findRichText: true),
+        findsNothing,
+      );
+      expect(
+        find.textContaining('计算示例题', findRichText: true),
+        findsNothing,
+      );
+      expect(
+        find.textContaining('未定型示例题', findRichText: true),
+        findsOneWidget,
+      );
       await selectType('全部');
-      expect(find.text('单选示例题'), findsOneWidget);
-      expect(find.text('计算示例题'), findsOneWidget);
-      expect(find.text('未定型示例题'), findsOneWidget);
+      expect(
+        find.textContaining('单选示例题', findRichText: true),
+        findsOneWidget,
+      );
+      expect(
+        find.textContaining('计算示例题', findRichText: true),
+        findsOneWidget,
+      );
+      expect(
+        find.textContaining('未定型示例题', findRichText: true),
+        findsOneWidget,
+      );
       await _drain(tester);
       expect(tester.takeException(), isNull);
     });

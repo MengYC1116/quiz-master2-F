@@ -269,6 +269,14 @@ Future<void> createTablesImpl(QuizDatabase db) async {
   await db.customStatement(
     'CREATE INDEX idx_questions_question_type ON questions(question_type)',
   );
+  // 十九批 A3：「我的查找」saved_searches 表（DDL 字面量须与
+  // db_saved_searches.dart 的 savedSearchesTableDDL 及
+  // drift/quiz_database.dart 的 _upgrade5To6 末尾一字不差）。
+  await db.customStatement('''
+    CREATE TABLE saved_searches(
+      id TEXT PRIMARY KEY, name TEXT NOT NULL,
+      conditions TEXT NOT NULL DEFAULT '{}',
+      created_at INTEGER NOT NULL)''');
   await db.customStatement('''
     CREATE TABLE settings(
       key TEXT PRIMARY KEY, value TEXT NOT NULL)''');

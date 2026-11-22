@@ -90,7 +90,7 @@ void main() {
       expect(find.text('没找到这道题，换个词试试'), findsOneWidget);
     });
 
-    testWidgets('详情页：标题与副标题学科字段显示“化学”', (tester) async {
+    testWidgets('详情页：标题行学科 chip 与题目信息学科行显示“化学”', (tester) async {
       final repo = FakeDetailRepo(
         questions: [
           dtq('qc1', '化学平衡',
@@ -104,10 +104,15 @@ void main() {
       );
       await pumpDetail(tester,
           repo: repo, questionId: 'qc1', orderIds: const ['qc1']);
-      // 标题：学科 · 题型｜题名。
-      expect(find.text('化学 · 极限题｜化学平衡'), findsOneWidget);
-      // 副标题：学科只读说明里的学科名是单独的 Text('化学')。
-      expect(find.text('化学'), findsWidgets);
+      // 十九批 C：旧拼串标题「学科 · 题型｜题名」已随 D1 板子去掉
+      //（板子 §2.3：学科 chip + 题名 + 状态 pill + 星）；学科名改到
+      // 题目信息 panel 的学科行，chip 只显示单字图标。
+      // 标题：题名本身。
+      expect(find.text('化学平衡'), findsOneWidget);
+      // 学科 chip：单字图标“化”。
+      expect(find.text('化'), findsOneWidget);
+      // 题目信息 panel 学科行：学科名是单独的 Text('化学')。
+      expect(find.text('化学'), findsOneWidget);
       expect(find.textContaining('数学'), findsNothing);
     });
 

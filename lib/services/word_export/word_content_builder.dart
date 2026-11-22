@@ -44,6 +44,7 @@ import '../pdf_export/slice_snapshot.dart' show readPngDimensions;
 import 'word_answer_section.dart';
 import 'word_document_builder.dart';
 import 'word_font.dart';
+import 'word_formula_baseline.dart';
 import 'word_page_estimate.dart';
 
 /// A 路线逐题增强结果（服务侧准备，见 [WordAPreparedQuestion]）。
@@ -153,6 +154,7 @@ class WordContentResult {
     required this.displayNumbersById,
     required this.imageCount,
     required this.estimatedPageCount,
+    this.drawingPositionHalfPoints = const [],
   });
 
   /// 已含全部题目段落与答案区的文档（待 `exportToBytes`）。
@@ -172,6 +174,17 @@ class WordContentResult {
   /// word_page_estimate.dart；只是估计，完成界面以「约 N 页
   /// （估计值）」展示，实际页数以 Word 打开为准）。
   final int estimatedPageCount;
+
+  /// 每张图的 `w:position` 下移值（十八批 P1 D-216，见
+  /// word_formula_baseline.dart）。
+  ///
+  /// 与 `word/document.xml` 内 `<w:r><w:drawing>` 的出现顺序一一
+  /// 对应（文档顺序，含独立图与行内公式图）：行内公式图为其下移量
+  /// （半磅，负值 = 下移），独立图（独立公式 / 图块 / A 路线切片）
+  /// 为 null（不注入）。服务层在 `exportToBytes` 之后用
+  /// [applyWordFormulaBaselineShifts] 注入；长度与 drawing 数不
+  /// 一致时注入抛错，不放出未对齐的文件。
+  final List<int?> drawingPositionHalfPoints;
 
   /// 已印出题数。
   int get printedCount => questions.length;
@@ -325,6 +338,10 @@ WordContentResult buildWordContent({
   // --- 第二遍：逐题建段落。
   final built = <WordBuiltQuestion>[];
   var imageCount = 0;
+  // 十八批 P1：按文档顺序记每张图的 w:position 下移值（与
+  // document.xml 内 drawing 出现顺序一一对应，见 WordContentResult
+  // 的 drawingPositionHalfPoints）。
+  final drawingPositionHalfPoints = <int?>[];
   for (var pi = 0; pi < planned.length; pi++) {
     final p = planned[pi];
     final entry = p.entry;
@@ -375,6 +392,7 @@ WordContentResult buildWordContent({
         addWarning: addWarning,
         onImageEmbedded: () => imageCount++,
         pageEstimator: pageEstimator,
+        drawingPositionHalfPoints: drawingPositionHalfPoints,
       );
       formulaOriginal = converted.hasOriginalFormula;
       figureMissing = converted.figureMissing;
@@ -511,6 +529,9 @@ WordContentResult buildWordContent({
               heightPt: seg.displayHeightPt,
             ),
           );
+          // 十八批 P1：A 路线切片图为独立图，不注入 w:position，
+          // 但须占一位（与 document.xml 内 drawing 顺序对齐）。
+          drawingPositionHalfPoints.add(null);
           pageEstimator.addAtomic(seg.displayHeightPt);
           imageCount++;
         }
@@ -554,6 +575,7 @@ WordContentResult buildWordContent({
     displayNumbersById: displayNumbersById,
     imageCount: imageCount,
     estimatedPageCount: pageEstimator.estimatedPageCount,
+    drawingPositionHalfPoints: drawingPositionHalfPoints,
   );
 }
 
@@ -604,6 +626,7 @@ _CConverted _convertCQuestion({
   required void Function(String warning) addWarning,
   required void Function() onImageEmbedded,
   required WordPageEstimator pageEstimator,
+  required List<int?> drawingPositionHalfPoints,
 }) {
   final ocr = entry.ocrContent!;
   final byId = {
@@ -678,6 +701,9 @@ _CConverted _convertCQuestion({
       }
     }
     builder.image(wordImageBlock(pngBytes, widthPt: w, heightPt: h));
+    // 十八批 P1：独立图（独立公式 / 图块）不注入 w:position，
+    // 但须占一位（与 document.xml 内 drawing 顺序对齐）。
+    drawingPositionHalfPoints.add(null);
     // 十七批 A4（D-207）：独立图不可拆分，按最终显示高整段计入估计。
     pageEstimator.addAtomic(h);
     onImageEmbedded();
@@ -744,6 +770,14 @@ _CConverted _convertCQuestion({
                 extension: 'png',
                 width: result.logicalWidthPt,
                 height: result.logicalHeightPt,
+              ),
+            );
+            // 十八批 P1：行内公式图的 w:position 下移值（基线未知
+            // 或下移量为 0 时为 null，不注入）。
+            drawingPositionHalfPoints.add(
+              wordFormulaPositionHalfPoints(
+                heightPt: result.logicalHeightPt,
+                baselineOffsetPt: result.baselineOffsetPt,
               ),
             );
             onImageEmbedded();

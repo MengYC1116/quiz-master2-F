@@ -322,9 +322,26 @@ void main() {
       // “上次停在”副标题是整句 Text（上次停在：整理 · 数学「函数极限」），
       // 用 textContaining 匹配。
       expect(find.textContaining('函数极限'), findsWidgets);
-      // 错题本：点导航进书架（书架摆三本学科书）。
+      // 错题本：点导航进错题本（十九批 L1：默认落点是列表，不再默认
+      // 进书架；书架从筛选面板顶部「📚 书架（按学科浏览）」进）。
       await tester.ensureVisible(find.text('错题本').first);
       await tester.tap(find.text('错题本').first);
+      await _pumpUntil(
+        tester,
+        () => find.text('全部题目').evaluate().isNotEmpty,
+        reason: '错题本 L1 列表未出现',
+      );
+      await tester.ensureVisible(find.text('筛选 ▾').first);
+      await tester.tap(find.text('筛选 ▾').first);
+      await _pumpUntil(
+        tester,
+        () => find.textContaining('书架（按学科浏览）').evaluate().isNotEmpty,
+        reason: '筛选面板未出现书架入口',
+      );
+      await tester.ensureVisible(
+        find.textContaining('书架（按学科浏览）').first,
+      );
+      await tester.tap(find.textContaining('书架（按学科浏览）').first);
       await _pumpUntil(
         tester,
         () => find.textContaining('共 3 本').evaluate().isNotEmpty,
@@ -342,21 +359,24 @@ void main() {
         () => find.text('全部题目').evaluate().isNotEmpty,
         reason: '数学目录未出现',
       );
-      // 进“试卷”文件夹看题目列表。列表卡片显示题干切片文本、不显示题名，
-      // 用 q-math-3 的切片文本确认两道已整理题都在。
+      // 进“试卷”文件夹看题目列表。十九批 L1 行只显示标题（RichText），
+      // 不显示题干切片文本；用 q-math-3 的标题确认两道已整理题都在。
       await tester.ensureVisible(find.text('试卷').first);
       await tester.tap(find.text('试卷').first);
       await _pumpUntil(
         tester,
-        () => find.textContaining('下图阴影部分由曲线').evaluate().isNotEmpty,
+        () => find
+            .textContaining('定积分阴影面积', findRichText: true)
+            .evaluate()
+            .isNotEmpty,
         reason: '错题本未列出已整理题目',
       );
-      // 点 q-math-1 的卡片进详情页。
+      // 点 q-math-1 的卡片进详情页（按标题）。
       await tester.ensureVisible(
-        find.textContaining('lim(x→0) sin 3x / x 的值是').first,
+        find.textContaining('函数极限', findRichText: true).first,
       );
       await tester.tap(
-        find.textContaining('lim(x→0) sin 3x / x 的值是').first,
+        find.textContaining('函数极限', findRichText: true).first,
       );
       await _pumpUntil(
         tester,
@@ -374,12 +394,20 @@ void main() {
   });
 
   group('模块 A #31 v1 副本打开行为（设计：v1 删除，不迁移）', () {
-    test('v1 演示库副本经 openAt 打开后被删除、重建为空 v5 库', () async {
+    test('v1 演示库副本经 openAt 打开后被删除、重建为空 v6 库', () async {
+      // v1 夹具来源：~/workspace/demo-db-backup/quiz-master2.db 是保留
+      // 的 v1 演示库原件（user_version 1，9 道题）；应用数据目录下的
+      // 同名文件现为 live v2 演示库，不再是 v1，不能当夹具。只读副本
+      // 验证，原件 md5 全程不变。
       final home = Platform.environment['HOME'] ?? '';
-      final demoDb = File(p.join(home, '.local', 'share', 'quiz-master2',
-          'quiz-master2.db'));
+      final demoDb = File(p.join(
+        home,
+        'workspace',
+        'demo-db-backup',
+        'quiz-master2.db',
+      ));
       if (!await demoDb.exists()) {
-        markTestSkipped('本机无 v1 演示库，跳过');
+        markTestSkipped('本机无 v1 演示库备份，跳过');
         return;
       }
       final md5Before = md5.convert(await demoDb.readAsBytes()).toString();
@@ -393,7 +421,7 @@ void main() {
       // 真实打开路径（含 deleteLegacyDatabaseIfPresent 预检）。
       final db = await AppDatabase.openAt(copyPath);
       final version = await db.customSelect('PRAGMA user_version').getSingle();
-      expect(version.data['user_version'], 5);
+      expect(version.data['user_version'], 6);
       final count = await db.customSelect(
         'SELECT COUNT(*) AS n FROM questions',
       ).getSingle();
@@ -633,6 +661,8 @@ void main() {
         reason: '恢复确认弹窗未出现',
       );
       await tester.tap(find.text('确认恢复，覆盖当前题库'));
+      // D-173：恢复成功文案按恢复前有无未完成会话分支；本例恢复前有
+      // 暂停会话，故为“恢复成功，已清除未完成的复习会话”。
       // 恢复走真实文件 IO：每轮先放行真实异步、再渲染，等 snackbar 文案出现。
       // 恢复链路是几十个串联的真实 IO await，每轮只能推进一步，200 轮兜底
       //（探针实测约 99 轮出现）。
@@ -640,22 +670,22 @@ void main() {
         tester,
         () =>
             find
-                .text('备份不包含未完成会话，恢复后已清除当前会话状态')
+                .text('恢复成功，已清除未完成的复习会话')
                 .evaluate()
                 .isNotEmpty,
         reason: '恢复完成提示文案未出现',
         maxRounds: 200,
       );
       expect(
-        find.text('备份不包含未完成会话，恢复后已清除当前会话状态'),
+        find.text('恢复成功，已清除未完成的复习会话'),
         findsOneWidget,
       );
       expect(await repo.reviewState(), isNull);
     });
   });
 
-  group('模块 A #30 v3 备份恢复进 v5（只用副本）', () {
-    test('v3 备份恢复后题目都在、库版本为 v5、新字段走默认值；高版本拒绝', () async {
+  group('模块 A #30 v3 备份恢复进 v6（只用副本）', () {
+    test('v3 备份恢复后题目都在、库版本为 v6、新字段走默认值；高版本拒绝', () async {
       final backupCopy = File(
         _simTmp.isEmpty
             ? 'quiz-master2-backup.qm2backup'
@@ -682,17 +712,17 @@ void main() {
         backupBytes,
         dataDir: dataDir.path,
       );
-      // v3 备份含 44 道题、2 科；恢复后版本为 v5。
+      // v3 备份含 44 道题、2 科；恢复后版本为 v6。
       final qs = await db.select(db.questions).get();
       expect(qs.length, 44);
       final subjects = await db.select(db.subjects).get();
       expect(subjects.length, 2);
       final version = await db.customSelect('PRAGMA user_version').getSingle();
-      expect(version.data['user_version'], 5);
+      expect(version.data['user_version'], 6);
       final schemaVersion = await db.customSelect(
         "SELECT value FROM settings WHERE key = 'schemaVersion'",
       ).getSingle();
-      expect(schemaVersion.data['value'], '5');
+      expect(schemaVersion.data['value'], '6');
       // 新字段走默认值：题型待确认、图块 []、作答记录空。
       expect(qs.every((q) => q.questionType == null), isTrue);
       expect(
@@ -726,7 +756,7 @@ void main() {
     });
   });
 
-  group('模块 A：为 built-app 截图播种文件库（9 道演示题，v5）', () {
+  group('模块 A：为 built-app 截图播种文件库（9 道演示题，v6）', () {
     test('seed file db for built app', () async {
       if (_simTmp.isEmpty) {
         markTestSkipped('未传 SIM_A_TMP，跳过文件库播种');
@@ -745,7 +775,7 @@ void main() {
       });
       await _seedDemo(repo, db);
       final version = await db.customSelect('PRAGMA user_version').getSingle();
-      expect(version.data['user_version'], 5);
+      expect(version.data['user_version'], 6);
       final count = await db.customSelect(
         'SELECT COUNT(*) AS n FROM questions',
       ).getSingle();

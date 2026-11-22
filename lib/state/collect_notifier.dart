@@ -672,7 +672,7 @@ class CollectNotifier extends Notifier<CollectState> {
       final result = await service.retryFromStoredOriginal(task);
       await load();
       if (result.status == CollectStatus.failed) {
-        return (task: result, error: result.error ?? '重试失败，请再试一次');
+        return (task: result, error: result.error ?? '重试失败，请稍后再试');
       }
       return (task: result, error: null);
     } on StateError catch (e) {

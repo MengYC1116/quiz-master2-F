@@ -28,6 +28,8 @@ String _norm(String s) => s.replaceAll(RegExp(r'\s+'), ' ').trim();
 //（idx_questions_question_type、idx_review_history_submission）。
 // Win11 反馈包 5：v6 期望 DDL（16 表 + 8 索引，仍 24 条；questions
 // 末尾加 option_contents + option_contents_parser_version 两列）。
+// 十九批 A3（D-218）：saved_searches 新表，不升版（仍 v6），25 条
+//（17 表 + 8 索引）。
 const _expected = [
   'CREATE UNIQUE INDEX idx_boxes_one_layer1_per_question ON question_boxes(question_id) WHERE layer = 1 AND question_id IS NOT NULL',
   'CREATE INDEX idx_boxes_parent ON question_boxes(parent_box_id)',
@@ -50,6 +52,7 @@ const _expected = [
   'CREATE TABLE recently_viewed_questions( question_id TEXT PRIMARY KEY, viewed_at INTEGER NOT NULL)',
   "CREATE TABLE review_history( id INTEGER PRIMARY KEY AUTOINCREMENT, question_id TEXT NOT NULL, result TEXT NOT NULL, reviewed_at INTEGER NOT NULL, cause_id TEXT, session_id TEXT, review_mode TEXT CHECK (review_mode IN ('到期复习')), verdict TEXT, verification_source TEXT, verification_status TEXT CHECK ((verification_status IS NULL AND verification_source IS NULL) OR (verification_status = '已核验' AND verification_source IN ('软件标准答案', '客观判分', '外部资料核对')) OR (verification_status = '未核验' AND verification_source = '未核验')), attempt_id TEXT, submission_id TEXT)",
   "CREATE TABLE review_state( id INTEGER PRIMARY KEY CHECK (id = 1), queue TEXT NOT NULL DEFAULT '', position INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL, session_id TEXT, mode TEXT, skips TEXT, per_question_state TEXT)",
+  "CREATE TABLE saved_searches( id TEXT PRIMARY KEY, name TEXT NOT NULL, conditions TEXT NOT NULL DEFAULT '{}', created_at INTEGER NOT NULL)",
   'CREATE TABLE settings( key TEXT PRIMARY KEY, value TEXT NOT NULL)',
   "CREATE TABLE subjects( id TEXT PRIMARY KEY, name TEXT NOT NULL, color INTEGER NOT NULL, cover_style TEXT NOT NULL DEFAULT 'plain', cover_color TEXT NOT NULL DEFAULT 'blue')",
   'CREATE TABLE tags(id TEXT PRIMARY KEY, name TEXT NOT NULL)',
@@ -57,7 +60,7 @@ const _expected = [
 
 void main() {
   group('B Stage 1：新代码建库 schema 与 v2 基线零差异', () {
-    test('openAt 新建空库：user_version=6，24 条 DDL 逐字一致', () async {
+    test('openAt 新建空库：user_version=6，25 条 DDL 逐字一致', () async {
       final tmp = await Directory.systemTemp.createTemp('b1-schema-');
       addTearDown(() async {
         try {

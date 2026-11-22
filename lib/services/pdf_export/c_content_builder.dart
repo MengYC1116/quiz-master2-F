@@ -27,9 +27,12 @@
 // [pw.WidgetSpan] 嵌图片（pw.Text 接不了 WidgetSpan），同样
 // overflow: TextOverflow.span。这是同一条规则在富文本上的应用，
 // 不是新入口——未改 M1-A 接口（见 M1-STATUS 的 M1-C 备注）。
-// 行内公式的垂直对齐：WidgetSpan 基线取（单行高 − 公式高）/ 2，
-// 即公式在单行行高盒内居中；精确基线对齐（需栅格化器报公式基线
-// 偏移）是后续打磨项，以 V-分页样例 PDF 目视复核。
+// 行内公式的垂直对齐（十八批 P1 D-216）：WidgetSpan baseline =
+// 公式基线偏移 − 公式高，即公式顶落在文字基线上方一个基线偏移处，
+// 公式基线与文字基线重合（探针 2 实测：baseline = 0 时图底贴文字
+// 基线；baseline = 基线偏移 − 高时公式基线落文字基线上）。
+// 基线未知（原图降级，CInlineFormula.baselineOffsetPt 为 null）时
+// 仍用旧居中启发式（单行高 − 公式高）/ 2，不得用猜的数。
 //
 // 多文件夹 / 多学科文案（§7）：页眉学科名取 [PdfExportHeaderInfo.subjectName]
 // （多学科时 M1-E 传“多学科”，构建器不取第一道题的学科作代表）；
@@ -504,7 +507,7 @@ class CContentBuilder {
     if (block.inlineFormulas.isEmpty) {
       return documentBuilder.spanText(block.text, style: style);
     }
-    // 行内公式在单行行高盒内居中（见文件头：基线启发式）。
+    // 行内公式按基线对齐（十八批 P1，见文件头）；基线未知时旧居中。
     final singleLine = pdfTextHeightPt(
       lines: 1,
       fontSizePt: block.fontSizePt,
@@ -520,9 +523,12 @@ class CContentBuilder {
           pw.TextSpan(text: block.text.substring(cursor, f.offset)),
         );
       }
+      final baseline = f.baselineOffsetPt == null
+          ? (singleLine - f.heightPt) / 2
+          : f.baselineOffsetPt! - f.heightPt;
       spans.add(
         pw.WidgetSpan(
-          baseline: (singleLine - f.heightPt) / 2,
+          baseline: baseline,
           child: _sizedImage(
             bytes: imageBytes[f.ref]!,
             widthPt: f.widthPt,

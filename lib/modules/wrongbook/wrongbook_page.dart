@@ -23,6 +23,8 @@ import '../../services/word_export/word_export_service.dart';
 import '../../state/repository_provider.dart';
 import '../../state/wrongbook_notifier.dart';
 import '../../theme/app_theme.dart'; // 转出 design_tokens，本文件不再单引它。
+import '../../widgets/command_palette.dart';
+import '../../widgets/entrance_animation.dart';
 import '../../widgets/uikit.dart';
 import '../../widgets/widgets.dart';
 import 'export_confirm.dart';
@@ -58,6 +60,7 @@ class WrongbookPage extends StatefulWidget {
     this.initialSubjectId,
     this.filterCause,
     this.filterKnowledgePointId,
+    this.folderId,
     required this.onOpenHome,
     this.onGoSubjects,
     this.onGoCollect,
@@ -65,12 +68,18 @@ class WrongbookPage extends StatefulWidget {
     required this.onOpenDetail,
     required this.onGoReview,
     this.exportControllerFactory,
+    this.pendingSearch,
+    this.onPendingSearchApplied,
   });
 
   final QuestionRepository repo;
   final String? initialSubjectId;
   final String? filterCause;
   final String? filterKnowledgePointId;
+
+  /// 十九批 A：详情页右栏「打开列表 ›」跳进来时按该文件夹筛选
+  ///（经 app.dart `_goWrongbookFiltered(folderId:)` 传入）。
+  final String? folderId;
   final VoidCallback onOpenHome;
 
   /// B8-1：学科删空时书架空状态给出去学科管理的入口（可空；
@@ -81,12 +90,26 @@ class WrongbookPage extends StatefulWidget {
   /// 测试里不传时回落到旧的单按钮“返回目录 / 返回书架”）。
   final VoidCallback? onGoCollect;
   final VoidCallback? onGoOrganize;
-  final Future<void> Function(Question q, List<String> orderIds) onOpenDetail;
+  final Future<void> Function(
+    Question q,
+    List<String> orderIds, {
+    String? searchContext,
+  })
+  onOpenDetail;
   final void Function({String? subjectId}) onGoReview;
 
   /// 十六批 B（D-190）：导出流程控制器的测试注入口（widget 测试传
   /// 桩控制器，避免碰真实数据库；生产传 null，走下面的真实构建）。
   final ExportFlowController Function()? exportControllerFactory;
+
+  /// 十九批 A4：命令面板在别的页面呼出时，app 把待应用的查找条
+  /// 件放在这里（({conditions, label})；页面已挂载时直接应用、
+  /// 未挂载时挂载后在 initState 里应用，见 _WrongbookViewState）。
+  final ({Map<String, dynamic> conditions, String label})? pendingSearch;
+
+  /// pendingSearch 应用完的回调（app 收到后清掉自己的待应用字段，
+  /// 防止重建时重复应用；只在真正应用了一次后调一次）。
+  final VoidCallback? onPendingSearchApplied;
 
   @override
   State<WrongbookPage> createState() => _WrongbookPageState();
@@ -103,6 +126,7 @@ class _WrongbookPageState extends State<WrongbookPage> {
             subjectId: widget.initialSubjectId,
             filterCause: widget.filterCause,
             filterKnowledgePointId: widget.filterKnowledgePointId,
+            filterFolderId: widget.folderId,
           ),
         ),
       ],
@@ -114,6 +138,8 @@ class _WrongbookPageState extends State<WrongbookPage> {
         onOpenDetail: widget.onOpenDetail,
         onGoReview: widget.onGoReview,
         exportControllerFactory: widget.exportControllerFactory,
+        pendingSearch: widget.pendingSearch,
+        onPendingSearchApplied: widget.onPendingSearchApplied,
       ),
     );
   }
@@ -128,15 +154,24 @@ class _WrongbookView extends ConsumerStatefulWidget {
     required this.onOpenDetail,
     required this.onGoReview,
     this.exportControllerFactory,
+    this.pendingSearch,
+    this.onPendingSearchApplied,
   });
 
   final VoidCallback onOpenHome;
   final VoidCallback? onGoSubjects;
   final VoidCallback? onGoCollect;
   final VoidCallback? onGoOrganize;
-  final Future<void> Function(Question q, List<String> orderIds) onOpenDetail;
+  final Future<void> Function(
+    Question q,
+    List<String> orderIds, {
+    String? searchContext,
+  })
+  onOpenDetail;
   final void Function({String? subjectId}) onGoReview;
   final ExportFlowController Function()? exportControllerFactory;
+  final ({Map<String, dynamic> conditions, String label})? pendingSearch;
+  final VoidCallback? onPendingSearchApplied;
 
   @override
   ConsumerState<_WrongbookView> createState() => _WrongbookViewState();
@@ -157,6 +192,11 @@ class _WrongbookViewState extends ConsumerState<_WrongbookView> {
   final _newFolderCtrl = TextEditingController();
   final _renameCtrl = TextEditingController();
 
+  /// 十九批 A3：「＋ 存当前条件」命名对话框的控制器（FR-15 同款
+  /// 字段持有：showDialog await 返回后立即 dispose，退出动画重建
+  /// TextField 时会抛 “used after being disposed”）。
+  final _saveSearchNameCtrl = TextEditingController();
+
   /// FR-15：批量加标签弹窗的控制器改字段持有（与详情页同款原因：
   /// showDialog await 返回后立即 dispose，退出动画重建 TextField 时
   /// 会抛 “used after being disposed”）。下次打开弹窗时先释放上一个，
@@ -172,9 +212,6 @@ class _WrongbookViewState extends ConsumerState<_WrongbookView> {
   /// 公式栅格化器（打开确认步时创建 + 挂载，收尾时卸载；只在
   /// 生成时用到，后台盘点不需要它）。
   FormulaRasterizer? _exportRasterizer;
-
-  /// 汇总条展开 / 收起（页面本地状态，不进 Provider）。
-  bool _exportSummaryExpanded = false;
 
   /// 十七批 P2（D-208）：导出模式（页面本地状态，不进 Provider；
   /// 选择仍在 Notifier 的 exportSelected 里，不动其语义）。
@@ -192,6 +229,7 @@ class _WrongbookViewState extends ConsumerState<_WrongbookView> {
     setState(() {
       _exportMode = true;
     });
+    _snack('已进入导出模式：点题行选中，再点一次取消');
   }
 
   /// 退出导出模式：已选保留，再进模式还能看到（D-208 定）。
@@ -201,9 +239,10 @@ class _WrongbookViewState extends ConsumerState<_WrongbookView> {
     });
   }
 
-  /// 批量模式开关（D-208：与导出模式互斥的另一半）：进批量时退出
-  /// 导出模式，已选保留；开关本身的语义（切换 batchMode 并清空批量
-  /// 勾选）与原来工具栏芯片一致。
+  /// 批量模式开关（D-217：与导出模式彻底互斥）：进批量时退出
+  /// 导出模式，导出已选也清空——D-209 的「取消保留已选」只适用
+  /// 于点「取消」退出导出模式，不适用于进批量模式；开关本身的
+  /// 语义（切换 batchMode 并清空批量勾选）与原来工具栏芯片一致。
   void _toggleBatchMode() {
     final entering = !_sr.batchMode;
     if (entering && _exportMode) {
@@ -217,20 +256,48 @@ class _WrongbookViewState extends ConsumerState<_WrongbookView> {
         selected: const <String>{},
       ),
     );
+    if (entering) {
+      // D-217：进批量清空导出已选（走 Notifier 的 clearExportSelected，
+      // 不绕开它改状态）。
+      _n.clearExportSelected();
+    }
   }
 
-  /// 汇总条后台盘点的防抖定时器。
-  Timer? _exportInventoryTimer;
+  @override
+  void initState() {
+    super.initState();
+    _maybeApplyPendingSearch();
+  }
 
-  /// 汇总条后台盘点的防抖序号（只认最新一次的结果，旧结果丢弃）。
-  int _exportInventorySeq = 0;
+  @override
+  void didUpdateWidget(covariant _WrongbookView oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.pendingSearch != null &&
+        !identical(widget.pendingSearch, oldWidget.pendingSearch)) {
+      _maybeApplyPendingSearch();
+    }
+  }
 
-  /// 汇总条后台盘点的最近一次结果（只在与当前勾选一致时展示）。
-  ExportInventory? _lastExportInventory;
-
-  /// [_lastExportInventory] 对应的勾选 ID（顺序同
-  /// [_exportSelectedQuestions]）。
-  List<String>? _lastExportInventoryIds;
+  /// 十九批 A4：应用 app 传来的待应用查找（命令面板在别的页面
+  /// 呼出时）。挂载后（initState）或已挂载收到新值时
+  ///（didUpdateWidget，identity 守门防重建重复应用）各应用一次；
+  /// 应用完调 onPendingSearchApplied，让 app 清掉自己的字段。
+  /// 找到的题不在当前筛选里时 Notifier 会按条件重算列表；搜索框
+  /// 文字由 _applySearchConditions 同步。
+  void _maybeApplyPendingSearch() {
+    final pending = widget.pendingSearch;
+    if (pending == null) return;
+    // initState 里直接调 Notifier 写状态是安全的（ref.read 不订阅）；
+    // toast 要等首帧之后（ScaffoldMessenger 需 context 已挂载）。
+    _applySearchConditions(
+      pending.conditions,
+      label: pending.label,
+      toast: '已用命令面板打开查找：${pending.label}',
+    );
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      widget.onPendingSearchApplied?.call();
+    });
+  }
 
   @override
   void dispose() {
@@ -238,8 +305,8 @@ class _WrongbookViewState extends ConsumerState<_WrongbookView> {
     _folderSearchCtrl.dispose();
     _newFolderCtrl.dispose();
     _renameCtrl.dispose();
+    _saveSearchNameCtrl.dispose();
     _batchAddTagCtrl?.dispose();
-    _exportInventoryTimer?.cancel();
     _exportRasterizer?.detach();
     super.dispose();
   }
@@ -303,21 +370,13 @@ class _WrongbookViewState extends ConsumerState<_WrongbookView> {
     return qs;
   }
 
-  /// 列表行点选 / 汇总清单取消钮共用：点选第 51 道时返回拒绝，
-  /// 页面弹 SnackBar；其余情况静默成功并刷新后台盘点。
-  void _toggleExportSelected(String id) {
+  /// 列表行点选 / 汇总条「全选本页」共用：点选第 51 道时返回
+  /// 拒绝（页面弹 SnackBar，「全选本页」收到拒绝就停）；其余
+  /// 情况返回 null 表示成功。
+  String? _toggleExportSelected(String id) {
     final msg = _n.toggleExportSelected(id);
-    if (msg != null) {
-      _snack(msg);
-      return;
-    }
-    _scheduleExportInventoryRefresh();
-  }
-
-  /// 汇总清单里逐个取消勾选。
-  void _removeExportSelected(String id) {
-    _n.removeExportSelected(id);
-    _scheduleExportInventoryRefresh();
+    if (msg != null) _snack(msg);
+    return msg;
   }
 
   /// 导出流程控制器（懒建；测试注入口优先，生产走真实构建）。
@@ -466,77 +525,13 @@ class _WrongbookViewState extends ConsumerState<_WrongbookView> {
             expectedImageCount: expectedImageCount,
           ),
       openFile: delivery.openPdf,
+      // 二十批 P7：Android 独立「打开 PDF」按钮的详细结果通道
+      //（失败原因带回完成界面 SnackBar；桌面端不用它）。
+      openPdfDetailed: delivery.openPdfWithResult,
       openFolder: delivery.openContainingFolder,
       shareFile: (path) => delivery.sharePdf(path),
     );
     return _exportController = controller;
-  }
-
-  /// 汇总条展开 / 收起切换（放页面本体里：part 文件的 extension
-  /// 方法里调 setState 会触发 invalid_use_of_protected_member）。
-  void _toggleExportSummaryExpanded() {
-    setState(() {
-      _exportSummaryExpanded = !_exportSummaryExpanded;
-    });
-  }
-
-  /// 汇总条的跳过信息：勾选变化后防抖 300ms 跑一次后台盘点（只读
-  /// 盘点，不写库、不生成）。结果只在与当前勾选一致时展示；失败
-  /// 时静默——确认步会重新盘点并展示错误，不在这里打扰用户。
-  void _scheduleExportInventoryRefresh() {
-    _exportInventoryTimer?.cancel();
-    final ids = _exportSelectedQuestions(_sr).map((q) => q.id).toList();
-    if (ids.isEmpty) {
-      _lastExportInventory = null;
-      _lastExportInventoryIds = null;
-      return;
-    }
-    final seq = ++_exportInventorySeq;
-    _exportInventoryTimer = Timer(const Duration(milliseconds: 300), () async {
-      if (seq != _exportInventorySeq || !mounted) return;
-      try {
-        final controller = _ensureExportController();
-        final inv = await controller.computeInventory(
-          ids: ids,
-          excluded: const [],
-          circledCount: _sr.filteredAll().length,
-        );
-        if (seq != _exportInventorySeq || !mounted) return;
-        setState(() {
-          _lastExportInventory = inv;
-          _lastExportInventoryIds = ids;
-        });
-      } catch (_) {
-        if (seq == _exportInventorySeq && mounted) {
-          setState(() {
-            _lastExportInventory = null;
-            _lastExportInventoryIds = null;
-          });
-        }
-      }
-    });
-  }
-
-  /// 汇总条的跳过信息文案（后台盘点结果与当前勾选一致时才展示，
-  /// 否则显示“正在盘点…”；未勾选时不展示跳过信息）。
-  String? _exportSkipSummary(List<Question> selectedQs) {
-    if (selectedQs.isEmpty) return null;
-    final ids = selectedQs.map((q) => q.id).toList();
-    final inv = _lastExportInventory;
-    if (inv == null ||
-        _lastExportInventoryIds == null ||
-        !listEquals(_lastExportInventoryIds, ids)) {
-      return '正在盘点是否会被跳过…';
-    }
-    if (inv.guard.isHardReject) return '内容过重，无法导出';
-    if (inv.route == ExportRoute.c) {
-      return inv.skippedCount > 0
-          ? '将跳过 ${inv.skippedCount} 道'
-          : '全部可印，无跳过';
-    }
-    return inv.lowDpi.isNotEmpty
-        ? '低于清晰度阈值 ${inv.lowDpi.length} 道'
-        : '全部可印，无跳过';
   }
 
   /// 打开导出确认步（列表页工具栏「导出」与汇总条「导出」共用入口）。
@@ -578,12 +573,12 @@ class _WrongbookViewState extends ConsumerState<_WrongbookView> {
     if (subject != null) filterParts.add('学科：${subject.name}');
     if (folderName != null) filterParts.add('文件夹：$folderName');
     final sortText = switch (st.sort) {
-      'old' => '时间旧→新',
-      'subj-asc' || 'subject' => '学科升序',
-      'subj-desc' => '学科降序',
-      'status-asc' => '错因状态升序',
-      'status-desc' => '错因状态降序',
-      _ => '时间新→旧',
+      'old' => '时间旧 → 新',
+      'subj-asc' || 'subject' => '学科首字母 A → Z',
+      'subj-desc' => '学科首字母 Z → A',
+      'status-asc' => '错因状态 待解决 → 已解决',
+      'status-desc' => '错因状态 已解决 → 待解决',
+      _ => '时间新 → 旧',
     };
     final session = ExportConfirmSession(
       controller: controller,
@@ -610,8 +605,6 @@ class _WrongbookViewState extends ConsumerState<_WrongbookView> {
       onFinished: () {
         if (controller.phase == ExportFlowPhase.done) {
           _n.clearExportSelected();
-          _lastExportInventory = null;
-          _lastExportInventoryIds = null;
           // 十七批 P2（D-208）：导出成功后退出导出模式（现行清空
           // 行为保留，另加退模式；确认步取消回来则留在模式里）。
           if (_exportMode && mounted) {
@@ -687,7 +680,7 @@ class _WrongbookViewState extends ConsumerState<_WrongbookView> {
           '${kidN > 0 ? '，它下面的 $kidN 个子文件夹也会一起删掉' : ''}，确定吗？',
         ),
         content: Text(
-          '要删的是${subject.name}的文件夹「${f.name}」，只删这一科的，其他科目的同名文件夹不受影响。',
+          '要删的是${subject.name}的文件夹「${f.name}」，只删这一科的，其他学科的同名文件夹不受影响。',
         ),
         actions: [
           TextButton(
@@ -877,10 +870,6 @@ class _WrongbookViewState extends ConsumerState<_WrongbookView> {
     }
   }
 
-  Future<void> _toggleFavorite(Question q) async {
-    await _n.toggleFavorite(q);
-  }
-
   Future<void> _restoreArchived(Question q) async {
     await _n.restoreArchived(q);
   }
@@ -930,7 +919,8 @@ class _WrongbookViewState extends ConsumerState<_WrongbookView> {
         ],
       );
     }
-    return view;
+    // 二十二批 D-247：错题本入场上移淡入（列表/归档/书架/目录共用）。
+    return EntranceFadeSlide(child: view);
   }
 
   /// 页标题（24px/800，HTML `h3.pt`）。

@@ -121,8 +121,8 @@ void main() {
         ),
       );
       final d = _chipDecoration(tester, 'A');
-      expect(d.color, const Color(0xFFFFFEF9));
-      expect((d.border as Border).top.color, const Color(0xFFCFC39E));
+      expect(d.color, const Color(0xFFFFFFFF));
+      expect((d.border as Border).top.color, const Color(0xFFB9C6D8));
       expect(_textColor(tester, 'A'), const Color(0xFF3D4E6B));
     });
 

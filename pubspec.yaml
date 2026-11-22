@@ -63,6 +63,12 @@ dependencies:
   # 依赖，当前锁定 2.1.6，见 M1-DESIGN.md §14）。
   share_plus: ^12.0.2
   path_provider: ^2.1.6
+  # 二十批 P7（十五批 #31）：Android／iOS 独立「打开 PDF」按钮
+  #（open_filex 5.0.0，sdk >=2.17 / flutter >=3.0.0，与 Dart 3.13.7 /
+  # Flutter 3.47.9 兼容；Android 侧 FileProvider 由插件自带
+  # AndroidManifest 合并提供，应用侧无需额外配置；桌面端不走它，
+  # 仍用系统启动器，见 lib/services/pdf_export/pdf_delivery.dart）。
+  open_filex: ^5.0.0
 
 dev_dependencies:
   flutter_test:

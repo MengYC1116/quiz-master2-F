@@ -509,7 +509,10 @@ void main() {
       expect(attempts.single['confidence'], '确定');
     });
 
-    testWidgets('标签已确认但未填正确答案：提交后不判分，只记录选择与置信度', (tester) async {
+    testWidgets('标签已确认但未填正确答案：不显示选项按钮、走纸上作答，不判分', (tester) async {
+      // REV5 R1-3：单选判分门禁只看答案配置是否有效（标签 ≥2 位且正确
+      // 答案在标签内），不再读 optionLabelsConfirmed 列。标签已确认
+      // 但未填正确答案 → 判分不可用，走纸上作答，不显示选项按钮。
       await seedQ(
         mkQ(
           'q1',
@@ -524,23 +527,44 @@ void main() {
       );
       await pumpReview(tester);
       await tapQm(tester, '开始复习');
-      await objectiveToCheck(tester, option: 'C', confidence: '不太确定');
-      expect(find.text('回答正确'), findsNothing);
-      expect(find.text('回答错误'), findsNothing);
+      await tapQm(tester, '开始作答');
       expect(
-        find.text('本次作答不判分：只记录了你的选择与置信度。'),
+        find.text('未配置有效答案，不显示选项按钮。请在纸上作答，或先补全答案。'),
         findsOneWidget,
       );
+      expect(find.widgetWithText(QmButton, 'A'), findsNothing);
+      expect(find.widgetWithText(QmButton, 'B'), findsNothing);
+      expect(find.widgetWithText(QmButton, 'C'), findsNothing);
+      expect(find.widgetWithText(QmButton, 'D'), findsNothing);
+      expect(find.text('这次作答有多大把握？'), findsNothing);
+      expect(find.widgetWithText(QmButton, '补全答案'), findsOneWidget);
+      await tapQm(tester, '我已完成作答');
+      // 核对步：无可判分，不显示对错；标准答案待补充、解析照常显示；
+      // 单选无正确答案即无有效标准答案，不出核对确认四选一。
+      expect(find.text('回答正确'), findsNothing);
+      expect(find.text('回答错误'), findsNothing);
+      expect(find.textContaining('标准答案：待补充'), findsOneWidget);
+      expect(find.textContaining('解析文本'), findsOneWidget);
+      expect(find.textContaining('暂无标准答案/解析'), findsOneWidget);
+      await tapQm(tester, '下一步：自查');
+      await tapQm(tester, '未解决', at: 0);
+      await tapQm(tester, '看总结');
+      expect(find.text('本轮复习总结'), findsOneWidget);
+      // 纸上作答不判分：attempt 只记“已完成作答”，选择/对错/置信度皆空。
       final attempts = await attemptRows('q1');
       expect(attempts.length, 1);
-      expect(attempts.single['selected'], '["C"]');
+      expect(attempts.single['selected'], isNull);
       expect(attempts.single['correct'], isNull);
-      expect(attempts.single['confidence'], '不太确定');
+      expect(attempts.single['confidence'], isNull);
+      expect(attempts.single['status'], '已完成作答');
     });
   });
 
-  group('#18 标签未确认不显示选项按钮', () {
-    testWidgets('不显示选项按钮：纸上作答不采集置信度；补全标签后返回会话继续点选', (tester) async {
+  group('#18 标签未确认不再拦选项按钮', () {
+    testWidgets('标签未确认不拦选项按钮：标签齐全即可点选判分', (tester) async {
+      // REV5 R1-3：门禁不再读 optionLabelsConfirmed 列；标签齐全
+      // （≥2 位）且正确答案有效即可点选判分，未确认标签不再拦路，
+      // “选项标签尚未确认”提示与“补全标签”入口已随之取消。
       await seedQ(
         mkQ(
           'q1',
@@ -553,38 +577,27 @@ void main() {
           explanation: '选 B 的理由。',
         ),
       );
-      await pumpReview(
-        tester,
-        onOpenDetail: (q, ids) async {
-          // 模拟详情页题型区“确认选项”：标签确认保存。
-          final fresh = (await repo.all()).firstWhere((x) => x.id == q.id);
-          await repo.save(
-            fresh.copyWith(
-              optionLabelsConfirmed: true,
-              optionLabelsJustConfirmed: true,
-            ),
-          );
-        },
-      );
+      await pumpReview(tester);
       await tapQm(tester, '开始复习');
       await tapQm(tester, '开始作答');
       expect(
         find.text('选项标签尚未确认，不显示选项按钮。请在纸上作答，或先补全标签。'),
-        findsOneWidget,
+        findsNothing,
       );
-      expect(find.widgetWithText(QmButton, 'A'), findsNothing);
-      expect(find.widgetWithText(QmButton, 'B'), findsNothing);
-      expect(find.widgetWithText(QmButton, '补全标签'), findsOneWidget);
-      await tapQm(tester, '补全标签');
-      // 返回会话：沿用同一会话，不出“继续上次会话”选择，回到看题步。
-      expect(find.textContaining('继续上次会话'), findsNothing);
-      expect(find.textContaining('第 1 / 1 道题'), findsOneWidget);
-      await tapQm(tester, '开始作答');
+      expect(find.widgetWithText(QmButton, '补全标签'), findsNothing);
       expect(find.widgetWithText(QmButton, 'A'), findsOneWidget);
+      expect(find.widgetWithText(QmButton, 'B'), findsOneWidget);
+      expect(find.widgetWithText(QmButton, 'C'), findsOneWidget);
+      expect(find.widgetWithText(QmButton, 'D'), findsOneWidget);
       await tapQm(tester, 'B');
       await tapQm(tester, '确定');
       await tapQm(tester, '提交答案');
       expect(find.text('回答正确'), findsOneWidget);
+      final attempts = await attemptRows('q1');
+      expect(attempts.length, 1);
+      expect(attempts.single['selected'], '["B"]');
+      expect(attempts.single['correct'], 1);
+      expect(attempts.single['confidence'], '确定');
     });
 
     testWidgets('标签未确认时点“我已完成作答”走纸上作答：selected/correct/置信度皆空', (tester) async {

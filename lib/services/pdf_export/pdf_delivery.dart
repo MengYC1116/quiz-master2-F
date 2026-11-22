@@ -11,11 +11,13 @@
 //   `getDownloadsDirectory()`；目录须明确、可找到，不得写到用户找
 //   不到的私有目录；返回 null 或不可用时整单失败并明确报错，绝不
 //   静默改写私有目录）；完成后提供「打开 PDF / 分享」——分享走系统
-//   分享（share_plus 12.0.2，已验证可解析）；直接打开在 Android 上
-//   无内置通道（不引新依赖），本包的打开动作只覆盖桌面端，Android
-//   端 M3 只出「分享」（分享面板含查看器选择，可达成打开效果；
-//   如需独立「打开 PDF」按钮，需另批加 open_filex 或 Intent 通道，
-//   见 M4 真机清单）。
+//   分享（share_plus 12.0.2，已验证可解析）；直接打开走 open_filex
+//   （二十批 P7，十五批 #31：独立「打开 PDF」按钮，
+//   `PdfDeliveryService.openPdf` 在 Android/iOS 上改走 open_filex，
+//   桌面端仍走系统启动器；本机 Linux 测不了真机打开行为，
+//   真机验证见 M4 真机清单）。
+// - iOS：打开同样走 open_filex（与 Android 同一通道）；落盘交付
+//   仍只支持 Windows 与 Android（见 [PdfDeliveryService.deliver]）。
 // - 公共 Downloads 的实际交付以 S1 真机验证结论为准（P1-3）：S1.6
 //   真机验证未做，Linux 侧不得把通过当作公共 Downloads 交付已证实，
 //   明确记入 M4 真机清单；若实际得到只是应用私有目录，不得当作
@@ -28,6 +30,7 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:file_picker/file_picker.dart';
+import 'package:open_filex/open_filex.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 
@@ -127,6 +130,23 @@ class ShareResult {
   final String? error;
 }
 
+/// 打开 PDF 的详细结果（二十批 P7：失败必须带明确原因，不静默吞掉；
+/// [PdfDeliveryService.openPdf] 只返回 bool，本类供需要报错文案的
+/// 调用方用）。
+class OpenPdfResult {
+  const OpenPdfResult({required this.success, this.error});
+
+  /// 是否已成功调起打开。
+  final bool success;
+
+  /// 失败原因（success 为 false 时非空；面向用户的明确说明）。
+  final String? error;
+}
+
+/// 系统打开结果（open_filex 的 [OpenResult] 的测试替身类型：
+/// 生产走 open_filex，测试注入返回 [OpenResult] 的假函数）。
+typedef OpenWithFilexFn = Future<OpenResult> Function(String path);
+
 /// 另存为对话框（Windows；取消返回 null）。
 typedef SaveFilePicker =
     Future<String?> Function({
@@ -151,13 +171,15 @@ class PdfDeliveryService {
     shareFile,
     Future<bool> Function(String path)? openFile,
     Future<bool> Function(String path)? openFolder,
+    OpenWithFilexFn? openWithFilex,
     this._platformOverride,
   }) : _pickSavePath = pickSavePath ?? _defaultPickSavePath,
        _downloadsDirectory =
            downloadsDirectory ?? getDownloadsDirectory,
        _shareFile = shareFile ?? _defaultShareFile,
        _openFile = openFile ?? _defaultOpenFile,
-       _openFolder = openFolder ?? _defaultOpenFolder;
+       _openFolder = openFolder ?? _defaultOpenFolder,
+       _openWithFilex = openWithFilex ?? _defaultOpenWithFilex;
 
   final SaveFilePicker _pickSavePath;
   final Future<Directory?> Function() _downloadsDirectory;
@@ -165,6 +187,7 @@ class PdfDeliveryService {
   _shareFile;
   final Future<bool> Function(String path) _openFile;
   final Future<bool> Function(String path) _openFolder;
+  final OpenWithFilexFn _openWithFilex;
   final PdfDeliveryPlatform? _platformOverride;
 
   /// 当前分发平台（测试覆盖优先，否则按真实平台）。
@@ -177,9 +200,17 @@ class PdfDeliveryService {
           : PdfDeliveryPlatform.other);
 
   /// 当前平台是否支持直接打开文件（桌面端：Windows/Linux/macOS；
-  /// Android/iOS 无内置打开通道，M3 用分享代替，见文件头）。
+  /// Android/iOS 走 open_filex，见 [openPdfWithResult]，不在此
+  /// getter 内——它只描述桌面端系统启动器路径）。
   static bool get supportsOpenFile =>
       Platform.isWindows || Platform.isLinux || Platform.isMacOS;
+
+  /// 当前平台的打开通道是否走 open_filex（Android／iOS；二十批 P7）。
+  ///
+  /// 测试用 [_platformOverride] 覆盖时按覆盖值判定；iOS 在
+  /// [_platform] 里落到 other，用真实 [Platform.isIOS] 补判定。
+  bool get _opensWithFilex =>
+      _platform == PdfDeliveryPlatform.android || Platform.isIOS;
 
   /// 按平台分发交付（一份文件）：Windows 走另存为对话框，
   /// Android 走公共下载目录，其它平台返回失败（不静默改写别处）。
@@ -391,11 +422,63 @@ class PdfDeliveryService {
     }
   }
 
-  /// 打开 PDF（桌面端：系统启动器按默认阅读器打开；Android/iOS
-  /// 无内置通道，返回 false，M3 改出「分享」）。
-  Future<bool> openPdf(String path) async {
-    if (!File(path).existsSync()) return false;
-    return _openFile(path);
+  /// 打开 PDF（桌面端：系统启动器按默认阅读器打开；Android/iOS：
+  /// open_filex 调起系统查看器，二十批 P7）。
+  ///
+  /// 文件不存在返回 false。失败原因见 [openPdfWithResult]，本方法
+  /// 只保留 bool 兼容旧调用方（完成界面失败提示用详细结果）。
+  Future<bool> openPdf(String path) async =>
+      (await openPdfWithResult(path)).success;
+
+  /// 打开 PDF（带明确失败原因版）：文件不存在、没有可打开 PDF 的
+  /// 应用、无权限、通道抛错都以 [OpenPdfResult.error] 返回，不静默
+  /// 吞掉；成功时 error 为 null。
+  Future<OpenPdfResult> openPdfWithResult(String path) async {
+    if (!File(path).existsSync()) {
+      return const OpenPdfResult(
+        success: false,
+        error: '要打开的文件不存在。',
+      );
+    }
+    if (_opensWithFilex) {
+      try {
+        final result = await _openWithFilex(path);
+        return switch (result.type) {
+          ResultType.done => const OpenPdfResult(success: true),
+          ResultType.fileNotFound => const OpenPdfResult(
+            success: false,
+            error: '要打开的文件不存在。',
+          ),
+          ResultType.noAppToOpen => const OpenPdfResult(
+            success: false,
+            error: '没有可打开 PDF 的应用，请先安装 PDF 阅读器。',
+          ),
+          ResultType.permissionDenied => const OpenPdfResult(
+            success: false,
+            error: '没有打开该文件的权限，请检查存储权限后重试。',
+          ),
+          ResultType.error => OpenPdfResult(
+            success: false,
+            error: result.message.isEmpty
+                ? '打开 PDF 失败，请重试。'
+                : '打开 PDF 失败：${result.message}',
+          ),
+        };
+      } catch (e) {
+        return OpenPdfResult(success: false, error: '打开 PDF 失败：$e');
+      }
+    }
+    try {
+      final ok = await _openFile(path);
+      return ok
+          ? const OpenPdfResult(success: true)
+          : const OpenPdfResult(
+              success: false,
+              error: '打开文件失败，请检查默认 PDF 阅读器。',
+            );
+    } catch (e) {
+      return OpenPdfResult(success: false, error: '打开文件失败：$e');
+    }
   }
 
   /// 打开所在文件夹（桌面端；Android/iOS 返回 false）。
@@ -424,6 +507,9 @@ class PdfDeliveryService {
     );
     return result.status;
   }
+
+  static Future<OpenResult> _defaultOpenWithFilex(String path) =>
+      OpenFilex.open(path);
 
   static Future<bool> _defaultOpenFile(String path) async {
     if (Platform.isWindows) return _runLauncher('explorer', [path]);

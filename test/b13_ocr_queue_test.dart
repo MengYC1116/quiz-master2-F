@@ -122,6 +122,11 @@ void main() {
     fakeNow = DateTime(2026, 11, 18, 12, 0, 0);
     db = await AppDatabase.openForTest();
     AppDatabase.useDatabaseForTest(db);
+    // FR-45 后续（slices 污染）：同 b13_p1_1——tearDown 的 resetForTest()
+    // 置 null 后，从第 2 个测试起 dataDirectoryPath() 读到真实目录，
+    // 切片写进真实 slices/。setUp 先给 testDataDirectory 指全新临时目录。
+    final tmpDataDir = await Directory.systemTemp.createTemp('qm2-ocrq-');
+    AppDatabase.testDataDirectory = tmpDataDir.path;
     // flutter_test_config 已把 testDataDirectory 指到全新临时目录；
     // 这里再取一次它的路径当切片落盘目录。
     dataDir = Directory(AppDatabase.dataDirectoryPath());
@@ -134,6 +139,10 @@ void main() {
   tearDown(() async {
     OcrWorker.resetInstanceForTest();
     await AppDatabase.resetForTest();
+    // setUp 指的临时数据目录用完即删，不留残留。
+    try {
+      if (await dataDir.exists()) await dataDir.delete(recursive: true);
+    } catch (_) {}
   });
 
   group('入队', () {

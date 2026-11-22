@@ -45,6 +45,24 @@ class B16FakeRepo extends QuestionRepository {
 
   List<Question> questions;
 
+  /// 十九批 A3：内存版已存查找（不碰真实库）。
+  final List<SavedSearch> savedSearchList = [];
+
+  @override
+  Future<List<SavedSearch>> savedSearches() async =>
+      List.of(savedSearchList);
+
+  @override
+  Future<void> saveSavedSearch(SavedSearch search) async {
+    savedSearchList.removeWhere((s) => s.id == search.id);
+    savedSearchList.add(search);
+  }
+
+  @override
+  Future<void> deleteSavedSearch(String id) async {
+    savedSearchList.removeWhere((s) => s.id == id);
+  }
+
   @override
   Future<List<Subject>> subjects() async => [
     Subject.math,
@@ -163,7 +181,7 @@ Future<void> _pumpSelection(
           repo: repo,
           exportControllerFactory: _stubSelectionController,
           onOpenHome: () {},
-          onOpenDetail: (_, __) async {},
+          onOpenDetail: (_, __, {String? searchContext}) async {},
           onGoReview: ({String? subjectId}) {},
         ),
       ),
@@ -172,13 +190,19 @@ Future<void> _pumpSelection(
   await tester.pumpAndSettle();
 }
 
+// 十九批 A5：/wrongbook 默认落点就是 L1 列表，不再经书架 → 目录 →
+// 全部题目导航；A1 去掉视图切换（无「紧凑列表」）。
 Future<void> _openMathListCompact(WidgetTester tester) async {
-  await tester.tap(find.text('数学'));
   await tester.pumpAndSettle();
-  await tester.tap(find.text('全部题目'));
-  await tester.pumpAndSettle();
-  await tester.tap(find.text('紧凑列表'));
-  await tester.pumpAndSettle();
+}
+
+/// 汇总条数字行文本（十九批 A2：只剩一行「已选 N 道：题名…」，
+/// 旧的可展开编号清单已删）。
+String _summaryNumbers(WidgetTester tester) {
+  final text = tester.widget<Text>(
+    find.byKey(const Key('export-summary-numbers')),
+  );
+  return text.data ?? '';
 }
 
 /// 进导出模式（工具栏「导出」平时是进模式的入口）。
@@ -369,13 +393,12 @@ void main() {
       await tester.enterText(find.byType(TextField).first, '求导数');
       await tester.pumpAndSettle();
       expect(find.byKey(const ValueKey('export-row-qOld')), findsNothing);
-      // 汇总清单题号即 _exportSelectedQuestions 的顺序。
-      await tester.tap(find.byKey(const Key('export-summary-numbers')));
-      await tester.pump();
-      expect(find.text('1. 第 qIn 题：求导数'), findsOneWidget);
-      expect(find.text('2. 第 qNew 题：求极限'), findsOneWidget);
-      expect(find.text('3. 第 qMid 题：求极限'), findsOneWidget);
-      expect(find.text('4. 第 qOld 题：求极限'), findsOneWidget);
+      // 汇总条题名清单即 _exportSelectedQuestions 的顺序：
+      // 筛选内的 qIn 在前，其余按 createdAt 降序。
+      expect(
+        _summaryNumbers(tester),
+        '已选 4 道：第 qIn 题：求导数、第 qNew 题：求极限、第 qMid 题：求极限、第 qOld 题：求极限',
+      );
     });
 
     testWidgets('createdAt 相同时按 id 升序，与入库顺序无关', (tester) async {
@@ -409,11 +432,11 @@ void main() {
       await _tapExportRow(tester, 'qIn');
       await tester.enterText(find.byType(TextField).first, '求导数');
       await tester.pumpAndSettle();
-      await tester.tap(find.byKey(const Key('export-summary-numbers')));
-      await tester.pump();
-      expect(find.text('1. 第 qIn 题：求导数'), findsOneWidget);
-      expect(find.text('2. 第 qA 题：求极限'), findsOneWidget);
-      expect(find.text('3. 第 qB 题：求极限'), findsOneWidget);
+      // 筛选内的 qIn 在前；createdAt 相同按 id 升序（qA 在 qB 前）。
+      expect(
+        _summaryNumbers(tester),
+        '已选 3 道：第 qIn 题：求导数、第 qA 题：求极限、第 qB 题：求极限',
+      );
     });
   });
 }

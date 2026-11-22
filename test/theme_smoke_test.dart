@@ -22,22 +22,22 @@ void main() {
 
   test('浅色 token 与 HTML :root 对照', () {
     final p = DesignTokens.light;
-    expect(p.background, const Color(0xFFFDF8EC));
-    expect(p.surface, const Color(0xFFFFFEF9));
-    expect(p.surface2, const Color(0xFFFDF3D8));
-    expect(p.surface3, const Color(0xFFF3E9C8));
+    expect(p.background, const Color(0xFFF7FAFD));
+    expect(p.surface, const Color(0xFFFFFFFF));
+    expect(p.surface2, const Color(0xFFEFF4FA));
+    expect(p.surface3, const Color(0xFFDCE8F5));
     expect(p.ink, const Color(0xFF17233B));
     expect(p.ink2, const Color(0xFF3D4E6B));
     expect(p.muted, const Color(0xFF5F718E));
-    expect(p.line, const Color(0xFFE8DFC2));
-    expect(p.lineStrong, const Color(0xFFCFC39E));
+    expect(p.line, const Color(0xFFDCE4EF));
+    expect(p.lineStrong, const Color(0xFFB9C6D8));
     expect(p.accent, const Color(0xFF2E7CF6));
     expect(p.accentSoft, const Color(0xFFE1EDFF));
     expect(p.accentInk, const Color(0xFFFFFFFF));
     expect(p.accentText, const Color(0xFF175CD3));
-    expect(p.paper, const Color(0xFFFFFDF4));
-    expect(p.paperInk, const Color(0xFF22251F));
-    expect(p.paperLine, const Color(0xFFE3D9BE));
+    expect(p.paper, const Color(0xFFFFFFFF));
+    expect(p.paperInk, const Color(0xFF17233B));
+    expect(p.paperLine, const Color(0xFFDCE4EF));
     expect(p.math, const Color(0xFF2E7CF6));
     expect(p.eng, const Color(0xFF00A884));
     expect(p.pol, const Color(0xFFEF4444));

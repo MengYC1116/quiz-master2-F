@@ -71,6 +71,23 @@ class _B86FakeRepo extends QuestionRepository {
 
   @override
   Future<void> addExam(Exam exam) async {}
+
+  /// B11-10：OrganizeNotifier 只在队列已空且库里有题时读这两个数
+  /// （今日小结行用）；返回 0 / 空，不碰真实库（见 D-88）。
+  @override
+  Future<int> organizedTodayCount({DateTime? now}) async => 0;
+
+  @override
+  Future<List<CauseRecord>> causeRecords() async => const [];
+
+  /// 十三批 M5：OCR 状态是 best-effort 加载（不 await）；返回空任务行
+  /// 与“无 key”，不碰真实库（见 D-88）。
+  @override
+  Future<List<OcrJob>> ocrJobsForQuestion(String questionId) async =>
+      const [];
+
+  @override
+  Future<bool> hasOcrApiKey() async => false;
 }
 
 /// 未选文件夹的待整理题（确认校验跳转用：_folderIds 为空才会拦下）。
@@ -103,7 +120,7 @@ Future<void> _pump(WidgetTester tester) async {
       home: Scaffold(
         body: OrganizePage(
           repo: _repo(),
-          onOpenDetail: (_, __) async {},
+          onOpenDetail: (_, __, {String? searchContext}) async {},
           onGoReview: () {},
           onGoCollect: () {},
         ),
