@@ -29,17 +29,24 @@ Question _probe({required String title, required String sliceText}) =>
 void main() {
   group('二十一批：行标题完整显示（D-244 修订，真题干）', () {
     testWidgets('5 道已整理真题行全是完整题干，不再显示旧标题', (tester) async {
-      await pumpWrongbook(tester, repo: liveDemoRepo());
+      // 二十三批 D-250：默认落点是书架，跨学科列表无书架入口——
+      // 分三科进列表断言（各科行标题都是完整题干）。
+      await pumpWrongbook(tester, repo: liveDemoRepo(), initialSubjectId: 'math');
+      await openSubjectList(tester);
       expect(demoRow('题：lim(x→0) sin 3x / x 的值是（ ）'), findsOneWidget);
       expect(demoRow('题：下图阴影部分由曲线 y = x² 与直线 y = 1 围成。用定积分表示阴影部分的面积，并计算其值。'), findsOneWidget);
-      expect(demoRow('题：The new evidence ______ the original hypothesis, forcing the team to revise the whole model.'), findsOneWidget);
-      expect(demoRow('题：Figure 1 · Students’ monthly spending (demo chart) Food / Books / Trans / Clothes'), findsOneWidget);
-      expect(demoRow('题：运用矛盾普遍性与特殊性的关系，说明如何推进中国式现代化。'), findsOneWidget);
       // 旧标题不再画在行里。
       expect(find.text('函数极限'), findsNothing);
       expect(find.text('定积分阴影面积'), findsNothing);
+      await pumpWrongbook(tester, repo: liveDemoRepo(), initialSubjectId: 'english');
+      await openSubjectList(tester);
+      expect(demoRow('题：The new evidence ______ the original hypothesis, forcing the team to revise the whole model.'), findsOneWidget);
+      expect(demoRow('题：Figure 1 · Students’ monthly spending (demo chart) Food / Books / Trans / Clothes'), findsOneWidget);
       expect(find.text('学术词汇辨析'), findsNothing);
       expect(find.text('图表作文'), findsNothing);
+      await pumpWrongbook(tester, repo: liveDemoRepo(), initialSubjectId: 'politics');
+      await openSubjectList(tester);
+      expect(demoRow('题：运用矛盾普遍性与特殊性的关系，说明如何推进中国式现代化。'), findsOneWidget);
       expect(find.text('马原'), findsNothing);
     });
 
@@ -50,7 +57,8 @@ void main() {
 
   group('二十一批：行标题高亮（D-244，真题干）', () {
     testWidgets('搜“阴影”：两处命中字都黄底高亮，行其余文字不高亮', (tester) async {
-      await pumpWrongbook(tester, repo: liveDemoRepo());
+      await pumpWrongbook(tester, repo: liveDemoRepo(), initialSubjectId: 'math');
+      await openSubjectList(tester);
       await typeSearch(tester, '阴影');
       final rt = tester.widget<RichText>(
         demoRow('题：下图阴影部分由曲线 y = x² 与直线 y = 1 围成。用定积分表示阴影部分的面积，并计算其值。'),

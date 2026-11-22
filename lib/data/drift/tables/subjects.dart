@@ -16,4 +16,9 @@ class Subjects extends Table {
   IntColumn get color => integer()();
   TextColumn get coverStyle => text().withDefault(const Constant('plain'))();
   TextColumn get coverColor => text().withDefault(const Constant('blue'))();
+  // D-257：书封英文名（GLM 翻译或手动填；可空，NULL = 没有）与
+  // 是否手动填过（0/1，默认 0；手动填过的不再被自动翻译覆盖）。
+  TextColumn get englishName => text().nullable()();
+  IntColumn get englishNameManual =>
+      integer().withDefault(const Constant(0))();
 }

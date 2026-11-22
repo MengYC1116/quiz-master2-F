@@ -16,7 +16,8 @@ import 'package:quiz_master2/models/models.dart';
 
 import 'p0b1_subject_sync_test.dart' show chemPurple, subjects4;
 import 'wrongbook_page_test.dart'
-    show FakeWrongbookRepo, boardRowDotColor, pumpWrongbook, wbq;
+    show FakeWrongbookRepo, boardRowDotColor, openSubjectList, pumpWrongbook,
+        wbq;
 
 class _ArchivedFakeRepo extends QuestionRepository {
   _ArchivedFakeRepo() : super(AppDatabase.instance);
@@ -174,6 +175,8 @@ void main() {
       );
       await pumpWrongbook(tester,
           repo: repo, initialSubjectId: 'subject-chem');
+      // 二十三批 D-250：只带学科落目录，点「全部题目」进列表再断言板子行。
+      await openSubjectList(tester);
       expect(boardRowDotColor(tester, 'qc1'), chemPurple);
     });
 
@@ -198,6 +201,8 @@ void main() {
       );
       await pumpWrongbook(tester,
           repo: repo, initialSubjectId: 'subject-chem');
+      // 二十三批 D-250：只带学科落目录，点「全部题目」进列表再断言板子行。
+      await openSubjectList(tester);
       expect(boardRowDotColor(tester, 'qc1'), chemPurple);
       expect(boardRowDotColor(tester, 'qc2'), chemPurple);
     });

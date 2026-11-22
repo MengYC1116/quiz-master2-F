@@ -285,11 +285,7 @@ void main() {
           onGoReview: ({String? subjectId}) {},
         ),
       );
-      // 十九批 A5：默认落点改 L1 列表，书架从筛选面板顶部入口进。
-      await tester.tap(find.text('筛选 ▾'));
-      await tester.pumpAndSettle();
-      await tester.tap(find.text('📚 书架（按学科浏览）'));
-      await tester.pumpAndSettle();
+      // 二十三批 D-250：默认落点就是书架，直接断言。
       for (final name in ['数学', '英语', '政治']) {
         expect(find.text(name), findsNothing);
       }
@@ -311,10 +307,7 @@ void main() {
           onGoReview: ({String? subjectId}) {},
         ),
       );
-      await tester.tap(find.text('筛选 ▾'));
-      await tester.pumpAndSettle();
-      await tester.tap(find.text('📚 书架（按学科浏览）'));
-      await tester.pumpAndSettle();
+      // 二十三批 D-250：默认落点就是书架，直接断言。
       for (final name in ['数学', '英语', '政治']) {
         expect(find.text(name), findsOneWidget);
       }

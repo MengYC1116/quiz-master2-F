@@ -94,3 +94,12 @@ flutter:
     # 不注册为 Flutter 字体。
     - assets/fonts/NotoSansSC-Regular.ttf
     - assets/fonts/OFL.txt
+  # 二十六批 D-256：错题本书 12 号学科名用 Noto Serif SC（OFL 免费，
+  # google/fonts 可变字体 NotoSerifSC[wght].ttf，25,125,512 字节，
+  # fvar wght 轴；学科名用 FontVariation('wght', 900) 取黑体）。
+  # 字体文件不走快照推送，Win11 构建前须先放到
+  # D:\quiz-master2-F\assets\fonts\（与 NotoSansSC 同款处理）。
+  fonts:
+    - family: Noto Serif SC
+      fonts:
+        - asset: assets/fonts/NotoSerifSC[wght].ttf

@@ -932,8 +932,9 @@ class CoverTokens {
 // 实读值。字号只写基准值，由 app.dart 的 MediaQuery TextScaler 全局缩放
 // 一次；布局尺寸由调用方按 qmScaleOf 的同一因子乘一次。
 // 注意：HTML 封面样式 key 是 plain/bands/dots/grid/diag/frame，Flutter
-// 存储 key 是 plain/lines/dots/grid/diagonal/double（与错题本
-// `_CoverPatternPainter` 一致）；标签中文相同，不改存储值。
+// 存储 key 是 plain/lines/dots/grid/diagonal/double（二十六批前与错题本
+// 旧封面 `_CoverPatternPainter` 同一套 key；该画笔已随 12 号复刻移除，
+// 存储值不变）；标签中文相同，不改存储值。
 abstract final class R10Tokens {
   // 学科行：`.subj-list-row .grow b` 15px；色点 `.subj-dot` 14px；
   // 行 `.mgrow` padding 7px 0、虚线底边、gap 8。

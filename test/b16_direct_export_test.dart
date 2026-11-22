@@ -239,30 +239,35 @@ Future<void> pumpDirect(
   await tester.pumpAndSettle();
 }
 
-// 十九批 A5：/wrongbook 默认落点就是 L1 列表（全部题目都已在），
-// 不再经书架 → 目录 → 全部题目导航；A1 去掉视图切换。
+// 二十三批 D-250：/wrongbook 默认落点恢复书架，进数学列表走
+// 书架 → 点数学封面进目录 → 全部题目；A1 去掉视图切换。
 Future<void> openMathList(WidgetTester tester) async {
+  await tester.tap(find.text('数学'));
+  await tester.pumpAndSettle();
+  await tester.tap(find.text('全部题目'));
   await tester.pumpAndSettle();
 }
 
 Future<void> openMathListCompact(WidgetTester tester) async {
-  await tester.pumpAndSettle();
+  await openMathList(tester);
 }
 
-/// 从 L1 列表进书架（筛选面板顶部入口，十九批 A5）。
-/// 十九批收尾：页头「合上 ✕」已删，回书架走这条路。
+/// 回书架（二十三批 D-250：页头恢复后走列表页头「合上 ✕」；
+/// 已在书架时 no-op。十九批 A5 的筛选面板顶部入口已删）。
 Future<void> openShelfFromList(WidgetTester tester) async {
-  // 面板可能已开着：已开就不再点 chip（再点会关掉）。
-  if (find.text('📚 书架（按学科浏览）').evaluate().isEmpty) {
-    // 筛选 chip 的文案带计数后缀（有筛选时「筛选（已选 N） ▾」），
-    // 按 QmChip.label 定位，不按固定文案。
-    final chip = find.byWidgetPredicate(
-      (w) => w is QmChip && w.label.startsWith('筛选'),
-    );
-    await tester.tap(chip);
-    await tester.pumpAndSettle();
+  if (find
+      .text('一科一本错题本，点一本打开看这一科的错题。')
+      .evaluate()
+      .isNotEmpty) {
+    return; // 已在书架。
   }
-  await tester.tap(find.text('📚 书架（按学科浏览）'));
+  if (find.text('合上 ✕').evaluate().isNotEmpty) {
+    await tester.tap(find.text('合上 ✕'));
+  } else if (find.text('返回书架').evaluate().isNotEmpty) {
+    await tester.tap(find.text('返回书架'));
+  } else {
+    fail('不在列表 / 目录 / 书架任一视图，回不了书架');
+  }
   await tester.pumpAndSettle();
 }
 
@@ -441,7 +446,7 @@ void main() {
       await tapExportRow(tester, 'q1');
       expect(summaryNumbers(tester), contains('已选 1 道'));
       // 回书架进英语列表点 q2（跨科点选不丢 q1）。
-      // 十九批收尾：页头「合上 ✕」已删，回书架走筛选面板书架入口。
+      // 二十三批 D-250：页头恢复，回书架走「合上 ✕」。
       await openShelfFromList(tester);
       await tester.tap(find.text('英语'));
       await tester.pumpAndSettle();

@@ -3,6 +3,9 @@
 // 复用 wrongbook_page_test.dart 的 pumpWrongbook /
 // FakeWrongbookRepo（同仓惯例）。
 //
+// 二十三批 D-250：默认落点恢复书架，跨学科列表无书架入口——
+// 本文件的跨学科断言分三科进列表（initialSubjectId + 点「全部题目」）。
+//
 // 模拟题规则（Meng 2026-11-22 09:23）：模拟题/演示题必须是他给的
 // 图片或他谷歌硬盘里的，不许自编题目内容、标题、题干。本文件
 // 只用演示库 9 道真题：liveDemoRepo() 的标题/题干/答案/解析/
@@ -248,7 +251,9 @@ Future<void> typeSearch(WidgetTester tester, String text) async {
 void main() {
   group('二十一批：内容搜索（D-241，真题库）', () {
     testWidgets('题干命中：搜“阴影”只出定积分阴影面积', (tester) async {
-      await pumpWrongbook(tester, repo: liveDemoRepo());
+      // 二十三批 D-250：默认落点是书架，进数学列表再搜。
+      await pumpWrongbook(tester, repo: liveDemoRepo(), initialSubjectId: 'math');
+      await openSubjectList(tester);
       await typeSearch(tester, '阴影');
       // “阴影”只在 q-math-3 的题干/解析里（元数据里没有）。
       expect(demoRow('题：下图阴影部分由曲线 y = x² 与直线 y = 1 围成。用定积分表示阴影部分的面积，并计算其值。'), findsOneWidget);
@@ -257,7 +262,8 @@ void main() {
     });
 
     testWidgets('解析命中：搜“sin3x”只出函数极限（题干里是 sin 3x，带空格）', (tester) async {
-      await pumpWrongbook(tester, repo: liveDemoRepo());
+      await pumpWrongbook(tester, repo: liveDemoRepo(), initialSubjectId: 'math');
+      await openSubjectList(tester);
       await typeSearch(tester, 'sin3x');
       // “sin3x”（无空格）只在 q-math-1 的解析里，题干是 “sin 3x”。
       expect(demoRow('题：lim(x→0) sin 3x / x 的值是（ ）'), findsOneWidget);
@@ -266,29 +272,46 @@ void main() {
     });
 
     testWidgets('答案命中：搜“见解析”出 4 道已整理的题，函数极限（答案是 1）不出', (tester) async {
-      await pumpWrongbook(tester, repo: liveDemoRepo());
+      // 二十三批 D-250：分三科进列表断言（4 道 = 数学 1 + 英语 2 + 政治 1）。
+      await pumpWrongbook(tester, repo: liveDemoRepo(), initialSubjectId: 'math');
+      await openSubjectList(tester);
       await typeSearch(tester, '见解析');
       expect(demoRow('题：下图阴影部分由曲线 y = x² 与直线 y = 1 围成。用定积分表示阴影部分的面积，并计算其值。'), findsOneWidget);
+      expect(demoRow('题：lim(x→0) sin 3x / x 的值是（ ）'), findsNothing);
+      await pumpWrongbook(tester, repo: liveDemoRepo(), initialSubjectId: 'english');
+      await openSubjectList(tester);
+      await typeSearch(tester, '见解析');
       expect(demoRow('题：The new evidence ______ the original hypothesis, forcing the team to revise the whole model.'), findsOneWidget);
       expect(demoRow('题：Figure 1 · Students’ monthly spending (demo chart) Food / Books / Trans / Clothes'), findsOneWidget);
+      await pumpWrongbook(tester, repo: liveDemoRepo(), initialSubjectId: 'politics');
+      await openSubjectList(tester);
+      await typeSearch(tester, '见解析');
       expect(demoRow('题：运用矛盾普遍性与特殊性的关系，说明如何推进中国式现代化。'), findsOneWidget);
-      expect(demoRow('题：lim(x→0) sin 3x / x 的值是（ ）'), findsNothing);
     });
 
     testWidgets('元数据仍命中：搜标签“常考”出函数极限/学术词汇辨析/马原', (tester) async {
-      await pumpWrongbook(tester, repo: liveDemoRepo());
+      // 二十三批 D-250：分三科进列表断言。
+      await pumpWrongbook(tester, repo: liveDemoRepo(), initialSubjectId: 'math');
+      await openSubjectList(tester);
       await typeSearch(tester, '常考');
       expect(demoRow('题：lim(x→0) sin 3x / x 的值是（ ）'), findsOneWidget);
-      expect(demoRow('题：The new evidence ______ the original hypothesis, forcing the team to revise the whole model.'), findsOneWidget);
-      expect(demoRow('题：运用矛盾普遍性与特殊性的关系，说明如何推进中国式现代化。'), findsOneWidget);
       expect(demoRow('题：下图阴影部分由曲线 y = x² 与直线 y = 1 围成。用定积分表示阴影部分的面积，并计算其值。'), findsNothing);
+      await pumpWrongbook(tester, repo: liveDemoRepo(), initialSubjectId: 'english');
+      await openSubjectList(tester);
+      await typeSearch(tester, '常考');
+      expect(demoRow('题：The new evidence ______ the original hypothesis, forcing the team to revise the whole model.'), findsOneWidget);
       expect(demoRow('题：Figure 1 · Students’ monthly spending (demo chart) Food / Books / Trans / Clothes'), findsNothing);
+      await pumpWrongbook(tester, repo: liveDemoRepo(), initialSubjectId: 'politics');
+      await openSubjectList(tester);
+      await typeSearch(tester, '常考');
+      expect(demoRow('题：运用矛盾普遍性与特殊性的关系，说明如何推进中国式现代化。'), findsOneWidget);
     });
   });
 
   group('二十一批：导出打印进结果头（D-243）', () {
     testWidgets('结果头里有「导出打印」chip，点进模式后 chip 消失', (tester) async {
-      await pumpWrongbook(tester);
+      await pumpWrongbook(tester, initialSubjectId: 'math');
+      await openSubjectList(tester);
       expect(find.text('导出打印'), findsOneWidget);
       expect(find.text('▣ 预览导出模式'), findsNothing);
       expect(find.byKey(const Key('export-selected-toolbar')), findsOneWidget);
@@ -303,7 +326,8 @@ void main() {
 
   group('二十一批：范围说明行（D-241/D-242）', () {
     testWidgets('范围说明行写明内容搜索范围，旧“只搜元数据”全站消失', (tester) async {
-      await pumpWrongbook(tester);
+      await pumpWrongbook(tester, initialSubjectId: 'math');
+      await openSubjectList(tester);
       expect(
         find.textContaining('可搜标题、题干、选项、答案、解析、备注'),
         findsOneWidget,

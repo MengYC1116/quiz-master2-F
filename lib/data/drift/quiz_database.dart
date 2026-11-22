@@ -77,7 +77,7 @@ class QuizDatabase extends _$QuizDatabase {
   final Future<void> Function(QuizDatabase db)? onBeforeOpen;
 
   @override
-  int get schemaVersion => 6;
+  int get schemaVersion => 7;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -85,31 +85,41 @@ class QuizDatabase extends _$QuizDatabase {
       await onCreateTables?.call(this);
     },
     // Win11 反馈包 5：v5 → v6——questions 加 option_contents +
-    // option_contents_parser_version 两列，数据全保留；v2 → v6 走
-    // 2→3→4→5→6 四步链式。其它 from/to 一律抛错：v1 及更老由打开前的
+    // option_contents_parser_version 两列，数据全保留；v2 → v7 走
+    // 2→3→4→5→6→7 五步链式。其它 from/to 一律抛错：v1 及更老由打开前的
     // deleteLegacyDatabaseIfPresent 预检删掉；from > to（新版库用旧版
     // 打开）请用新版打开。
+    // 二十七批 D-257：v6 → v7——subjects 加 english_name +
+    // english_name_manual 两列，预设三科回填英文名，数据全保留。
     onUpgrade: (m, from, to) async {
-      if (from == 2 && to == 6) {
+      if (from == 2 && to == 7) {
         await _upgrade2To3(m);
         await _upgrade3To4(m);
         await _upgrade4To5(m);
         await _upgrade5To6(m);
+        await _upgrade6To7(m);
         return;
       }
-      if (from == 3 && to == 6) {
+      if (from == 3 && to == 7) {
         await _upgrade3To4(m);
         await _upgrade4To5(m);
         await _upgrade5To6(m);
+        await _upgrade6To7(m);
         return;
       }
-      if (from == 4 && to == 6) {
+      if (from == 4 && to == 7) {
         await _upgrade4To5(m);
         await _upgrade5To6(m);
+        await _upgrade6To7(m);
         return;
       }
-      if (from == 5 && to == 6) {
+      if (from == 5 && to == 7) {
         await _upgrade5To6(m);
+        await _upgrade6To7(m);
+        return;
+      }
+      if (from == 6 && to == 7) {
+        await _upgrade6To7(m);
         return;
       }
       if (from > to) {
@@ -464,6 +474,46 @@ Future<void> _upgrade5To6(Migrator m) async {
   final db = m.database as QuizDatabase;
   await db.into(db.settings).insert(
     SettingsCompanion.insert(key: 'schemaVersion', value: '6'),
+    mode: InsertMode.insertOrReplace,
+  );
+}
+
+/// 二十七批 D-257 的 v6 → v7 迁移步：subjects 加 2 列——
+/// english_name（英文名，可空；NULL = 没有）+
+/// english_name_manual（是否手动填过，0/1，默认 0）。
+/// 预设三科回填英文名（与 _Book12Palette 预设值一致，不重新翻译，
+/// manual 置 1）；其余已有学科 english_name 留 NULL，等学科管理
+/// 打开时补翻。迁移 DDL 必须与 createTablesImpl 的手写字面量一字不差
+/// （十二批 D-91 的教训：迁移后库与全新 v7 库 sqlite_master 逐字一致——
+/// ALTER TABLE ADD COLUMN 的列定义文本与建表字面量的列定义逐词相同，
+/// SQLite 会把它们拼进同一份 CREATE TABLE 文本；两列都在 subjects
+/// 表末尾，追加顺序与建表顺序一致）。
+/// 重复迁移不重复加字段：Drift 只在 from==6 时跑本步，user_version
+/// 已是 7 的库不再进 onUpgrade；迁移中途失败时 SQLite/Drift 回滚
+/// 本步（onUpgrade 在事务内跑），不留半迁移状态。
+Future<void> _upgrade6To7(Migrator m) async {
+  await m.database.customStatement(
+    'ALTER TABLE subjects ADD COLUMN english_name TEXT',
+  );
+  await m.database.customStatement(
+    'ALTER TABLE subjects ADD COLUMN english_name_manual INTEGER NOT NULL DEFAULT 0',
+  );
+  // 预设三科回填英文名（固定值，不走翻译）。
+  await m.database.customStatement(
+    "UPDATE subjects SET english_name = 'MATHEMATICS', english_name_manual = 1 WHERE id = 'math'",
+  );
+  await m.database.customStatement(
+    "UPDATE subjects SET english_name = 'ENGLISH', english_name_manual = 1 WHERE id = 'english'",
+  );
+  await m.database.customStatement(
+    "UPDATE subjects SET english_name = 'POLITICS', english_name_manual = 1 WHERE id = 'politics'",
+  );
+  // settings 里的 schemaVersion 写回 7，与 user_version 一致
+  // （真实 v6 库的 settings 本来就有这行；手造夹具库若缺这行，
+  // insertOrReplace 会补一行）。
+  final db = m.database as QuizDatabase;
+  await db.into(db.settings).insert(
+    SettingsCompanion.insert(key: 'schemaVersion', value: '7'),
     mode: InsertMode.insertOrReplace,
   );
 }

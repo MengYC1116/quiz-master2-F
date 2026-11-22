@@ -190,9 +190,14 @@ Future<void> _pumpSelection(
   await tester.pumpAndSettle();
 }
 
-// 十九批 A5：/wrongbook 默认落点就是 L1 列表，不再经书架 → 目录 →
-// 全部题目导航；A1 去掉视图切换（无「紧凑列表」）。
+// 二十三批 D-250：/wrongbook 默认落点改回书架，数学列表要经
+// 书架 → 点「数学」封面进目录 → 点「全部题目」进列表
+//（十九批 A5“默认落点就是 L1 列表”已废）；A1 去掉视图切换
+//（无「紧凑列表」）。
 Future<void> _openMathListCompact(WidgetTester tester) async {
+  await tester.tap(find.text('数学'));
+  await tester.pumpAndSettle();
+  await tester.tap(find.text('全部题目'));
   await tester.pumpAndSettle();
 }
 

@@ -480,6 +480,9 @@ extension AppDatabaseCatalog on AppDatabase {
             icon: _iconFor(r.id),
             coverStyle: r.coverStyle,
             coverColor: r.coverColor,
+            // D-257：英文名与手动标记随行读出（NULL = 没有英文名）。
+            englishName: r.englishName,
+            englishNameManual: r.englishNameManual == 1,
           ),
         )
         .toList();
@@ -501,6 +504,9 @@ extension AppDatabaseCatalog on AppDatabase {
             color: Value(s.color.toARGB32()),
             coverStyle: Value(s.coverStyle),
             coverColor: Value(s.coverColor),
+            // D-257：英文名与手动标记随行写回（英文名 NULL = 清空）。
+            englishName: Value(s.englishName),
+            englishNameManual: Value(s.englishNameManual ? 1 : 0),
           ),
         );
     if (updated == 0) {
@@ -513,6 +519,8 @@ extension AppDatabaseCatalog on AppDatabase {
               color: s.color.toARGB32(),
               coverStyle: Value(s.coverStyle),
               coverColor: Value(s.coverColor),
+              englishName: Value(s.englishName),
+              englishNameManual: Value(s.englishNameManual ? 1 : 0),
             ),
           );
     }

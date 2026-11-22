@@ -318,7 +318,7 @@ class _RefreshFakeRepo extends QuestionRepository {
   // _refreshRelated 调 repo.all() + repo.causeRecords()；未覆写时走真实
   // QuestionRepository → 单例 db getter → 本文件数据层 tearDown 的
   // resetForTest 已把 testDataDirectory 置 null 的窗口里会打开真实演示库
-  // 跑 v2→v6 迁移（探针 zz_probe_b12_test 复现：md5 9c5640… → 0a7e7dd0…，
+  // 跑 v2→v7 迁移（探针 zz_probe_b12_test 复现：md5 9c5640… → 0a7e7dd0…，
   // 见 batch20-work/p3-followup/STATUS.md）。本文件整文件跑干净只因
   // load() 在 testWidgets（FakeAsync  stalls 真实 Drift 打开）且是最后
   // 一个测试；改 plain load 或在后面加测试即会咬人。causeRecords() 本

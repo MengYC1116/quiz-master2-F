@@ -19,21 +19,24 @@ bool shouldFallbackAfterOpenFailureImpl(String dbPath) {
   }
 }
 
-/// §2.2：删老库（v1）+ 建 v6 新库的唯一打开入口（§8.1 的测试工厂）：
-/// - 文件不存在 → 全新安装，直接建 v6 新库；
-/// - 文件是 v6（user_version == 6）→ 正常打开；
-/// - 文件是 v5（user_version == 5）→ 保留，Drift onUpgrade 迁到 v6
-///   （Win11 反馈包 5：questions 加 option_contents +
-///   option_contents_parser_version 两列，数据全保留，不再删除）；
+/// §2.2：删老库（v1）+ 建 v7 新库的唯一打开入口（§8.1 的测试工厂）：
+/// - 文件不存在 → 全新安装，直接建 v7 新库；
+/// - 文件是 v7（user_version == 7）→ 正常打开；
+/// - 文件是 v6（user_version == 6）→ 保留，Drift onUpgrade 迁到 v7
+///   （二十七批 D-257：subjects 加 english_name +
+///   english_name_manual 两列，预设三科回填英文名，数据全保留）；
+/// - 文件是 v5（user_version == 5）→ 保留，Drift onUpgrade 先迁到 v6
+///   再迁到 v7（两步链式，数据全保留；Win11 反馈包 5：questions 加
+///   option_contents + option_contents_parser_version 两列，不再删除）；
 /// - 文件是 v4（user_version == 4）→ 保留，Drift onUpgrade 先迁到 v5
-///   再迁到 v6（两步链式，数据全保留）；
+///   再迁到 v6 再迁到 v7（三步链式，数据全保留）；
 /// - 文件是 v3（user_version == 3）→ 保留，Drift onUpgrade 先迁到 v4
-///   再迁到 v5 再迁到 v6（三步链式，数据全保留）；
+///   再迁到 v5 再迁到 v6 再迁到 v7（四步链式，数据全保留）；
 /// - 文件是 v2（user_version == 2）→ 保留，Drift onUpgrade 先迁到 v3
-///   再迁到 v4 再迁到 v5 再迁到 v6（四步链式，数据全保留）；
+///   再迁到 v4 再迁到 v5 再迁到 v6 再迁到 v7（五步链式，数据全保留）；
 /// - 文件是老版本（v1，user_version < 2）→ 删除库文件（含 -wal / -shm），
-///   再建 v6 新库；无 v1 迁移；
-/// - 文件是更新的版本（user_version > 6）→ 预检不动它，Drift onUpgrade
+///   再建 v7 新库；无 v1 迁移；
+/// - 文件是更新的版本（user_version > 7）→ 预检不动它，Drift onUpgrade
 ///   按 from > to 抛“请用新版打开”，不静默删掉新版库；
 /// - 删除失败 → 抛错、拒绝打开（不许在老库尚在的情况下建新库，
 ///   避免新旧库并存、读写串库），下次启动重试删除。
@@ -128,12 +131,16 @@ Future<bool> deleteLegacyDatabaseIfPresentImpl(String dbPath) async {
 /// Win11 反馈包 5：v6 建表（questions 末尾加 option_contents +
 /// option_contents_parser_version；DDL 字面量须与
 /// quiz_database.dart 的 _upgrade5To6 迁移字面量一字不差，见该函数注释）。
+/// 二十七批 D-257：v7 建表（subjects 末尾加 english_name +
+/// english_name_manual；DDL 字面量须与 _upgrade6To7 迁移字面量一字不差）。
 Future<void> createTablesImpl(QuizDatabase db) async {
   await db.customStatement('''
     CREATE TABLE subjects(
       id TEXT PRIMARY KEY, name TEXT NOT NULL, color INTEGER NOT NULL,
       cover_style TEXT NOT NULL DEFAULT 'plain',
-      cover_color TEXT NOT NULL DEFAULT 'blue')''');
+      cover_color TEXT NOT NULL DEFAULT 'blue',
+      english_name TEXT,
+      english_name_manual INTEGER NOT NULL DEFAULT 0)''');
   await db.customStatement('''
     CREATE TABLE questions(
       id TEXT PRIMARY KEY, title TEXT NOT NULL, subject_id TEXT NOT NULL,
@@ -340,6 +347,10 @@ Future<void> _seed(QuizDatabase db) async {
               'english' => 'green',
               _ => 'red',
             }),
+            // D-257：预设三科英文名直接写进库（与 _Book12Palette
+            // 预设值一致），manual 置 1（固定值，不走自动翻译）。
+            englishName: Value(s.englishName),
+            englishNameManual: const Value(1),
           ),
         );
   }
@@ -386,8 +397,8 @@ Future<void> _seed(QuizDatabase db) async {
           ),
         );
   }
-  // §2.1：settings 表写 schemaVersion = '6'（与备份 _meta 同一口径；
+  // §2.1：settings 表写 schemaVersion = '7'（与备份 _meta 同一口径；
   // 与 PRAGMA user_version 是两回事）。新库从空开始，不预置演示
   // 数据（§6 第 1 条）：演示题、演示解决记录、演示 recent_tasks 一律不建。
-  await _upsertSettingInto(db, 'schemaVersion', '6');
+  await _upsertSettingInto(db, 'schemaVersion', '7');
 }

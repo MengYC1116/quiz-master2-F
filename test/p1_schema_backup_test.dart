@@ -340,7 +340,7 @@ void main() {
 
       final db = await AppDatabase.openAt(dbPath);
       addTearDown(() async => db.close());
-      expect(await dbVersion(db), 6);
+      expect(await dbVersion(db), 7);
       // 旧表没了，新库从空开始。
       final tables =
           (await db
@@ -373,7 +373,7 @@ void main() {
         await db.customSelect('SELECT * FROM folders').get(),
         hasLength(9),
       );
-      // settings.schemaVersion 写回 6（Win11 反馈包 5：当前版本 v6）。
+      // settings.schemaVersion 写回 7（二十七批 D-257：当前版本 v7）。
       final settings =
           (await db
                   .customSelect(
@@ -383,10 +383,10 @@ void main() {
                   .get())
               .map((r) => r.data)
               .toList();
-      expect(settings.single['value'], '6');
+      expect(settings.single['value'], '7');
     });
 
-    test('已是 v6 的库不删：再次打开数据还在', () async {
+    test('已是 v7 的库不删：再次打开数据还在', () async {
       final (tmp, db, dbPath) = await openTempDb();
       await AppDatabase.upsertQuestionInto(db, testQuestion());
       await db.close();
@@ -394,11 +394,11 @@ void main() {
       final reopened = await AppDatabase.openAt(dbPath);
       addTearDown(() async => reopened.close());
       expect(await AppDatabase.allQuestionsFrom(reopened), hasLength(1));
-      expect(await dbVersion(reopened), 6);
+      expect(await dbVersion(reopened), 7);
       expect(tmp.existsSync(), isTrue);
     });
 
-    test('不存在的库文件：直接建 v6 新库，不报错', () async {
+    test('不存在的库文件：直接建 v7 新库，不报错', () async {
       final tmp = await Directory.systemTemp.createTemp('p1-fresh-');
       addTearDown(() async {
         try {
@@ -409,7 +409,7 @@ void main() {
       expect(await AppDatabase.deleteLegacyDatabaseIfPresent(dbPath), isFalse);
       final db = await AppDatabase.openAt(dbPath);
       addTearDown(() async => db.close());
-      expect(await dbVersion(db), 6);
+      expect(await dbVersion(db), 7);
       expect(await db.customSelect('SELECT * FROM questions').get(), isEmpty);
     });
   });
@@ -695,7 +695,7 @@ void main() {
       );
     });
 
-    test('备份 → 清空 → 恢复：题/框/任务回来，schemaVersion 写回 6', () async {
+    test('备份 → 清空 → 恢复：题/框/任务回来，schemaVersion 写回 7', () async {
       final db = await openMemoryDb();
       final decoded = await seedAndExport(db);
       await db.customUpdate('DELETE FROM questions');
@@ -721,13 +721,13 @@ void main() {
                   .get())
               .map((r) => r.data)
               .toList();
-      expect(settings.single['value'], '6');
+      expect(settings.single['value'], '7');
     });
 
-    test('schemaVersion > 6：拒绝恢复，原库一动不动', () async {
+    test('schemaVersion > 7：拒绝恢复，原库一动不动', () async {
       final db = await openMemoryDb();
       final decoded = await seedAndExport(db);
-      (decoded['_meta'] as Map<String, dynamic>)['schemaVersion'] = 7;
+      (decoded['_meta'] as Map<String, dynamic>)['schemaVersion'] = 8;
       await expectLater(
         () => AppDatabase.importBackupJsonInto(db, decoded),
         throwsA(
@@ -768,7 +768,7 @@ void main() {
       );
     });
 
-    test('schemaVersion 不是 2、3、4、5 或 6（=1 / 非整数）：拒绝恢复', () async {
+    test('schemaVersion 不是 2、3、4、5、6 或 7（=1 / 非整数）：拒绝恢复', () async {
       final db = await openMemoryDb();
       final decoded = await seedAndExport(db);
       (decoded['_meta'] as Map<String, dynamic>)['schemaVersion'] = 1;
@@ -787,7 +787,7 @@ void main() {
 
     test('v2 备份恢复：新表缺键视为 empty，source_hash 为 NULL', () async {
       // 十二批 D-91：v2 备份（13 张表、无 recently_viewed_questions
-      // 键、collect_tasks 行无 source_hash 列）仍可恢复进 v6
+      // 键、collect_tasks 行无 source_hash 列）仍可恢复进 v7
       //（十三批 M2：v2 备份也没有 ocr_jobs 键与 questions 的 OCR 列，
       // 新表缺键视为 empty、新列走 DDL 默认值）。
       final db = await openMemoryDb();

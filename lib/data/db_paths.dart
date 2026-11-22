@@ -82,26 +82,71 @@ String newBoxIdImpl(String scope, int page) {
 bool databaseExistsAtImpl(String dir) =>
     File(p.join(dir, 'quiz-master2.db')).existsSync();
 
-String _defaultDataDirectoryPath() {
-  if (Platform.isWindows) {
-    final localAppData = Platform.environment['LOCALAPPDATA'];
-    if (localAppData != null && localAppData.isNotEmpty) {
-      return p.join(localAppData, 'quiz-master2');
+/// 二十四批 D-253：默认数据目录的纯解析核心（平台、环境与路径
+/// 风格均可注入，测试在 Linux 上覆盖 Windows/Android 分支）。
+///
+/// - Android：必须用启动时解析好的 [startupDataDirectory]（main()
+///   里先用 path_provider 取应用内部存储目录）；未设或空串就抛
+///   StateError，绝不回退到相对路径。
+/// - Windows：LOCALAPPDATA → USERPROFILE\AppData\Local。
+/// - 其他：XDG_DATA_HOME → HOME/.local/share。
+///
+/// 算出的结果若是相对路径一律抛 StateError（旧行为是静默返回
+/// 相对路径，调用方再在进程当前目录下建目录——安卓上进程当前
+/// 目录是只读的根目录 /，建 .local 直接报 errno 30；见 D-253）。
+/// [pathContext] 默认当前平台风格；测试传 [p.windows]/[p.posix]
+/// 覆盖跨平台分支。
+@visibleForTesting
+String resolveDefaultDataDirectory({
+  required bool isWindows,
+  required bool isAndroid,
+  required String? startupDataDirectory,
+  required Map<String, String> environment,
+  p.Context? pathContext,
+}) {
+  final ctx = pathContext ?? p.context;
+  final String result;
+  if (isAndroid) {
+    final dir = startupDataDirectory;
+    if (dir == null || dir.isEmpty) {
+      throw StateError(
+        '安卓数据目录未初始化：启动时须先用 path_provider 解析应用内部存储目录，再设置 AppDatabase.startupDataDirectory。',
+      );
     }
-    return p.join(
-      Platform.environment['USERPROFILE'] ?? '',
-      'AppData',
-      'Local',
-      'quiz-master2',
-    );
+    result = ctx.join(dir, 'quiz-master2');
+  } else if (isWindows) {
+    final localAppData = environment['LOCALAPPDATA'];
+    if (localAppData != null && localAppData.isNotEmpty) {
+      result = ctx.join(localAppData, 'quiz-master2');
+    } else {
+      result = ctx.join(
+        environment['USERPROFILE'] ?? '',
+        'AppData',
+        'Local',
+        'quiz-master2',
+      );
+    }
+  } else {
+    final xdg = environment['XDG_DATA_HOME'];
+    if (xdg != null && xdg.isNotEmpty) {
+      result = ctx.join(xdg, 'quiz-master2');
+    } else {
+      final home = environment['HOME'] ?? '';
+      result = ctx.join(home, '.local', 'share', 'quiz-master2');
+    }
   }
-  final xdg = Platform.environment['XDG_DATA_HOME'];
-  if (xdg != null && xdg.isNotEmpty) {
-    return p.join(xdg, 'quiz-master2');
+  if (!ctx.isAbsolute(result)) {
+    throw StateError('数据目录算出来是相对路径（$result），拒绝使用。');
   }
-  final home = Platform.environment['HOME'] ?? '';
-  return p.join(home, '.local', 'share', 'quiz-master2');
+  return result;
 }
+
+String _defaultDataDirectoryPath() => resolveDefaultDataDirectory(
+  isWindows: Platform.isWindows,
+  isAndroid: Platform.isAndroid,
+  startupDataDirectory: AppDatabase.startupDataDirectory,
+  environment: Platform.environment,
+);
 
 /// 数据目录内的相对路径解析（`..` 越界返回 null，不许读盘）。
 String? _resolveInsideDir(String dataDir, String rel) {

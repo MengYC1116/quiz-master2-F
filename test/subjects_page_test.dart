@@ -388,12 +388,49 @@ void main() {
       await tester.tap(find.text('改名').first);
       await tester.pumpAndSettle();
       expect(find.text('保存改名'), findsOneWidget);
-      // 改名输入框是段内最后一个输入框（前面还有新增学科输入框）。
-      await tester.enterText(find.byType(TextField).last, '高等数学');
+      // 改名输入框与「保存改名」在同一行（D-258：英文名栏已删）。
+      // 注意 QmButton 内部也可能有 Row，
+      // 所以不用 .first 取最近的祖先 Row，而是在全部祖先 Row 里找
+      // 唯一的 TextField（就是改名输入框）。
+      final editRows = find.ancestor(
+        of: find.text('保存改名'),
+        matching: find.byType(Row),
+      );
+      final renameField = find.descendant(
+        of: editRows,
+        matching: find.byType(TextField),
+      );
+      expect(renameField, findsOneWidget);
+      await tester.enterText(renameField, '高等数学');
       await tester.tap(find.text('保存改名'));
       await tester.pumpAndSettle();
       expect(find.text('高等数学'), findsOneWidget);
       expect(repo.subjectsList.first.name, '高等数学');
+    });
+
+    testWidgets('D-258 学科管理页无英文名 UI：不显示、不设英文名', (tester) async {
+      final repo = FakeSubjectsRepo();
+      repo.subjectsList.add(
+        Subject(
+          id: 'chem',
+          name: '化学',
+          color: const Color(0xFF7C3AED),
+          icon: '化',
+          englishName: 'Chemistry',
+        ),
+      );
+      await pumpSubjects(tester, repo: repo);
+      await openSection(tester, '学科');
+      // 即使学科已存好英文名（翻译落库），学科管理页也不显示、不设。
+      expect(find.text('英文名'), findsNothing);
+      expect(
+        find.byWidgetPredicate(
+          (w) =>
+              w is TextField &&
+              (w.decoration?.hintText ?? '').contains('英文名'),
+        ),
+        findsNothing,
+      );
     });
 
     testWidgets('删除学科：长文案确认框，确认后删除', (tester) async {

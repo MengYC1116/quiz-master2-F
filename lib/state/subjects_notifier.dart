@@ -23,7 +23,18 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../data/data_change_events.dart';
 import '../data/repository.dart';
 import '../models/models.dart';
+import '../services/glm_subject_translator.dart';
 import 'repository_provider.dart';
+
+/// 科目英文名翻译器（D-257，GLM 翻译，复用 BigModel key）。
+/// 默认走真实 [GlmSubjectTranslator]；单测用
+/// `subjectTranslatorProvider.overrideWithValue` 注入假实现。
+final subjectTranslatorProvider = Provider<GlmSubjectTranslator>(
+  (ref) => GlmSubjectTranslator(),
+);
+
+/// 预设三科 id：英文名固定（播种/迁移已写库），永不自动翻译。
+const _presetSubjectIds = {'math', 'english', 'politics'};
 
 /// 学科管理页的状态 Provider（ARCH-PLAN-A 第 2 阶段）。
 /// FR-19：声明 `dependencies: [repositoryProvider]`（D-49 同款，见
@@ -203,10 +214,70 @@ class SubjectsNotifier extends Notifier<SubjectsState> {
         loading: false,
         loadError: false,
       );
+      // D-257：打开学科管理时顺带补翻缺英文名的学科（后台跑，不阻塞
+      // 页面；每打开一次最多补翻一次——失败的等下次打开再试）。
+      unawaited(backfillEnglishNames());
     } catch (_) {
       if (_disposed) return;
       state = state.copyWith(loading: false, loadError: true);
     }
+  }
+
+  /// 本次打开已尝试过补翻的学科 id（失败的不在本次内重复试；
+  /// 下次打开是新 Notifier，集合是空的，会再试一次）。
+  final _backfillAttempted = <String>{};
+
+  /// 各科英文名的“代次”：改名清英文名时 +1。
+  /// 后台翻译在 await 前后各读一次代次——翻译途中刚改过名，
+  /// 代次变了，旧名翻出的英文名不写回（不写给新名）。
+  /// 只靠 state 的 englishNameManual 判断不够：state 重读滞后于
+  /// 入库，翻译途中改名清掉的值在 state 里还看不到。
+  final _englishNameEpoch = <String, int>{};
+
+  /// 把缺英文名的学科逐一补翻（D-257）：只翻“没有英文名、没手动填过、
+  /// 不是预设三科”的学科；翻译失败（无 key、无网、超时、接口报错）
+  /// 时什么都不做，等下次打开再试。翻译成功才写库并重读。
+  /// load() 里后台调（不阻塞页面）；单测直接 await 本方法。
+  Future<void> backfillEnglishNames() async {
+    final translator = ref.read(subjectTranslatorProvider);
+    for (final s in state.subjects) {
+      if (_disposed) return;
+      if (s.englishName != null || s.englishNameManual) continue;
+      if (_presetSubjectIds.contains(s.id)) continue;
+      if (!_backfillAttempted.add(s.id)) continue;
+      await _translateAndSave(s, translator);
+    }
+  }
+
+  /// 翻一科英文名并存库（D-257）：失败返回 null 时什么都不做；
+  /// 成功时写回英文名（manual 保持 false）。写回前校验两道关：
+  /// （1）代次没变——翻译途中没改名（改名会清英文名并 +1 代次）；
+  /// （2）按库里当前行校验——学科还在、名字没变、没被标成手动。
+  Future<void> _translateAndSave(
+    Subject s,
+    GlmSubjectTranslator translator,
+  ) async {
+    if (_disposed) return;
+    // D-42：repo 入口处捕获一次（翻译要等 1–2 秒，中途切页销毁
+    // Provider 后再 ref.read 会抛 UnmountedRefException）。
+    final repo = _repo;
+    final epoch = _englishNameEpoch[s.id] ?? 0;
+    String? translated;
+    try {
+      translated = await translator.translate(s.name);
+    } catch (_) {
+      // 翻译器抛异常也当没翻出来（不阻塞学科管理）。
+      return;
+    }
+    if (translated == null || _disposed) return;
+    if ((_englishNameEpoch[s.id] ?? 0) != epoch) return;
+    final current = (await repo.subjects())
+        .where((e) => e.id == s.id)
+        .firstOrNull;
+    if (current == null || current.name != s.name) return;
+    if (current.englishNameManual) return;
+    await repo.saveSubject(current.copyWith(englishName: translated));
+    await load();
   }
 
   /// 知识点树页签：换一科看（页面本地展开状态由页面自己清）。
@@ -305,6 +376,8 @@ class SubjectsNotifier extends Notifier<SubjectsState> {
   }
 
   /// 学科改名：不存在或同名静默无操作；重名拦下。
+  /// D-257：改名后旧英文名作废——非手动、非预设的学科先清空英文名
+  ///（load() 里的补翻会给新名重新翻译）；手动填过的不动，预设三科不动。
   Future<({bool saved, String? message})> renameSubject(
     String id,
     String name,
@@ -314,7 +387,18 @@ class SubjectsNotifier extends Notifier<SubjectsState> {
     if (state.subjects.any((e) => e.name == name)) {
       return (saved: false, message: '已经有了这个学科');
     }
-    await _repo.saveSubject(s.copyWith(name: name));
+    final renamed =
+        _presetSubjectIds.contains(s.id) || s.englishNameManual
+        ? s.copyWith(name: name)
+        : s.copyWith(name: name, englishName: null);
+    await _repo.saveSubject(renamed);
+    // D-257：英文名刚清空的学科，本次打开还没补翻过——把 id 从已尝试
+    // 集合里拿掉，load() 里的补翻才会给新名重新翻译；同时代次 +1，
+    // 途中在翻旧名的后台任务写回时会被拦下。
+    if (!_presetSubjectIds.contains(s.id) && !s.englishNameManual) {
+      _backfillAttempted.remove(s.id);
+      _englishNameEpoch[s.id] = (_englishNameEpoch[s.id] ?? 0) + 1;
+    }
     await load();
     return (saved: true, message: null);
   }

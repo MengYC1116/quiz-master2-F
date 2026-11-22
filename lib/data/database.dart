@@ -132,7 +132,9 @@ class AppDatabase {
   /// Win11 反馈包 5：v6（questions 加 option_contents +
   /// option_contents_parser_version 两列；v5 库走 Drift 迁移到 v6，
   /// 不再删除）。
-  static const int schemaVersion = 6;
+  /// 二十七批 D-257：v7（subjects 加 english_name +
+  /// english_name_manual 两列；v6 库走 Drift 迁移到 v7）。
+  static const int schemaVersion = 7;
 
   /// §2.3：备份里的应用版本号（与 pubspec.yaml 的 version 一致）。
   static const String appVersion = '0.1.0+1';
@@ -307,6 +309,17 @@ class AppDatabase {
   @visibleForTesting
   static String? testMarkerDirectory;
 
+  /// 二十四批 D-253：生产用——启动时解析出的安卓数据目录根
+  /// （main() 里先 await path_provider 的
+  /// getApplicationDocumentsDirectory() 再设置；未设时安卓分支
+  /// 直接抛错，绝不回退到相对路径）。
+  /// 与 [testDataDirectory] 的区别：测试钩子只供测试用、且优先级
+  /// 更高（[dataDirectoryPathImpl] 先认测试钩子，测试里即使设了
+  /// 本字段也被测试钩子覆盖，保证测试隔离）；本字段只供生产启动
+  /// 流程设置，测试里除非特意测安卓分支否则不动它。
+  /// [resetForTest] 里一并清掉，防止泄漏到下一个测试。
+  static String? startupDataDirectory;
+
   /// 测试用：让单例直接用已打开的库（内存库 / 临时目录库），
   /// 不走 `_openDb` 的真实路径。只供测试调用。
   @visibleForTesting
@@ -343,8 +356,8 @@ class AppDatabase {
 
   /// B3-P01 测试钩子：复位单例与测试目录重定向（只供测试调用）。
   /// 关掉单例当前持有的库（若有）、清掉缓存的 `_dbFuture` 与
-  /// `dbPathUsed`、把 [testDataDirectory] / [testMarkerDirectory]
-  /// 置回 null。同一文件里多个测试都要碰单例时，在 tearDown 里
+  /// `dbPathUsed`、把 [testDataDirectory] / [testMarkerDirectory] /
+  /// [startupDataDirectory] 置回 null。同一文件里多个测试都要碰单例时，在 tearDown 里
   /// 调它，避免前一个测试的库/目录泄漏到下一个测试。
   /// 不改动任何生产打开路径的行为。
   @visibleForTesting
@@ -357,6 +370,7 @@ class AppDatabase {
     instance.dbPathUsed = null;
     testDataDirectory = null;
     testMarkerDirectory = null;
+    startupDataDirectory = null;
   }
 
   /// §4.1：缓存 `Future<QuizDatabase>` 本身：启动时多处同时 `await db`

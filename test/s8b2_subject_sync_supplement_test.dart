@@ -25,7 +25,8 @@ import 'report_page_test.dart' show pumpReport, reportRepo, tq, trec;
 import 'review_page_test.dart'
     show FakeReviewRepo, pickMenuItem, pumpReview, rec, reviewRepo, rq;
 import 'wrongbook_page_test.dart'
-    show FakeWrongbookRepo, boardRowDotColor, pumpWrongbook, wbq;
+    show FakeWrongbookRepo, boardRowDotColor, openSubjectList, pumpWrongbook,
+        wbq;
 
 /// 新学科：化学，紫 0xFF7C5CFC（与 B2 测试、学科管理轮换表第 4 位同值）。
 const chemPurple = Color(0xFF7C5CFC);
@@ -241,6 +242,8 @@ void main() {
       );
       await pumpWrongbook(tester,
           repo: repo, initialSubjectId: 'subject-chem');
+      // 二十三批 D-250：只带学科落目录，点「全部题目」进列表再断言板子行。
+      await openSubjectList(tester);
       final color = boardRowDotColor(tester, 'q-chem-1');
       expect(color, chemPurple);
       expect(color, isNot(DesignTokens.of(Brightness.light).mathInk));

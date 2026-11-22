@@ -173,22 +173,9 @@ void main() {
       expect(find.text(name), findsNothing);
     }
 
-    // 4. 错题本：先落 L1 列表（空库显示“错题本里还没有题”），再从
-    // 筛选面板进书架看空状态（十九批 A5：/wrongbook 默认落点改
-    // 为 L1 列表，书架只从筛选面板顶部入口进）。
+    // 4. 错题本：二十三批 D-250 默认落点就是书架，空库直接显示
+    // 书架空状态（学科删空后无书）。
     await _goNav(tester, '错题本');
-    await _pumpUntil(
-      tester,
-      () => find.text('错题本里还没有题').evaluate().isNotEmpty,
-      reason: '错题本列表未显示空状态',
-    );
-    await tester.tap(find.text('筛选 ▾'));
-    await _pumpUntil(
-      tester,
-      () => find.text('📚 书架（按学科浏览）').evaluate().isNotEmpty,
-      reason: '筛选面板未打开',
-    );
-    await tester.tap(find.text('📚 书架（按学科浏览）'));
     await _pumpUntil(
       tester,
       () => find.text('还没有学科').evaluate().isNotEmpty,

@@ -2371,3 +2371,123 @@ unavailable），kill -9 后新进程可取锁——与实现依据一致。
 - 修法：`rowDisplayTitle` 去掉 15 字截断（`stem.length > 15` 一行删掉），题干完整显示；板子行 RichText 去掉 `maxLines: 1` + `TextOverflow.ellipsis`，自动换行（首行 Row 本就是 `CrossAxisAlignment.start`，多行时 pill/时间顶对齐）；已归档行 Text 本无 maxLines，不动。无题干回退标题、LaTeX 整段去掉这两条不变；`stripLatexForRow` 本身不含截断，不动。
 - 测试同步：`b21_row_title_test.dart` 截断用例改完整显示（16 字完整、30 字完整、含空格完整；高亮用例“阴影”由 1 处改 2 处——完整题干里“阴影”出现两次）；`b21_content_search_test.dart` 的 demoRow 截断串全换完整题干；`wrongbook_page_test.dart` 映射表 4 项换全文（函数极限/导数综合/阅读主旨/图表作文）。
 - 注意：`rowDisplayTitle` 的 `\s+` 折叠会把全角空格 U+3000 也折成半角空格——函数极限题干「（　）」渲染后是「（ ）」，期望里要用折叠后形式；liveDemoRepo 的 sliceText 原文（全角空格）是逐字抄自 live 库的原始 OCR 文字，不动。
+
+## D-249 — 二十三批第 3 件：详情页题目信息编辑区分组精简式（2026-11-22，Meng 13:19 选定 3 号方案）
+
+- Meng 13:15：详情页题目信息编辑区杂乱无章（说明文字太多、无分组、顶部两栏与下面一栏混用）。主代理报了三个方案（折叠式 / 两栏式 / 分组精简式），Meng 13:19 选了 3 号分组精简式，先做它、截屏验收后再做第 1、2 件；比较板不用做。
+- 分组（按意思分三组，单栏上下叠放）：归类（学科、文件夹、知识点）、诊断（题型、错因、标签）、来源与内容（试卷、答案、解析、备注）。“不动单栏”按 Meng 的原话“顶部两栏与下面一栏混用”理解：原先学科｜试卷、答案｜解析两栏混用，改后全部字段上下叠放（编辑表单所有字段 `full: true`；`_formGrid` 本身不动，查看态答案区仍可两栏）。
+- 备注方案原文只列了试卷、答案、解析，未提备注——按意思归入「来源与内容」组（内容类），已在代码注释里写明。
+- 组间分隔小标题：组名 13px/700 ink + 右侧分隔线（`_formGroupHeader`）；组间距 18、组头与首字段间距 10。
+- 各组的新建按钮统一放组头右上角：归类（＋ 新建文件夹、＋ 新建知识点）、诊断（＋ 自定义错因、＋ 新建标签）、来源与内容（＋ 新建试卷）。试卷按钮文案由「新建」改「＋ 新建试卷」，与其他四处统一；下拉框本身不再包 Row，全宽。
+- 说明文字每区最多留一句：原有 hint 本来就都是一句，不动；标题括号里的补充说明收进标题旁的「？」（文件夹、知识点、错因、标签、答案、解析、备注七处；学科（不能改）、试卷（来源）括号短，留标题里）。「？」是圆圈小按钮（`_fieldHelpButton`，key `field-help-<字段>`）：悬停出 Tooltip、点按在标题下展开/收起说明文字；进编辑时展开态清零（`_enterEdit` 里 `_expandedFieldHelp.clear()`）。
+- 不动：顶部黄色提示条、查看态题目信息面板、答案区选项编辑器（`AnswerOptionEditor`）、保存/取消流程、字段功能与写库逻辑、题型切分诊断小字。
+- 测试：`test/detail_page_test.dart` 原「编辑表单含试卷下拉与芯片多选，学科不可改」改分组精简断言（三组标题、短标题、旧长标题消失、七个「？」key、五个新建按钮、旧「新建」消失）；新增「点「？」展开/收起」与「单栏排列（学科与试卷、答案与解析上下叠放）」两测。
+- 结果：相关测试 detail_page + b14 尾巴 + b19 相关三文件 **81/81 全过**，analyze 干净。截图（演示库 q-eng-3 图表作文进详情页编辑态）：`b23-d1-edit-top/mid/bottom-1280.png` + `b23-d1-edit-help-1280.png`（文件夹「？」展开态），四张均已目视确认。
+
+## D-250 — 二十三批第 1 件：错题本落点改回 2026-11-16 条件落点 + 列表页头恢复（2026-11-22，Meng 13:13）
+
+- Meng 13:13：错题本落点改回之前那样——先进书架页，再进文件夹页，最后才是题目列表，返回按钮也恢复（十九批 A5 把默认落点改成列表是他不想要的）。
+- 落点三档（`WrongbookNotifier.build()`，`wrongbook_notifier.dart`）：带筛选（错因 / 知识点 / 文件夹任一）→ 列表；只带学科 → 目录；都不带 → 书架。D-50 筛选优先不变：报告页深链（学科 + 错因 / 知识点）仍直达带筛选列表；首页学科行点进错题本走 `_go('/wrongbook', subjectId)`，恢复后落目录页。
+- 页头恢复（`wrongbook_list.dart`）：`_buildListHeader(title, scale)` 从十七批版（c086ca8）原样恢复——标题 +「← 目录」（有学科进目录、无学科回书架）+「合上 ✕」（回书架）；页头后副标题「这一科的题目列表，点一道题进题目详情；筛选里没有文件夹，文件夹在目录页选。」（B19-CODEMAP.md §2.2 同款语义）。标题口径与旧版一致（文件夹名 / 学科 · 错题本 / 错题本；已归档视图「已归档 · 错题本」）。
+- 删十九批 A5 筛选面板顶部「📚 书架（按学科浏览）」入口：生产流程无其他依赖，恢复页头后即冗余。书架→目录（点封面）、目录→列表（点文件夹行）链路未动；目录页「返回书架」按钮仍在。
+- 测试同步：`openShelfFromList` helper 改走页头「合上 ✕」/ 目录「返回书架」（已在书架时 no-op）；b19_a_list_test 默认落点与只带学科两测改断言（书架 / 目录）；wrongbook_page_test「结果头＋无页头」改页头存在断言；s8/b7/b16 三处 A5 入口调用改走新链路；新增 `test/b23_landing_test.dart`（落点三档、返回按钮）。
+- 结果：相关测试 12 文件 166/166 全过（wrongbook_page、b19_a_list、b21×2、b23×2、s8、b7、b16、b8_1×2、b15_m3）；全量 `tmp/b23-full5.log` **+3147 全过**，`flutter analyze` **No issues found**。
+## D-251 — 二十三批第 2 件：列表行标题与内容搜索走统一题干口径 displayStem（2026-11-22，Meng 13:13）
+
+- 根源（两字段分裂）：详情页“识别题干”区渲染 `question.ocrStem`（ocr_queue 写 ocrStem/ocrRaw），列表行 `rowDisplayTitle`（D-244）读 `q.sliceText`（演示题/老题占位字段，OCR 从不写它）——真题 ocrStem 有、sliceText 空，行标题回退到文件名；内容搜索同根因（searchHaystack 只含 sliceText，真题题干搜不到）。
+- 修法：模型层 `Question.displayStem`（`models.dart`）——优先 ocrStem（去空白后非空才用）、回退 sliceText；`rowDisplayTitle` 与 `searchHaystack` 都走它（haystack 里 sliceText 一项换成 displayStem，不重复、不丢演示题行为）。不改 OCR 本身、不动打印逻辑；ocrRaw 是内部原始结果，绝不进 displayStem。
+- 测试：`test/b23_stem_test.dart` 纯函数探针（ocrStem 优先 / 空白 ocrStem 回退 / 无 ocrStem 回退 sliceText / LaTeX 去除仍作用于 ocrStem / haystack 含 ocrStem）；widget 层用演示库题干内容填进 ocrStem 的测试库拍一行带 OCR 题干的标题。
+- 结果：相关测试 `test/b23_stem_test.dart` 随 12 文件 166/166 全过；全量 `tmp/b23-full5.log` **+3147 全过**，`flutter analyze` **No issues found**。
+
+## D-252 — 二十三批 pendingSearch 全新挂载抛错：验证后生产无问题，不修（2026-11-22，Meng 已定顺手验证＋修）
+
+- 背景：b21 跨学科断言最初想走 `WrongbookPage(pendingSearch: ...)`（十九批 A4 命令面板待应用查找生产链路），widget 测试里 `_maybeApplyPendingSearch`（initState）调 `_n.applySearchConditions` 改 Provider 时抛 `Tried to modify a provider while the widget tree was building`（Riverpod 3.x 禁止在 build/initState 里改 Provider）。生产里从别的页面带 pendingSearch 进错题本、页面全新挂载时是同一条路，是否同样抛错未验证；b21 已改走分科进列表断言绕过。Meng 2026-11-22 15:15 定：顺手验证＋修，放二十三批里。
+- 验证（三路，结论一致指向“debug-only”）：
+  1. widget 测试复现（探针 `test/b23_pending_search_test.dart`，事后已删）：全新挂载 + `pendingSearch={'cause': '概念不清'}` 与空条件两测，在 debug 下都抛同一条 Riverpod 异常，复现成功。
+  2. 真实 Linux 应用复现生产链路（release 二进制，06:53 构建，含 1、2 件、不含任何 pendingSearch 改动）：首页 Ctrl+K 打开命令面板，点「文件夹」组第一条「试卷 · 英语 · 0 道」，进错题本。截图 `b23-d2-ps-prod-before.png`：页面正常渲染——「英语 · 试卷」列表（共 0 道）、「最近搜过：试卷」已记、底部 toast「已用命令面板打开查找：试卷」；应用 stderr 日志零异常。生产 release 下没有抛错。
+  3. 根因（Riverpod 3.5.0 源码）：`flutter_riverpod/.../provider_scope.dart:268` 只在 `kDebugMode` 时才挂 `debugCanModifyProviders` 钩子；`riverpod/.../element.dart:860` 状态写入通知监听时才调它；`_debugCanModifyProviders` 本身在非 debug 下调用会直接抛 StateError（防误用）。即这条 guard 是 debug-only 设计——release 下钩子为 null，initState 里改 Notifier 静默成功；widget 测试跑在 debug 下，同一条路必然抛错。
+- 结论（按任务第 3 条：生产没问题，只记结论不修）：**不改生产代码**。initState 里同步应用待应用查找在 release 下工作正常（状态在首帧任何监听者读到之前已写好，无 Riverpod 警告的两 widget 状态不一致）；改成下一帧再应用反而会让列表先闪一下默认落点（书架）再跳 filtered 列表，体验更差。didUpdateWidget 路径（已在错题本时再 Ctrl+K 选查找）是同一机制，同样只在 debug 下受 guard 限制，生产不受影响。
+- 附带结论：这条生产链路在 widget 测试里无法覆盖（debug guard 使任何走 `pendingSearch` 的 widget 测试都抛错），b21 的分科进列表断言绕法继续有效；探针测试与 helper 参数已 revert，不留失败测试。复现证据：`~/workspace/batch23-work/tmp/b23-ps-repro.log`（两测抛错）、`~/workspace/batch23-work/screenshots/b23-d2-ps-probe-palette.png`（面板）与 `b23-d2-ps-prod-before.png`（生产正常）。
+- 结果：无生产代码改动；相关测试 0（探针已删）；全量 `tmp/b23-full5.log` **+3147 全过**，`flutter analyze` **No issues found**。
+
+## D-253 — 二十四批：安卓数据目录走 path_provider 内部存储（2026-11-22，Meng 15:42 定单开一批修，15:45 定再次尝试）
+
+- 故障：小米 14 装 APK（296e2508，不含二十三批改动）后启动即弹「quiz-master2 无法启动」，详情 `FileSystemException: Creation failed, path = '.local' (OS Error: Read-only file system, errno = 30)`。报错屏本身是应用的兜底（_StartupFailureApp），工作正常。
+- 根源：`lib/data/db_paths.dart` 的 `_defaultDataDirectoryPath()` 没有安卓分支——安卓上不是 Windows → XDG_DATA_HOME 为空 → HOME 为空 → 返回相对路径 `.local/share/quiz-master2`；`lib/main.dart` 启动第一步拿这个目录建单实例锁（`SingleInstanceGuard.tryAcquire` 的 `Directory.create(recursive: true)`），相对路径相对的是进程当前目录 `/`（只读），建 `.local` 被系统拒绝。数据库都还没碰到。Win11/Linux 不受影响。
+- 修法（只改代码，不打 APK；APK 重打另起一步）：
+  - 安卓走 `getApplicationDocumentsDirectory()`（`/data/data/<包名>/files`），下拼 `quiz-master2`，库、imports、slices、标记文件、备份都在这个根下，布局与桌面一致。`path_provider: ^2.1.6` 已是直接依赖，不加新依赖；生产已有使用先例（`pdf_delivery.dart` 用 `getDownloadsDirectory`）。
+  - 保持 `dataDirectoryPath()` 同步 API 不变：`main()` 启动最开始先 await 解析安卓目录，存进 `AppDatabase` 新正式静态字段 `startupDataDirectory`（仿照 testDataDirectory 的模式，另开生产字段，绝不拿测试钩子当生产用）；`resetForTest()` 里一并清掉。优先级：测试钩子 > 默认目录（含安卓启动目录）> db_location.txt 标记——测试隔离不变。
+  - 默认目录解析抽成纯函数 `resolveDefaultDataDirectory({isWindows, isAndroid, startupDataDirectory, environment, pathContext})`（`@visibleForTesting`，平台/环境/路径风格均可注入，Linux 测试机上覆盖 Windows/Android 分支）；`_defaultDataDirectoryPath()` 只剩 5 行委托。安卓分支：`startupDataDirectory` 未设或空串就抛 StateError；另加一道 guard：任何平台算出的默认目录如果是相对路径就抛 StateError（旧行为是静默返回相对路径）。
+  - `main()` 里安卓解析失败（path_provider 抛错）时进启动失败窗口（`_StartupFailureApp` 加可选 title/message 参数，安卓失败用自己的文案，不复用单实例锁的文案），不继续走单实例锁/开库。
+  - `_openDb` 的回退（可执行文件同级 `data/`）已确认：修完后主路径可用，回退在安卓上不会被走到；回退只在“主位置无库文件”时触发，若主路径已坏、回退再失败也是明确抛错、不静默建库——不改回退逻辑。
+- 测试：`test/b24_android_data_dir_test.dart` 纯函数探针（安卓采用启动目录 / 未初始化抛错 / 空串抛错 / 相对启动目录被 guard 拦 / Windows 两档 / Linux 两档 / HOME 为空 guard 抛错（本次故障同款形状）/ 测试钩子优先于启动目录 / resetForTest 清掉启动目录 / 当前平台委托一致）。
+- main() 的安卓分支本身在 Linux 测试机上跑不到（`Platform.isAndroid` 为 false），真机验证留给 APK 重打后的小米 14（能进首页即通过）。
+- 结果：相关测试 `test/b24_android_data_dir_test.dart` **13/13 全过**，`flutter analyze` **No issues found**；最后全量未跑（二十三批全量在 31:16、+3025 -12 处被 flutter_tools 流错误非正常中断，且第 3 件已改方案二重做、收尾延后——等主代理安排窗口再跑）。
+
+## D-254 — 二十三批第 3 件重做：详情页题目信息编辑区改方案二（左主右属性），方案三作废（2026-11-22，Meng 15:53 改主意）
+
+- 背景：Meng 13:13 嫌详情页题目信息编辑区杂乱无章，13:19 选了方案三（分组精简式），14:15 点头通过；15:53 他再想后改主意——方案二更好（主次分明、最像成品软件），方案三作废、按对照板截图（`~/workspace/user/media_library/image/image-9d26d834.png`）的方案二重做。配色/字号/圆角走项目现有 token（浅色蓝白经典，不照搬对照板深色底）。
+- 布局（只改 `lib/modules/detail/question_detail_page.dart`，`_buildInfoEdit` 重写）：
+  - 面板头不变：标题「题目信息」+「编辑中」pill +「改动保存后才生效」；黄色提示条、查看态面板、答案区编辑器、保存/取消流程不动。
+  - 宽屏（面板宽 > 640）：左主列（flex 3）+ 1px 分隔线 + 右属性列（flex 2），`IntrinsicHeight` Row；窄屏（面板宽 ≤ 640）：右栏掉到左列下面变一列，18px 间距。
+  - 左主列（整理字段）：文件夹 *（学科文件夹 chips +「＋ 新建」→ `_newFolder`）、知识点（虚线框：未选显示「还没选」+「＋ 添加」展开选；已选 chips 点按移除，展开态列全部学科知识点 chips 点按切换 +「＋ 新建知识点」）、答案（TextField，hint「填答案（可以空着）」，maxLines 3）、解析（hint「填解析（可以空着）」，maxLines 5）、备注（hint「填备注（可以空着）」，maxLines 3，见下判断 1）、底部取消（plain）/ 保存（primary）右对齐一行。选择题分流保留（选择题不显示文字答案框；「答案（已保留）」提示保留）；AnswerOptionEditor 全宽在两列之后，不动；标题行编辑态的保存/取消已移到左列底部。
+  - 右属性列：一行一个、值靠右对齐——学科（学科名加粗 +「不可改」弱化字）、试卷（`DropdownButton` `isExpanded: true`，hint/选项右对齐，选项与 onChanged 与旧版一致）、题型（`questionTypeChip`，null 显示「待确认」+ 仅 `questionTypeSource != 'manual'` 且 OCR raw 可解析时显示「重新分类」，与旧 `_typeFieldChild` 同条件）；错因（固定五项 + 自定义 chips +「＋ 自定义」→ `_newCustomErrorType`）、标签（全部标签 +「＋ 新建」→ `_newTag`）是“上面是 label、下面是 chips”的分区（行内放不下）。
+  - 方案三全拆：`_formGroupHeader`、`_fieldHelpButton`、`_expandedFieldHelp` 删净（0 残留）、`_Field` 的 hint/help 参数去掉、`_fieldCell` 简化为 label + child；`_newExam` 删（唯一调用者是已删的组头「＋ 新建试卷」按钮；`submitNewExam` 仍被整理工作台用，保留）。`_formGrid` 保留（查看态答案区仍用）。
+- 判断（汇报给 Meng 的三处，板子上没画、按 Muse 建议做）：
+  1. 备注放左列解析下面——内容类字段，跟答案/解析一起。
+  2. 试卷行没有「＋ 新建试卷」——板子没画；新建试卷留在学科管理 / 整理工作台。
+  3. 知识点选择器里保留「＋ 新建知识点」——否则知识点树为空时无法继续。
+- 测试：`test/detail_page_test.dart` 方案三 3 测改成方案二 3 测（左右两栏 + 几何断言：右列在左列右侧、保存位于备注下方且在右列左侧；知识点选择器展开/选/收起；窄屏 500×800 右栏掉到左列下面、同一左对齐）；D1 测改名「编辑态左列底部显示取消/保存」并加几何断言；`test/b19_detail_related_test.dart:743` 改名同款；`test/b5_p2_collect_test.dart`（3 处）：「＋ 新建文件夹」→「＋ 新建」（first: true）、「＋ 自定义错因」→「＋ 自定义」。另：答案 TextField 按板子去掉 `labelText: '答案'` 只留 hint，两个旧 finder（`detail_page_test.dart:747/1732`）改按 hintText「填答案（可以空着）」找——板子优先，测试跟随。
+- 截图验收（演示库 q-eng-3 图表作文详情页编辑态，真实 Linux 应用，release 二进制 2026-11-22 08:24 构建）：宽屏 `~/workspace/batch23-work/screenshots/b23-d3-item3-wide.png`（1280×720，备注 + 取消/保存可见）与顶部补充 `b23-d3-item3-wide-top.png`（面板头 + 黄色提示条 + 两栏顶部）；窄屏 `b23-d3-item3-narrow.png`（500×720 裁切：左列以备注 + 取消/保存收尾，右栏学科/试卷/题型/错因掉到下面、同一左对齐）与顶部补充 `b23-d3-item3-narrow-top.png`。窄屏是窗口 resize 到 500×800 后拍的（书架页在窄屏下不换行、英语封面在屏外，无法直接点过去；详情页本身在窄屏下是单栏、无左导航——与手机适配未做一致，属已知现状）。
+- 附注：截图时两次点「编辑」按钮 (137, 483) 无反应——坐标贴了按钮底边（按钮约 30px 高，点在底边上沿 3px 处），改点中心 (145, 470) 即生效；不是产品问题，是截图探针坐标精度问题。
+- 结果：相关测试 4 文件（detail_page_test、b19_detail_related_test、b5_p2_collect_test、b14_win11_tail2_edit_stale_test）**108/108 全过**，`flutter analyze` **No issues found**；全量 `tmp/b23-full5.log` **+3147 全过**（含 b17/b18 导出模式 16 道——其落点同步修完后通过；另含二十四批 D-253 的 b24 测试 13 道与二十五批进行中的 b25 yolo 探针，均通过）。
+- 确认：Meng 2026-11-22 18:15 点头——三处判断与方案三作废均按 Muse 建议交付（“采纳你的建议，按照你的建议来就行”）。二十三批至此全部完成，未推送。
+
+## D-255 — 二十五批：yolo 定位探针 + 修 8 道已定位 Win11 失败，只改测试（2026-11-22，Meng 16:54 选 A 批准）
+
+- 背景：Meng Win11 全量 +3070 ~12 -37，排查（`~/workspace/win11-test-triage/TRIAGE.md`）定性为 45 行 [E]：37 道失败 + 8 道 yolo 未完成；设计上仅限 Linux 6 道、测试写法问题 30 道、缺详情 9 道，真实产品 bug 0 道。16:49 日志分析坐实 8 道计入失败（重框重试删切片 errno 32；D-91 证据文件写到不存在的相对路径，断言未执行；6×tearDownAll 删临时目录 errno 32）；yolo 8 道是挂起不是崩溃（无退出码，卡在首次碰 FFI 的 OrtEnv init，模型缺失那道也挂，与推理无关）。Meng 选 A：先跑 yolo 定位探针，再修 8 道已定位失败；其余 29 道测试问题暂不修。
+- 探针（新增 `test/b25_yolo_probe_test.dart`，只新增这一个文件）：单个 test 顺序执行六步，每步前后 print `PROBE step N <名字> start/ok/fail`、每步 20 秒 `Future.timeout` 保护、整个 test `Timeout(Duration(minutes: 2))`。六步与 `_loadOnce` 加载链一一对应：(1) `DynamicLibrary.open`（与包内 `bindings.dart` 顶层 `_dylib` 同款：Windows `onnxruntime.dll` / Linux `libonnxruntime.so.1.15.1`）；(2) `OrtEnv.instance` 构造（触发包懒加载 + `GetApi(14)`）；(3) `OrtEnv.instance.init()`（`CreateEnv`）；(4) `rootBundle.load` 模型（路径取服务默认值 `assets/models/question/yolo11s-question-v1.onnx`）；(5) `OrtSession.fromBuffer`；(6) `runAsync` 推理（100×100 白底合成图，画法抄 `yolo_onnx_service_test.dart` 的 `_whitePagePng`，letterbox 转张量抄服务的 `_letterboxTensor`）。`tearDown` 释放 session/options 并调 `YoloOnnxService.resetLoadStateForTest()`。设计说明：FFI 同步调用卡住时会堵住 isolate、20 秒定时器触发不了，靠 test 级 2 分钟超时兜底，最后一条 `start` 标记即挂点。Linux 验证：`00:16 +1: All tests passed!`，六步全 ok（step 2 version=1.15.1、step 4 模型 38,432,570 字节、step 6 outputs=1 first=[1][5][33600]）；`flutter analyze` No issues found。Win11 命令（D:\quiz-master2-F 下）：`flutter test --reporter expanded test/b25_yolo_probe_test.dart`——读法：最后一条 `PROBE step N ... start` 即挂点；某步 20 秒超时会打印 `fail: TimeoutException` 后快速失败。注意：探针文件只在本地工作树，未推送，须先发给 Meng 才能跑。
+- 修 8 道（只改 7 个测试文件，未动 `lib/`）：
+  - `test/b13_p1_2_reenqueue_m4_test.dart`：删切片前先 `imageCache.clear()`，删失败（`PathAccessException`）时最多重试 10 次、每次间隔 100ms，删不掉则断言失败。
+  - `test/b14_m5_fix2_d91_test.dart`：证据文件改写进本测试的临时目录（`p.join(tmp.path, 'fix2-d91-sqlite-master-diff.txt')`），不再拼 `$HOME/workspace/batch14-work/...`；证据内容一字未动。Linux 重跑确认比对本身通过：migratedVersion=6、freshVersion=6，`normDiff` 为空、逐行解释全为“仅空白/换行差异”。
+  - 6 个 tearDownAll（`b11_8_export_image`、`b8_345_box_interaction`、`detail_notifier`、`detail_page`、`b5_p2_collect`、`collect_page`）：teardown 先 `imageCache.clear()` 再 `await AppDatabase.resetForTest()` 再删目录；`b11_8` 与 `detail_notifier` 的 FakeRepo 补 `all()` / `causeRecords()` 内存桩（读内存列表，不真开库）；`b5_p2_collect` 的 FakeRepo 本来就有桩，只改 tearDownAll；`detail_page_test.dart` 只动了 tearDownAll 一处，其余一行未碰。`collect_page` 是协调员自查补修的——派工简报里漏列了它（只列了 5 个），工人按简报修完 5 个后协调员核对文件清单发现，2026-11-22 17:46 按同款修法补上（`imageCache.clear()` + 防御性 `resetForTest()`），单独验证 `01:19 +52: All tests passed!`、[E] 0 条、analyze 干净。
+- 结果：7 文件一条命令（`--concurrency=1`）6 分 00 秒 **+145: All tests passed!**（[E] 0 条；另有 5 道跳过；b13 14 道、D-91 1 道、b11_8 18 道、b8_345 14 道、detail_notifier 24 道、detail_page 51 道、b5_p2_collect 28 道），`collect_page` 单独验证 **01:19 +52: All tests passed!**（[E] 0 条，tearDownAll 正常走完）；两次 `flutter analyze` 均 **No issues found**（61.4s / 36.8s）。演示库未动（验证前后 md5 均为 `9c5640bb66fc272e94d6b1f749495187`）。8 道计入失败至此在 Linux 上全部修完验证通过。
+- 排序与偏差：二十三批最后全量（b23-full3.log，30:12 +3130 -16）跑完后才验证；detail_page 与 b5_p2_collect 在全量里没跑到，全量结束后再改。偏差：修测试工等 marker 超时后未再等就跑了验证，而探针验证实际在 17:41 已过、marker 已写——两边验证跑了约 2 分钟重叠（小核机器上双 flutter test 并发），结果均通过、未 OOM，影响为零；下次跨工人串行以 marker 文件为准、超时后须先复核 marker 再跑。
+- 待办（不在本批）：Meng 在 Win11 上跑探针（须先把探针文件发给他）；探针定出挂点后再定 yolo 修法；7 个修好的测试文件在 Win11 上复核须等文件到位（未推送）；二十三批全量的 16 道失败归二十三批收尾，不在本批。
+
+## D-256 — 二十六批：错题本书 12 号「双色拼接精装」一比一复刻进书架（2026-11-22，Meng 18:18 批准）
+
+- 背景：Meng 在对照板 artifact `cuo-ti-ben-shu-she-ji`（错题本 · 书）上选了 12 号双色拼接精装，18:18 批准「开始复刻，做进错题本」，复刻完截图给他一比一对照。规范唯一依据 `~/workspace/batch26-work/B26-SPEC.md`；复刻源头板子导出 HTML `~/workspace/your_files/cuo-ti-ben-shu-she-ji/cuo-ti-ben-shu-she-ji.html`（12 号 CSS 约 262–280 行）。
+- 复刻值（板子值，逐字照搬；与 app 学科 token 略有不同，Meng 已批准用板子值）：外形 218×304，圆角 3/9/9/3（左上/右上/右下/左下）；封面线性渐变 160°，学科色 `--c` 0–58%、深色 `--cd` 58.2–100%（stops `[0.58, 0.582]`）；数学 c #2B6BEB / cd #1743A6 / cdd #102F75 / cl #6E97F2，英语 c #0E9F6E / cd #066E4B / cdd #044A33 / cl #4CC79A，政治 c #DE5148 / cd #A92E28 / cdd #7C1F1B / cl #F08A82；书脊槽 2px、距左 12px、上下顶满、rgba(0,0,0,.26)；书页边右沿 8px、上下 inset 4px、右圆角 2px、#FFFEF8 2px / #DCD4BE 1px 交替竖纹（每 3px 一个循环）；阴影偏移 (14,18)、模糊 28、rgba(15,18,25,.30)；书脊侧内侧高光 Flutter 无 inset shadow，用左沿 4px 白 15% 渐变条近似（近似不了就记一笔、不硬凑）。上半区 padding 左 32 右 22 上 30：学科名 38px、Noto Serif SC、weight 900、letter-spacing .14em、白色；「错 题 本」12px、ls .62em、opacity .92、margin-top 8px；英文名 10px、ls .34em、opacity .75、weight 700、margin-top 12px（MATHEMATICS / ENGLISH / POLITICS）。下半区 padding 左 32 右 22 下 18：三数字行（道题/要复习/待复查，左右分散、居中），顶部分隔线 1px 白 40%、padding-top 11px；「开始复习」按钮白底、字色 `--cdd`、13.5px、ls .22em、上下 padding 9px、圆角 3px、margin-top 12px。
+- 范围：只改书架书 widget（`lib/modules/wrongbook/`，`_buildBook` 重写 + 书页边画笔）；目录页、列表页、详情页不动；行为不变（点书进目录、点「开始复习」进复习）；三个数字是真实数据，只改渲染。旧封面样式（6 种纹样、折角、虚线内框、左暗带、书脊块）随本次复刻从书架书上移除——板子 12 号没有这些；旧画笔 `_CoverPatternPainter`、`_CoverFoldPainter`、`_CoverPageEdgePainter`、`_CoverInsetShadowPainter` 只被旧 `_buildBook` 用，随复刻一并删除（`_VerticalDashedPainter`、`_DashedBorderPainter` 仍被目录/列表页用，保留）；新增 `_Book12PageEdgePainter`（竖纹书页边）。
+- 字体：板子学科名用 Noto Serif SC，app 之前只捆了 Noto Sans SC（且只作 PDF 导出资产，未注册为 Flutter 字体；UI 字体是 Segoe UI）。已从 github.com/google/fonts 取回可变字体 `assets/fonts/NotoSerifSC[wght].ttf`（25,125,512 字节，fvar wght 轴，OFL 免费），`pubspec.yaml` 增加 `fonts:` 注册（family `Noto Serif SC`），学科名用 `FontVariation('wght', 900)` 取黑体。字体文件不走快照推送：Meng 在 Win11 构建前须先把该文件放到 `D:\quiz-master2-F\assets\fonts\`（与 NotoSansSC 同款处理），否则 Win11 构建缺字体资产；未推送代码。
+- 开工条件：二十四批最后全量 +3147 全过、APK 已发后才动代码（二十四批 2026-11-22 19:32 完成，batch24-monitor 已撤）。
+- 结果：已完成。代码：`lib/modules/wrongbook/wrongbook_shelf.dart`（`_buildBook` 重写 + `_Book12Palette` + `_Book12ReviewButton` + 218×304 常量与 160° 渐变端点），`lib/modules/wrongbook/wrongbook_cover.dart`（旧画笔 4 个删除，新增 `_Book12PageEdgePainter`），`lib/theme/design_tokens.dart` 与 `lib/widgets/uikit.dart` 各一处注释修正。测试：相关测试通过（新 `test/b26_book12_test.dart` 6/6，`test/wrongbook_page_test.dart` 91/91）；第一次全量 +3150 -3，3 个失败是 `test/b19_a_wiring_test.dart` 用 52px 定位数学封面（旧字号），二十六批改 38px 后定位不到——测试定位失效、产品行为未变，两处改 38px 后单跑 3/3 通过；第二次全量 **+3153 全过**（3147 + 新 6 项），全项目 `flutter analyze` 干净。截图：真实 Linux 应用书架 1280×720（`~/workspace/batch26-work/screenshots/b26-shelf-1280.png`），三本书都在，演示库 9 道题完好（快照 md5 前后一致）。未推送代码。唯一与 1:1 的偏差：未知学科英文名回退仍是大写学科名，但中文名大写后与学科名相同（如「化学」）时不画英文行，免得封面出现两行一样的字（新测试覆盖，拉丁名 `Bio` → `BIO` 正常显示）。另：构建时发现环境重置又丢了 libgtk-3-dev，已按 TOOLS.md 旧法装回（compat libzstd-dev + `apt-mark hold libzstd1` + libgtk-3-dev 3.24.41），构建恢复。
+
+## D-257 — 二十七批：科目英文名自动翻译（方案三，GLM 翻译，复用 BigModel key）（2026-11-22，Meng 20:57 选方案三）
+
+- 背景：二十六批书封英文行（MATHEMATICS / ENGLISH / POLITICS）只对数英政三科有预设值；词典外的新学科（如化学）没有英文名，D-256 回退是不画英文行（未知学科英文名回退是大写学科名，中文名大写后与学科名相同则不画）。Meng 20:55 问「能不能有个科目自动翻译的小功能」，给了四个方案（内置词典+手动 / 在线翻译接口 / GLM 翻译 / 纯手动），他 20:57 选方案三：走 GLM 翻译，复用用户已有的 BigModel key；随后问「速度快不快」——主代理 2026-11-22 晚用同一 key 实测：glm-4-flash 翻「高等数学」→ Advanced Mathematics 2.04 秒、「数据结构」→ Data Structures 1.04 秒，翻译正确。
+- 设计：
+  - 触发点只在学科管理时：新建/改名学科时，若该学科没有手动填过英文名，调 GLM 把中文名翻成英文，存到学科实体新字段 `englishName`；书封直接读存好的值渲染（渲染时统一大写），渲染永远不走网络、不等翻译。
+  - 翻译调用：BigModel chat completions（POST https://open.bigmodel.cn/api/paas/v4/chat/completions），模型 glm-4-flash，temperature 0，prompt 要求「只回英文名，不要解释」。key 走应用内已有的 OcrKeyStore（`bigmodel_api_key`，与 OCR 同一个 key）。失败（无 key、无网、接口报错、超时）时不阻塞建学科：英文名留空，保持现有行为（不画英文行），用户可在学科管理手动填。
+  - 学科管理加一个「英文名」可编辑栏：有翻译结果时自动填入，用户可改；手动填过的值以后不再被自动翻译覆盖（`englishNameManual` 标记；清空英文名栏会清除手动标记，下次打开学科管理时重新补翻）。数英政三科预设英文名保持不变，不重新翻译（按 id 守卫）。
+  - 已有但无英文名的学科：在学科管理打开时顺带补翻一次（每打开一次最多补翻一次，失败不重试到下次打开）；不要在书架渲染时触发。
+  - 改名时：非手动、非预设的学科先把旧英文名清空再后台重翻（避免封面挂着旧名的错误英文），翻失败则留空、等下次打开补翻。
+  - 成本：每科几十 token，glm-4-flash 0.2 元/百万 token，可忽略。
+- 落地（schema v6 → v7）：subjects 表加 `english_name TEXT`（可空）与 `english_name_manual INTEGER NOT NULL DEFAULT 0` 两列；`createTablesImpl` 的建表字面量、Drift 表定义、`_seed`（预设三科写英文名 + manual=1）、`_upgrade6To7` 迁移（两列 ALTER + 预设三科回填 + settings schemaVersion 写回 '7'）四处同一口径，B1 纪律：迁移后库与全新 v7 库 sqlite_master 逐字一致；`Subject` 模型加 `englishName` / `englishNameManual` 字段与 copyWith；`allSubjects` / `upsertSubject` 读写两列。书封 `_Book12Palette` 改读存好的 `englishName`（无值不画英文行），D-256 的「未知学科大写学科名回退」随之作废（拉丁名学科也会先走翻译；无 key 时不画英文行）。
+- 测试：翻译 HTTP 层必须 mock，不在测试里调真实接口；覆盖翻译成功存库、失败回退、手动值不被覆盖、无 key 行为、改名重翻、打开补翻。相关测试与全量结果见本批收尾汇报。
+- 验证范围变更（Meng 2026-11-22 21:06）：最后不跑全量测试，只测相关的（新测试 + 相关既有测试 + analyze）。
+
+## D-258 — 二十八批：科目英文名仅书封可见，学科管理栏与一切露出面清除（2026-11-22，Meng 21:32 纠正）
+
+- 背景：二十七批在学科管理页加了每科一行「英文名」可编辑栏，截图发给 Meng 后他 21:32 对着截图纠正：「这个英文，只在书的封面可以看见，其他任何地方都不能设置和看见」。二十八批把英文名收敛到只在书封可见。
+- 排查（改前全库 grep `englishName|english_name|EnglishName`，lib 13 文件 + test 5 文件，共 235 处）：
+  - 唯一用户可见面：`lib/modules/subjects/subjects_page.dart` 每科一行「英文名」可编辑栏（控制器/焦点/保存方法 + UI 行）。删。
+  - 书封渲染 `lib/modules/wrongbook/wrongbook_shelf.dart` 是唯一允许读英文名的地方（大写英文行）：保留不动。
+  - 搜索 `searchHaystack`（wrongbook_notifier.dart:501）只用学科中文名，不含英文名：无需改，加回归断言（搜英文名不命中）。
+  - 题目详情页、错题本列表、PDF/Word 导出：全库无 englishName 引用：无需改。
+  - 备份 JSON：`db_backup.dart` 随行读写两列（数据保留，备份文件本身不向用户展示内容）：保留不动；home/settings 页只有备份/恢复按钮，不展示 JSON 内容。
+  - 数据层保留：Subject 模型两字段、Drift 表/DDL/seed/迁移 v7、翻译服务、notifier 的自动翻译/补翻/改名重翻/手动标志保护。
+- 改动：学科管理页英文名栏删净（字段控制器/焦点、保存方法、UI 行）；notifier 的 `setEnglishName` 唯一调用方就是该栏，删栏后成死代码，随栏一起删（代次注释同步改口：只剩改名清英文名时 +1）；其测试一并删。手动标志的保护作用仍在（预设 seed manual=1、备份恢复带标志），由既有测试覆盖（b27 手动值不被覆盖、改名手动值不动）。不删字段、不动翻译链路：english_name 列与翻译/补翻/改名重翻全部保留，只删 UI 与其他露出面。
+- 测试：subjects_page 的 D-257 栏期望测试删除，改名测试注释同步；b27 的 setEnglishName 测试删除；新增断言——学科管理页无英文名 UI（无「英文名」文字、无英文名 hint 的 TextField）、searchHaystack 不含英文名（有存值英文名的学科，搜英文名不命中、搜中文名命中）。验证口径与二十七批相同：只测相关 + analyze，不跑全量（Meng 21:06 定）。
+- 推送仍暂停（Meng 21:31 叫停），二十八批修完也不自行恢复推送，等他发话。

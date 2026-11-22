@@ -224,6 +224,9 @@ void main() {
   });
 
   tearDownAll(() {
+    // 二十五批：先清图片缓存（page.png 经 Image.file 显示后 mmap
+    // 占着文件），再删目录；否则 Windows 上报 errno 32。
+    imageCache.clear();
     _testTmp.deleteSync(recursive: true);
   });
 

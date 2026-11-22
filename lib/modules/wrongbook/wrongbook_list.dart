@@ -8,14 +8,15 @@ part of 'wrongbook_page.dart';
 // 书内列表视图：列表页、工具条、筛选面板、批量条、大卡片 / 紧凑行 / 归档行、分页与已归档视图。
 
 /// L1 行标题（D-244，Meng 2026-11-22；2026-11-22 11:32 修订：取消
-/// 15 字限制，不设字数截断）：优先显示题干 OCR 文字（sliceText），
+/// 15 字限制，不设字数截断）：优先显示题干 OCR 文字（displayStem：
+/// 二十三批 D-250 统一口径，优先 ocrStem、回退 sliceText），
 /// 无题干时回退到标题字段。题干先去 LaTeX 公式标记与换行/多余空白，
 /// 完整显示、行内自动换行。
 /// 详情页标题栏与导出汇总里的标题不动（仍用 q.title）。
 /// 顶层公开函数：纯字符串逻辑，供 test/b21_row_title_test.dart
 /// 直接单测（回退 / LaTeX / 空白折叠 / 完整显示）。
 String rowDisplayTitle(Question q) {
-  final stem = stripLatexForRow(q.sliceText).replaceAll(
+  final stem = stripLatexForRow(q.displayStem).replaceAll(
     RegExp(r'\s+'),
     ' ',
   ).trim();
@@ -40,14 +41,12 @@ String stripLatexForRow(String text) {
 extension _WrongbookListBuild on _WrongbookViewState {
   /// 十九批 A1：L1 列表页（命令面板式，一比一复刻板子 §1）。
   ///
-  /// 自上而下：大搜索框 → 范围说明行 → 「我的查找」行 →
-  /// 「最近搜过」行 → 结果头（标题＋计数＋排序＋筛选＋批量）→
-  /// 导出模式入口 / 提示条 → 筛选面板（点「筛选 ▾」展开）→
-  /// 已掌握提示 / 归档条 / 批量条 → 列表行 → 分页行 →
-  /// 底部汇总条（仅导出模式）。页头（标题 + 目录 / 合上）已删
-  /// （十九批收尾：板子 §1.1 的 L1 从大搜索框直接开始，没有页头；
-  /// 回目录 / 书架走筛选面板顶部的书架入口）。书架 / 目录视图保留，
-  /// 从筛选面板顶部「📚 书架（按学科浏览）」入口进入（A5）。
+  /// 自上而下：页头（标题＋← 目录 / 合上 ✕，二十三批 D-250 从
+  /// 十七批版恢复）→ 副标题 → 大搜索框 → 范围说明行 →
+  /// 「我的查找」行 → 「最近搜过」行 → 结果头（标题＋计数＋
+  /// 排序＋筛选＋批量）→ 导出模式入口 / 提示条 → 筛选面板
+  /// （点「筛选 ▾」展开）→ 已掌握提示 / 归档条 / 批量条 →
+  /// 列表行 → 分页行 → 底部汇总条（仅导出模式）。
   /// 视图切换已去掉：只用板子一种行设计（_buildBoardRow），
   /// `viewMode` 字段与 load() 守门保留在 Notifier 里不用。
   Widget _buildList() {
@@ -57,6 +56,29 @@ extension _WrongbookListBuild on _WrongbookViewState {
     final start = page * _s.pageSize;
     final items = all.skip(start).take(_s.pageSize).toList();
     final orderIds = all.map((q) => q.id).toList();
+    final subject = _s.subjectId == null ? null : _s.subjectOf(_s.subjectId!);
+    final folder = _s.folderId == null
+        ? null
+        : _s.folders.firstWhere(
+            (f) => f.id == _s.folderId!,
+            orElse: () => Folder(
+              id: _s.folderId!,
+              name: '',
+              subjectId: _s.subjectId ?? '',
+            ),
+          );
+    final title = _s.inBookArchived
+        // FR-17：无学科时不留悬空的“ · ”，与下面分支同款处理。
+        ? subject != null
+              ? '${subject.name} · 错题本'
+              : '已归档 · 错题本'
+        : folder != null && folder.name.isNotEmpty
+        ? subject != null
+              ? '${subject.name} · ${folder.name}'
+              : folder.name
+        : subject != null
+        ? '${subject.name} · 错题本'
+        : '错题本';
     final scale = qmScaleOf(context);
     // B8-9：去掉蓝色大框（_openBookFrame）：搜索框 / 结果头 / 列表 /
     // 分页直接落在页面底色上。目录页的书框不动（那是目录页的样式，
@@ -73,6 +95,8 @@ extension _WrongbookListBuild on _WrongbookViewState {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
+                _buildListHeader(title, scale),
+                _pageSubtitle('这一科的题目列表，点一道题进题目详情；筛选里没有文件夹，文件夹在目录页选。'),
                 _buildBigSearch(),
                 _buildSavedSearchRow(),
                 _buildRecentSearchRow(),
@@ -95,6 +119,34 @@ extension _WrongbookListBuild on _WrongbookViewState {
           ),
         ),
         if (_exportMode && !_s.inBookArchived) _buildExportSummaryBar(items),
+      ],
+    );
+  }
+
+  /// 列表页头（标题 + 目录 / 合上按钮）：二十三批 D-250 从十七批版
+  /// （c086ca8）原样恢复。「← 目录」：有学科进目录、无学科回书架；
+  /// 「合上 ✕」：回书架。
+  Widget _buildListHeader(String title, double scale) {
+    return Row(
+      children: [
+        Expanded(child: _pageTitle(title)),
+        QmButton(
+          label: '← 目录',
+          variant: QmButtonVariant.plain,
+          onPressed: () {
+            if (_sr.subjectId != null) {
+              _openDirectory(_sr.subjectId!);
+            } else {
+              _openShelf();
+            }
+          },
+        ),
+        SizedBox(width: 8 * scale),
+        QmButton(
+          label: '合上 ✕',
+          variant: QmButtonVariant.plain,
+          onPressed: _openShelf,
+        ),
       ],
     );
   }
@@ -1379,15 +1431,6 @@ extension _WrongbookListBuild on _WrongbookViewState {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // 十九批 A5：书架 / 目录视图保留，从 L1 筛选面板顶部进入
-          //（`/wrongbook` 默认落点是 L1 列表，不再默认进目录）。
-          QmButton(
-            label: '📚 书架（按学科浏览）',
-            variant: QmButtonVariant.plain,
-            size: QmButtonSize.small,
-            onPressed: _openShelf,
-          ),
-          SizedBox(height: 10 * scale),
           LayoutBuilder(
             builder: (context, constraints) {
               final cols = constraints.maxWidth > 700 ? 4 : 2;

@@ -67,13 +67,21 @@ import '../collect/collect_page.dart';
 
 /// 表单字段（HTML `.form-grid` 的一格）：label 12.5px/700 ink-2，
 /// 值 14.5px；[hint] 是字段下的补充说明（`.ph` 12.5px muted）。
+/// [help] 是收进标题旁「？」里的说明（二十三批 3 号方案）：标题括号
+/// 里的补充说明太长时收进「？」，点「？」在标题下展开、悬停也可见；
+/// 不传时不画「？」。
+/// 编辑表单字段格数据：标题 + 控件（二十三批 2 号方案不留说明文字，
+/// 3 号方案的 hint/help 已拆掉）。
 class _Field {
-  const _Field(this.label, this.child, {this.full = false, this.hint});
+  const _Field(
+    this.label,
+    this.child, {
+    this.full = false,
+  });
 
   final String label;
   final Widget child;
   final bool full;
-  final String? hint;
 }
 
 /// 十九批 D1：右栏「全部 ›」/「打开列表 ›」跳搜索结果的回调
@@ -206,6 +214,11 @@ class _DetailViewState extends ConsumerState<_DetailView> {
   int _seenFormKey = -1;
 
   bool _editing = false;
+
+  /// 二十三批 2 号方案：知识点「＋ 添加」展开的内联选择器是否正开着
+  ///（开着时列出本学科全部知识点 chip 点选；关着时只显示已选）。
+  bool _kpPickerOpen = false;
+
   bool _dirty = false;
   bool _answerVisible = false;
 
@@ -452,6 +465,7 @@ class _DetailViewState extends ConsumerState<_DetailView> {
       _editing = true;
       _dirty = false;
       _cancelAsk = false;
+      _kpPickerOpen = false;
       _expanded.addAll(['info', 'review']);
     });
     if (focusField != null) {
@@ -1127,13 +1141,6 @@ class _DetailViewState extends ConsumerState<_DetailView> {
     _markDirty();
   }
 
-  Future<void> _newExam() async {
-    final name = await _askText('新建试卷');
-    if (name == null) return;
-    await _notifier.submitNewExam(name);
-    _markDirty();
-  }
-
   Future<void> _newCustomErrorType() async {
     final name = await _askText('自定义错因');
     if (name == null) return;
@@ -1378,7 +1385,12 @@ class _DetailViewState extends ConsumerState<_DetailView> {
       ],
       ..._answerArea(q),
       SizedBox(height: 12 * scale),
-      _buildPanel('info', '题目信息', _buildInfoSection(q)),
+      _buildPanel(
+        'info',
+        '题目信息',
+        _buildInfoSection(q),
+        showEditingBadge: _editing,
+      ),
       SizedBox(height: 12 * scale),
       _buildPanel('review', '复习记录', _buildReviewSection(q)),
       _buildWorkActs(q),
@@ -1511,7 +1523,14 @@ class _DetailViewState extends ConsumerState<_DetailView> {
   }
 
   /// 左栏 panel：标题行可点折叠，默认展开（见 [_expanded]）。
-  Widget _buildPanel(String key, String title, Widget body) {
+  /// [showEditingBadge]：编辑态时标题后挂「编辑中」pill +「改动保存后
+  /// 才生效」（二十三批 2 号方案板子同款；只有题目信息 panel 用）。
+  Widget _buildPanel(
+    String key,
+    String title,
+    Widget body, {
+    bool showEditingBadge = false,
+  }) {
     final open = _expanded.contains(key);
     final scale = qmScaleOf(context);
     final palette = _d1Palette;
@@ -1538,6 +1557,19 @@ class _DetailViewState extends ConsumerState<_DetailView> {
                   color: palette.ink,
                 ),
               ),
+              if (showEditingBadge) ...[
+                SizedBox(width: 8 * scale),
+                QmStatusPill.tone(label: '编辑中', tone: QmTone.info),
+                SizedBox(width: 8 * scale),
+                Text(
+                  '改动保存后才生效',
+                  style: TextStyle(
+                    fontSize: 12.5,
+                    color: palette.muted,
+                    height: DesignTokens.bodyLineHeight,
+                  ),
+                ),
+              ],
               const Spacer(),
               Text(
                 open ? '▾' : '▸',
@@ -1977,20 +2009,9 @@ class _DetailViewState extends ConsumerState<_DetailView> {
           ),
         ],
         SizedBox(width: 8 * scale),
-        if (_editing) ...[
-          QmButton(
-            label: '保存',
-            size: QmButtonSize.small,
-            onPressed: _saveEdit,
-          ),
-          SizedBox(width: 8 * scale),
-          QmButton(
-            label: '取消',
-            variant: QmButtonVariant.plain,
-            size: QmButtonSize.small,
-            onPressed: _requestCancelEdit,
-          ),
-        ] else ...[
+        // 二十三批 2 号方案：编辑态的保存/取消不在标题行，改放左主列
+        // 底部（板子同款位置）；标题行编辑态只留标题 + 星标。
+        if (!_editing) ...[
           QmButton(
             label: q.isArchived ? '恢复' : '归档',
             variant: QmButtonVariant.plain,
@@ -2088,6 +2109,9 @@ class _DetailViewState extends ConsumerState<_DetailView> {
     );
   }
 
+  /// 编辑表单字段格（二十三批 2 号方案）：标题 + 控件，不留说明文字
+  ///（3 号方案的「？」展开与长 hint 已拆掉；_formGrid 的查看态答案
+  /// 区也走这里，同样只有标题 + 控件）。
   Widget _fieldCell(_Field f) {
     final palette = DesignTokens.of(Theme.of(context).brightness);
     final scale = qmScaleOf(context);
@@ -2105,17 +2129,6 @@ class _DetailViewState extends ConsumerState<_DetailView> {
         ),
         SizedBox(height: 5 * scale),
         f.child,
-        if (f.hint != null) ...[
-          SizedBox(height: 4 * scale),
-          Text(
-            f.hint!,
-            style: TextStyle(
-              fontSize: DesignTokens.detailFieldLabelFontSize,
-              color: palette.muted,
-              height: DesignTokens.bodyLineHeight,
-            ),
-          ),
-        ],
       ],
     );
   }
@@ -2389,275 +2402,55 @@ class _DetailViewState extends ConsumerState<_DetailView> {
           tone: QmBannerTone.warning,
           message: '正在编辑这道题：改动先不生效，点「保存」才保存；点「取消」时，有改动会先问你存不存。学科不在编辑范围里。',
         ),
-        _formGrid([
-          _Field(
-            '学科（不能改）',
-            _valueText(_st.subjectOf(q.subjectId).name),
-            hint: '导入时选定，详情和整理工作台都不能改',
-          ),
-          _Field(
-            '试卷（来源）',
-            Row(
-              children: [
-                Expanded(
-                  child: DropdownButton<String?>(
-                    value: _st.editExamId,
-                    isExpanded: true,
-                    hint: const Text('未关联试卷'),
-                    items: [
-                      const DropdownMenuItem<String?>(
-                        value: null,
-                        child: Text('未关联试卷'),
-                      ),
-                      for (final e in _st.exams)
-                        DropdownMenuItem(
-                          value: e.id,
-                          child: Text(
-                            e.date == null
-                                ? e.name
-                                : '${e.name}（${_fmtDate(e.date!)}）',
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                        ),
-                    ],
-                    onChanged: (v) {
-                      _notifier.setEditExamId(v);
-                      _markDirty();
-                    },
-                  ),
-                ),
-                SizedBox(width: 8 * scale),
-                QmButton(
-                  label: '新建',
-                  variant: QmButtonVariant.plain,
-                  size: QmButtonSize.small,
-                  onPressed: _newExam,
-                ),
-              ],
-            ),
-          ),
-          // 十四批 M1：题型 chip（编辑态改表单值，点「保存」才落盘）。
-          // Win11 包 4：芯片行 + 重新分类按钮 + 切分诊断小字。
-          _Field(
-            '题型',
-            _typeFieldChild(
+        // 二十三批 2 号方案（Meng 2026-11-22 15:53 改定：3 号分组
+        // 精简式作废，改左主右属性）：左主列是「整理」（文件夹 /
+        // 知识点 / 答案 / 解析 / 备注，底部取消/保存），右列是
+        // 「贴标签」（学科 / 试卷 / 题型 / 错因 / 标签，一行一个、
+        // 值靠右对齐）；窄屏右栏掉到左列下方变一列。3 号方案的
+        // 分组小标题、分隔线、「？」展开、组头新建按钮全拆掉。
+        SizedBox(height: 12 * scale),
+        LayoutBuilder(
+          builder: (context, constraints) {
+            final wide = constraints.maxWidth > 640;
+            final main = _buildEditMainColumn(
               q,
-              questionTypeChip(
-                type: _st.editQuestionType,
-                onTap: _pickEditQuestionType,
+              isChoiceEditType: isChoiceEditType,
+              subjectFolders: subjectFolders,
+              subjectKps: subjectKps,
+            );
+            final attrs = _buildEditAttrColumn(
+              q,
+              customTypes: customTypes,
+            );
+            if (!wide) {
+              return Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  main,
+                  SizedBox(height: 18 * scale),
+                  attrs,
+                ],
+              );
+            }
+            return IntrinsicHeight(
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Expanded(flex: 3, child: main),
+                  SizedBox(width: 20 * scale),
+                  Container(
+                    width: 1,
+                    color: DesignTokens.of(
+                      Theme.of(context).brightness,
+                    ).line,
+                  ),
+                  SizedBox(width: 20 * scale),
+                  Expanded(flex: 2, child: attrs),
+                ],
               ),
-              _st.editQuestionType,
-            ),
-            hint: '点一下可改 · 改后不再自动分类',
-          ),
-          _Field(
-            '文件夹（归类 · 可多选，题只存一份 · 只列本学科自己的文件夹）',
-            Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Wrap(
-                  spacing: 8 * scale,
-                  runSpacing: 8 * scale,
-                  children: [
-                    for (final f in subjectFolders)
-                      QmChip(
-                        label: f.name,
-                        selected: _st.editFolders.contains(f.id),
-                        onTap: () {
-                          _notifier.toggleEditFolder(f.id);
-                          _markDirty();
-                        },
-                      ),
-                  ],
-                ),
-                SizedBox(height: 8 * scale),
-                QmButton(
-                  label: '＋ 新建文件夹',
-                  variant: QmButtonVariant.plain,
-                  size: QmButtonSize.small,
-                  onPressed: _newFolder,
-                ),
-              ],
-            ),
-            full: true,
-            hint: '新建的文件夹只加进本学科的文件夹列表、只在这一科出现，建完直接选上',
-          ),
-          _Field(
-            '知识点（可多选、不限个数）',
-            Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Wrap(
-                  spacing: 8 * scale,
-                  runSpacing: 8 * scale,
-                  children: [
-                    for (final kp in subjectKps)
-                      QmChip(
-                        label: '${kp.chapter} · ${kp.name}',
-                        selected: _st.editKps.contains(kp.id),
-                        onTap: () {
-                          _notifier.toggleEditKp(kp.id);
-                          _markDirty();
-                        },
-                      ),
-                  ],
-                ),
-                SizedBox(height: 8 * scale),
-                QmButton(
-                  label: '＋ 新建知识点',
-                  variant: QmButtonVariant.plain,
-                  size: QmButtonSize.small,
-                  onPressed: _newKnowledgePoint,
-                ),
-              ],
-            ),
-            full: true,
-            hint:
-                '在这里新建的知识点会加进「${_st.subjectOf(q.subjectId).name}」的知识点树（自定义一类），之后整理和筛选都能选，不用去学科管理',
-          ),
-          _Field(
-            '错因（固定多选 + 自定义）',
-            Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Wrap(
-                  spacing: 8 * scale,
-                  runSpacing: 8 * scale,
-                  children: [
-                    for (final t in ErrorTypes.fixed)
-                      QmChip(
-                        label: t,
-                        selected: _st.editErrorTypes.contains(t),
-                        onTap: () {
-                          _notifier.toggleEditErrorType(t);
-                          _markDirty();
-                        },
-                      ),
-                    for (final t in customTypes)
-                      QmChip(
-                        label: t,
-                        selected: true,
-                        onTap: () {
-                          _notifier.removeEditCustomType(t);
-                          _markDirty();
-                        },
-                        onDelete: () {
-                          _notifier.removeEditCustomType(t);
-                          _markDirty();
-                        },
-                      ),
-                  ],
-                ),
-                SizedBox(height: 8 * scale),
-                QmButton(
-                  label: '＋ 自定义错因',
-                  variant: QmButtonVariant.plain,
-                  size: QmButtonSize.small,
-                  onPressed: _newCustomErrorType,
-                ),
-              ],
-            ),
-            full: true,
-            hint: '自定义错因只跟这道题，下次编辑时还能再选',
-          ),
-          _Field(
-            '标签（不限个数）',
-            Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Wrap(
-                  spacing: 8 * scale,
-                  runSpacing: 8 * scale,
-                  children: [
-                    for (final t in _st.allTags)
-                      QmChip(
-                        label: t,
-                        selected: _st.editTags.contains(t),
-                        onTap: () {
-                          _notifier.toggleEditTag(t);
-                          _markDirty();
-                        },
-                      ),
-                  ],
-                ),
-                SizedBox(height: 8 * scale),
-                QmButton(
-                  label: '＋ 新建标签',
-                  variant: QmButtonVariant.plain,
-                  size: QmButtonSize.small,
-                  onPressed: _newTag,
-                ),
-              ],
-            ),
-            full: true,
-          ),
-          // Win11 反馈包 1：答案区按题型分流（与整理页同套）——
-          // 选择/判断题只留字母按钮（下方编辑器），不显示文字答案框；
-          // 其他题型与待确认只留文字答案框。题型切换不删除已有答案：
-          // 旧值保留在本次编辑中，只提示、改回原题型可恢复。
-          if (!isChoiceEditType)
-            _Field(
-              '答案（与解析分开）',
-              TextField(
-                controller: _answerCtrl,
-                focusNode: _answerFocus,
-                decoration: const InputDecoration(
-                  labelText: '答案',
-                  hintText: '留空保存后显示“待补充”',
-                ),
-                maxLines: 3,
-                onChanged: (_) => _markDirty(),
-              ),
-            ),
-          if (isChoiceEditType &&
-              (_st.editQuestionType == 'choice_single' ||
-                  _st.editQuestionType == 'true_false') &&
-              (q.answer ?? '').trim().isNotEmpty)
-            _Field(
-              '答案（已保留）',
-              _valueText(
-                '文字答案“${q.answer!.trim()}”已保留：当前题型答案以字母按钮为准，改回其他题型可继续用。',
-              ),
-              full: true,
-            ),
-          if (!isChoiceEditType &&
-              _st.editCorrectOption != null &&
-              _st.editCorrectOption!.isNotEmpty)
-            _Field(
-              '答案（已保留）',
-              _valueText(
-                '题型已改：之前选定的正确答案（${_st.editCorrectOption}）已保留在本次编辑中，改回单选/判断可恢复；保存后按新题型处理。',
-              ),
-              full: true,
-            ),
-          _Field(
-            '解析（可以空）',
-            TextField(
-              controller: _explanationCtrl,
-              focusNode: _explanationFocus,
-              decoration: const InputDecoration(
-                labelText: '解析',
-                hintText: '留空保存后显示“待补充”',
-              ),
-              maxLines: 5,
-              onChanged: (_) => _markDirty(),
-            ),
-          ),
-          _Field(
-            '备注（笔记 · 与答案、解析分开）',
-            TextField(
-              controller: _notesCtrl,
-              focusNode: _notesFocus,
-              decoration: const InputDecoration(
-                labelText: '备注',
-                hintText: '留空保存后显示“待补充”',
-              ),
-              maxLines: 3,
-              onChanged: (_) => _markDirty(),
-            ),
-            full: true,
-          ),
-        ]),
+            );
+          },
+        ),
         // 十四批 M3：选项标签确认编辑器（编辑态；随「保存」落盘——
         // 「确认选项」只改编辑态确认值，不单独写库）。
         // Win11 反馈包 1：选择/判断题时它是答案区的唯一答案入口
@@ -2743,6 +2536,444 @@ class _DetailViewState extends ConsumerState<_DetailView> {
             ),
           ]),
         ],
+      ],
+    );
+  }
+
+  /// 二十三批 2 号方案左主列「整理」：文件夹 / 知识点 / 答案 /
+  /// 解析 / 备注（备注放解析下面，内容类字段跟答案/解析一起），
+  /// 底部取消/保存右对齐。全部单栏上下叠放。
+  Widget _buildEditMainColumn(
+    Question q, {
+    required bool isChoiceEditType,
+    required List<Folder> subjectFolders,
+    required List<KnowledgePoint> subjectKps,
+  }) {
+    final scale = qmScaleOf(context);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _fieldCell(
+          _Field(
+            '文件夹 *',
+            Wrap(
+              spacing: 8 * scale,
+              runSpacing: 8 * scale,
+              children: [
+                for (final f in subjectFolders)
+                  QmChip(
+                    label: f.name,
+                    selected: _st.editFolders.contains(f.id),
+                    onTap: () {
+                      _notifier.toggleEditFolder(f.id);
+                      _markDirty();
+                    },
+                  ),
+                QmChip(
+                  label: '＋ 新建',
+                  selected: false,
+                  onTap: _newFolder,
+                ),
+              ],
+            ),
+            full: true,
+          ),
+        ),
+        SizedBox(height: 14 * scale),
+        _fieldCell(
+          _Field('知识点', _buildKpPickerBox(subjectKps), full: true),
+        ),
+        if (!isChoiceEditType) ...[
+          SizedBox(height: 14 * scale),
+          _fieldCell(
+            _Field(
+              '答案',
+              TextField(
+                controller: _answerCtrl,
+                focusNode: _answerFocus,
+                decoration: const InputDecoration(
+                  hintText: '填答案（可以空着）',
+                ),
+                maxLines: 3,
+                onChanged: (_) => _markDirty(),
+              ),
+              full: true,
+            ),
+          ),
+        ],
+        if (isChoiceEditType &&
+            (_st.editQuestionType == 'choice_single' ||
+                _st.editQuestionType == 'true_false') &&
+            (q.answer ?? '').trim().isNotEmpty) ...[
+          SizedBox(height: 14 * scale),
+          _fieldCell(
+            _Field(
+              '答案（已保留）',
+              _valueText(
+                '文字答案“${q.answer!.trim()}”已保留：当前题型答案以字母按钮为准，改回其他题型可继续用。',
+              ),
+              full: true,
+            ),
+          ),
+        ],
+        if (!isChoiceEditType &&
+            _st.editCorrectOption != null &&
+            _st.editCorrectOption!.isNotEmpty) ...[
+          SizedBox(height: 14 * scale),
+          _fieldCell(
+            _Field(
+              '答案（已保留）',
+              _valueText(
+                '题型已改：之前选定的正确答案（${_st.editCorrectOption}）已保留在本次编辑中，改回单选/判断可恢复；保存后按新题型处理。',
+              ),
+              full: true,
+            ),
+          ),
+        ],
+        SizedBox(height: 14 * scale),
+        _fieldCell(
+          _Field(
+            '解析',
+            TextField(
+              controller: _explanationCtrl,
+              focusNode: _explanationFocus,
+              decoration: const InputDecoration(
+                hintText: '填解析（可以空着）',
+              ),
+              maxLines: 5,
+              onChanged: (_) => _markDirty(),
+            ),
+            full: true,
+          ),
+        ),
+        SizedBox(height: 14 * scale),
+        _fieldCell(
+          _Field(
+            '备注',
+            TextField(
+              controller: _notesCtrl,
+              focusNode: _notesFocus,
+              decoration: const InputDecoration(
+                hintText: '填备注（可以空着）',
+              ),
+              maxLines: 3,
+              onChanged: (_) => _markDirty(),
+            ),
+            full: true,
+          ),
+        ),
+        SizedBox(height: 16 * scale),
+        Row(
+          mainAxisAlignment: MainAxisAlignment.end,
+          children: [
+            QmButton(
+              label: '取消',
+              variant: QmButtonVariant.plain,
+              size: QmButtonSize.small,
+              onPressed: _requestCancelEdit,
+            ),
+            SizedBox(width: 8 * scale),
+            QmButton(
+              label: '保存',
+              size: QmButtonSize.small,
+              onPressed: _saveEdit,
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+
+  /// 二十三批 2 号方案知识点行：虚线框；未选时显示「还没选」+
+  /// 「＋ 添加」；点「＋ 添加」展开内联选择器（本学科全部知识点
+  /// chip 点选，末尾「＋ 新建知识点」新建并选上）；已选的 chip
+  /// 点一下取消选。选择器开着时按钮变「收起」。
+  Widget _buildKpPickerBox(List<KnowledgePoint> subjectKps) {
+    final palette = DesignTokens.of(Theme.of(context).brightness);
+    final scale = qmScaleOf(context);
+    final selected = subjectKps
+        .where((k) => _st.editKps.contains(k.id))
+        .toList();
+    return _DashedBox(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: selected.isEmpty
+                    ? Text(
+                        '还没选',
+                        style: TextStyle(
+                          fontSize: DesignTokens.detailFieldValueFontSize,
+                          color: palette.muted,
+                          height: DesignTokens.bodyLineHeight,
+                        ),
+                      )
+                    : Wrap(
+                        spacing: 8 * scale,
+                        runSpacing: 8 * scale,
+                        children: [
+                          for (final kp in selected)
+                            QmChip(
+                              label: '${kp.chapter} · ${kp.name}',
+                              selected: true,
+                              onTap: () {
+                                _notifier.toggleEditKp(kp.id);
+                                _markDirty();
+                              },
+                            ),
+                        ],
+                      ),
+              ),
+              SizedBox(width: 8 * scale),
+              QmButton(
+                label: _kpPickerOpen ? '收起' : '＋ 添加',
+                variant: QmButtonVariant.plain,
+                size: QmButtonSize.small,
+                onPressed: () {
+                  setState(() {
+                    _kpPickerOpen = !_kpPickerOpen;
+                  });
+                },
+              ),
+            ],
+          ),
+          if (_kpPickerOpen) ...[
+            SizedBox(height: 10 * scale),
+            Wrap(
+              spacing: 8 * scale,
+              runSpacing: 8 * scale,
+              children: [
+                for (final kp in subjectKps)
+                  QmChip(
+                    label: '${kp.chapter} · ${kp.name}',
+                    selected: _st.editKps.contains(kp.id),
+                    onTap: () {
+                      _notifier.toggleEditKp(kp.id);
+                      _markDirty();
+                    },
+                  ),
+                QmChip(
+                  label: '＋ 新建知识点',
+                  selected: false,
+                  onTap: _newKnowledgePoint,
+                ),
+              ],
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  /// 二十三批 2 号方案右属性列：一行一个、值靠右对齐——学科 /
+  /// 试卷 / 题型；错因 / 标签是标题在上、chip 在下。
+  Widget _buildEditAttrColumn(
+    Question q, {
+    required Iterable<String> customTypes,
+  }) {
+    final palette = DesignTokens.of(Theme.of(context).brightness);
+    final scale = qmScaleOf(context);
+    // 题型「重新分类」与查看态同款条件（_typeFieldChild）：
+    // 非手动题型且有 OCR 原文时才可重算。
+    final showReclassify =
+        q.questionTypeSource != 'manual' &&
+        GlmOcrRawData.tryParse(q.ocrRaw) != null;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _attrRow(
+          '学科',
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                _st.subjectOf(q.subjectId).name,
+                style: TextStyle(
+                  fontSize: DesignTokens.detailFieldValueFontSize,
+                  fontWeight: FontWeight.w700,
+                  color: palette.ink,
+                  height: DesignTokens.bodyLineHeight,
+                ),
+              ),
+              SizedBox(width: 6 * scale),
+              Text(
+                '不可改',
+                style: TextStyle(
+                  fontSize: 12.5,
+                  color: palette.muted,
+                  height: DesignTokens.bodyLineHeight,
+                ),
+              ),
+            ],
+          ),
+        ),
+        SizedBox(height: 14 * scale),
+        _attrRow(
+          '试卷',
+          DropdownButton<String?>(
+            value: _st.editExamId,
+            isExpanded: true,
+            hint: const Text(
+              '未关联试卷',
+              textAlign: TextAlign.right,
+              overflow: TextOverflow.ellipsis,
+            ),
+            items: [
+              const DropdownMenuItem<String?>(
+                value: null,
+                child: Text(
+                  '未关联试卷',
+                  textAlign: TextAlign.right,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+              for (final e in _st.exams)
+                DropdownMenuItem(
+                  value: e.id,
+                  child: Text(
+                    e.date == null
+                        ? e.name
+                        : '${e.name}（${_fmtDate(e.date!)}）',
+                    textAlign: TextAlign.right,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+            ],
+            onChanged: (v) {
+              _notifier.setEditExamId(v);
+              _markDirty();
+            },
+          ),
+        ),
+        SizedBox(height: 14 * scale),
+        _attrRow(
+          '题型',
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              questionTypeChip(
+                type: _st.editQuestionType,
+                onTap: _pickEditQuestionType,
+              ),
+              if (showReclassify) ...[
+                SizedBox(width: 4 * scale),
+                TextButton(
+                  onPressed: _onReclassify,
+                  child: const Text('重新分类'),
+                ),
+              ],
+            ],
+          ),
+        ),
+        SizedBox(height: 16 * scale),
+        _attrSection(
+          '错因',
+          Wrap(
+            spacing: 8 * scale,
+            runSpacing: 8 * scale,
+            children: [
+              for (final t in ErrorTypes.fixed)
+                QmChip(
+                  label: t,
+                  selected: _st.editErrorTypes.contains(t),
+                  onTap: () {
+                    _notifier.toggleEditErrorType(t);
+                    _markDirty();
+                  },
+                ),
+              for (final t in customTypes)
+                QmChip(
+                  label: t,
+                  selected: true,
+                  onTap: () {
+                    _notifier.removeEditCustomType(t);
+                    _markDirty();
+                  },
+                  onDelete: () {
+                    _notifier.removeEditCustomType(t);
+                    _markDirty();
+                  },
+                ),
+              QmChip(
+                label: '＋ 自定义',
+                selected: false,
+                onTap: _newCustomErrorType,
+              ),
+            ],
+          ),
+        ),
+        SizedBox(height: 16 * scale),
+        _attrSection(
+          '标签',
+          Wrap(
+            spacing: 8 * scale,
+            runSpacing: 8 * scale,
+            children: [
+              for (final t in _st.allTags)
+                QmChip(
+                  label: t,
+                  selected: _st.editTags.contains(t),
+                  onTap: () {
+                    _notifier.toggleEditTag(t);
+                    _markDirty();
+                  },
+                ),
+              QmChip(
+                label: '＋ 新建',
+                selected: false,
+                onTap: _newTag,
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  /// 右属性列单行：标签在左、值靠右对齐。
+  Widget _attrRow(String label, Widget value) {
+    final palette = DesignTokens.of(Theme.of(context).brightness);
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.center,
+      children: [
+        Text(
+          label,
+          style: TextStyle(
+            fontSize: 13.5,
+            color: palette.muted,
+            height: DesignTokens.bodyLineHeight,
+          ),
+        ),
+        SizedBox(width: 10),
+        Expanded(
+          child: Align(
+            alignment: Alignment.centerRight,
+            child: value,
+          ),
+        ),
+      ],
+    );
+  }
+
+  /// 右属性列小节：标题在上、内容在下（错因 / 标签 chip 组）。
+  Widget _attrSection(String label, Widget child) {
+    final palette = DesignTokens.of(Theme.of(context).brightness);
+    final scale = qmScaleOf(context);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          label,
+          style: TextStyle(
+            fontSize: 13.5,
+            color: palette.muted,
+            height: DesignTokens.bodyLineHeight,
+          ),
+        ),
+        SizedBox(height: 6 * scale),
+        child,
       ],
     );
   }
@@ -3468,3 +3699,81 @@ class _ShareCardExportDialogState extends State<_ShareCardExportDialog> {
     );
   }
 }
+
+/// 虚线圆角框（二十三批 2 号方案知识点行：板子同款虚线框）。
+/// Flutter 没有内置虚线边框，用 PathMetric 沿圆角矩形描虚线。
+class _DashedBox extends StatelessWidget {
+  const _DashedBox({required this.child});
+
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = DesignTokens.of(Theme.of(context).brightness);
+    final scale = qmScaleOf(context);
+    return CustomPaint(
+      painter: _DashedRectPainter(
+        color: palette.lineStrong,
+        strokeWidth: 1,
+        radius: 8 * scale,
+      ),
+      child: Container(
+        width: double.infinity,
+        padding: EdgeInsets.symmetric(
+          horizontal: 12 * scale,
+          vertical: 10 * scale,
+        ),
+        child: child,
+      ),
+    );
+  }
+}
+
+class _DashedRectPainter extends CustomPainter {
+  const _DashedRectPainter({
+    required this.color,
+    required this.strokeWidth,
+    required this.radius,
+  });
+
+  final Color color;
+  final double strokeWidth;
+  final double radius;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()
+      ..color = color
+      ..strokeWidth = strokeWidth
+      ..style = PaintingStyle.stroke;
+    final rect = Rect.fromLTWH(
+      strokeWidth / 2,
+      strokeWidth / 2,
+      size.width - strokeWidth,
+      size.height - strokeWidth,
+    );
+    final path = Path()
+      ..addRRect(
+        RRect.fromRectAndRadius(rect, Radius.circular(radius)),
+      );
+    const dash = 5.0;
+    const gap = 4.0;
+    final dashed = Path();
+    for (final metric in path.computeMetrics()) {
+      var distance = 0.0;
+      while (distance < metric.length) {
+        final end = (distance + dash).clamp(0.0, metric.length);
+        dashed.addPath(metric.extractPath(distance, end), Offset.zero);
+        distance += dash + gap;
+      }
+    }
+    canvas.drawPath(dashed, paint);
+  }
+
+  @override
+  bool shouldRepaint(_DashedRectPainter old) =>
+      old.color != color ||
+      old.strokeWidth != strokeWidth ||
+      old.radius != radius;
+}
+

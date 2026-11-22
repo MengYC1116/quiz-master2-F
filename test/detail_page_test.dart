@@ -396,8 +396,10 @@ Future<void> pumpDetail(
   bool imageFailed = false,
   Brightness brightness = Brightness.light,
   double scale = 1.0,
+  // 二十三批 2 号方案窄屏测试用：默认 1280×720 宽屏。
+  Size viewport = const Size(1280, 720),
 }) async {
-  tester.view.physicalSize = const Size(1280, 720);
+  tester.view.physicalSize = viewport;
   tester.view.devicePixelRatio = 1.0;
   addTearDown(tester.view.resetPhysicalSize);
   addTearDown(tester.view.resetDevicePixelRatio);
@@ -500,7 +502,12 @@ void main() {
   });
 
   tearDownAll(() async {
-    AppDatabase.testDataDirectory = null;
+    // 二十五批：只动 tearDownAll。先清图片缓存（详情页切片经 Image.file
+    // 显示后 mmap 占着文件）+ 关掉 _refreshRelated 真开过的库连接，
+    // 再删目录；否则 Windows 上删目录报 errno 32。resetForTest 也把
+    // testDataDirectory 置 null。
+    imageCache.clear();
+    await AppDatabase.resetForTest();
     await _testTmp.delete(recursive: true);
   });
 
@@ -572,7 +579,7 @@ void main() {
       // D1：信息 panel 默认展开，q2 的备注也是空 → 答案 + 解析 + 备注共 3 处。
       expect(find.text('待补充 · 点这里补'), findsNWidgets(3));
       await tapText(tester, '待补充 · 点这里补', first: true);
-      expect(find.text('保存'), findsOneWidget); // 标题行（编辑态）
+      expect(find.text('保存'), findsOneWidget); // 左列底部（编辑态）
       expect(find.textContaining('正在编辑这道题'), findsOneWidget);
     });
 
@@ -742,7 +749,7 @@ void main() {
       // Win11 反馈包 1：选择题不显示文字答案框——多选答案只活在点选
       // 里，保存时拼成字母串落库。
       final answerField = find.byWidgetPredicate(
-        (w) => w is TextField && w.decoration?.labelText == '答案',
+        (w) => w is TextField && w.decoration?.hintText == '填答案（可以空着）',
       );
       expect(answerField, findsNothing);
       Future<void> tapChip(String letter) async {
@@ -786,7 +793,7 @@ void main() {
       expect(find.text('继续编辑'), findsOneWidget);
       // 继续编辑：仍在编辑态
       await tapText(tester, '继续编辑');
-      expect(find.text('保存'), findsOneWidget); // 标题行（编辑态）
+      expect(find.text('保存'), findsOneWidget); // 左列底部（编辑态）
       // 不保存：退出编辑，标题未变
       await tapText(tester, '取消', first: true);
       await tapText(tester, '不保存，丢弃改动');
@@ -801,19 +808,111 @@ void main() {
       expect(repo.saved.last.title, '函数极限改');
     });
 
-    testWidgets('编辑表单含试卷下拉与芯片多选，学科不可改', (tester) async {
+    testWidgets('方案二：左右两栏——左列整理字段、右列属性行、底部取消/保存',
+        (tester) async {
       await pumpDetail(tester);
       await tapText(tester, '编辑');
-      expect(find.text('学科（不能改）'), findsOneWidget);
-      expect(find.text('试卷（来源）'), findsOneWidget);
-      expect(find.text('文件夹（归类 · 可多选，题只存一份 · 只列本学科自己的文件夹）'), findsOneWidget);
-      expect(find.text('知识点（可多选、不限个数）'), findsOneWidget);
-      expect(find.text('错因（固定多选 + 自定义）'), findsOneWidget);
-      expect(find.text('标签（不限个数）'), findsOneWidget);
-      expect(find.text('＋ 新建文件夹'), findsOneWidget);
+      // 面板头：题目信息 +「编辑中」+「改动保存后才生效」。
+      expect(find.text('题目信息'), findsOneWidget);
+      expect(find.text('编辑中'), findsOneWidget);
+      expect(find.text('改动保存后才生效'), findsOneWidget);
+      // 3 号方案的东西全拆掉：分组小标题、「？」、组头新建按钮。
+      expect(find.text('归类'), findsNothing);
+      expect(find.text('诊断'), findsNothing);
+      expect(find.text('来源与内容'), findsNothing);
+      expect(find.byKey(const Key('field-help-文件夹')), findsNothing);
+      expect(find.text('＋ 新建文件夹'), findsNothing);
+      expect(find.text('＋ 新建知识点'), findsNothing);
+      expect(find.text('＋ 自定义错因'), findsNothing);
+      expect(find.text('＋ 新建标签'), findsNothing);
+      expect(find.text('＋ 新建试卷'), findsNothing);
+      // 左列：文件夹 * / 知识点 / 答案 / 解析 / 备注。
+      expect(find.text('文件夹 *'), findsOneWidget);
+      expect(find.text('知识点'), findsOneWidget);
+      expect(find.text('答案'), findsOneWidget);
+      expect(find.text('解析'), findsOneWidget);
+      expect(find.text('备注'), findsOneWidget);
+      // 右列：一行一个——学科（数学 不可改）/ 试卷 / 题型（待确认）/
+      // 错因 / 标签。'试卷'出现两次：文件夹 chip + 右列标签。
+      expect(find.text('学科'), findsOneWidget);
+      expect(find.text('数学'), findsOneWidget);
+      expect(find.text('不可改'), findsOneWidget);
+      expect(find.text('试卷'), findsNWidgets(2));
+      expect(find.textContaining('高等数学期末试卷'), findsOneWidget);
+      expect(find.text('待确认'), findsOneWidget);
+      expect(find.text('错因'), findsOneWidget);
+      expect(find.text('标签'), findsOneWidget);
+      // 错因 chip（固定五项 +「＋ 自定义」）、标签 chip +「＋ 新建」。
+      // 「概念不清」在复习记录里也出现一次，错因行用 panel 限定。
+      final infoPanel = find.byKey(const Key('detail-panel-info'));
+      for (final t in ['审题失误', '概念不清', '计算错误', '方法不会', '其他']) {
+        expect(
+          find.descendant(of: infoPanel, matching: find.text(t)),
+          findsOneWidget,
+        );
+      }
+      expect(find.text('＋ 自定义'), findsOneWidget);
+      for (final t in ['易错', '常考', '需重做']) {
+        expect(find.text(t), findsOneWidget);
+      }
+      // 「＋ 新建」两处：文件夹行与标签行。
+      expect(find.text('＋ 新建'), findsNWidgets(2));
+      // 知识点：q1 已选 k1，显示已选 chip +「＋ 添加」。
+      expect(
+        find.text('第一章 函数与极限 · 函数极限'),
+        findsOneWidget,
+      );
+      expect(find.text('＋ 添加'), findsOneWidget);
+      // 取消/保存各一个，在左列底部。
+      expect(find.text('取消'), findsOneWidget);
+      expect(find.text('保存'), findsOneWidget);
+      // 几何：右列在左列右面；取消/保存在备注下面、右列左面。
+      final folderRect = tester.getRect(find.text('文件夹 *'));
+      final attrRect = tester.getRect(find.text('学科'));
+      expect(attrRect.left, greaterThan(folderRect.right));
+      final notesRect = tester.getRect(find.text('备注'));
+      final saveRect = tester.getRect(find.text('保存'));
+      expect(saveRect.top, greaterThan(notesRect.bottom));
+      expect(saveRect.right, lessThan(attrRect.left));
+    });
+
+    testWidgets('方案二：知识点「＋ 添加」展开选择器，点选后选中', (tester) async {
+      await pumpDetail(tester);
+      await tapText(tester, '编辑');
+      const k2 = '第二章 导数 · 导数概念';
+      // 选择器关着：k2 不出现，「＋ 新建知识点」也不出现。
+      expect(find.text(k2), findsNothing);
+      expect(find.text('＋ 新建知识点'), findsNothing);
+      await tapText(tester, '＋ 添加');
+      expect(find.text('收起'), findsOneWidget);
+      expect(find.text(k2), findsOneWidget);
       expect(find.text('＋ 新建知识点'), findsOneWidget);
-      expect(find.text('＋ 自定义错因'), findsOneWidget);
-      expect(find.text('＋ 新建标签'), findsOneWidget);
+      // 点选 k2：已选区与选择器里各出现一次。
+      await tapText(tester, k2);
+      expect(find.text(k2), findsNWidgets(2));
+      // 收起：选择器关掉，已选区只剩一次。
+      await tapText(tester, '收起');
+      expect(find.text('＋ 添加'), findsOneWidget);
+      expect(find.text(k2), findsOneWidget);
+      expect(find.text('＋ 新建知识点'), findsNothing);
+    });
+
+    testWidgets('方案二：窄屏右栏掉到左列下方变一列', (tester) async {
+      await pumpDetail(
+        tester,
+        questionId: 'q3',
+        viewport: const Size(500, 800),
+      );
+      await tapText(tester, '编辑');
+      // q3 未关联试卷，下拉显示「未关联试卷」；未选知识点显示「还没选」。
+      expect(find.text('未关联试卷'), findsOneWidget);
+      expect(find.text('还没选'), findsOneWidget);
+      // 几何：右列（学科行）在左列（备注行）下方，且与左列同一起点。
+      final folderRect = tester.getRect(find.text('文件夹 *'));
+      final notesRect = tester.getRect(find.text('备注'));
+      final attrRect = tester.getRect(find.text('学科'));
+      expect(attrRect.top, greaterThan(notesRect.bottom));
+      expect((attrRect.left - folderRect.left).abs(), lessThan(2.0));
     });
   });
 
@@ -1613,7 +1712,8 @@ void main() {
       expect(size.height, 460);
     });
 
-    testWidgets('D1：编辑态标题行显示保存/取消代替归档/删除', (tester) async {
+    testWidgets('D1：编辑态左列底部显示取消/保存，标题行不再显示归档/删除',
+        (tester) async {
       await pumpDetail(tester);
       await tapText(tester, '编辑');
       expect(find.text('保存'), findsOneWidget);
@@ -1621,6 +1721,10 @@ void main() {
       expect(find.text('归档'), findsNothing);
       expect(find.text('删除'), findsNothing);
       expect(find.text('编辑'), findsNothing);
+      // 取消/保存在左列底部：备注字段下面。
+      final notesRect = tester.getRect(find.text('备注'));
+      final saveRect = tester.getRect(find.text('保存'));
+      expect(saveRect.top, greaterThan(notesRect.bottom));
     });
 
     testWidgets('A 紧凑：亮/深 × 1.30 无溢出', (tester) async {
@@ -1635,7 +1739,7 @@ void main() {
 
   group('Win11 反馈包 1：答案区', () {
     Finder editAnswerField() => find.byWidgetPredicate(
-      (w) => w is TextField && w.decoration?.labelText == '答案',
+      (w) => w is TextField && w.decoration?.hintText == '填答案（可以空着）',
     );
 
     Future<void> pickEditType(

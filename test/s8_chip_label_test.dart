@@ -281,9 +281,9 @@ void main() {
       );
       await pumpWrongbook(tester,
           repo: repo, initialSubjectId: 'subject-chem');
-      // 二十批全量定位：十九批后 /wrongbook 默认落点是 L1 列表（D-223），
-      // L1 页头随收尾修复已删，标题不在列表页——目录标题在目录视图里，
-      // 经筛选面板书架入口进书架、点化学封面进目录再断言。
+      // 二十批全量定位：/wrongbook 默认落点是书架（D-250），
+      // L1 页头已恢复，标题在目录视图里——只带学科直接落目录，
+      // 点「返回书架」再点化学封面进目录断言。
       await openShelfFromList(tester);
       await tester.tap(find.text('化学'));
       await tester.pumpAndSettle();

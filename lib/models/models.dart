@@ -15,6 +15,10 @@ class Subject {
     required this.icon,
     this.coverStyle = 'plain',
     this.coverColor = 'blue',
+    // D-257：书封英文名（GLM 翻译或手动填）；null = 没有，不画英文行。
+    this.englishName,
+    // D-257：true = 用户手动填过英文名，自动翻译不再覆盖。
+    this.englishNameManual = false,
   });
   final String id;
   final String name;
@@ -22,13 +26,33 @@ class Subject {
   final String icon; // 单字图标，如 数 / 英 / 政
   final String coverStyle; // 6 种封面样式之一
   final String coverColor; // 7 种预设色之一
+  final String? englishName;
+  final bool englishNameManual;
 
   static final math = Subject(
-      id: 'math', name: '数学', color: const Color(0xFF2E7CF6), icon: '数');
+    id: 'math',
+    name: '数学',
+    color: const Color(0xFF2E7CF6),
+    icon: '数',
+    englishName: 'MATHEMATICS',
+    englishNameManual: true,
+  );
   static final english = Subject(
-      id: 'english', name: '英语', color: const Color(0xFF00A884), icon: '英');
+    id: 'english',
+    name: '英语',
+    color: const Color(0xFF00A884),
+    icon: '英',
+    englishName: 'ENGLISH',
+    englishNameManual: true,
+  );
   static final politics = Subject(
-      id: 'politics', name: '政治', color: const Color(0xFFEF4444), icon: '政');
+    id: 'politics',
+    name: '政治',
+    color: const Color(0xFFEF4444),
+    icon: '政',
+    englishName: 'POLITICS',
+    englishNameManual: true,
+  );
   static List<Subject> get all => [math, english, politics];
   static Subject byId(String id) =>
       all.firstWhere((s) => s.id == id, orElse: () => math);
@@ -38,6 +62,10 @@ class Subject {
     Color? color,
     String? coverStyle,
     String? coverColor,
+    // D-257：englishName 用哨兵区分“不传”（保持原值）与“传 null”
+    //（清空英文名，改名重翻时用）；其余字段沿用可空即不传的旧约定。
+    Object? englishName = _unset,
+    bool? englishNameManual,
   }) =>
       Subject(
         id: id,
@@ -46,7 +74,13 @@ class Subject {
         icon: icon,
         coverStyle: coverStyle ?? this.coverStyle,
         coverColor: coverColor ?? this.coverColor,
+        englishName: englishName == _unset
+            ? this.englishName
+            : englishName as String?,
+        englishNameManual: englishNameManual ?? this.englishNameManual,
       );
+
+  static const _unset = Object();
 }
 
 /// 错题本封面 6 种样式（学科管理页按学科换）。
@@ -572,6 +606,17 @@ class Question {
   /// 自定义）会在详情页与错题本重复显示；新入口已拦同名，但未重保存
   /// 的旧题仍带重复。Set 保序（先固定、后自定义），一处修、全链路受益。
   List<String> get allCauses => {...errorTypes, ...customErrorTypes}.toList();
+
+  /// 二十三批 D-250：题干取用口径——优先 OCR 题干（ocrStem，
+  /// GLM-OCR 由 ocr_queue 写入），回退演示/老题占位字段 sliceText。
+  /// OCR 流程从不写 sliceText，旧口径只读 sliceText 时真题行标题
+  /// 回退到文件名；列表行标题与内容搜索共用此口径。ocrRaw 是内部
+  /// 原始结果，绝不进这里。
+  String get displayStem {
+    final ocr = ocrStem?.trim();
+    if (ocr != null && ocr.isNotEmpty) return ocr;
+    return sliceText;
+  }
 
   Question copyWith({
     List<String>? folderIds,

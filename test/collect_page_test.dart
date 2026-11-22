@@ -592,7 +592,12 @@ void main() {
   });
 
   tearDownAll(() async {
-    AppDatabase.testDataDirectory = null;
+    // 二十五批：先清图片缓存（页图/切片经 Image.file 显示后 mmap
+    // 占着文件）+ 防御性关掉可能真开过的库连接，再删目录；否则
+    // Windows 上删目录报 errno 32。resetForTest 也把
+    // testDataDirectory 置 null。
+    imageCache.clear();
+    await AppDatabase.resetForTest();
     await _testTmp.delete(recursive: true);
   });
 

@@ -413,7 +413,19 @@ void main() {
       expect(container.read(detailProvider).ocrEnqueueFailed, isTrue);
       // 新切片文件被删：重试入队返回 null（无切片，不是失败）。
       final newSlice = container.read(detailProvider).question!.slicePath!;
-      await File(AppDatabase.resolveDataPath(newSlice)!).delete();
+      // 二十五批：Win11 上新切片仍可能被图片缓存/解码句柄占着，直接删
+      // 报 PathAccessException（errno 32）。先清缓存，再重试删。
+      imageCache.clear();
+      var deleted = false;
+      for (var attempt = 0; attempt < 10 && !deleted; attempt++) {
+        try {
+          await File(AppDatabase.resolveDataPath(newSlice)!).delete();
+          deleted = true;
+        } on PathAccessException {
+          await Future<void>.delayed(const Duration(milliseconds: 100));
+        }
+      }
+      expect(deleted, isTrue);
       final db2 = await AppDatabase.openForTest();
       AppDatabase.useDatabaseForTest(db2);
       expect(await notifier.retryOcrEnqueue(), isTrue);

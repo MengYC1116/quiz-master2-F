@@ -2,6 +2,91 @@ part of 'wrongbook_page.dart';
 
 // 书架视图：书架页、书架顶栏、分页器、封面书本与封面统计。
 
+// D-256：板子 12 号外形 218×304（旧封面是 300×376，见 B8-8）。
+// 尺寸与板子一致，不再走 DesignTokens.bookWidth/bookMinHeight。
+const double _kBook12Width = 218;
+const double _kBook12Height = 304;
+
+// D-256：板子渐变 160°（CSS 角度：0° 朝上、顺时针；160° 即向下
+// 偏右 20°）。方向向量 (sin160°, cos160°)（y 向下）= (0.342, 0.940)。
+// CSS 的渐变线过中心、端点落在盒子上下两边（218×304：x=53.7/164.3），
+// Flutter 的 begin/end 直接取这两个端点对应的 Alignment，
+// 这样 58% 的接缝位置与 CSS 完全一致（只取 ±(sin,cos) 会让渐变线
+// 短一截，接缝偏上约 16px）。
+const _kBook12GradientBegin = Alignment(-0.5076, -1.0);
+const _kBook12GradientEnd = Alignment(0.5076, 1.0);
+
+/// 板子 12 号配色（B26-SPEC；与 app 学科 token 略有不同，按板子值来）。
+/// 预设三科按 id 查表；其他学科按自身学科色推导（c 取学科色，
+/// cd/cdd 按明度加深）。
+/// D-257：英文名读学科存好的 englishName（GLM 翻译或手动填）；没有
+/// 就不画英文行。预设三科的存值与板子预设值一致；万一存值缺失（如从
+/// v6 备份恢复的老行），回退到板子预设值。
+/// 板子上的 `--cl`（浅色）12 号没用到（渐变只用 c/cd，按钮字用 cdd），
+/// 这里不带它。
+class _Book12Palette {
+  const _Book12Palette({
+    required this.c,
+    required this.cd,
+    required this.cdd,
+    required this.englishName,
+  });
+  final Color c;
+  final Color cd;
+  final Color cdd;
+
+  /// 书封英文名（渲染时统一大写）；null = 没有，不画英文行。
+  final String? englishName;
+
+  static const _bySubjectId = <String, (Color, Color, Color, String)>{
+    'math': (
+      Color(0xFF2B6BEB),
+      Color(0xFF1743A6),
+      Color(0xFF102F75),
+      'MATHEMATICS',
+    ),
+    'english': (
+      Color(0xFF0E9F6E),
+      Color(0xFF066E4B),
+      Color(0xFF044A33),
+      'ENGLISH',
+    ),
+    'politics': (
+      Color(0xFFDE5148),
+      Color(0xFFA92E28),
+      Color(0xFF7C1F1B),
+      'POLITICS',
+    ),
+  };
+
+  factory _Book12Palette.of(Subject s) {
+    final preset = _bySubjectId[s.id];
+    // 预设三科：存值优先（用户手动改过英文名时以存值为准），缺失时
+    // 回退板子预设值；其他学科：只读存值，没有就不画英文行。
+    final englishName = s.englishName ?? preset?.$4;
+    if (preset != null) {
+      return _Book12Palette(
+        c: preset.$1,
+        cd: preset.$2,
+        cdd: preset.$3,
+        englishName: englishName,
+      );
+    }
+    return _Book12Palette(
+      c: s.color,
+      cd: _shade(s.color, 0.62),
+      cdd: _shade(s.color, 0.45),
+      englishName: englishName,
+    );
+  }
+
+  static Color _shade(Color color, double factor) {
+    final hsl = HSLColor.fromColor(color);
+    final lightness = (hsl.lightness * factor).clamp(0.0, 1.0);
+    return hsl.withLightness(lightness).toColor();
+  }
+}
+
 extension _WrongbookShelfBuild on _WrongbookViewState {
   Widget _buildShelf() {
     const perPage = 6;
@@ -30,15 +115,15 @@ extension _WrongbookShelfBuild on _WrongbookViewState {
               onAction: widget.onGoSubjects,
             )
           else ...[
-            // B8-8：封面固定尺寸（宽 DesignTokens.bookWidth、高
-            // bookMinHeight，均 × 字号缩放因子），不再随窗口缩放；
+            // D-256：封面固定尺寸（宽 _kBook12Width 218、高 _kBook12Height 304，
+            // 均 × 字号缩放因子），不再随窗口缩放；
             // Wrap 响应式换行：窗口变宽/变窄只改变每行本数。
             // 窄到放不下一本时才把宽压到可用宽（安全阀，桌面窗口
             // 正常尺寸下不触发），避免极窄窗口溢出。
             LayoutBuilder(
               builder: (context, constraints) {
                 final gap = DesignTokens.shelfGridGap * scale;
-                final fixedW = DesignTokens.bookWidth * scale;
+                final fixedW = _kBook12Width * scale;
                 final bookW = fixedW < constraints.maxWidth
                     ? fixedW
                     : constraints.maxWidth;
@@ -170,9 +255,9 @@ extension _WrongbookShelfBuild on _WrongbookViewState {
     );
   }
 
-  // B8-8：[width] 由书架按固定尺寸传入（DesignTokens.bookWidth ×
-  // 字号缩放因子），封面不再由 Expanded/Column 撑满可用宽——
-  // 单本也不拉满全宽，窗口变化只改变 Wrap 每行本数。
+  // D-256：[width] 由书架按固定尺寸传入（_kBook12Width × 字号缩放因子），
+  // 封面不再由 Expanded/Column 撑满可用宽——单本也不拉满全宽，
+  // 窗口变化只改变 Wrap 每行本数。
   Widget _buildBook(Subject s, {required double width}) {
     final scale = qmScaleOf(context);
     final counts = _s.counts[s.id] ?? (0, 0, 0);
@@ -187,9 +272,9 @@ extension _WrongbookShelfBuild on _WrongbookViewState {
               !_s.isMastered(q),
         )
         .length;
-    final coverColor = CoverTokens.of(s.coverColor);
-    // 悬停（HTML `.nb-book:hover`）：上移 4px，阴影 0 16px 30px / .24；
-    // 未悬停：阴影 0 10px 22px / .20。150ms 与 HTML transition 一致。
+    final palette = _Book12Palette.of(s);
+    // 悬停（板子无悬停态；沿用旧书架的上移 4px，阴影不变）：
+    // 未悬停与悬停都是板子阴影 14/18/28/.30，150ms 与旧版一致。
     final hovered = _s.hoverBookId == s.id;
     return MouseRegion(
       onEnter: (_) => _n.update((st) => st.copyWith(hoverBookId: s.id)),
@@ -199,10 +284,10 @@ extension _WrongbookShelfBuild on _WrongbookViewState {
       child: InkWell(
         onTap: () => _openDirectory(s.id),
         borderRadius: BorderRadius.only(
-          topLeft: Radius.circular(6 * scale),
-          topRight: Radius.circular(12 * scale),
-          bottomLeft: Radius.circular(12 * scale),
-          bottomRight: Radius.circular(12 * scale),
+          topLeft: Radius.circular(3 * scale),
+          topRight: Radius.circular(9 * scale),
+          bottomLeft: Radius.circular(3 * scale),
+          bottomRight: Radius.circular(9 * scale),
         ),
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 150),
@@ -210,245 +295,199 @@ extension _WrongbookShelfBuild on _WrongbookViewState {
           transform: hovered
               ? Matrix4.translationValues(0, -4 * scale, 0)
               : Matrix4.identity(),
-          // 固定高（HTML `.nb-book` min-height 376px；内容按同一因子
-          // 缩放后恒小于该高，固定高与最小高视觉等价，且让内层
-          // Column + Spacer 有定界高度）。宽同为固定值（B8-8），
-          // 由调用方按 DesignTokens.bookWidth 传入。
           width: width,
-          height: DesignTokens.bookMinHeight * scale,
-          padding: EdgeInsets.fromLTRB(
-            DesignTokens.bookPaddingH * scale,
-            DesignTokens.bookPaddingTop * scale,
-            DesignTokens.bookPaddingH * scale,
-            DesignTokens.bookPaddingBottom * scale,
-          ),
+          height: _kBook12Height * scale,
           decoration: BoxDecoration(
-            color: coverColor,
-            borderRadius: BorderRadius.only(
-              topLeft: Radius.circular(6 * scale),
-              topRight: Radius.circular(12 * scale),
-              bottomLeft: Radius.circular(12 * scale),
-              bottomRight: Radius.circular(12 * scale),
+            gradient: LinearGradient(
+              begin: _kBook12GradientBegin,
+              end: _kBook12GradientEnd,
+              colors: [palette.c, palette.cd],
+              stops: const [0.58, 0.582],
             ),
-            boxShadow: [
+            borderRadius: BorderRadius.only(
+              topLeft: Radius.circular(3 * scale),
+              topRight: Radius.circular(9 * scale),
+              bottomLeft: Radius.circular(3 * scale),
+              bottomRight: Radius.circular(9 * scale),
+            ),
+            boxShadow: const [
               BoxShadow(
-                offset: Offset(0, hovered ? 16 : 10),
-                blurRadius: hovered ? 30 : 22,
-                color: Color.fromRGBO(23, 35, 59, hovered ? 0.24 : 0.20),
+                offset: Offset(14, 18),
+                blurRadius: 28,
+                color: Color.fromRGBO(15, 18, 25, 0.30),
               ),
             ],
           ),
-          child: Stack(
-            clipBehavior: Clip.none,
-            children: [
-              ClipRRect(
-                borderRadius: BorderRadius.only(
-                  topLeft: Radius.circular(6 * scale),
-                  topRight: Radius.circular(12 * scale),
-                  bottomLeft: Radius.circular(12 * scale),
-                  bottomRight: Radius.circular(12 * scale),
+          child: ClipRRect(
+            borderRadius: BorderRadius.only(
+              topLeft: Radius.circular(3 * scale),
+              topRight: Radius.circular(9 * scale),
+              bottomLeft: Radius.circular(3 * scale),
+              bottomRight: Radius.circular(9 * scale),
+            ),
+            child: Stack(
+              children: [
+                // 书脊侧内侧高光：板子是 inset 4px 0 10px 白 15%，Flutter
+                // 没有 inset shadow，用左沿 4px 白 15% 渐隐条近似（D-256）。
+                Positioned(
+                  left: 0,
+                  top: 0,
+                  bottom: 0,
+                  width: 4 * scale,
+                  child: Container(
+                    decoration: const BoxDecoration(
+                      gradient: LinearGradient(
+                        colors: [
+                          Color.fromRGBO(255, 255, 255, 0.15),
+                          Color.fromRGBO(255, 255, 255, 0),
+                        ],
+                      ),
+                    ),
+                  ),
                 ),
-                child: Stack(
+                // 书脊槽：2px 宽竖线，距左 12px，上下顶满，黑 26%。
+                Positioned(
+                  left: 12 * scale,
+                  top: 0,
+                  bottom: 0,
+                  width: 2 * scale,
+                  child: Container(
+                    color: const Color.fromRGBO(0, 0, 0, 0.26),
+                  ),
+                ),
+                // 书页边：右沿 8px，上下各 inset 4px（D-256 画笔）。
+                Positioned(
+                  right: 0,
+                  top: 4 * scale,
+                  bottom: 4 * scale,
+                  width: 8 * scale,
+                  child: const CustomPaint(
+                    painter: _Book12PageEdgePainter(),
+                  ),
+                ),
+                // 内容：上半区（左 32/上 30/右 22）+ 下半区（左 32/右 22/下 18）。
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Positioned.fill(
-                      child: CustomPaint(
-                        painter: _CoverPatternPainter(s.coverStyle),
-                      ),
-                    ),
-                    // 内阴影（HTML `.nb-book` box-shadow 的两层 inset：
-                    // 左暗 rgba(0,0,0,.18) / 右亮 rgba(255,255,255,.14)；
-                    // 封面“上下深浅变化、底部略深”就是它 + 计数条叠加的视觉效果，
-                    // 两版 HTML 的封面底色都是纯色，无纵向渐变）。
-                    Positioned.fill(
-                      child: CustomPaint(
-                        // 只画右亮带：左暗带已移到封面边缘单独画（见外层
-                        // Stack 的左暗带）；留在这里会在书脊原位置
-                        // （封面左缘内 18px）留下一条暗带。
-                        painter: const _CoverInsetShadowPainter(
-                          drawLeft: false,
-                        ),
-                      ),
-                    ),
-                    // 虚线内框（HTML `.nb-book::before`：1.6px、rgba 白 .55、
-                    // inset 9/9/9/15、圆角 4 9 9 4）。
-                    Positioned.fill(
+                    Expanded(
                       child: Padding(
                         padding: EdgeInsets.fromLTRB(
-                          15 * scale,
-                          9 * scale,
-                          9 * scale,
-                          9 * scale,
+                          32 * scale,
+                          30 * scale,
+                          22 * scale,
+                          0,
                         ),
-                        child: CustomPaint(
-                          painter: _DashedBorderPainter(
-                            color: const Color.fromRGBO(255, 255, 255, 0.55),
-                            borderRadius: BorderRadius.only(
-                              topLeft: Radius.circular(4 * scale),
-                              topRight: Radius.circular(9 * scale),
-                              bottomRight: Radius.circular(9 * scale),
-                              bottomLeft: Radius.circular(4 * scale),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            // 学科名（板子 38px / Noto Serif SC 900 / 字距 .14em）。
+                            // 字号不乘 scale（D4 约定：字号只由 TextScaler
+                            // 全局乘一次；字距不被 TextScaler 缩放，所以
+                            // 字距乘 scale——与旧封面同款做法）。
+                            Text(
+                              s.name,
+                              style: TextStyle(
+                                fontFamily: 'Noto Serif SC',
+                                fontSize: 38,
+                                fontWeight: FontWeight.w900,
+                                fontVariations: const [
+                                  FontVariation('wght', 900),
+                                ],
+                                letterSpacing: 5.32 * scale,
+                                color: Colors.white,
+                                height: 1.2,
+                              ),
                             ),
-                            strokeWidth: 1.6 * scale,
-                          ),
+                            // 「错 题 本」（板子 12px / 字距 .62em / 白 .92）。
+                            Padding(
+                              padding: EdgeInsets.only(top: 8 * scale),
+                              child: Text(
+                                '错 题 本',
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  letterSpacing: 7.44 * scale,
+                                  color: const Color.fromRGBO(
+                                    255,
+                                    255,
+                                    255,
+                                    0.92,
+                                  ),
+                                  height: 1.2,
+                                ),
+                              ),
+                            ),
+                            // 英文名（板子 10px / 字距 .34em / 白 .75 / 700）。
+                            // D-257：读学科存好的 englishName，渲染时统一大写；
+                            // 没有就不画英文行（翻译失败/无 key 时的回退）。
+                            if (palette.englishName != null &&
+                                palette.englishName!.isNotEmpty)
+                              Padding(
+                                padding: EdgeInsets.only(top: 12 * scale),
+                                child: Text(
+                                  palette.englishName!.toUpperCase(),
+                                style: TextStyle(
+                                  fontSize: 10,
+                                  fontWeight: FontWeight.w700,
+                                  letterSpacing: 3.4 * scale,
+                                  color: const Color.fromRGBO(
+                                    255,
+                                    255,
+                                    255,
+                                    0.75,
+                                  ),
+                                  height: 1.2,
+                                ),
+                              ),
+                            ),
+                          ],
                         ),
                       ),
                     ),
-                    // 书页边（HTML `.nb-book::after`：右缘 5px 处、4px 宽，
-                    // 3px 米白 #F5EFDD + 1px #D9D2BC 循环，opacity .85）。
-                    Positioned(
-                      right: 5 * scale,
-                      top: 0,
-                      bottom: 0,
-                      width: 4 * scale,
-                      child: CustomPaint(painter: _CoverPageEdgePainter()),
-                    ),
-                    // 折角（HTML `.nb-book-fold`：右上角 34px 纸色折角，
-                    // z-index 2，盖住书页边顶部）。
-                    Positioned(
-                      right: 0,
-                      top: 0,
-                      width: DesignTokens.bookFoldSize * scale,
-                      height: DesignTokens.bookFoldSize * scale,
-                      child: CustomPaint(painter: _CoverFoldPainter(scale)),
-                    ),
-                    Column(
-                      crossAxisAlignment: CrossAxisAlignment.center,
-                      children: [
-                        // 顶部不留英文行（Meng 2026-11-14 决定，预览里的英文是
-                        // 有意的不同点，不恢复）。但学科名纵向位置仍按预览排布：
-                        // 预览里英文行占 margin-top 26px + 12px×1.2 行高 = 40.4px，
-                        // 去掉英文后用等高占位顶住，学科名不顶上去，
-                        // 仍在距封面顶 34 + 40.4 = 74.4px 处。
-                        SizedBox(height: 40.4 * scale),
-                        // 学科名（HTML `.nb-book-name`：52px/800）。
-                        // 注：原型封面实际渲染为横排 52px 学科名 + 横排
-                        // 「错 题 本」，无 `writing-mode: vertical-rl`；
-                        // 任务书说的“竖排”与实际渲染不符，按实际渲染实现。
-                        // 字号不乘 scale：D4 约定字号只由 TextScaler 全局
-                        // 乘一次（实测 52 在特大档渲染为 67.6）；字距不被
-                        // TextScaler 缩放（实测 13.6 在特大档仍是 13.6），
-                        // 所以只有字距乘 scale（SR-P2-52；若字号也乘会
-                        // 双倍缩放）。
-                        Text(
-                          s.name,
-                          style: TextStyle(
-                            fontSize: 52,
-                            fontWeight: FontWeight.w800,
-                            letterSpacing: 3.12 * scale,
-                            color: Colors.white,
-                            height: 1.15,
-                            shadows: const [
-                              Shadow(
-                                offset: Offset(0, 2),
-                                blurRadius: 5,
-                                color: Color.fromRGBO(0, 0, 0, 0.22),
+                    Padding(
+                      padding: EdgeInsets.fromLTRB(
+                        32 * scale,
+                        0,
+                        22 * scale,
+                        18 * scale,
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          // 三数字行：顶部分隔线 1px 白 40%，padding-top 11。
+                          Container(
+                            decoration: const BoxDecoration(
+                              border: Border(
+                                top: BorderSide(
+                                  color: Color.fromRGBO(255, 255, 255, 0.4),
+                                ),
                               ),
-                            ],
-                          ),
-                        ),
-                        // 「错 题 本」（HTML `.nb-book-sub`：16px、字距 .85em、
-                        // margin-top 8px、opacity .95）。注意 padding-left 不取
-                        // HTML 的 .85em（13.6px）：HTML 那样写是为了抵消 CSS
-                        // 字距在末字后多出的一格；Flutter 的 Text 不把末字后的
-                        // 字距算进宽度，照搬 13.6 反而会右偏。实测：改前 padding
-                        // 6.8 时字墨中心比书中心右偏约 5px，学科名（无 padding）
-                        // 居中无偏；故 Flutter 侧 padding-left 取 0，
-                        // 与预览“居中”的视觉结果一致。
-                        Padding(
-                          padding: EdgeInsets.only(top: 8 * scale),
-                          child: Text(
-                            '错 题 本',
-                            style: TextStyle(
-                              fontSize: 16,
-                              // 字距同乘 scale（SR-P2-52）：字号由 TextScaler
-                              // 全局缩放，字距不被它缩放，大字号下不乘会
-                              // 显得越来越挤。
-                              letterSpacing: 13.6 * scale,
-                              color: const Color.fromRGBO(255, 255, 255, 0.95),
-                              height: 1.2,
+                            ),
+                            padding: EdgeInsets.only(top: 11 * scale),
+                            child: Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              children: [
+                                _bookStat('道题', total),
+                                _bookStat('要复习', counts.$1),
+                                _bookStat('待复查', counts.$2),
+                              ],
                             ),
                           ),
-                        ),
-                        const Spacer(),
-                        // 计数牌（HTML `.nb-book-counts`）。
-                        Container(
-                          padding: EdgeInsets.symmetric(
-                            horizontal: 4 * scale,
-                            vertical: 10 * scale,
+                          SizedBox(height: 12 * scale),
+                          // 「开始复习」（板子：白底、字色 cdd、13.5px/700、
+                          // 字距 .22em、上下 padding 9px、圆角 3px）。
+                          _Book12ReviewButton(
+                            label: '开始复习',
+                            textColor: palette.cdd,
+                            onPressed: () =>
+                                widget.onGoReview(subjectId: s.id),
                           ),
-                          decoration: BoxDecoration(
-                            color: const Color.fromRGBO(0, 0, 0, 0.20),
-                            border: Border.all(
-                              color: const Color.fromRGBO(255, 255, 255, 0.35),
-                            ),
-                            borderRadius: BorderRadius.circular(12 * scale),
-                          ),
-                          child: Row(
-                            children: [
-                              _bookStat('道题', total),
-                              _bookStat('要复习', counts.$1),
-                              _bookStat('待复查', counts.$2),
-                            ],
-                          ),
-                        ),
-                        SizedBox(height: 10 * scale),
-                        // 封面内「开始复习」（HTML `.nb-cover-rev`）。
-                        _CoverReviewButton(
-                          label: '开始复习',
-                          onPressed: () => widget.onGoReview(subjectId: s.id),
-                        ),
-                      ],
+                        ],
+                      ),
                     ),
                   ],
                 ),
-              ),
-              // 左暗带：内阴影的左暗带必须画在封面左缘、被书脊盖住
-              // （与 HTML 一致：inset 阴影画在整本书上，书脊盖住它）。
-              // 它不能留在内层 Stack 里——那里是内容内边距，左暗带会
-              // 落在封面左缘内 18px；书脊移走后，原位置会留下一条暗带。
-              // 宽 12 与画笔里的渐变宽一致（画笔的 12 是固定值，不跟 scale）。
-              Positioned(
-                left: -DesignTokens.bookPaddingH * scale,
-                top: -DesignTokens.bookPaddingTop * scale,
-                bottom: -DesignTokens.bookPaddingBottom * scale,
-                width: 12,
-                child: const CustomPaint(
-                  painter: _CoverInsetShadowPainter(drawRight: false),
-                ),
-              ),
-              // 书脊：贴着封面左边缘、通顶通底（HTML `.nb-book-spine`
-              // 是相对整本书定位的 left:0/top:0/bottom:0）。
-              // 根因：书脊原来在内层 Stack 里，而内层 Stack 在
-              // AnimatedContainer 的内容内边距（左右 18、上 34、
-              // 下 20）之内，left:0 实际落在封面左缘内 18px，且上下
-              // 各短 34px/20px（实测截图：书脊离左缘 18px、顶上短
-              // 34px）。这里用负偏移把它顶回封面边缘；外层 Stack 用
-              // Clip.none（AnimatedContainer 本身不裁剪），书脊自己的
-              // ClipRRect 按封面左上角 6 / 左下角 12 的圆角裁剪。
-              // 折角/书页边/虚线内框/内容列一律不动（Meng 只让改书脊）。
-              Positioned(
-                left: -DesignTokens.bookPaddingH * scale,
-                top: -DesignTokens.bookPaddingTop * scale,
-                bottom: -DesignTokens.bookPaddingBottom * scale,
-                width: DesignTokens.bookSpineWidth * scale,
-                child: ClipRRect(
-                  borderRadius: BorderRadius.only(
-                    topLeft: Radius.circular(6 * scale),
-                    bottomLeft: Radius.circular(12 * scale),
-                  ),
-                  child: Container(
-                    decoration: const BoxDecoration(
-                      color: Color.fromRGBO(0, 0, 0, 0.20),
-                      border: Border(
-                        right: BorderSide(
-                          color: Color.fromRGBO(255, 255, 255, 0.25),
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-            ],
+              ],
+            ),
           ),
         ),
       ),
@@ -456,38 +495,48 @@ extension _WrongbookShelfBuild on _WrongbookViewState {
   }
 
   Widget _bookStat(String label, int value) {
-    return Expanded(
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Text(
-            '$value',
-            style: const TextStyle(
-              fontSize: 21,
-              fontWeight: FontWeight.w800,
-              color: Colors.white,
-              height: 1.25,
-            ),
+    // 板子 12 号三数字：数字 21px/900（等宽数字），标签 10.5px/白 .85/
+    // 字距 .08em；每格内容居中，Row 用 spaceBetween 左右分散。
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Text(
+          '$value',
+          textAlign: TextAlign.center,
+          style: const TextStyle(
+            fontSize: 21,
+            fontWeight: FontWeight.w900,
+            color: Colors.white,
+            height: 1.1,
+            fontFeatures: [FontFeature.tabularFigures()],
           ),
-          Text(
-            label,
-            style: const TextStyle(
-              fontSize: 12,
-              color: Color.fromRGBO(255, 255, 255, 0.92),
-              height: 1.25,
-            ),
+        ),
+        Text(
+          label,
+          textAlign: TextAlign.center,
+          style: TextStyle(
+            fontSize: 10.5,
+            letterSpacing: 0.84 * qmScaleOf(context),
+            color: const Color.fromRGBO(255, 255, 255, 0.85),
+            height: 1.25,
           ),
-        ],
-      ),
+        ),
+      ],
     );
   }
 }
 
-/// 封面内「开始复习」按钮（HTML `.nb-cover-rev`：白底 95%、
-/// #22304A 字、15px/800、圆角 12、全宽；点按不触发封面打开）。
-class _CoverReviewButton extends StatelessWidget {
-  const _CoverReviewButton({required this.label, required this.onPressed});
+/// 封面内「开始复习」按钮（板子 12 号 `.bk-cta`：白底、字色 cdd、
+/// 13.5px/700、字距 .22em、上下 padding 9px、圆角 3px、全宽；
+/// 点按不触发封面打开——内层 InkWell 抢先接住手势，与旧版同款）。
+class _Book12ReviewButton extends StatelessWidget {
+  const _Book12ReviewButton({
+    required this.label,
+    required this.textColor,
+    required this.onPressed,
+  });
   final String label;
+  final Color textColor;
   final VoidCallback onPressed;
 
   @override
@@ -497,28 +546,22 @@ class _CoverReviewButton extends StatelessWidget {
       color: Colors.transparent,
       child: InkWell(
         onTap: onPressed,
-        borderRadius: BorderRadius.circular(12 * scale),
+        borderRadius: BorderRadius.circular(3 * scale),
         child: Container(
           width: double.infinity,
           padding: EdgeInsets.symmetric(vertical: 9 * scale),
           decoration: BoxDecoration(
-            color: const Color.fromRGBO(255, 255, 255, 0.95),
-            borderRadius: BorderRadius.circular(12 * scale),
-            boxShadow: const [
-              BoxShadow(
-                offset: Offset(0, 2),
-                blurRadius: 6,
-                color: Color.fromRGBO(0, 0, 0, 0.18),
-              ),
-            ],
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(3 * scale),
           ),
           child: Text(
             label,
             textAlign: TextAlign.center,
-            style: const TextStyle(
-              fontSize: 15,
-              fontWeight: FontWeight.w800,
-              color: Color(0xFF22304A),
+            style: TextStyle(
+              fontSize: 13.5,
+              fontWeight: FontWeight.w700,
+              letterSpacing: 2.97 * scale,
+              color: textColor,
               height: 1.2,
             ),
           ),

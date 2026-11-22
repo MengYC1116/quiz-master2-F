@@ -166,8 +166,36 @@ Future<void> _pumpApp(WidgetTester tester) async {
 }
 
 /// 首页 → 错题本 → 点 q1 行进详情，停在详情页右栏可见处。
+/// 二十三批 D-250：导航进错题本先落书架，点「数学」封面进目录、
+/// 点「全部题目」进列表，再点行（十九批 A5“直接落列表”已废）。
 Future<void> _openQ1Detail(WidgetTester tester) async {
   await tester.tap(_navText('错题本'));
+  await _pumpUntil(
+    tester,
+    () =>
+        find
+            .text('一科一本错题本，点一本打开看这一科的错题。')
+            .evaluate()
+            .isNotEmpty,
+    reason: '错题本未落到书架',
+  );
+  // 整应用里「数学」出现两次（左导航学科速览 13.5px + 书架封面
+  // 38px 大字）：点封面按 38px 大字定位，左导航那行点不到封面。
+  // 二十六批 D-256：封面学科名由 52px 改 38px（板子 12 号值）。
+  await tester.tap(
+    find.byWidgetPredicate(
+      (w) =>
+          w is Text &&
+          w.data == '数学' &&
+          w.style?.fontSize == 38,
+    ),
+  );
+  await _pumpUntil(
+    tester,
+    () => find.text('全部题目').evaluate().isNotEmpty,
+    reason: '错题本未落到数学目录',
+  );
+  await tester.tap(find.text('全部题目'));
   await _pumpUntil(
     tester,
     () => _boardRow('函数极限').evaluate().isNotEmpty,
@@ -224,8 +252,8 @@ void main() {
       await _openQ1Detail(tester);
       await _tapJumpEntry(tester, '打开列表 ›');
       // 详情被 pop，底层重挂载为 f1 的列表：f1 的 q1/q3 在，
-      // f2 的 q2/q6 不在；页头已删（十九批收尾），文件夹范围不再以
-      // 页头标题呈现，行断言即证明落到了该文件夹的列表。
+      // f2 的 q2/q6 不在；二十三批 D-250 页头恢复后，文件夹范围
+      // 以页头标题「数学 · 试卷」呈现，标题断言即证明落到了该文件夹的列表。
       await _pumpUntil(
         tester,
         () =>
@@ -237,7 +265,7 @@ void main() {
       expect(_boardRow('定积分'), findsOneWidget);
       expect(_boardRow('导数综合'), findsNothing);
       expect(_boardRow('洛必达法则'), findsNothing);
-      expect(find.text('数学 · 试卷'), findsNothing);
+      expect(find.text('数学 · 试卷'), findsOneWidget);
     });
 
     testWidgets('普通导航后 _folderArg 已清：下次进错题本不再带文件夹筛选',
@@ -255,8 +283,30 @@ void main() {
       );
       expect(_boardRow('导数综合'), findsNothing);
       // 左导航点「错题本」是普通导航：清 _folderArg，重挂载后
-      // 不再带文件夹筛选，f2 的题也回来了。
+      // 不再带文件夹筛选；二十三批 D-250：普通导航落书架（不再是
+      // 无筛选列表），再经目录进数学列表，f2 的题也回来了。
       await tester.tap(_navText('错题本'));
+      await _pumpUntil(
+        tester,
+        () =>
+            find
+                .text('一科一本错题本，点一本打开看这一科的错题。')
+                .evaluate()
+                .isNotEmpty,
+        reason: '普通导航后未回到书架',
+      );
+      await tester.tap(
+        find.byWidgetPredicate(
+          (w) =>
+              w is Text && w.data == '数学' && w.style?.fontSize == 38,
+        ),
+      );
+      await _pumpUntil(
+        tester,
+        () => find.text('全部题目').evaluate().isNotEmpty,
+        reason: '普通导航后未落到数学目录',
+      );
+      await tester.tap(find.text('全部题目'));
       await _pumpUntil(
         tester,
         () => _boardRow('导数综合').evaluate().isNotEmpty,

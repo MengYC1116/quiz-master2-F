@@ -183,7 +183,10 @@ Future<void> pumpWrongbookP0B2(
       onGoReview: ({String? subjectId}) {},
     ),
   );
-  // 十九批 A5：initialSubjectId 直接落列表，不用再点「全部题目」。
+  // 二十三批 D-250：只带学科落目录，点「全部题目」进列表
+  //（十九批 A5“直接落列表”已废）。
+  await tester.tap(find.text('全部题目'));
+  await tester.pumpAndSettle();
 }
 
 Future<void> pickPageSize(WidgetTester tester, int size) async {

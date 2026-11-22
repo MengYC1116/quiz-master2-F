@@ -80,11 +80,7 @@ Future<void> pumpShelf(WidgetTester tester, ShelfFakeRepo repo) async {
     ),
   );
   await tester.pumpAndSettle();
-  // 十九批 C：默认落点已改 L1 列表（D-222），书架在筛选面板顶部进入。
-  await tester.tap(find.text('筛选 ▾'));
-  await tester.pumpAndSettle();
-  await tester.tap(find.text('📚 书架（按学科浏览）'));
-  await tester.pumpAndSettle();
+  // 二十三批 D-250：默认落点就是书架，不用再经筛选面板进。
 }
 
 void main() {

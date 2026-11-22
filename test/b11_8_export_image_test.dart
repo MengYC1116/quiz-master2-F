@@ -70,6 +70,16 @@ class FakeExportRepo extends QuestionRepository {
   Future<Question?> questionById(String id) async =>
       questions.where((q) => q.id == id).firstOrNull;
 
+  // 二十五批：DetailNotifier.load() 经 _refreshRelated 调 all() +
+  // causeRecords()；不覆写会落到基类在 _testTmp 里真开库、连接一直
+  // 占着，Windows 上 tearDownAll 删目录报 errno 32。直接读内存列表。
+  @override
+  Future<List<Question>> all({bool includeArchived = false}) async =>
+      List.of(questions);
+
+  @override
+  Future<List<CauseRecord>> causeRecords() async => const [];
+
   @override
   Future<List<CauseRecord>> causeRecordsFor(String questionId) async => [];
 
@@ -285,7 +295,11 @@ void main() {
   });
 
   tearDownAll(() async {
-    AppDatabase.testDataDirectory = null;
+    // 二十五批：先清图片缓存（FileImage mmap 占着切片）+ 关掉
+    // _refreshRelated 真开过的库连接，再删目录；否则 Windows 上删
+    // 目录报 errno 32。resetForTest 也把 testDataDirectory 置 null。
+    imageCache.clear();
+    await AppDatabase.resetForTest();
     await _testTmp.delete(recursive: true);
   });
 

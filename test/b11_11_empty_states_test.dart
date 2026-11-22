@@ -426,7 +426,9 @@ void main() {
           onGoReview: ({String? subjectId}) {},
         ),
       );
-      // 十九批 A5：initialSubjectId 直接落列表，不用点「全部题目」。
+      // 二十三批 D-250：只带学科落目录，点「全部题目」进列表
+      //（十九批 A5“直接落列表”已废）。
+      await _tapText(tester, '全部题目');
       expect(find.text('这里的题错因都已解决'), findsOneWidget);
       await _tapText(tester, '看看已解决的题');
       // 十九批 A1：板子行标题常显，不用切视图。
@@ -494,9 +496,10 @@ void main() {
           onGoReview: ({String? subjectId}) {},
         ),
       );
-      // 十九批 A5：initialSubjectId 直接落列表，不用点「全部题目」；
-      // A1：板子行标题常显，不用切视图。
+      // 二十三批 D-250：只带学科落目录，点「全部题目」进列表
+      //（十九批 A5“直接落列表”已废）；A1：板子行标题常显，不用切视图。
       // 二十一批 D-244：行标题改显示题干（'题：求极限'）。
+      await _tapText(tester, '全部题目');
       expect(
         find.textContaining('题：求极限', findRichText: true),
         findsOneWidget,

@@ -1397,6 +1397,29 @@ class $SubjectsTable extends Subjects
     requiredDuringInsert: false,
     defaultValue: const Constant('blue'),
   );
+  static const VerificationMeta _englishNameMeta = const VerificationMeta(
+    'englishName',
+  );
+  @override
+  late final GeneratedColumn<String> englishName = GeneratedColumn<String>(
+    'english_name',
+    aliasedName,
+    true,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+  );
+  static const VerificationMeta _englishNameManualMeta = const VerificationMeta(
+    'englishNameManual',
+  );
+  @override
+  late final GeneratedColumn<int> englishNameManual = GeneratedColumn<int>(
+    'english_name_manual',
+    aliasedName,
+    false,
+    type: DriftSqlType.int,
+    requiredDuringInsert: false,
+    defaultValue: const Constant(0),
+  );
   @override
   List<GeneratedColumn> get $columns => [
     id,
@@ -1404,6 +1427,8 @@ class $SubjectsTable extends Subjects
     color,
     coverStyle,
     coverColor,
+    englishName,
+    englishNameManual,
   ];
   @override
   String get aliasedName => _alias ?? actualTableName;
@@ -1450,6 +1475,24 @@ class $SubjectsTable extends Subjects
         coverColor.isAcceptableOrUnknown(data['cover_color']!, _coverColorMeta),
       );
     }
+    if (data.containsKey('english_name')) {
+      context.handle(
+        _englishNameMeta,
+        englishName.isAcceptableOrUnknown(
+          data['english_name']!,
+          _englishNameMeta,
+        ),
+      );
+    }
+    if (data.containsKey('english_name_manual')) {
+      context.handle(
+        _englishNameManualMeta,
+        englishNameManual.isAcceptableOrUnknown(
+          data['english_name_manual']!,
+          _englishNameManualMeta,
+        ),
+      );
+    }
     return context;
   }
 
@@ -1479,6 +1522,14 @@ class $SubjectsTable extends Subjects
         DriftSqlType.string,
         data['${effectivePrefix}cover_color'],
       )!,
+      englishName: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}english_name'],
+      ),
+      englishNameManual: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}english_name_manual'],
+      )!,
     );
   }
 
@@ -1494,12 +1545,16 @@ class DbSubject extends DataClass implements Insertable<DbSubject> {
   final int color;
   final String coverStyle;
   final String coverColor;
+  final String? englishName;
+  final int englishNameManual;
   const DbSubject({
     required this.id,
     required this.name,
     required this.color,
     required this.coverStyle,
     required this.coverColor,
+    this.englishName,
+    required this.englishNameManual,
   });
   @override
   Map<String, Expression> toColumns(bool nullToAbsent) {
@@ -1509,6 +1564,10 @@ class DbSubject extends DataClass implements Insertable<DbSubject> {
     map['color'] = Variable<int>(color);
     map['cover_style'] = Variable<String>(coverStyle);
     map['cover_color'] = Variable<String>(coverColor);
+    if (!nullToAbsent || englishName != null) {
+      map['english_name'] = Variable<String>(englishName);
+    }
+    map['english_name_manual'] = Variable<int>(englishNameManual);
     return map;
   }
 
@@ -1519,6 +1578,10 @@ class DbSubject extends DataClass implements Insertable<DbSubject> {
       color: Value(color),
       coverStyle: Value(coverStyle),
       coverColor: Value(coverColor),
+      englishName: englishName == null && nullToAbsent
+          ? const Value.absent()
+          : Value(englishName),
+      englishNameManual: Value(englishNameManual),
     );
   }
 
@@ -1533,6 +1596,8 @@ class DbSubject extends DataClass implements Insertable<DbSubject> {
       color: serializer.fromJson<int>(json['color']),
       coverStyle: serializer.fromJson<String>(json['coverStyle']),
       coverColor: serializer.fromJson<String>(json['coverColor']),
+      englishName: serializer.fromJson<String?>(json['englishName']),
+      englishNameManual: serializer.fromJson<int>(json['englishNameManual']),
     );
   }
   @override
@@ -1544,6 +1609,8 @@ class DbSubject extends DataClass implements Insertable<DbSubject> {
       'color': serializer.toJson<int>(color),
       'coverStyle': serializer.toJson<String>(coverStyle),
       'coverColor': serializer.toJson<String>(coverColor),
+      'englishName': serializer.toJson<String?>(englishName),
+      'englishNameManual': serializer.toJson<int>(englishNameManual),
     };
   }
 
@@ -1553,12 +1620,16 @@ class DbSubject extends DataClass implements Insertable<DbSubject> {
     int? color,
     String? coverStyle,
     String? coverColor,
+    Value<String?> englishName = const Value.absent(),
+    int? englishNameManual,
   }) => DbSubject(
     id: id ?? this.id,
     name: name ?? this.name,
     color: color ?? this.color,
     coverStyle: coverStyle ?? this.coverStyle,
     coverColor: coverColor ?? this.coverColor,
+    englishName: englishName.present ? englishName.value : this.englishName,
+    englishNameManual: englishNameManual ?? this.englishNameManual,
   );
   DbSubject copyWithCompanion(SubjectsCompanion data) {
     return DbSubject(
@@ -1571,6 +1642,12 @@ class DbSubject extends DataClass implements Insertable<DbSubject> {
       coverColor: data.coverColor.present
           ? data.coverColor.value
           : this.coverColor,
+      englishName: data.englishName.present
+          ? data.englishName.value
+          : this.englishName,
+      englishNameManual: data.englishNameManual.present
+          ? data.englishNameManual.value
+          : this.englishNameManual,
     );
   }
 
@@ -1581,13 +1658,23 @@ class DbSubject extends DataClass implements Insertable<DbSubject> {
           ..write('name: $name, ')
           ..write('color: $color, ')
           ..write('coverStyle: $coverStyle, ')
-          ..write('coverColor: $coverColor')
+          ..write('coverColor: $coverColor, ')
+          ..write('englishName: $englishName, ')
+          ..write('englishNameManual: $englishNameManual')
           ..write(')'))
         .toString();
   }
 
   @override
-  int get hashCode => Object.hash(id, name, color, coverStyle, coverColor);
+  int get hashCode => Object.hash(
+    id,
+    name,
+    color,
+    coverStyle,
+    coverColor,
+    englishName,
+    englishNameManual,
+  );
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
@@ -1596,7 +1683,9 @@ class DbSubject extends DataClass implements Insertable<DbSubject> {
           other.name == this.name &&
           other.color == this.color &&
           other.coverStyle == this.coverStyle &&
-          other.coverColor == this.coverColor);
+          other.coverColor == this.coverColor &&
+          other.englishName == this.englishName &&
+          other.englishNameManual == this.englishNameManual);
 }
 
 class SubjectsCompanion extends UpdateCompanion<DbSubject> {
@@ -1605,6 +1694,8 @@ class SubjectsCompanion extends UpdateCompanion<DbSubject> {
   final Value<int> color;
   final Value<String> coverStyle;
   final Value<String> coverColor;
+  final Value<String?> englishName;
+  final Value<int> englishNameManual;
   final Value<int> rowid;
   const SubjectsCompanion({
     this.id = const Value.absent(),
@@ -1612,6 +1703,8 @@ class SubjectsCompanion extends UpdateCompanion<DbSubject> {
     this.color = const Value.absent(),
     this.coverStyle = const Value.absent(),
     this.coverColor = const Value.absent(),
+    this.englishName = const Value.absent(),
+    this.englishNameManual = const Value.absent(),
     this.rowid = const Value.absent(),
   });
   SubjectsCompanion.insert({
@@ -1620,6 +1713,8 @@ class SubjectsCompanion extends UpdateCompanion<DbSubject> {
     required int color,
     this.coverStyle = const Value.absent(),
     this.coverColor = const Value.absent(),
+    this.englishName = const Value.absent(),
+    this.englishNameManual = const Value.absent(),
     this.rowid = const Value.absent(),
   }) : id = Value(id),
        name = Value(name),
@@ -1630,6 +1725,8 @@ class SubjectsCompanion extends UpdateCompanion<DbSubject> {
     Expression<int>? color,
     Expression<String>? coverStyle,
     Expression<String>? coverColor,
+    Expression<String>? englishName,
+    Expression<int>? englishNameManual,
     Expression<int>? rowid,
   }) {
     return RawValuesInsertable({
@@ -1638,6 +1735,8 @@ class SubjectsCompanion extends UpdateCompanion<DbSubject> {
       if (color != null) 'color': color,
       if (coverStyle != null) 'cover_style': coverStyle,
       if (coverColor != null) 'cover_color': coverColor,
+      if (englishName != null) 'english_name': englishName,
+      if (englishNameManual != null) 'english_name_manual': englishNameManual,
       if (rowid != null) 'rowid': rowid,
     });
   }
@@ -1648,6 +1747,8 @@ class SubjectsCompanion extends UpdateCompanion<DbSubject> {
     Value<int>? color,
     Value<String>? coverStyle,
     Value<String>? coverColor,
+    Value<String?>? englishName,
+    Value<int>? englishNameManual,
     Value<int>? rowid,
   }) {
     return SubjectsCompanion(
@@ -1656,6 +1757,8 @@ class SubjectsCompanion extends UpdateCompanion<DbSubject> {
       color: color ?? this.color,
       coverStyle: coverStyle ?? this.coverStyle,
       coverColor: coverColor ?? this.coverColor,
+      englishName: englishName ?? this.englishName,
+      englishNameManual: englishNameManual ?? this.englishNameManual,
       rowid: rowid ?? this.rowid,
     );
   }
@@ -1678,6 +1781,12 @@ class SubjectsCompanion extends UpdateCompanion<DbSubject> {
     if (coverColor.present) {
       map['cover_color'] = Variable<String>(coverColor.value);
     }
+    if (englishName.present) {
+      map['english_name'] = Variable<String>(englishName.value);
+    }
+    if (englishNameManual.present) {
+      map['english_name_manual'] = Variable<int>(englishNameManual.value);
+    }
     if (rowid.present) {
       map['rowid'] = Variable<int>(rowid.value);
     }
@@ -1692,6 +1801,8 @@ class SubjectsCompanion extends UpdateCompanion<DbSubject> {
           ..write('color: $color, ')
           ..write('coverStyle: $coverStyle, ')
           ..write('coverColor: $coverColor, ')
+          ..write('englishName: $englishName, ')
+          ..write('englishNameManual: $englishNameManual, ')
           ..write('rowid: $rowid')
           ..write(')'))
         .toString();
@@ -10884,6 +10995,8 @@ typedef $$SubjectsTableCreateCompanionBuilder = SubjectsCompanion Function({
   required int color,
   Value<String> coverStyle,
   Value<String> coverColor,
+  Value<String?> englishName,
+  Value<int> englishNameManual,
   Value<int> rowid,
 });
 typedef $$SubjectsTableUpdateCompanionBuilder = SubjectsCompanion Function({
@@ -10892,6 +11005,8 @@ typedef $$SubjectsTableUpdateCompanionBuilder = SubjectsCompanion Function({
   Value<int> color,
   Value<String> coverStyle,
   Value<String> coverColor,
+  Value<String?> englishName,
+  Value<int> englishNameManual,
   Value<int> rowid,
 });
 
@@ -10926,6 +11041,16 @@ class $$SubjectsTableFilterComposer
 
   ColumnFilters<String> get coverColor => $composableBuilder(
     column: $table.coverColor,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get englishName => $composableBuilder(
+    column: $table.englishName,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<int> get englishNameManual => $composableBuilder(
+    column: $table.englishNameManual,
     builder: (column) => ColumnFilters(column),
   );
 }
@@ -10963,6 +11088,16 @@ class $$SubjectsTableOrderingComposer
     column: $table.coverColor,
     builder: (column) => ColumnOrderings(column),
   );
+
+  ColumnOrderings<String> get englishName => $composableBuilder(
+    column: $table.englishName,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<int> get englishNameManual => $composableBuilder(
+    column: $table.englishNameManual,
+    builder: (column) => ColumnOrderings(column),
+  );
 }
 
 class $$SubjectsTableAnnotationComposer
@@ -10990,6 +11125,16 @@ class $$SubjectsTableAnnotationComposer
 
   GeneratedColumn<String> get coverColor => $composableBuilder(
     column: $table.coverColor,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<String> get englishName => $composableBuilder(
+    column: $table.englishName,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<int> get englishNameManual => $composableBuilder(
+    column: $table.englishNameManual,
     builder: (column) => column,
   );
 }
@@ -11030,6 +11175,8 @@ class $$SubjectsTableTableManager
                 Value<int> color = const Value.absent(),
                 Value<String> coverStyle = const Value.absent(),
                 Value<String> coverColor = const Value.absent(),
+                Value<String?> englishName = const Value.absent(),
+                Value<int> englishNameManual = const Value.absent(),
                 Value<int> rowid = const Value.absent(),
               }) => SubjectsCompanion(
                 id: id,
@@ -11037,6 +11184,8 @@ class $$SubjectsTableTableManager
                 color: color,
                 coverStyle: coverStyle,
                 coverColor: coverColor,
+                englishName: englishName,
+                englishNameManual: englishNameManual,
                 rowid: rowid,
               ),
           createCompanionCallback:
@@ -11046,6 +11195,8 @@ class $$SubjectsTableTableManager
                 required int color,
                 Value<String> coverStyle = const Value.absent(),
                 Value<String> coverColor = const Value.absent(),
+                Value<String?> englishName = const Value.absent(),
+                Value<int> englishNameManual = const Value.absent(),
                 Value<int> rowid = const Value.absent(),
               }) => SubjectsCompanion.insert(
                 id: id,
@@ -11053,6 +11204,8 @@ class $$SubjectsTableTableManager
                 color: color,
                 coverStyle: coverStyle,
                 coverColor: coverColor,
+                englishName: englishName,
+                englishNameManual: englishNameManual,
                 rowid: rowid,
               ),
           withReferenceMapper: (p0) => p0

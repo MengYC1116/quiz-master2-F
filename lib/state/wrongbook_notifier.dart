@@ -46,11 +46,10 @@ final wrongbookProvider =
       dependencies: [wrongbookInitialProvider, repositoryProvider],
     );
 
-/// 错题本页的构造参数（初始落点）：带错因 / 知识点筛选进来 → 列表页
-///（学科只定列表的范围）；只带学科进来 → 按该学科筛选的列表；
-/// 都不带 → 全部题目的列表（十九批 A5：默认落点改为 L1 搜索结果页，
-/// 不再先过书架；书架 / 目录视图保留在代码里，从 L1 筛选面板顶部
-/// 「📚 书架（按学科浏览）」入口进入）。
+/// 错题本页的构造参数（初始落点，二十三批 D-250 恢复 2026-11-16
+/// 条件落点）：带错因 / 知识点 / 文件夹筛选进来 → 列表页
+///（学科只定列表的范围）；只带学科进来 → 目录页；
+/// 都不带 → 书架。
 /// 页面外壳经 `ProviderScope` 注入；Notifier 的 `build()` 里读它，
 /// 不在 `initState` 里改 Provider（Riverpod 禁止在 build /
 /// initState 等生命周期里同步改 Provider）。
@@ -89,7 +88,7 @@ class WrongbookInitial {
       Object.hash(subjectId, filterCause, filterKnowledgePointId, filterFolderId);
 }
 
-/// 初始落点 Provider：默认空（L1 列表）；页面外壳按构造参数 override。
+/// 初始落点 Provider：默认空（书架）；页面外壳按构造参数 override。
 final wrongbookInitialProvider = Provider<WrongbookInitial>(
   (ref) => const WrongbookInitial(),
 );
@@ -546,7 +545,9 @@ class WrongbookState {
       ...kpNames,
       ...q.allCauses,
       // D-241 内容搜索：题干 OCR 文字、选项文字、答案、解析、备注。
-      q.sliceText,
+      // 二十三批 D-250：题干走统一口径 displayStem（优先 ocrStem、
+      // 回退 sliceText），真题题干才搜得到；演示题 sliceText 不变。
+      q.displayStem,
       ...?q.optionContents?.values,
       if (q.answer != null) q.answer!,
       if (q.explanation != null) q.explanation!,
@@ -1008,20 +1009,26 @@ class WrongbookNotifier extends Notifier<WrongbookState> {
   WrongbookState build() {
     ref.onDispose(() => _disposed = true);
     unawaited(load());
-    // 初始落点（原 `initState` 的一部分）：十九批 A5——默认落点改
-    // 为 L1 搜索结果页（不再先过书架）；带错因 / 知识点 / 文件夹
-    // 筛选进来 → 带筛选的列表（D-50：筛选优先于学科——报告深链路
-    // 带学科 + 错因 / 知识点进来时直达已筛选列表，学科只定列表的
-    // 范围；详情页右栏「打开列表 ›」带文件夹 + 学科进来时同款，
-    // 落到按该文件夹筛选的列表）；只带学科进来 → 按该学科筛选的
-    // 列表（不再落目录页）；都不带 → 全部题目的列表。书架 / 目录
-    // 视图保留在代码里，从 L1 筛选面板顶部「📚 书架（按学科浏览）」
-    // 入口进入。
+    // 初始落点（原 `initState` 的一部分）：二十三批 D-250 恢复
+    // 2026-11-16 条件落点（十九批 A5 的“恒落 L1 列表”已废）：
+    // 带错因 / 知识点 / 文件夹筛选进来 → 带筛选的列表（D-50：
+    // 筛选优先于学科——报告深链路带学科 + 错因 / 知识点进来时
+    // 直达已筛选列表，学科只定列表的范围；详情页右栏「打开列表 ›」
+    // 带文件夹 + 学科进来时同款，落到按该文件夹筛选的列表）；
+    // 只带学科进来 → 目录页；都不带 → 书架。
     // `load()` 只写数据字段，不动视图 / 范围 / 筛选字段，
     // 所以先读后读不影响最终状态。
     final initial = ref.read(wrongbookInitialProvider);
+    var view = WrongbookView.shelf;
+    if (initial.filterCause != null ||
+        initial.filterKnowledgePointId != null ||
+        initial.filterFolderId != null) {
+      view = WrongbookView.list;
+    } else if (initial.subjectId != null) {
+      view = WrongbookView.directory;
+    }
     return WrongbookState(
-      view: WrongbookView.list,
+      view: view,
       subjectId: initial.subjectId,
       folderId: initial.filterFolderId,
       filterCauseName: initial.filterCause,

@@ -953,7 +953,7 @@ class _FakeDetailRepo extends QuestionRepository {
   // FR-45：_refreshRelated（十九批 D1，DetailNotifier.load 内 unawaited）
   // 调 repo.all() + repo.causeRecords()；未覆写时走真实 QuestionRepository
   // → 单例 db getter → testDataDirectory 已被 resetForTest 置 null 的窗口
-  // 里会打开真实演示库并跑 v2→v6 迁移（本文件 36 号测试“saveEdit 保留 OCR
+  // 里会打开真实演示库并跑 v2→v7 迁移（本文件 36 号测试“saveEdit 保留 OCR
   // 字段”触发，见 batch20-work/p3-fr45/STATUS.md）。与 _FakeOrganizeRepo
   // 的 all() 同款：直接读内存列表，不碰单例。
   @override

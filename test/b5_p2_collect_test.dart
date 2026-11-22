@@ -241,6 +241,12 @@ void main() {
   });
 
   tearDownAll(() async {
+    // 二十五批：先清图片缓存（编辑器页图/切片经 Image.file 显示后 mmap
+    // 占着文件）+ 防御性关掉可能真开过的库连接，再删目录；否则
+    // Windows 上删目录报 errno 32。resetForTest 也把
+    // testDataDirectory 置 null。
+    imageCache.clear();
+    await AppDatabase.resetForTest();
     await _testTmp.delete(recursive: true);
   });
 
@@ -627,7 +633,7 @@ void main() {
       _DetailFakeRepo repo,
       String name,
     ) async {
-      await _tapText(tester, '＋ 新建文件夹');
+      await _tapText(tester, '＋ 新建', first: true); // 二十三批 D-254：方案二文件夹行改「＋ 新建」chip（标签行也有一个，取第一个）
       expect(find.text('新建文件夹'), findsOneWidget);
       await tester.enterText(
         find.descendant(
@@ -705,7 +711,7 @@ void main() {
       final repo = _detailRepo();
       await _pumpDetail(tester, repo: repo);
       await _tapText(tester, '编辑');
-      await _tapText(tester, '＋ 自定义错因');
+      await _tapText(tester, '＋ 自定义'); // 二十三批 D-254：方案二错因行改「＋ 自定义」chip
       expect(find.text('自定义错因'), findsOneWidget);
       await tester.enterText(
         find.descendant(
@@ -1188,7 +1194,7 @@ void main() {
       final repo = _detailRepo();
       await _pumpDetail(tester, repo: repo);
       await _tapText(tester, '编辑');
-      await _tapText(tester, '＋ 新建文件夹');
+      await _tapText(tester, '＋ 新建', first: true); // 二十三批 D-254：方案二文件夹行改「＋ 新建」chip（标签行也有一个，取第一个）
       await tester.enterText(
         find.descendant(
           of: find.byType(AlertDialog),

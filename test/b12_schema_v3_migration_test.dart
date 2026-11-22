@@ -75,8 +75,8 @@ Future<List<String>> _allDdl(String dbPath) async {
 }
 
 void main() {
-  group('十二批 D-91 + 十三批 M2：v2 → v6 链式迁移', () {
-    test('v2 库打开即链式迁移到 v6：数据全保留，新表与新列就位', () async {
+  group('十二批 D-91 + 十三批 M2：v2 → v7 链式迁移', () {
+    test('v2 库打开即链式迁移到 v7：数据全保留，新表与新列就位', () async {
       final tmp = await Directory.systemTemp.createTemp('b12-migrate-');
       addTearDown(() async {
         try {
@@ -94,7 +94,7 @@ void main() {
         (await db.customSelect('PRAGMA user_version').get())
             .single
             .data['user_version'],
-        6,
+        7,
       );
       // 旧数据还在。
       final qs = await AppDatabase.allQuestionsFrom(db);
@@ -135,7 +135,7 @@ void main() {
         await db.customSelect('SELECT * FROM ocr_jobs').get(),
         isEmpty,
       );
-      // settings.schemaVersion 写回 6。
+      // settings.schemaVersion 写回 7。
       final settings =
           (await db
                   .customSelect(
@@ -145,10 +145,10 @@ void main() {
                   .get())
               .map((r) => r.data)
               .toList();
-      expect(settings.single['value'], '6');
+      expect(settings.single['value'], '7');
     });
 
-    test('迁移后 DDL 与全新 v6 库逐字一致', () async {
+    test('迁移后 DDL 与全新 v7 库逐字一致', () async {
       final tmp = await Directory.systemTemp.createTemp('b12-migrate-ddl-');
       addTearDown(() async {
         try {

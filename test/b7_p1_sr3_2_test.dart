@@ -157,12 +157,13 @@ String _coverTotal(WidgetTester tester) {
   return texts.first.data!;
 }
 
-/// 从 L1 列表进书架（十九批 A5：默认落点是列表，书架在筛选面板顶部）。
+/// 书架已是默认落点（二十三批 D-250：/wrongbook 不带参数落书架，
+/// 十九批 A5 的筛选面板顶部入口已删）——直接断言已在书架上。
 Future<void> _openShelf(WidgetTester tester) async {
-  await tester.tap(find.text('筛选 ▾'));
-  await tester.pumpAndSettle();
-  await tester.tap(find.text('📚 书架（按学科浏览）'));
-  await tester.pumpAndSettle();
+  expect(
+    find.text('一科一本错题本，点一本打开看这一科的错题。'),
+    findsOneWidget,
+  );
 }
 
 void main() {

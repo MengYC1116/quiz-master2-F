@@ -240,15 +240,18 @@ Future<void> pumpB17(
   await tester.pumpAndSettle();
 }
 
-// 十九批 A5：/wrongbook 默认落点就是 L1 列表（全部题目都已在），
-// 不再经书架 → 目录 → 全部题目导航；A1 去掉视图切换，
-// openMathListCompact 与 openMathList 同款（只等列表稳定）。
+// 二十三批 D-250：默认落点改回三档（无参数 → 书架），不再是 A5 的
+// L1 列表；进数学列表改为书架 → 点「数学」封面 → 目录点「全部题目」。
 Future<void> openMathList(WidgetTester tester) async {
+  await tester.pumpAndSettle();
+  await tester.tap(find.text('数学'));
+  await tester.pumpAndSettle();
+  await tester.tap(find.text('全部题目'));
   await tester.pumpAndSettle();
 }
 
 Future<void> openMathListCompact(WidgetTester tester) async {
-  await tester.pumpAndSettle();
+  await openMathList(tester);
 }
 
 /// 进导出模式（工具栏「导出」平时是进模式的入口）。

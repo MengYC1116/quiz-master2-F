@@ -740,7 +740,7 @@ void main() {
       expect(find.text('第 1 / 9 题 · 按错题本当前的顺序'), findsOneWidget);
     });
 
-    testWidgets('编辑入口在题目信息 panel 底部；编辑态标题行显示保存/取消', (tester) async {
+    testWidgets('编辑入口在题目信息 panel 底部；编辑态左列底部显示保存/取消', (tester) async {
       await _pumpB19Detail(tester);
       expect(find.text('编辑'), findsOneWidget);
       await tapB19Text(tester, '编辑');

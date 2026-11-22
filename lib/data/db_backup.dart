@@ -378,6 +378,17 @@ void _validateBackupRowDomains(String table, Map row) {
       );
     }
   }
+  // D-257：subjects 的手动标记 ∈ {0, 1}。键缺失放行（走 DDL 默认值 0）；
+  // 键在但域外值 → 拒绝整个恢复。
+  if (table == 'subjects' && row.containsKey('english_name_manual')) {
+    final value = row['english_name_manual'];
+    if (value is! int || (value != 0 && value != 1)) {
+      throw BackupRestoreException(
+        '这份备份文件已损坏：subjects 表 $id 行的 english_name_manual 不是合法的'
+        '布尔值（应为 0 或 1）：$value',
+      );
+    }
+  }
   if (table == 'questions') {
     const boolColumns = [
       'is_organized',
@@ -627,7 +638,17 @@ Future<void> _backupInsertRowTyped(
   // 让 SQLite 报错（“不能静默丢列”）；类型化映射只认已知列，未知列
   // 不会进 Companion，必须在这里先拦，否则会静默丢掉备份里的数据。
   const knownColumns = <String, Set<String>>{
-    'subjects': {'id', 'name', 'color', 'cover_style', 'cover_color'},
+    'subjects': {
+      'id',
+      'name',
+      'color',
+      'cover_style',
+      'cover_color',
+      // D-257：英文名与手动标记（v7 新增；旧备份缺键时插库走
+      // NULL / DDL 默认值 0）。
+      'english_name',
+      'english_name_manual',
+    },
     'questions': {
       'id',
       'title',
@@ -822,6 +843,10 @@ Future<void> _backupInsertRowTyped(
               color: Value(_ri(row, 'color')),
               coverStyle: _vStrDef(row, 'cover_style'),
               coverColor: _vStrDef(row, 'cover_color'),
+              // D-257：英文名（可空列，缺键写 NULL）与手动标记
+              //（缺键走 Value.absent() 落 DDL 默认值 0）。
+              englishName: Value(_rsN(row, 'english_name')),
+              englishNameManual: _vIntDef(row, 'english_name_manual'),
             ),
             mode: InsertMode.insertOrReplace,
           );

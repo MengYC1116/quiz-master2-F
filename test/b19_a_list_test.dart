@@ -9,21 +9,32 @@ import 'wrongbook_page_test.dart';
 
 void main() {
   group('十九批 A：L1 落点与查找', () {
-    testWidgets('默认落点：不带参数进 L1 搜索结果页，标题「全部题目」', (tester) async {
+    testWidgets('默认落点：不带参数进书架（二十三批 D-250）', (tester) async {
       await pumpWrongbook(tester);
-      // 十九批收尾：L1 页头（「错题本」标题＋←目录／合上 ✕）已删，
-      // 页面从大搜索框直接开始（板子 §1.1）。
-      expect(find.text('错题本'), findsNothing);
-      expect(find.byKey(const ValueKey('big-search')), findsOneWidget);
+      // 二十三批 D-250：默认落点恢复书架，L1 大搜索框与「全部题目」
+      // 在列表页，不在书架上。
+      expect(find.text('错题本'), findsOneWidget);
+      expect(
+        find.text('一科一本错题本，点一本打开看这一科的错题。'),
+        findsOneWidget,
+      );
+      expect(find.byKey(const ValueKey('big-search')), findsNothing);
+      expect(find.text('全部题目'), findsNothing);
+      // 书架 → 目录 → 列表后才是 L1。
+      await openMathList(tester);
       expect(find.text('全部题目'), findsOneWidget);
       expect(boardRow('函数极限'), findsOneWidget);
-      expect(boardRow('阅读主旨'), findsOneWidget);
+      expect(boardRow('阅读主旨'), findsNothing);
     });
 
-    testWidgets('只带学科：落到按该学科筛选的列表', (tester) async {
+    testWidgets('只带学科：落到该学科目录（二十三批 D-250）', (tester) async {
       await pumpWrongbook(tester, initialSubjectId: 'math');
-      // 十九批收尾：页头已删，学科范围不再以页头标题呈现。
-      expect(find.text('数学 · 错题本'), findsNothing);
+      // 二十三批 D-250：只带学科落目录，页头标题恢复。
+      expect(find.text('数学 · 错题本'), findsOneWidget);
+      expect(find.text('全部题目'), findsOneWidget);
+      expect(find.byKey(const ValueKey('big-search')), findsNothing);
+      // 点「全部题目」进按该学科筛选的列表。
+      await openSubjectList(tester);
       expect(boardRow('函数极限'), findsOneWidget);
       expect(boardRow('导数综合'), findsOneWidget);
       expect(boardRow('定积分'), findsOneWidget);
@@ -33,6 +44,8 @@ void main() {
 
     testWidgets('命令面板：点范围说明行的 Ctrl+K kbd 呼出，点文件夹应用', (tester) async {
       await pumpWrongbook(tester);
+      // 二十三批 D-250：默认落点是书架，命令面板在列表页，先进列表。
+      await openMathList(tester);
       // 二十一批 D-242：大搜索框里的深色 Ctrl+K kbd 已去掉，
       // 页面上只剩范围说明行里的一对浅色 kbd。
       expect(find.text('Ctrl'), findsOneWidget);
@@ -49,8 +62,8 @@ void main() {
       expect(find.text('已用命令面板打开查找：试卷'), findsOneWidget);
       await tester.pumpAndSettle();
       expect(find.byKey(const ValueKey('command-palette')), findsNothing);
-      // 十九批收尾：页头已删，文件夹范围不再以页头标题呈现。
-      expect(find.text('数学 · 试卷'), findsNothing);
+      // 二十三批 D-250：页头恢复，文件夹范围以页头标题呈现。
+      expect(find.text('数学 · 试卷'), findsOneWidget);
       expect(boardRow('函数极限'), findsOneWidget);
       expect(boardRow('定积分'), findsOneWidget);
       expect(boardRow('导数综合'), findsNothing);
@@ -68,6 +81,8 @@ void main() {
         ),
       );
       await pumpWrongbook(tester, repo: repo);
+      // 二十三批 D-250：默认落点是书架，「我的查找」行在列表页，先进列表。
+      await openMathList(tester);
       expect(find.text('★ 概念不清题'), findsOneWidget);
       await tester.tap(find.text('★ 概念不清题'));
       await tester.pump();
@@ -82,6 +97,8 @@ void main() {
     testWidgets('我的查找：存当前条件 + chip 小 × 删除', (tester) async {
       final repo = threeSubjectRepo();
       await pumpWrongbook(tester, repo: repo);
+      // 二十三批 D-250：默认落点是书架，「＋ 存当前条件」在列表页，先进列表。
+      await openMathList(tester);
       expect(find.text('★ 我的概念不清'), findsNothing);
       await tester.tap(find.text('＋ 存当前条件'));
       await tester.pumpAndSettle();

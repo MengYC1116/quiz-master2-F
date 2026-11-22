@@ -949,9 +949,10 @@ class _QmTextFieldState extends State<QmTextField> {
 
 /// 错题本封面样式小图（HTML `.cover-mini`：52×68、书脊在左、
 // 圆角 4 8 8 4、中间是学科首字 19px/800 白字）。
-/// 纹路由 [_QmCoverMiniPainter] 自绘（与错题本 `_CoverPatternPainter`
-/// 同一套 Flutter 样式 key：plain / lines / dots / grid / diagonal /
-/// double；HTML key bands/diag/frame 不用，存储值不变）。
+/// 纹路由 [_QmCoverMiniPainter] 自绘（沿用旧版错题本封面同一套 Flutter
+/// 样式 key：plain / lines / dots / grid / diagonal / double；
+/// HTML key bands/diag/frame 不用，存储值不变；旧封面画笔
+/// `_CoverPatternPainter` 已随二十六批 12 号复刻移除，小图不受影响）。
 class QmCoverMini extends StatelessWidget {
   const QmCoverMini({
     super.key,

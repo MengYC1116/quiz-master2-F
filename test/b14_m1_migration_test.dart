@@ -185,8 +185,8 @@ Future<Map<String, dynamic>> _seedAndExport(QuizDatabase db) async {
 }
 
 void main() {
-  group('十四批 M1：v4 → v6 迁移', () {
-    test('v4 库打开即迁移到 v6：数据全保留，新列默认值正确，content_version 原值保留', () async {
+  group('十四批 M1：v4 → v7 迁移', () {
+    test('v4 库打开即迁移到 v7：数据全保留，新列默认值正确，content_version 原值保留', () async {
       final tmp = await Directory.systemTemp.createTemp('b14-migrate-');
       addTearDown(() async {
         try {
@@ -202,12 +202,12 @@ void main() {
         (await db.customSelect('PRAGMA user_version').get())
             .single
             .data['user_version'],
-        6,
+        7,
       );
       final settings = await _rawRows(db, 'settings');
       expect(
         settings.singleWhere((r) => r['key'] == 'schemaVersion')['value'],
-        '6',
+        '7',
       );
       // 旧数据还在。
       final qs = await AppDatabase.allQuestionsFrom(db);
@@ -322,7 +322,7 @@ void main() {
       expect(rows.single['status'], 'inProgress');
     });
 
-    test('迁移后 DDL 与全新 v6 库逐字一致', () async {
+    test('迁移后 DDL 与全新 v7 库逐字一致', () async {
       final tmp = await Directory.systemTemp.createTemp('b14-migrate-');
       addTearDown(() async {
         try {

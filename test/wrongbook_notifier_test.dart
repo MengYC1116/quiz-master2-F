@@ -300,15 +300,16 @@ void main() {
     expect(container.read(wrongbookProvider).loadError, isTrue);
   });
 
-  // 十九批 A5（D-222）：/wrongbook 默认落点改为 L1 搜索结果页——
-  // 带学科、只带错因、都不带，全部进 list（带学科时按该学科筛选；
-  // 书架 / 目录只从 L1 筛选面板顶部入口进）。
-  test('初始落点：带学科、只带错因、都不带，全部进 L1 列表', () async {
+  // 二十三批 D-250：落点改回 2026-11-16 条件三档——带筛选
+  //（错因 / 知识点 / 文件夹任一）→ 列表；只带学科 → 目录；
+  //都不带 → 书架。十九批 A5“全部进 L1 列表”已废。
+  test('初始落点三档：只带学科进目录、只带错因进列表、都不带进书架',
+      () async {
     final (_, _, c1) = await _setUp(
       initial: const WrongbookInitial(subjectId: 'math'),
     );
     addTearDown(c1.dispose);
-    expect(c1.read(wrongbookProvider).view, WrongbookView.list);
+    expect(c1.read(wrongbookProvider).view, WrongbookView.directory);
     expect(c1.read(wrongbookProvider).subjectId, 'math');
 
     final (_, _, c2) = await _setUp(
@@ -320,7 +321,7 @@ void main() {
 
     final (_, _, c3) = await _setUp();
     addTearDown(c3.dispose);
-    expect(c3.read(wrongbookProvider).view, WrongbookView.list);
+    expect(c3.read(wrongbookProvider).view, WrongbookView.shelf);
     expect(c3.read(wrongbookProvider).subjectId, isNull);
   });
 
