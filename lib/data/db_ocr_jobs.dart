@@ -184,6 +184,39 @@ Future<int> clearNoKeyOcrWaitIntoImpl(QuizDatabase db, {DateTime? now}) async {
       );
 }
 
+/// 保存新 API Key 后，把“因 key 无效而 failed”的任务重新放回 pending。
+/// 只恢复 `failed + last_error_code = api_key_invalid`；completed /
+/// cancelled / 其它失败的 failed 行不动。清掉租约、错误码与完成时间，
+/// available_at 置空让 worker 立即领取；attempt_count 保留（诊断用）。
+/// 返回恢复的行数。
+Future<int> requeueApiKeyInvalidIntoImpl(
+  QuizDatabase db, {
+  DateTime? now,
+}) async {
+  final nowMs = (now ?? DateTime.now()).millisecondsSinceEpoch;
+  return (db.update(db.ocrJobs)..where(
+        (t) =>
+            t.status.equals(OcrJobStatus.failed.name) &
+            // 字面量 'api_key_invalid' = OcrErrorCode.apiKeyInvalid
+            //（与 clearNoKeyOcrWaitIntoImpl 同口径：data 层不 import
+            // services 层，错误码表只增不改）。
+            t.lastErrorCode.equals('api_key_invalid'),
+      ))
+      .write(
+        OcrJobsCompanion(
+          status: Value(OcrJobStatus.pending.name),
+          availableAt: const Value<int?>(null),
+          startedAt: const Value<int?>(null),
+          leaseUntil: const Value<int?>(null),
+          leaseToken: const Value<String?>(null),
+          lastErrorCode: const Value<String?>(null),
+          lastErrorMessage: const Value<String?>(null),
+          completedAt: const Value<int?>(null),
+          updatedAt: Value(nowMs),
+        ),
+      );
+}
+
 /// 发请求前记一次尝试（可单测版）：attempt_count +1。
 /// 返回更新后的行；任务不存在时返回 null。
 /// 十三批 P1-1：[leaseToken] 非空时校验当前持有者——与库里 lease_token
@@ -412,6 +445,10 @@ extension AppDatabaseOcrJobs on AppDatabase {
   /// available_at。返回清掉的行数。
   Future<int> clearNoKeyOcrWait({DateTime? now}) async =>
       clearNoKeyOcrWaitIntoImpl(await db, now: now);
+
+  /// 保存新 key 后，把因 key 无效而 failed 的任务重新放回 pending。
+  Future<int> requeueApiKeyInvalid({DateTime? now}) async =>
+      requeueApiKeyInvalidIntoImpl(await db, now: now);
 
   /// 发请求前记一次尝试（实例版）：attempt_count +1。
   /// [leaseToken] 非空时校验持有者，不一致返回 null（不写库）。

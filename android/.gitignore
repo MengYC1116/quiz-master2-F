@@ -1,0 +1,20 @@
+gradle-wrapper.jar
+/.gradle
+/captures/
+/gradlew
+/gradlew.bat
+/local.properties
+GeneratedPluginRegistrant.java
+.cxx/
+
+# D 包：wrapper 必须入库，干净检出才能 bootstrap；上面的忽略规则
+# 仅用于本地生成物，不能把 gradlew / wrapper jar 排除在版本库外。
+!gradle/wrapper/gradle-wrapper.jar
+!/gradlew
+!/gradlew.bat
+
+# Remember to never publicly share your keystore.
+# See https://flutter.dev/to/reference-keystore
+key.properties
+**/*.keystore
+**/*.jks

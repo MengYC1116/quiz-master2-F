@@ -97,6 +97,11 @@ const Duration ocrNoKeyDelay = Duration(minutes: 10);
 /// 卡住；入队后最迟 5 秒内开跑，[OcrWorker.kick] 可立即唤醒）。
 const Duration ocrPollInterval = Duration(seconds: 5);
 
+/// worker 运行中回收过期租约的检查间隔。启动时仍会立即回收一次；
+/// 运行中至少每 30 秒补一次，避免“启动时 lease 未到期”的 running
+/// 任务在本次会话里永远不被回收。
+const Duration _ocrReclaimInterval = Duration(seconds: 30);
+
 /// OCR 后台队列 worker：单例 + 单 worker 顺序处理（并发 1）。
 ///
 /// 单测直接 `OcrWorker(database: ..., recognizer: 假实现)` 构造新实例，
@@ -147,6 +152,7 @@ class OcrWorker {
 
   bool _running = false;
   Future<void>? _loopFuture;
+  DateTime? _lastReclaimAt;
 
   bool get isRunning => _running;
 
@@ -164,6 +170,7 @@ class OcrWorker {
       // 回收失败不阻启动：过期任务下次领任务前仍是 running 占着，
       // 最多一轮空转；下次启动再回收。
     }
+    _lastReclaimAt = _now();
     try {
       await database.clearNoKeyOcrWait(now: _now());
     } catch (_) {
@@ -196,6 +203,11 @@ class OcrWorker {
     try {
       await database.clearNoKeyOcrWait(now: _now());
     } catch (_) {}
+    try {
+      // P1-03：无效 key 的 failed 任务不归 clearNoKeyOcrWait 管，必须
+      // 单独回 pending，否则 UI 会一直停在“等待设置 API Key”。
+      await database.requeueApiKeyInvalid(now: _now());
+    } catch (_) {}
     kick();
   }
 
@@ -203,6 +215,20 @@ class OcrWorker {
 
   Future<void> _runLoop() async {
     while (_running) {
+      // P1-01：启动时 lease 尚未过期的 running 任务（例如请求中杀进程、
+      // 5 分钟内重开）不会在 start() 被回收；运行中按间隔补回收，
+      // 否则 claimNextOcrJob 只认 pending，该任务会整会话卡“识别中”。
+      final now = _now();
+      final lastReclaim = _lastReclaimAt;
+      if (lastReclaim == null ||
+          now.difference(lastReclaim) >= _ocrReclaimInterval) {
+        _lastReclaimAt = now;
+        try {
+          await database.reclaimExpiredLeases(now: now);
+        } catch (_) {
+          // 回收失败不阻断循环；下个间隔再试。
+        }
+      }
       bool didWork = false;
       try {
         didWork = await processOne();
@@ -367,6 +393,38 @@ class OcrWorker {
     return outcome;
   }
 
+  /// P1-02：未预期异常发生时的 attempt 计数。
+  ///
+  /// `_processClaimed` 只在发请求前 mark 一次；如果异常发生在 mark 之前
+  /// （questionById / _hasKey / markOcrJobAttempt 本身抛错），直接
+  /// `_handleFailure(job, ...)` 会一直拿旧的 attemptCount=0，4 次上限被
+  /// 绕过、任务永久 pending 退避。这里先看库里是否已经 mark 过：
+  /// - 已 mark（applyResult 等 mark 后异常）：用库里的新值，避免双计；
+  /// - 未 mark：尝试补一次 mark，把这次异常也计入上限；
+  /// - 库仍不可用：至少把本次计数传给 _handleFailure，等库恢复的下一轮
+  ///   再落库。
+  Future<int> _attemptForUnexpected(OcrJob job) async {
+    try {
+      final latest = await database.ocrJobById(job.id);
+      if (latest != null && latest.attemptCount > job.attemptCount) {
+        return latest.attemptCount;
+      }
+    } catch (_) {
+      // 读不到就继续尝试 mark。
+    }
+    try {
+      final marked = await database.markOcrJobAttempt(
+        job.id,
+        now: _now(),
+        leaseToken: job.leaseToken,
+      );
+      if (marked != null) return marked.attemptCount;
+    } catch (_) {
+      // mark 失败时退回 job+1；下一轮库恢复后再落库。
+    }
+    return job.attemptCount + 1;
+  }
+
   /// 单步处理：领一条可跑任务并走完它。返回 true = 处理了一条任务
   /// （无论成功/失败/丢弃），false = 无可领任务。
   /// 内部兜底一切异常：绝不向循环外抛错。
@@ -385,10 +443,13 @@ class OcrWorker {
       await _processClaimed(job);
     } catch (e) {
       // 未预期异常：按 internal 码重试（上限 4 次），不让 worker 死掉。
+      // P1-02：必须把这次异常计入 attempt；否则 mark 之前的异常会让
+      // attempt 恒为 0、永久重试。
+      final attempts = await _attemptForUnexpected(job);
       await _handleFailure(job, OcrException(
         OcrErrorCode.internalError,
         '识别处理异常，请重试',
-      ));
+      ), attemptCount: attempts);
     }
     return true;
   }

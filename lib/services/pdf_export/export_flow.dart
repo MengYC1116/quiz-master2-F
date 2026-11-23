@@ -333,6 +333,12 @@ class ExportFlowController extends ChangeNotifier {
     bool excludeLowDpi = false,
     ExportFormat format = ExportFormat.pdf,
   }) async {
+    // P2-02：服务层防重入。UI 生成中已把按钮换掉，正常情况下双击
+    // 不可达；但程序性调用/极端双击不应覆盖 _token、不应并发生成两套。
+    if (_phase == ExportFlowPhase.generating ||
+        _phase == ExportFlowPhase.delivering) {
+      return;
+    }
     if (ids.length > kExportMaxQuestions) {
       error = '单次最多导出 50 道题';
       _setPhase(ExportFlowPhase.failed);

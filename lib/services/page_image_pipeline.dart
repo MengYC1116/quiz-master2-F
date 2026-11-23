@@ -161,6 +161,61 @@ Future<Uint8List> rotateImageBytes(
   return (width: width, height: height);
 }
 
+/// B 包 P1-05：图片像素上限 60MP（宽×高）。在完整解码前先读文件头拒绝，
+/// 避免 20MB 以内的高压缩比图片解出数百 MB–GB 的 RGBA。
+const int maxImagePixels = 60 * 1000 * 1000;
+
+/// EXIF 归一化副本的页图长边目标；解码时直接按该尺寸缩放，避免把
+/// 整张 60MP 图完整解码后再缩。
+const int normalizedPageMaxLongEdge = 3000;
+
+/// 读图片头得到宽高，不解码整图。支持导入允许的 PNG/JPEG；其它格式
+/// 或损坏文件返回 null，由调用方按“图片打不开”处理。
+({int width, int height})? readImageDimensions(Uint8List bytes) {
+  final png = pngDimensions(bytes);
+  if (png != null) return png;
+  return _jpegDimensions(bytes);
+}
+
+/// 轻量 JPEG 尺寸解析：SOI 后逐段找 SOFn（C0–CF，排除 C4/C8/CC），
+/// 读 height/width。只解析头部，不做熵解码。
+({int width, int height})? _jpegDimensions(Uint8List bytes) {
+  if (bytes.length < 4 || bytes[0] != 0xFF || bytes[1] != 0xD8) {
+    return null;
+  }
+  var pos = 2;
+  while (pos + 4 <= bytes.length) {
+    if (bytes[pos] != 0xFF) return null;
+    // 跳过填充的 0xFF 字节。
+    while (pos < bytes.length && bytes[pos] == 0xFF) {
+      pos++;
+    }
+    if (pos >= bytes.length) return null;
+    final marker = bytes[pos];
+    pos++;
+    if (marker == 0xD8 || marker == 0xD9) return null;
+    if (marker >= 0xD0 && marker <= 0xD7) continue; // RSTn 无长度
+    if (marker == 0xDA) return null; // SOS 之前应已命中 SOFn
+    if (pos + 2 > bytes.length) return null;
+    final len = (bytes[pos] << 8) | bytes[pos + 1];
+    if (len < 2 || pos + len > bytes.length) return null;
+    final isSof = marker >= 0xC0 &&
+        marker <= 0xCF &&
+        marker != 0xC4 &&
+        marker != 0xC8 &&
+        marker != 0xCC;
+    if (isSof) {
+      if (len < 7) return null;
+      final height = (bytes[pos + 3] << 8) | bytes[pos + 4];
+      final width = (bytes[pos + 5] << 8) | bytes[pos + 6];
+      if (width <= 0 || height <= 0) return null;
+      return (width: width, height: height);
+    }
+    pos += len;
+  }
+  return null;
+}
+
 /// 按 0..1 相对框 [box] 从页图字节裁剪，返回 PNG 与像素尺寸。
 /// 矩形按像素四舍五入后钳制进图内；框落在图外时抛 [ArgumentError]。
 Future<({Uint8List png, int width, int height})> cropBoxPng(
@@ -243,12 +298,48 @@ Future<ui.Image> _decode(Uint8List bytes) async {
   }
 }
 
+/// B 包 P1-05：按目标长边解码。仅用于导入时的 EXIF 归一化副本，
+/// 避免 60MP 图完整解出后再缩放；切片/裁剪仍走 [_decode] 保留原分辨率。
+Future<ui.Image> _decodeScaled(
+  Uint8List bytes, {
+  required int maxLongEdge,
+}) async {
+  final dims = readImageDimensions(bytes);
+  int? targetWidth;
+  int? targetHeight;
+  if (dims != null) {
+    final longEdge = math.max(dims.width, dims.height);
+    if (longEdge > maxLongEdge) {
+      final scale = maxLongEdge / longEdge;
+      targetWidth = math.max(1, (dims.width * scale).round());
+      targetHeight = math.max(1, (dims.height * scale).round());
+    }
+  }
+  final codec = await ui.instantiateImageCodec(
+    bytes,
+    targetWidth: targetWidth,
+    targetHeight: targetHeight,
+  );
+  try {
+    final frame = await codec.getNextFrame();
+    return frame.image;
+  } finally {
+    codec.dispose();
+  }
+}
+
 /// 图片能否解码（SR-P2-61 导入校验用）：能解出首帧即 true，解码失败
 /// 返回 false，不抛错。只校验、不保留像素；图片与 Codec 用完即释放。
 Future<bool> canDecodeImageBytes(Uint8List bytes) async {
   ui.Codec? codec;
   try {
-    codec = await ui.instantiateImageCodec(bytes);
+    // B 包 P1-05：校验格式只需要首帧，按 1×1 解码，避免为了“能不能
+    // 打开”把整张大图解成 RGBA。像素上限由 readImageDimensions 先判。
+    codec = await ui.instantiateImageCodec(
+      bytes,
+      targetWidth: 1,
+      targetHeight: 1,
+    );
     final frame = await codec.getNextFrame();
     frame.image.dispose();
     return true;
@@ -377,7 +468,11 @@ normalizeExifImageBytes(Uint8List bytes) async {
   if (degrees == null || degrees == 0) {
     return (bytes: bytes, orientation: orientation, wasNormalized: false);
   }
-  final img = await _decode(bytes); // 解码即转正（见上）
+  // B 包 P1-05：归一化副本按目标长边解码，不把整张原图完整展开。
+  final img = await _decodeScaled(
+    bytes,
+    maxLongEdge: normalizedPageMaxLongEdge,
+  ); // 解码即转正（见上）
   try {
     final data = await img.toByteData(format: ui.ImageByteFormat.png);
     return (

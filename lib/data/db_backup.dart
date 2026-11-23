@@ -1989,7 +1989,7 @@ Map<String, dynamic> _decodeBackupJson(List<int> bytes) {
 /// 不是 zip / 缺 backup.json / JSON 非法 / 版本校验不过 → 抛
 /// BackupRestoreException（带具体原因），原库不动。
 Map<String, dynamic> readBackupJsonFromZipImpl(List<int> bytes) {
-  final entries = _readZipOrThrow(bytes);
+  final entries = _readZipOrThrow(bytes, maxTotalBytes: maxBackupFileBytes);
   ZipEntryData? jsonEntry;
   for (final e in entries) {
     if (e.name == 'backup.json') jsonEntry = e;
@@ -2007,6 +2007,12 @@ Map<String, dynamic> readBackupJsonFromZipImpl(List<int> bytes) {
 /// 的 zip 会直接把库撑过 2GB。JSON 恢复不产生新文件（只换库内行），
 /// 不适用此检查；zip 恢复在文件进位前估算，超了拒绝整个恢复。
 const int _maxRestoreBytes = 2 * 1024 * 1024 * 1024;
+
+/// B 包 P1-04：备份文件本身（压缩后的 zip / JSON）上限 200MB。
+/// 在 readAsBytes 之前检查，避免把超大文件整体读进内存；zip 解压
+/// 后的总量也复用同一上限（见 [readBackupJsonFromZipImpl] /
+/// [importBackupZipIntoImpl]），比原来的 2GB/4GB 低得多。
+const int maxBackupFileBytes = 200 * 1024 * 1024;
 
 /// SR-P2-5：数据目录下 imports/ + slices/ 的当前占用字节数
 /// （与 ImportService.storageUsageBytes 同一口径，但按传入的
@@ -2107,11 +2113,10 @@ Future<List<String>> importBackupZipIntoImpl(
   String? dataDir,
 }) async {
   final dir = dataDir ?? AppDatabase.dataDirectoryPath();
-  // FR-41：恢复上限 2GB 在解压前预判——readZip 按中央目录 rawSize 累计，
-  // 超了直接拒、不解压（之前是全量解压进内存后才在峰值估算里判，
-  // 2~4GB 的包先占满内存再被拒，有 OOM 风险）。预览入口
-  // readBackupJsonFromZipImpl 不走这里，仍用 readZip 默认 4GB 上限。
-  final entries = _readZipOrThrow(bytes, maxTotalBytes: _maxRestoreBytes);
+  // B 包 P1-04：zip 文件/解压总量上限 200MB 在解压前预判；不再用
+  // 原来的 2GB 恢复上限（2GB 内存峰值在 Android 不现实）。预览入口
+  // readBackupJsonFromZipImpl 同样用 maxBackupFileBytes。
+  final entries = _readZipOrThrow(bytes, maxTotalBytes: maxBackupFileBytes);
   ZipEntryData? jsonEntry;
   for (final e in entries) {
     if (e.name == 'backup.json') jsonEntry = e;

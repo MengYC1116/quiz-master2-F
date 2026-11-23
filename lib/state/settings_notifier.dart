@@ -136,9 +136,25 @@ class SettingsNotifier extends AsyncNotifier<AppSettings> {
   /// 不做静默读坏。
   Future<({Map<String, dynamic> data, List<int>? zipBytes})>
   parseRestoreFile(String path) async {
+    final file = File(path);
+    // B 包 P1-04：先看文件大小再 readAsBytes——200MB 的包整体读入 +
+    // 解压后全量表项在 Android 会先 OOM；超限直接拒绝，不动原库。
+    try {
+      final size = await file.length();
+      if (size > maxBackupFileBytes) {
+        throw BackupRestoreException(
+          '备份文件超过 200MB 上限（当前 ${(size / 1024 / 1024).toStringAsFixed(1)}MB），'
+          '请先减少题目/图片后重新导出',
+        );
+      }
+    } on BackupRestoreException {
+      rethrow;
+    } catch (_) {
+      throw RestoreFileReadException(path);
+    }
     List<int> bytes;
     try {
-      bytes = await File(path).readAsBytes();
+      bytes = await file.readAsBytes();
     } catch (_) {
       throw RestoreFileReadException(path);
     }

@@ -199,7 +199,12 @@ void main() {
   });
 
   group('当前平台委托', () {
-    test('Linux 默认路径与环境一致（不依赖私有 wrapper）', () {
+    test(
+      'Linux 默认路径与环境一致（不依赖私有 wrapper）',
+      skip: Platform.isLinux
+          ? false
+          : '该用例校验 Linux 默认路径；Windows/Android 的默认路径分支已由上方平台专属用例覆盖',
+      () {
       final home = Platform.environment['HOME'] ?? '';
       final xdg = Platform.environment['XDG_DATA_HOME'];
       final expected = (xdg != null && xdg.isNotEmpty)

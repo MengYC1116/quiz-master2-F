@@ -206,7 +206,12 @@ void main() {
       expectNoStagingLeft();
     });
 
-    test('staging 中切片读取失败：导出抛错，指明“暂存区文件无法读取”', () async {
+    test(
+      'staging 中切片读取失败：导出抛错，指明“暂存区文件无法读取”',
+      skip: Platform.isWindows
+          ? 'Windows 普通权限下创建不可读 symlink 失败，测试前置条件建不起来'
+          : false,
+      () async {
       await writeBytes('slices/q1.png', [1, 2, 3]);
       await insertQuestion('q1', slicePath: 'slices/q1.png');
       Object? caught;
@@ -254,7 +259,12 @@ void main() {
       expectNoStagingLeft();
     });
 
-    test('staging 中图块裁图读取失败：备份成功，警告列出题目', () async {
+    test(
+      'staging 中图块裁图读取失败：备份成功，警告列出题目',
+      skip: Platform.isWindows
+          ? 'Windows 普通权限下创建不可读 symlink 失败，测试前置条件建不起来'
+          : false,
+      () async {
       await writeBytes('slices/q1.png', [1, 2, 3]);
       await writeBytes('slices/q1-fig.png', validPngBytes());
       await insertQuestion(
@@ -307,7 +317,12 @@ void main() {
       expectNoStagingLeft();
     });
 
-    test('staging 中派生文件读取失败：备份成功，警告含该派生路径', () async {
+    test(
+      'staging 中派生文件读取失败：备份成功，警告含该派生路径',
+      skip: Platform.isWindows
+          ? 'Windows 普通权限下创建不可读 symlink 失败，测试前置条件建不起来'
+          : false,
+      () async {
       // 二十批 P6 修法 A（D-237）：同上，快照时在盘上的副本暂存区
       // 读取失败按通用派生口径警告。
       await insertTask(

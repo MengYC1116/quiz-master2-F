@@ -454,38 +454,47 @@ void main() {
       expect((await AppDatabase.instance.allCollectTasks()).length, 1);
     });
 
-    test('同文件大小写不同写法（SR2-72/SR3-5）：Linux 下不存在的大写拼写是独立任务', () async {
+    test('同文件大小写不同写法（SR2-72/SR3-5）：Windows 只建 1 个任务，Linux 区分大小写', () async {
       await openMemoryDb();
-      // SR3-5：Linux 文件系统区分大小写，大写路径本身打不开文件；
-      // 去重键的回退分支不再折叠小写，不存在的大写拼写不再与真实
-      // 文件撞键，所以建两个任务：一个 needBox、一个 failed（诚实
-      // 行为）。产品跑在不区分大小写的 Windows 上，那里两种拼写
-      // 打开同一文件，仍只建一个任务。
       // B10-2：大写拼写取生成路径整体大写（临时目录名本身含小写，
-      // 大写后一定不存在）。
+      // 大写后一定不存在于 Linux）。Windows 文件系统不区分大小写，
+      // 两种拼写打开同一文件，去重后只建一个任务；Linux 上大写
+      // 路径本身打不开，是两个独立任务（一个 needBox、一个 failed）。
       final tasks = await ImportService(AppDatabase.instance)
           .enqueue([_photoPath, _photoPath.toUpperCase()], subjectId: 'math');
-      expect(tasks.length, 2);
-      expect(tasks.map((t) => t.status).toSet(), {
-        CollectStatus.needBox,
-        CollectStatus.failed,
-      });
-      expect((await AppDatabase.instance.allCollectTasks()).length, 2);
+      if (Platform.isWindows) {
+        expect(tasks.length, 1);
+        expect(tasks.single.status, CollectStatus.needBox);
+        expect((await AppDatabase.instance.allCollectTasks()).length, 1);
+      } else {
+        expect(tasks.length, 2);
+        expect(tasks.map((t) => t.status).toSet(), {
+          CollectStatus.needBox,
+          CollectStatus.failed,
+        });
+        expect((await AppDatabase.instance.allCollectTasks()).length, 2);
+      }
     });
 
-    test('不存在的大写拼写在前（SR3-5）：真实文件仍导入，不被遮蔽', () async {
+    test('不存在的大写拼写在前（SR3-5）：Windows 仍只建 1 个任务', () async {
       await openMemoryDb();
-      // 旧行为：不存在的大写拼写回退键折叠后与真实文件同键，先建
-      // 失败任务、真实文件被当作重复跳过，只剩一个失败任务。修后：
-      // 两个任务，真实文件正常进 needBox。
+      // Windows：先给的大写路径仍打开真实文件，去重后只建一个
+      // needBox 任务，真实文件不会被遮蔽。Linux：两个任务，真实
+      // 文件正常进 needBox，大写拼写单独 failed。
       final tasks = await ImportService(AppDatabase.instance)
           .enqueue([_photoPath.toUpperCase(), _photoPath], subjectId: 'math');
-      expect(tasks.length, 2);
-      final real = tasks.firstWhere((t) => t.fileName == 'photo.jpg');
-      expect(real.status, CollectStatus.needBox);
-      final ghost = tasks.firstWhere((t) => t.fileName == 'PHOTO.JPG');
-      expect(ghost.status, CollectStatus.failed);
-      expect((await AppDatabase.instance.allCollectTasks()).length, 2);
+      if (Platform.isWindows) {
+        expect(tasks.length, 1);
+        expect(tasks.single.status, CollectStatus.needBox);
+        expect((await AppDatabase.instance.allCollectTasks()).length, 1);
+      } else {
+        expect(tasks.length, 2);
+        final real = tasks.firstWhere((t) => t.fileName == 'photo.jpg');
+        expect(real.status, CollectStatus.needBox);
+        final ghost = tasks.firstWhere((t) => t.fileName == 'PHOTO.JPG');
+        expect(ghost.status, CollectStatus.failed);
+        expect((await AppDatabase.instance.allCollectTasks()).length, 2);
+      }
     });
   });
 
@@ -515,6 +524,40 @@ void main() {
       expect(tasks.first.status, CollectStatus.needBox);
       expect(tasks.first.pageCount, 1);
       expect((await AppDatabase.instance.allCollectTasks()).length, 1);
+    });
+  });
+
+  group('B 包 P1-05 图片像素上限', () {
+    // 只构造 PNG 签名 + IHDR 宽高，不构造真实像素数据：
+    // 60MP 检查在读头阶段就应拒绝，不能走到解码。
+    Uint8List pngHeader(int width, int height) {
+      final b = BytesBuilder();
+      b.add(const [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]);
+      b.add(const [0x00, 0x00, 0x00, 0x0D]);
+      b.add(const [0x49, 0x48, 0x44, 0x52]);
+      for (final v in [width, height]) {
+        b.add([
+          (v >> 24) & 0xFF,
+          (v >> 16) & 0xFF,
+          (v >> 8) & 0xFF,
+          v & 0xFF,
+        ]);
+      }
+      b.add(const [8, 6, 0, 0, 0]); // bit depth/color/compression/filter/interlace
+      b.add(const [0, 0, 0, 0]); // CRC（readImageDimensions 不校验 CRC）
+      return b.takeBytes();
+    }
+
+    test('8000×8000 PNG 头：导入直接 failed，提示 60MP 上限', () async {
+      await openMemoryDb();
+      final bomb = File('${_tmp.path}/pixel-bomb.png');
+      await bomb.writeAsBytes(pngHeader(8000, 8000));
+      final tasks = await ImportService(AppDatabase.instance)
+          .enqueue([bomb.path], subjectId: 'math');
+      expect(tasks.length, 1);
+      expect(tasks.single.status, CollectStatus.failed);
+      expect(tasks.single.error, contains('60MP'));
+      expect(await AppDatabase.instance.allCollectTasks(), hasLength(1));
     });
   });
 }

@@ -673,10 +673,20 @@ class ImportService {
     String? decodeError;
     if (bytes != null) {
       try {
-        // SR-P2-61：先校验图片能不能解码。改后缀的非图片文件（如 .txt
-        // 改 .jpg）能通过扩展名检查，解不开时不再静默按原图进 needBox，
-        // 任务直接失败并提示“这张图片打不开”（修框时才暴露太晚了）。
-        if (!await canDecodeImageBytes(bytes)) {
+        // B 包 P1-05：读文件头先判像素，再决定是否解码。20MB 的
+        // 高压缩比图片可以解出数百 MB 的 RGBA；先拒 60MP 以上。
+        final dims = readImageDimensions(bytes);
+        if (dims == null) {
+          // 沿用 SR-P2-61 文案：改后缀的非图片文件也走这里。
+          decodeError = '这张图片打不开，请确认文件是完好的图片再导入';
+        } else if (dims.width * dims.height > maxImagePixels) {
+          decodeError =
+              '这张图片像素过大（${dims.width}×${dims.height}），'
+              '超过 60MP 上限，请压缩到 60MP 以内再导入';
+        } else if (!await canDecodeImageBytes(bytes)) {
+          // SR-P2-61：先校验图片能不能解码。改后缀的非图片文件（如 .txt
+          // 改 .jpg）能通过扩展名检查，解不开时不再静默按原图进 needBox，
+          // 任务直接失败并提示“这张图片打不开”（修框时才暴露太晚了）。
           decodeError = '这张图片打不开，请确认文件是完好的图片再导入';
         } else {
           final normalized = await normalizeExifImageBytes(bytes);

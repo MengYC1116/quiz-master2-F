@@ -1,4 +1,5 @@
 // 十五批 M3：导出流程控制器（PLAN-15-REV3 §6 M3-2；P1-5 部分成功语义）。
+import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -242,6 +243,74 @@ void main() {
         c.reportSummaryLines.any((l) => l.contains('答案已录入 1 / 2 道')),
         isTrue,
       );
+    });
+
+    test('start 重入保护：generating 中第二次 start 直接返回，不重复生成（P2-02）', () async {
+      final gate = Completer<TwoVersionExportResult>();
+      var generateCalls = 0;
+      final c = ExportFlowController(
+        computeInventory:
+            ({
+              required List<String> ids,
+              required List<ExcludedQuestion> excluded,
+              required int circledCount,
+            }) async => fakeInventory(),
+        generateVersions:
+            ({
+              required List<String> ids,
+              required List<ExcludedQuestion> excluded,
+              required String filterText,
+              required String sortText,
+              required ExportVersionSelection versions,
+              required int circledCount,
+              required ExportCancellationToken token,
+              void Function(int done, int total, String label)? onProgress,
+              String subjectName = '多学科',
+              String? folderName,
+              bool excludeLowDpi = false,
+            }) async {
+              generateCalls++;
+              return gate.future;
+            },
+        deliverAll:
+            ({required List<VersionDeliveryRequest> requests}) async => [
+              for (final r in requests)
+                FileDeliveryResult(
+                  status: FileDeliveryStatus.delivered,
+                  version: r.version,
+                  fileName: r.fileName,
+                  filePath: '/tmp/${r.fileName}',
+                  pageCount: r.expectedPages,
+                ),
+            ],
+      );
+
+      final first = c.start(
+        ids: const ['q1', 'q2'],
+        excluded: const [],
+        filterText: '全部题目',
+        sortText: '时间新→旧',
+        versions: const ExportVersionSelection.both(),
+        circledCount: 2,
+        fileNameFor: (v) => '错题本_多学科_20261121${v.fileSuffix}.pdf',
+      );
+      expect(c.phase, ExportFlowPhase.generating);
+      final second = c.start(
+        ids: const ['q1', 'q2'],
+        excluded: const [],
+        filterText: '全部题目',
+        sortText: '时间新→旧',
+        versions: const ExportVersionSelection.both(),
+        circledCount: 2,
+        fileNameFor: (v) => '错题本_多学科_20261121${v.fileSuffix}.pdf',
+      );
+      await Future<void>.delayed(Duration.zero);
+      expect(generateCalls, 1);
+
+      gate.complete(fakeTwoVersion());
+      await Future.wait([first, second]);
+      expect(c.phase, ExportFlowPhase.done);
+      expect(generateCalls, 1);
     });
 
     test('部分成功：答案版生成失败时练习版保留，逐份列出状态', () async {

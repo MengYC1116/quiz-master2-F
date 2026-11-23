@@ -1136,6 +1136,12 @@ Future<void> _deleteQuestionTxn(QuizDatabase db, String id) async {
     db.reviewHistory,
   )..where((t) => t.questionId.equals(id))).go();
   await (db.delete(db.attempts)..where((t) => t.questionId.equals(id))).go();
+  // P2-01：这两张表没有外键/级联；不删会留下 ocr_jobs 孤儿（其
+  // crop_path 还会让 _isFileReferenced 永久保留切片）与最近查看行。
+  await (db.delete(db.ocrJobs)..where((t) => t.questionId.equals(id))).go();
+  await (db.delete(
+    db.recentlyViewedQuestions,
+  )..where((t) => t.questionId.equals(id))).go();
   await (db.delete(
     db.causeRecords,
   )..where((t) => t.questionId.equals(id))).go();

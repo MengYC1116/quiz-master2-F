@@ -185,7 +185,12 @@ void main() {
       expectNoStagingLeft();
     });
 
-    test('普通引用文件读取失败：备份失败，错误指明题目 ID 与相对路径', () async {
+    test(
+      '普通引用文件读取失败：备份失败，错误指明题目 ID 与相对路径',
+      skip: Platform.isWindows
+          ? 'Windows 普通权限下创建不可读 symlink 失败，测试前置条件建不起来'
+          : false,
+      () async {
       // 故障注入：切片路径上放一个指向 /proc/self/mem 的软链——
       // File.existsSync() 为真（跟随链接后是文件），readAsBytes()
       // 确定性抛 EIO（FileSystemException）。不用 chmod：测试以 root

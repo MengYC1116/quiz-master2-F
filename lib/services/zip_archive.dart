@@ -226,6 +226,51 @@ int _readU32(List<int> b, int off) =>
 ///   占满内存再触发上限）；
 /// - 无文件条目（空 zip / 只含目录条目）直接抛错，不再静默返回 []。
 /// 不支持 ZIP64（尺寸字段为 0xFFFFFFFF 时抛错）与多盘。
+/// B 包 P1-04：有界解压 sink。中央目录的 rawSize 不可信（可以谎报
+/// 很小、实际解压巨大）；这里按实际输出字节数硬截断，超限即抛错，
+/// 不把炸弹完整展开后再判断。只改单条目解压，不改整包读取/恢复流程。
+class _BoundedBytesSink implements Sink<List<int>> {
+  _BoundedBytesSink(this.maxBytes, this.entryName);
+
+  final int maxBytes;
+  final String entryName;
+  final BytesBuilder _builder = BytesBuilder(copy: false);
+  var _length = 0;
+
+  @override
+  void add(List<int> data) {
+    if (data.isEmpty) return;
+    if (_length + data.length > maxBytes) {
+      throw ZipFormatException(
+        'ZIP 条目解压后超过 ${_formatLimit(maxBytes)}：$entryName',
+      );
+    }
+    _length += data.length;
+    _builder.add(data);
+  }
+
+  @override
+  void close() {}
+
+  List<int> takeBytes() => _builder.takeBytes();
+}
+
+/// 逐块喂 deflate，输出由 [_BoundedBytesSink] 限制；不会先解出完整
+/// 数据再检查 rawSize。
+List<int> _inflateBounded(List<int> compressed, int maxBytes, String name) {
+  final sink = _BoundedBytesSink(maxBytes, name);
+  final decoder = ZLibDecoder(raw: true).startChunkedConversion(sink);
+  const chunkSize = 64 * 1024;
+  for (var start = 0; start < compressed.length; start += chunkSize) {
+    final end = (start + chunkSize < compressed.length)
+        ? start + chunkSize
+        : compressed.length;
+    decoder.add(compressed.sublist(start, end));
+  }
+  decoder.close();
+  return sink.takeBytes();
+}
+
 List<ZipEntryData> readZip(
   List<int> bytes, {
   int maxTotalBytes = 4 * 1024 * 1024 * 1024,
@@ -237,7 +282,6 @@ List<ZipEntryData> readZip(
   final entries = <ZipEntryData>[];
   final seenNames = <String>{};
   var total = 0;
-  final inflate = ZLibCodec(raw: true);
   for (final entry in central) {
     if (entry.name.endsWith('/')) continue; // 目录条目跳过
     final bad = validateZipEntryName(entry.name);
@@ -255,8 +299,10 @@ List<ZipEntryData> readZip(
     if ((entry.flags & 0x01) != 0) {
       throw ZipFormatException('不支持加密的 ZIP 备份');
     }
-    // 解压前预判：累计 rawSize 超上限即拒绝，不先解压占内存。
-    if (total + entry.rawSize > maxTotalBytes) {
+    // 解压前预判：累计 rawSize 超上限即拒绝。rawSize 只是快速预判，
+    // 不能作为信任边界；下面单条目解压仍按实际输出限流。
+    final remaining = maxTotalBytes - total;
+    if (remaining < 0 || entry.rawSize > remaining) {
       throw ZipFormatException('备份解压后超过 ${_formatLimit(maxTotalBytes)}，拒绝恢复');
     }
     final dataStart = _localDataStart(bytes, entry);
@@ -266,10 +312,17 @@ List<ZipEntryData> readZip(
     final compressed = bytes.sublist(dataStart, dataStart + entry.compSize);
     List<int> data;
     if (entry.method == 0) {
+      if (compressed.length > remaining) {
+        throw ZipFormatException(
+          'ZIP 条目解压后超过 ${_formatLimit(maxTotalBytes)}：${entry.name}',
+        );
+      }
       data = compressed;
     } else if (entry.method == 8) {
       try {
-        data = inflate.decode(compressed);
+        data = _inflateBounded(compressed, remaining, entry.name);
+      } on ZipFormatException {
+        rethrow;
       } catch (_) {
         throw ZipFormatException('ZIP 解压失败：${entry.name}');
       }

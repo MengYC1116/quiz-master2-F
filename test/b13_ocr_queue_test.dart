@@ -244,6 +244,61 @@ void main() {
       // 10 分钟内不再领走；10 分钟后 key 补上即可跑。
       expect(await worker.processOne(), isFalse);
     });
+
+    test('无效 key 改成有效 key：failed 任务自动回队并完成（P1-03）', () async {
+      final slice = await writeSlice('q1');
+      final q = await insertQuestion(id: 'q1', slicePath: slice);
+      final worker = workerWith(
+        _FakeRecognizer([
+          OcrException(OcrErrorCode.apiKeyInvalid, 'key 无效'),
+          _okResult(_stemMd),
+        ]),
+      );
+      await worker.enqueueForQuestion(q);
+      expect(await worker.processOne(), isTrue);
+      var job = (await AppDatabase.instance.ocrJobsForQuestion('q1')).single;
+      expect(job.status, OcrJobStatus.failed);
+      expect(job.lastErrorCode, OcrErrorCode.apiKeyInvalid);
+
+      await OcrKeyStore(backend: keyBackend).setApiKey('new-valid-key');
+      await worker.notifyApiKeySaved();
+      job = (await AppDatabase.instance.ocrJobsForQuestion('q1')).single;
+      expect(job.status, OcrJobStatus.pending);
+      expect(job.lastErrorCode, isNull);
+
+      expect(await worker.processOne(), isTrue);
+      job = (await AppDatabase.instance.ocrJobsForQuestion('q1')).single;
+      expect(job.status, OcrJobStatus.completed);
+      expect(job.attemptCount, 2);
+      final after = await AppDatabase.instance.questionById('q1');
+      expect(after!.ocrStem, contains('双曲线'));
+    });
+
+    test('应用启动不会把 failed + apiKeyInvalid 回队（P1-03）', () async {
+      final slice = await writeSlice('q1');
+      final q = await insertQuestion(id: 'q1', slicePath: slice);
+      final first = workerWith(
+        _FakeRecognizer([OcrException(OcrErrorCode.apiKeyInvalid, 'key 无效')]),
+      );
+      await first.enqueueForQuestion(q);
+      expect(await first.processOne(), isTrue);
+      var job = (await AppDatabase.instance.ocrJobsForQuestion('q1')).single;
+      expect(job.status, OcrJobStatus.failed);
+      expect(job.lastErrorCode, OcrErrorCode.apiKeyInvalid);
+
+      // 模拟重启：新 worker.start() 只能回收租约/清 no-key 等待，
+      // 不得把 api_key_invalid 的 failed 任务推回 pending。
+      final second = workerWith(_FakeRecognizer([_okResult(_stemMd)]));
+      await second.start();
+      try {
+        job = (await AppDatabase.instance.ocrJobsForQuestion('q1')).single;
+        expect(job.status, OcrJobStatus.failed);
+        expect(job.lastErrorCode, OcrErrorCode.apiKeyInvalid);
+        expect(await second.processOne(), isFalse);
+      } finally {
+        await second.stop();
+      }
+    });
   });
 
   group('重试与错误分类', () {
@@ -318,6 +373,25 @@ void main() {
       expect(job.lastErrorCode, OcrErrorCode.timeout);
     });
 
+    test('未预期异常也计入 4 次上限，不会第 5 次请求（P1-02）', () async {
+      final slice = await writeSlice('q1');
+      final q = await insertQuestion(id: 'q1', slicePath: slice);
+      final recognizer = _FakeRecognizer([StateError('识别器内部异常')]);
+      final worker = workerWith(recognizer);
+      await worker.enqueueForQuestion(q);
+
+      for (var i = 0; i < 4; i++) {
+        expect(await worker.processOne(), isTrue);
+        fakeNow = fakeNow.add(const Duration(minutes: 5));
+      }
+
+      final job = (await AppDatabase.instance.ocrJobsForQuestion('q1')).single;
+      expect(job.status, OcrJobStatus.failed);
+      expect(job.attemptCount, 4);
+      expect(recognizer.calls, 4);
+      expect(await worker.processOne(), isFalse);
+    });
+
     test('bad_image 不重试：一次即 failed', () async {
       final slice = await writeSlice('q1');
       final q = await insertQuestion(id: 'q1', slicePath: slice);
@@ -349,16 +423,27 @@ void main() {
       expect(after.contentVersion, 0);
     });
 
-    test('题目已删：结果丢弃（failed/question_deleted）', () async {
+    test('删题同时清理 OCR 任务与最近查看，worker 不会领到孤儿任务（P2-01）', () async {
       final slice = await writeSlice('q1');
       final q = await insertQuestion(id: 'q1', slicePath: slice);
       final worker = workerWith(_FakeRecognizer([_okResult(_stemMd)]));
       await worker.enqueueForQuestion(q);
+      await AppDatabase.recordQuestionViewedInto(db, 'q1');
+      expect(
+        (await AppDatabase.instance.recentlyViewedQuestions())
+            .any((e) => e.question.id == 'q1'),
+        isTrue,
+      );
+
       await AppDatabase.deleteQuestionFrom(db, 'q1');
-      expect(await worker.processOne(), isTrue);
-      final job = (await AppDatabase.instance.ocrJobsForQuestion('q1')).single;
-      expect(job.status, OcrJobStatus.failed);
-      expect(job.lastErrorCode, OcrErrorCode.questionDeleted);
+
+      expect(await AppDatabase.instance.ocrJobsForQuestion('q1'), isEmpty);
+      expect(
+        (await AppDatabase.instance.recentlyViewedQuestions())
+            .any((e) => e.question.id == 'q1'),
+        isFalse,
+      );
+      expect(await worker.processOne(), isFalse);
     });
 
     test('识别期间内容版本变了：结果丢弃（failed/content_changed）', () async {
@@ -472,6 +557,44 @@ void main() {
         expect(job?.status, OcrJobStatus.completed);
         final after = await AppDatabase.instance.questionById('q1');
         expect(after!.ocrStem, contains('双曲线'));
+      } finally {
+        await worker.stop();
+      }
+    });
+
+    test('重启时 lease 未到期：运行中到期会自动回收，不会整会话卡 running（P1-01）', () async {
+      final slice = await writeSlice('q1');
+      final q = await insertQuestion(id: 'q1', slicePath: slice);
+      final worker = OcrWorker(
+        database: AppDatabase.instance,
+        keyStore: OcrKeyStore(backend: keyBackend),
+        recognizer: _FakeRecognizer([_okResult(_stemMd)]),
+        pollInterval: const Duration(milliseconds: 20),
+        clock: clock,
+      );
+      final job = (await worker.enqueueForQuestion(q))!;
+      // 模拟旧 worker 在请求中领走后被杀：lease 还没到期。
+      final claimed = await AppDatabase.claimNextOcrJobInto(
+        db,
+        leaseDuration: ocrLeaseDuration,
+        now: fakeNow,
+      );
+      expect(claimed!.id, job.id);
+      expect(claimed.status, OcrJobStatus.running);
+
+      await worker.start();
+      try {
+        // 新会话先启动；启动时 lease 未到期，不能回收。
+        // 等 lease 过期后，运行中的周期回收必须把它放回 pending 并跑完。
+        fakeNow = fakeNow.add(const Duration(minutes: 6));
+        OcrJob? current;
+        final deadline = DateTime.now().add(const Duration(seconds: 5));
+        while (DateTime.now().isBefore(deadline)) {
+          current = await AppDatabase.instance.ocrJobById(job.id);
+          if (current?.status == OcrJobStatus.completed) break;
+          await Future.delayed(const Duration(milliseconds: 20));
+        }
+        expect(current?.status, OcrJobStatus.completed);
       } finally {
         await worker.stop();
       }
