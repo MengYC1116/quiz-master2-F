@@ -637,28 +637,54 @@ void main() {
       required Question question,
       required List<OcrJob> jobs,
       Future<bool> Function()? onCancelOcr,
+      double? width,
     }) async {
+      final section = OcrStemSection(
+        question: question,
+        jobs: jobs,
+        hasApiKey: true,
+        onSaveEdited: (_) async => true,
+        onAcceptCandidate: (_) async => true,
+        onDismissCandidate: () async {},
+        onRerecognize: () async {},
+        onCancelOcr: onCancelOcr,
+      );
       await tester.pumpWidget(
         MaterialApp(
           theme: AppTheme.light(),
           home: Scaffold(
             body: SingleChildScrollView(
-              child: OcrStemSection(
-                question: question,
-                jobs: jobs,
-                hasApiKey: true,
-                onSaveEdited: (_) async => true,
-                onAcceptCandidate: (_) async => true,
-                onDismissCandidate: () async {},
-                onRerecognize: () async {},
-                onCancelOcr: onCancelOcr,
-              ),
+              child: width == null
+                  ? section
+                  : SizedBox(width: width, child: section),
             ),
           ),
         ),
       );
       await tester.pumpAndSettle();
     }
+
+    testWidgets('窄宽度：标题行按钮换行不溢出，「取消识别」完整可见', (tester) async {
+      // Win11 真机核验 52a463a：整理工作台识别题干那一行 RIGHT OVERFLOWED
+      // BY 8.4 PIXELS，“取消识别”只露出“取”。420 宽足以复现换行。
+      const narrowWidth = 420.0;
+      await pumpSection(
+        tester,
+        question: sectionQuestion(ocrStem: '题干文字'),
+        jobs: [sectionJob(OcrJobStatus.completed)],
+        onCancelOcr: () async => true,
+        width: narrowWidth,
+      );
+      // RenderFlex 溢出会以 FlutterError 记录；有溢出则本断言失败。
+      expect(tester.takeException(), isNull);
+      expect(find.text('取消识别'), findsOneWidget);
+      // 按钮完整落在可用宽度内（右端不被裁掉）。
+      final cancelRect = tester.getRect(
+        find.byKey(const Key('cancel-ocr-button')),
+      );
+      expect(cancelRect.left, greaterThanOrEqualTo(0));
+      expect(cancelRect.right, lessThanOrEqualTo(narrowWidth));
+    });
 
     testWidgets('有任务时显示取消识别，点后调 onCancelOcr', (tester) async {
       var called = false;

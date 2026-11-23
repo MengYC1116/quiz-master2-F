@@ -323,26 +323,36 @@ class _OcrStemSectionState extends State<OcrStemSection> {
             // Win11 反馈包 3：编辑题干 / 重新识别按钮从题干区底部移到
             // “识别题干”标题行旁（与状态 chip 同一行），方便操作。
             // 编辑态时隐藏（编辑器自带保存/取消）。
+            // Win11 真机 8.4px 溢出：三个按钮宽度固定，Spacer 缩不到负数，
+            // 列宽不够时最后一个被推出画面（“取消识别”只剩“取”）。改用
+            // Wrap：宽度不够时按钮掉到第二行，不缩字体、不藏切分文字。
             if (!_editing) ...[
-              const Spacer(),
-              FilledButton(
-                onPressed: () => _setEditing(true),
-                child: const Text('编辑题干'),
-              ),
-              const SizedBox(width: 8),
-              OutlinedButton(
-                onPressed: _rerecognize,
-                child: Text(status == OcrStemStatus.failed ? '重试' : '重新识别'),
-              ),
-              // Win11 反馈包 2：取消识别放在“重新识别”旁边。
-              if (hasSomethingToCancel) ...[
-                const SizedBox(width: 8),
-                OutlinedButton(
-                  key: const Key('cancel-ocr-button'),
-                  onPressed: _cancelOcr,
-                  child: const Text('取消识别'),
+              Expanded(
+                child: Wrap(
+                  alignment: WrapAlignment.end,
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    FilledButton(
+                      onPressed: () => _setEditing(true),
+                      child: const Text('编辑题干'),
+                    ),
+                    OutlinedButton(
+                      onPressed: _rerecognize,
+                      child: Text(
+                        status == OcrStemStatus.failed ? '重试' : '重新识别',
+                      ),
+                    ),
+                    // Win11 反馈包 2：取消识别放在“重新识别”旁边。
+                    if (hasSomethingToCancel)
+                      OutlinedButton(
+                        key: const Key('cancel-ocr-button'),
+                        onPressed: _cancelOcr,
+                        child: const Text('取消识别'),
+                      ),
+                  ],
                 ),
-              ],
+              ),
             ],
           ],
         ),
