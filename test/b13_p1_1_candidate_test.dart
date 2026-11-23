@@ -793,9 +793,10 @@ void main() {
       await worker.enqueueForQuestion(q);
       expect(await worker.processOne(), isTrue);
       expect(await readQuestion('atom-del'), isNull);
+      // C 包 P2-01：删题同事务删 ocr_jobs，作业行随题目一起消失
+      //（不再留下 question_deleted 的 failed 行）。
       final jobs = await AppDatabase.instance.ocrJobsForQuestion('atom-del');
-      expect(jobs.single.status, OcrJobStatus.failed);
-      expect(jobs.single.lastErrorCode, OcrErrorCode.questionDeleted);
+      expect(jobs, isEmpty);
     });
 
     test('识别期间重框（slice_path 换新文件）：旧结果丢弃，旧候选标 stale', () async {

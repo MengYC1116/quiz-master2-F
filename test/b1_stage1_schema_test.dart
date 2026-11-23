@@ -30,6 +30,8 @@ String _norm(String s) => s.replaceAll(RegExp(r'\s+'), ' ').trim();
 // 末尾加 option_contents + option_contents_parser_version 两列）。
 // 十九批 A3（D-218）：saved_searches 新表，不升版（仍 v6），25 条
 //（17 表 + 8 索引）。
+// 二十七批 D-257：v7（subjects 末尾加 english_name + english_name_manual
+// 两列），仍 25 条。
 const _expected = [
   'CREATE UNIQUE INDEX idx_boxes_one_layer1_per_question ON question_boxes(question_id) WHERE layer = 1 AND question_id IS NOT NULL',
   'CREATE INDEX idx_boxes_parent ON question_boxes(parent_box_id)',
@@ -54,13 +56,13 @@ const _expected = [
   "CREATE TABLE review_state( id INTEGER PRIMARY KEY CHECK (id = 1), queue TEXT NOT NULL DEFAULT '', position INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL, session_id TEXT, mode TEXT, skips TEXT, per_question_state TEXT)",
   "CREATE TABLE saved_searches( id TEXT PRIMARY KEY, name TEXT NOT NULL, conditions TEXT NOT NULL DEFAULT '{}', created_at INTEGER NOT NULL)",
   'CREATE TABLE settings( key TEXT PRIMARY KEY, value TEXT NOT NULL)',
-  "CREATE TABLE subjects( id TEXT PRIMARY KEY, name TEXT NOT NULL, color INTEGER NOT NULL, cover_style TEXT NOT NULL DEFAULT 'plain', cover_color TEXT NOT NULL DEFAULT 'blue')",
+  "CREATE TABLE subjects( id TEXT PRIMARY KEY, name TEXT NOT NULL, color INTEGER NOT NULL, cover_style TEXT NOT NULL DEFAULT 'plain', cover_color TEXT NOT NULL DEFAULT 'blue', english_name TEXT, english_name_manual INTEGER NOT NULL DEFAULT 0)",
   'CREATE TABLE tags(id TEXT PRIMARY KEY, name TEXT NOT NULL)',
 ];
 
 void main() {
   group('B Stage 1：新代码建库 schema 与 v2 基线零差异', () {
-    test('openAt 新建空库：user_version=6，25 条 DDL 逐字一致', () async {
+    test('openAt 新建空库：user_version=7，25 条 DDL 逐字一致', () async {
       final tmp = await Directory.systemTemp.createTemp('b1-schema-');
       addTearDown(() async {
         try {
@@ -81,7 +83,7 @@ void main() {
           probe
               .select('PRAGMA user_version')
               .single['user_version'],
-          6,
+          7,
         );
         final actual =
             probe

@@ -782,7 +782,7 @@ void main() {
     expect(AppDatabase.inRestoreMaintenance, isFalse);
   });
 
-  test('FR-41 2GB 恢复上限在解压前预判：申报 rawSize 超 2GB 的 zip 直接拒', () async {
+  test('FR-41 200MB 恢复上限在解压前预判：申报 rawSize 超 2GB 的 zip 直接拒', () async {
     final old = await _makeOldState();
     addTearDown(() async {
       try {
@@ -816,7 +816,7 @@ void main() {
         isA<BackupRestoreException>().having(
           (e) => e.message,
           'message',
-          contains('2GB'),
+          contains('200MB'),
         ),
       ),
     );
