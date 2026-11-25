@@ -10,9 +10,16 @@
 // 修后三处共用 QuestionRepository.reviewBucketOf：
 // 纯复查题只计待复查、未解决错因题只计要复习、两者之和等于总数。
 // 只用 FakeRepo（覆盖 all / causeRecords / subjects），不碰真实数据库。
+//
+// 口径迁移（2026-11-25 §2.1）：首页焦点卡已改 FSRS 口径（到期数 +
+// 今日新题数），不再读 dueToday / 错因拆分；下方两处 widget 测试已
+// 按新口径重写（到期/今日新题期望值由夹具直接算出，不手写），
+// reviewBucketOf / subjectCounts / homeRevCounts 的仓储层断言仍是
+// 旧口径、保持不动（封面迁移是面 3 的事）。
 import 'package:flutter_test/flutter_test.dart';
 import 'package:quiz_master2/data/database.dart';
 import 'package:quiz_master2/data/repository.dart';
+import 'package:quiz_master2/data/review_scheduler.dart';
 import 'package:quiz_master2/models/models.dart';
 
 import 'home_page_test.dart' show FakeRepo, pumpHome;
@@ -203,9 +210,10 @@ void main() {
           (await repo.dueToday()).map((q) => q.id).toSet(),
           {'q1', 'q2', 'q3', 'q8'});
     });
+  });
 
-    testWidgets('首页焦点卡拆分与封面三数一致：待解决 2 道 · 复查 2 道',
-        (tester) async {
+  group('首页焦点卡 FSRS 口径（2026-11-25 口径迁移 §2.1）', () {
+    testWidgets('首页焦点卡 FSRS 口径：到期总数与今日新题', (tester) async {
       final s = _scenario();
       final repo = FakeRepo()
         ..due = s.questions
@@ -213,13 +221,24 @@ void main() {
             .toList()
         ..records = s.records
         ..rev = {'math': 3, 'english': 1, 'politics': 0};
+      // FSRS 口径：首页焦点卡不再读 dueToday / 错因记录——上面填的
+      // 4 道旧口径要复习题与错因拆分只是对照夹具，不驱动卡片。
+      // 卡片只认 FSRS 桩：到期数 = rev 各科之和，今日新题数 =
+      // todayNewIds 长度；期望值由桩直接算出，不手写。
+      final expectedDue =
+          repo.rev.values.fold<int>(0, (a, b) => a + b);
+      final expectedNew = repo.todayNewIds.length;
       await pumpHome(tester, repo: repo);
-      // 焦点卡总数 4 = 封面数学（2 + 1）+ 英语（0 + 1）。
-      expect(find.text('4 道要复习'), findsOneWidget);
-      expect(find.text('待解决 2 道 · 复查 2 道'), findsOneWidget);
+      expect(find.text('$expectedDue 道到期'), findsOneWidget);
+      expect(find.text('到期 $expectedDue 道 · 今日新题 $expectedNew 道'),
+          findsOneWidget);
+      // 旧文案已不存在：不是“4 道要复习”，更没有待解决/复查拆分。
+      expect(find.text('4 道要复习'), findsNothing);
+      expect(find.textContaining('待解决'), findsNothing);
+      expect(find.textContaining('复查'), findsNothing);
     });
 
-    testWidgets('真实仓储泵首页：焦点卡待解决 2 道 · 复查 2 道（SR2-61）',
+    testWidgets('真实仓储泵首页：无 FSRS 卡时焦点卡为空状态（SR2-61）',
         (tester) async {
       // 真实 QuestionRepository + 内存库，不用手填的 FakeRepo：
       // 钉住“仓储 → 首页焦点卡”这一段接线。openForTest 只建表不播种，
@@ -229,6 +248,11 @@ void main() {
       // tester.runAsync 里（真实异步区）；泵首页本身仍走 tester。
       // SR3-20：tearDown 注册在播种之前——播种抛错时测试库单例也不残留。
       addTearDown(() async => AppDatabase.resetForTest());
+      // FSRS 口径期望值：由真实仓储在同一 runAsync 里算出，不手写。
+      var expectedDue = -1;
+      var expectedNew = -1;
+      var expectedFsrsCounts = <String, int>{};
+      var expectedPendingCounts = <String, int>{};
       await tester.runAsync(() async {
         final db = await AppDatabase.openForTest();
         AppDatabase.useDatabaseForTest(db);
@@ -243,18 +267,45 @@ void main() {
         for (final r in s.records) {
           await repo.saveCauseRecord(r);
         }
+        // 旧口径仓储数仍在（封面/旧首页对照用）：要复习 4 道
+        //（q1/q2/q3/q8），分科数学 3、英语 1——首页不再读它们。
         // 先断言仓储层算出的数与 FakeRepo 手填数一致，再泵首页：
         // 若文案不对，能分清是仓储算错还是首页渲染错。
         expect((await repo.dueToday()).map((q) => q.id).toSet(),
             {'q1', 'q2', 'q3', 'q8'});
         expect(await repo.homeRevCounts(),
             {'math': 3, 'english': 1, 'politics': 0});
+        // FSRS 口径：本种子只播了学科/题/错因记录，没有建任何 FSRS 卡
+        //（建卡只发生在 initializeQuestion / 首次呈现时，save(q)
+        // 不建卡）→ 到期 0 道、今日新题 0 道。调度器与首页 provider
+        // 同源（FsrsReviewScheduler + SqliteCardStore，默认配置）。
+        final scheduler = FsrsReviewScheduler(
+          config: const SchedulerConfig(),
+          store: SqliteCardStore(),
+        );
+        final dueIds =
+            await repo.fsrsDueQuestionIds(scheduler: scheduler);
+        final plan = await repo.previewNewRelease(
+          scheduler: scheduler,
+          dailyNewLimit: (await repo.settings()).dailyNewQuestions,
+        );
+        expect(dueIds, isEmpty);
+        expect(plan.todaysNewIds, isEmpty);
+        expectedDue = dueIds.length;
+        expectedNew = plan.todaysNewIds.length;
+        expectedFsrsCounts =
+            await repo.fsrsDueCountsBySubject(scheduler: scheduler);
+        expectedPendingCounts = await repo.pendingOrganizeBySubject();
+        expect(expectedFsrsCounts,
+            {'math': 0, 'english': 0, 'politics': 0});
+        expect(expectedPendingCounts,
+            {'math': 1, 'english': 0, 'politics': 0});
       });
       final repo = QuestionRepository(AppDatabase.instance);
       // 真实仓储的 Future.wait 在 FakeAsync 下不完成：_load 挂起、
       // 加载圈一直转，pumpAndSettle 会超时。改用真实时间驱动：
       // 每轮先在真实异步区等 100ms（让 sqflite isolate 回包到达），
-      // 再 pump 一帧，直到焦点卡文案出现；30 轮（3 秒）没等到就
+      // 再 pump 一帧，直到空状态文案出现；30 轮（3 秒）没等到就
       // 明确失败，不静默挂起。
       await pumpHome(tester, repo: repo, settle: false);
       var found = false;
@@ -262,18 +313,28 @@ void main() {
         await tester.runAsync(
             () => Future<void>.delayed(const Duration(milliseconds: 100)));
         await tester.pump();
-        found = find.text('4 道要复习').evaluate().isNotEmpty;
+        found = find
+            .text('今天没有到期的题，明天再来吧')
+            .evaluate()
+            .isNotEmpty;
       }
-      expect(found, isTrue, reason: '真实仓储加载后焦点卡应显示 4 道要复习');
-      // 焦点卡总数 4 = 封面数学（2 + 1）+ 英语（0 + 1），与手填
-      // FakeRepo 的用例同一文案，但数是真实仓储算出来的。
-      expect(find.text('待解决 2 道 · 复查 2 道'), findsOneWidget);
-      // SR3-20：补断言分科行文案（与 FakeRepo 的“下方 4 格”用例同款）：
-      // 数学要复习 3 道（q1/q2/q3）· 待整理 1 道（q6 未整理）；
-      // 英语要复习 1 道（q8）· 待整理 0 道；政治 0 道 · 待整理 0 道。
-      expect(find.text('要复习 3 道 · 待整理 1 道'), findsOneWidget);
-      expect(find.text('要复习 1 道 · 待整理 0 道'), findsOneWidget);
-      expect(find.text('要复习 0 道 · 待整理 0 道'), findsOneWidget);
+      expect(found, isTrue,
+          reason: '真实仓储加载后焦点卡应显示空状态（到期 0、今日新题 0）');
+      // 到期与今日新题都为 0 → 空状态卡：小字由算出的期望值拼出，
+      // 不手写 0。
+      expect(find.text('到期 $expectedDue 道 · 今日新题 $expectedNew 道'),
+          findsOneWidget);
+      expect(find.text('4 道要复习'), findsNothing);
+      // 学科行同样是 FSRS 口径：到期全 0，待整理只有未整理的 q6
+      //（数学 1 道）；英语与政治同一文案，共两格。
+      expect(
+          find.text('到期 ${expectedFsrsCounts['math']} 道 · '
+              '待整理 ${expectedPendingCounts['math']} 道'),
+          findsOneWidget);
+      expect(
+          find.text('到期 ${expectedFsrsCounts['english']} 道 · '
+              '待整理 ${expectedPendingCounts['english']} 道'),
+          findsNWidgets(2));
     }, timeout: const Timeout(Duration(seconds: 90)));
   });
 }
