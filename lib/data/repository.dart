@@ -9,21 +9,12 @@ import '../models/models.dart';
 import '../services/import_service.dart';
 import '../services/ocr_key_store.dart';
 
-/// 一道题的复习归属（互斥拆分）：首页焦点卡“待解决 / 复查”与错题本
-/// 封面三数共用此口径，同一道题只落一个桶。
-///
-/// - [ReviewBucket.pending]：至少一个错因未解决（待解决 / 解决中）
-///   → 计入“要复习”。
-/// - [ReviewBucket.recheck]：全部错因已解决、且至少一条到了复查时间
-///   → 只计入“待复查”，不计入“要复习”。
-/// - [ReviewBucket.solved]：全部错因已解决、且无一条到复查时间
-///   → 计入三元组第三项“已解决”（已掌握且不在复查期，不在要复习总数内）。
-/// - [ReviewBucket.none]：无错因记录 → 三处都不计。
-///
-/// 互斥保证：`pending` 题数 + `recheck` 题数 = 旧口径要复习总数
-/// （`dueToday` 已随 2026-11-26 面 C 删除；首页焦点卡现走 FSRS 口径，
-/// 见 [fsrsDueQuestionIds]）。
-enum ReviewBucket { pending, recheck, solved, none }
+/// 2026-11-26 口径迁移第二批清理：旧口径互斥拆分
+/// `ReviewBucket` / `reviewBucketOf` / `isReviewDue` 已删除——lib 内
+/// 调用方已全部迁走（复习列表分组迁 FSRS 四组、元信息行已取消、
+/// `dueToday`/`homeRevCounts`/`subjectCounts` 已删）；仅剩的
+/// b5 纯函数断言组随之删除。`CauseRecord.isRecheckDue` 本身保留
+/// （错题本筛选与详情页错因 pill 仍读它作历史状态）。
 
 /// 仓库：各页面模块共用的查询口径（首页计数、错题本筛选、整理队列、复习）。
 /// 不直接读其他模块的状态，只读数据层。
@@ -36,25 +27,6 @@ class QuestionRepository {
   /// BigModel key 的安全存储（十三批 M3 契约：键名 bigmodel_api_key 冻结；
   /// 本仓库只问“有没有 key”，不读出 key 值、不记日志）。
   final OcrKeyStore _keyStore;
-
-  /// 一道题的复习归属：按它的全部错因记录互斥分类（见 [ReviewBucket]）。
-  /// 首页焦点卡的待解决 / 复查拆分与错题本封面三数都走这里，
-  /// 不再各自定义（SR-P1-1）。
-  static ReviewBucket reviewBucketOf(List<CauseRecord> records) {
-    if (records.isEmpty) return ReviewBucket.none;
-    if (records.any((r) => r.status != CauseStatus.solved)) {
-      return ReviewBucket.pending;
-    }
-    if (records.any((r) => r.isRecheckDue)) return ReviewBucket.recheck;
-    return ReviewBucket.solved;
-  }
-
-  /// 这道题要不要复习：有未解决错因，或全部已解决但到了复查时间。
-  /// 等价于 `reviewBucketOf` 落在 `pending` 或 `recheck`。
-  static bool isReviewDue(List<CauseRecord> records) {
-    final bucket = reviewBucketOf(records);
-    return bucket == ReviewBucket.pending || bucket == ReviewBucket.recheck;
-  }
 
   AppDatabase get db => _db;
 
@@ -278,8 +250,9 @@ class QuestionRepository {
   /// `organize_notifier.dart` 一处调用方，已迁到 FSRS 口径
   /// `fsrsDueQuestionIds().length`；首页 / 角标 / 错题本封面此前已
   /// 分别迁到 `fsrsDueCountsBySubject` / `fsrsDueTotal`。
-  /// 旧口径的互斥拆分本身仍在 [reviewBucketOf] / [isReviewDue]，
-  /// 复习列表分组与元信息行（`review_notifier.dart`）还在用。
+  /// 2026-11-26 第二批清理：旧口径互斥拆分 `reviewBucketOf` /
+  /// `isReviewDue` 也已删除（调用方随复习列表分组与元信息行迁移
+  /// 而归零）；`buildDueQueue` 保留（到期复习建队回落兜底仍在用）。
 
   /// 自查一个错因：result 是 'solved' / 'unsolved' / 'unsure'。
   /// - 已解决：solvedCount + 1；满 cureChecks 次 → 已解决，复查日 =

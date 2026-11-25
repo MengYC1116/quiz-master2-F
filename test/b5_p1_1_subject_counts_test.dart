@@ -1,4 +1,4 @@
-// SR-P1-1 回归：互斥拆分口径（QuestionRepository.reviewBucketOf）。
+// SR-P1-1 回归（历史）：互斥拆分口径（旧 `reviewBucketOf`）。
 //
 // 旧口径背景：subjectCounts 与首页 dueToday 曾有两处不一致（纯复查题
 // 归属、双计），修后三处共用 reviewBucketOf：纯复查题只计待复查、
@@ -6,9 +6,10 @@
 //
 // 口径迁移：2026-11-25 §2.1 首页焦点卡改 FSRS 口径；2026-11-26 面 C
 // 删除 `dueToday()` / `homeRevCounts()` / `subjectCounts()` 本体，
-// 直接调它们的三组仓储层断言随之删除（下方已删）。本文件只保留仍在
-// 用的部分：reviewBucketOf / isReviewDue 的纯函数断言（复习列表
-// 元信息行还在复用该口径），以及两处 FSRS 口径的首页 widget 测试。
+// 直接调它们的三组仓储层断言随之删除；2026-11-26 第二批清理删除
+// `reviewBucketOf` / `isReviewDue` 本体及其纯函数断言组（调用方随
+// 复习列表分组与元信息行迁移而归零）。本文件只保留两处 FSRS 口径
+// 的首页 widget 测试。
 import 'package:flutter_test/flutter_test.dart';
 import 'package:quiz_master2/data/database.dart';
 import 'package:quiz_master2/data/repository.dart';
@@ -86,74 +87,6 @@ CauseRecord _r(String qid,
 }
 
 void main() {
-  group('SR-P1-1 互斥拆分口径（reviewBucketOf / isReviewDue）', () {
-    test('reviewBucketOf：四桶互斥，混合错因题只落待解决', () {
-      final yesterday = DateTime.now().subtract(const Duration(days: 1));
-      final nextWeek = DateTime.now().add(const Duration(days: 7));
-      // SR2-64：复查日恰好是今天——零点与当前时刻各一，都算到期。
-      // isRecheckDue 按日期比较（!d.isAfter(today)），当天任意时刻
-      // 都落 recheck 桶、isReviewDue 为真；这是“待复查”与“已解决”
-      // 的分界点。
-      final now = DateTime.now();
-      final todayMidnight = DateTime(now.year, now.month, now.day);
-      expect(
-          QuestionRepository.reviewBucketOf([
-            _r('x', status: CauseStatus.solved, recheckDate: todayMidnight),
-          ]),
-          ReviewBucket.recheck);
-      expect(
-          QuestionRepository.reviewBucketOf([
-            _r('x', status: CauseStatus.solved, recheckDate: now),
-          ]),
-          ReviewBucket.recheck);
-      expect(
-          QuestionRepository.isReviewDue([
-            _r('x', status: CauseStatus.solved, recheckDate: todayMidnight),
-          ]),
-          isTrue);
-      expect(
-          QuestionRepository.isReviewDue([
-            _r('x', status: CauseStatus.solved, recheckDate: now),
-          ]),
-          isTrue);
-      expect(QuestionRepository.reviewBucketOf([]), ReviewBucket.none);
-      expect(
-          QuestionRepository.reviewBucketOf([_r('x')]), ReviewBucket.pending);
-      expect(
-          QuestionRepository.reviewBucketOf([
-            _r('x', status: CauseStatus.solved, recheckDate: yesterday),
-            _r('x', cause: '审题失误'),
-          ]),
-          ReviewBucket.pending);
-      expect(
-          QuestionRepository.reviewBucketOf([
-            _r('x', status: CauseStatus.solved, recheckDate: yesterday),
-          ]),
-          ReviewBucket.recheck);
-      expect(
-          QuestionRepository.reviewBucketOf([
-            _r('x', status: CauseStatus.solved, recheckDate: nextWeek),
-          ]),
-          ReviewBucket.solved);
-      expect(QuestionRepository.isReviewDue([_r('x')]), isTrue);
-      expect(
-          QuestionRepository.isReviewDue([
-            _r('x', status: CauseStatus.solved, recheckDate: yesterday),
-          ]),
-          isTrue);
-      expect(
-          QuestionRepository.isReviewDue([
-            _r('x', status: CauseStatus.solved, recheckDate: nextWeek),
-          ]),
-          isFalse);
-      expect(QuestionRepository.isReviewDue([]), isFalse);
-    });
-
-    // 2026-11-26 面 C：subjectCounts / homeRevCounts / dueToday 三组
-    // 仓储层断言随方法本体删除而删除（旧口径的互斥拆分本身仍在
-    // reviewBucketOf，上方纯函数断言保留）。
-  });
-
   group('首页焦点卡 FSRS 口径（2026-11-25 口径迁移 §2.1）', () {
     testWidgets('首页焦点卡 FSRS 口径：到期总数与今日新题', (tester) async {
       final repo = FakeRepo()

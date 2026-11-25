@@ -23,7 +23,7 @@ Future<List<Question>> allQuestionsFromImpl(QuizDatabase db) async {
 /// SR-P2-8：手动加入 / 取消加入复习（可单测版）：题行 + 错因记录
 /// 同一个事务。旧写法是仓库里两步：先 upsertQuestion、再
 /// ensureCauseRecords（逐条 insert）；中间抛错/被杀，题已标
-/// “已加入复习”却没有一条 cause_records，dueToday / subjectCounts
+/// “已加入复习”却没有一条 cause_records，旧口径的复习计数
 /// 对无记录的题静默跳过——题从复习计数里消失，用户以为已加入、
 /// 实际永远排不到。`joined && causes.isEmpty` 时不写库、返回 false
 /// （错因是空的题加不进复习，与旧仓库口径一致）。
@@ -112,7 +112,7 @@ Future<void> syncCauseRecordsIntoImpl(QuizDatabase db, Question q) async {
 /// 要靠这套语义解读旧历史。移除归 P3/P4 队列替换时一并做（那时
 /// cause_records 的治愈状态才真正退役）。
 /// P3 评估（2026-11-25）：已复核——P3 改的是加题入口（新入池走
-/// FSRS，旧到期队列 buildDueQueue / dueToday 仍以 cause_records
+/// FSRS，旧到期队列 buildDueQueue 仍以 cause_records
 /// 治愈状态为准），不能安全移除；留给 P4 队列替换时一并做。
 Future<CauseRecord> recordSelfCheckIntoImpl(
   QuizDatabase db, {
