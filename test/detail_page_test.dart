@@ -508,7 +508,16 @@ void main() {
     // testDataDirectory 置 null。
     imageCache.clear();
     await AppDatabase.resetForTest();
-    await _testTmp.delete(recursive: true);
+    for (var i = 0; i < 5; i++) {
+      try {
+        await _testTmp.delete(recursive: true);
+        break;
+      } catch (_) {
+        if (i == 4) break;
+      await Future.delayed(const Duration(milliseconds: 200));
+  }
+}
+    
   });
 
   // 十三批 P1-2（任务 b）：重框入队走 DetailNotifier 的可 fake 缝——

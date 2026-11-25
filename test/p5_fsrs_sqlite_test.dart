@@ -517,6 +517,10 @@ void main() {
     });
 
     test('真实演示库 v2 复制品：9 道题都在，链式升到 v8', () async {
+      if (!Platform.isLinux) {
+        markTestSkipped('演示库只在 Linux 开发机路径下，Win11 无此文件');
+        return;
+      }
       final tmp = await Directory.systemTemp.createTemp('p5-demo-');
       addTearDown(() async {
         try {
