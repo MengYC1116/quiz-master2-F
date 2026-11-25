@@ -8,7 +8,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:quiz_master2/data/database.dart';
 import 'package:quiz_master2/data/drift/quiz_database.dart';
+import 'package:quiz_master2/data/p4_new_release.dart';
 import 'package:quiz_master2/data/repository.dart';
+import 'package:quiz_master2/data/review_scheduler.dart';
 import 'package:quiz_master2/models/exam_event.dart';
 import 'package:quiz_master2/models/models.dart';
 import 'package:quiz_master2/modules/home/home_page.dart';
@@ -462,6 +464,38 @@ class _FakeHomeRepo extends QuestionRepository {
 
   @override
   Future<List<ExamEvent>> examEvents() async => events;
+
+  /// FSRS 口径迁移（§2.1）：home_provider.load() 新增调
+  /// `fsrsDueCountsBySubject` / `settings()` / `previewNewRelease`；
+  /// 不覆盖会走到真调度器 + 真库，在 widget 测试里永不完成，首页一直卡
+  /// loading → pumpAndSettle 超时（同款先例 b8_1；对照
+  /// test/b12_history_home_test.dart 的 Fake 写法）。焦点卡走空状态，
+  /// 故三者均返回空。
+  @override
+  Future<Map<String, int>> fsrsDueCountsBySubject({
+    required ReviewScheduler scheduler,
+    DateTime? now,
+  }) async => const {};
+
+  @override
+  Future<FsrsReleasePlan> previewNewRelease({
+    required ReviewScheduler scheduler,
+    required int dailyNewLimit,
+    DateTime? now,
+  }) async => FsrsReleasePlan(
+    todaysNewIds: const [],
+    newlyReleasableIds: const [],
+    carryoverIds: const [],
+    presentedTodayIds: const [],
+    waitingIds: const [],
+    presentedTodayCount: 0,
+    pendingBacklogCount: 0,
+    dailyLimit: dailyNewLimit,
+    releaseAllowance: 0,
+  );
+
+  @override
+  Future<AppSettings> settings() async => AppSettings.defaults;
 
   @override
   Future<List<Subject>> subjects() async => Subject.all;
