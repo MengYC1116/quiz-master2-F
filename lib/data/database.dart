@@ -552,6 +552,10 @@ class AppDatabase {
   ) => setReviewJoinedIntoImpl(db, q, joined);
 
   // -- 十四批 M3：verdict 提交 / attempts / 重新加入复习 --
+  // P2（2026-11-25）：submitCauseVerdictInto / hasSessionVerdictInto
+  // 的产品调用方已随 finishQuestion 删除；新流程不写 review_history
+  // 的 verdict / verification_* 字段（停止写入，不物理删除）。
+  // 两个入口仅供旧写入层测试保留，P5 迁移时决定是否移除。
   static Future<VerdictSubmitResult> submitCauseVerdictInto(
     QuizDatabase db, {
     required String questionId,
@@ -599,6 +603,7 @@ class AppDatabase {
   }) => loadAttemptsForSessionIntoImpl(db, sessionId: sessionId);
 
   /// 十四批 M3（M3-10 断点恢复重建用）：本会话里该错因是否已有 verdict 事件。
+  /// P2 起产品流程不再调用（恢复只认 attempts 行），仅供旧写入层保留。
   static Future<bool> hasSessionVerdictInto(
     QuizDatabase db, {
     required String causeStableId,

@@ -2,18 +2,15 @@
 // - 列表：按学习状态分组（已逾期复查 → 今日到期复查 → 未解决错因 →
 //   已掌握未到期），一题一行；页顶今日待复习 + 开始复习 / 专项练习；
 //   学科/题型/错因筛选、分页、已治愈区、未加入盒、空态、恢复条。
-// - 五段会话（看题 → 作答 → 核对 → 错因自查 → 下一题 → 小结），
-//   一道题内部的状态变化；跳过两次留到下次、暂停续接、自查治愈
-//   计数、保存失败横幅。
-// - 软件内答题：单选/判断点选 + 置信度 + 客观判分、判分不可用走
-//   纸上作答 + 补全答案跳转返回、多选只记录不判分、主观核对确认
-//   四态、证据关联判断、批注开关。
-// - 专项练习：选题页、隔离（不推进治愈）、空范围、重新加入复习。
+// - 三步会话（看题 → 作答 → 核对 → 下一题 → 小结），一道题内部的
+//   状态变化；跳过两次留到下次、暂停续接、保存失败横幅。
+// - 软件内答题：单选/判断点选 + 客观判分、判分不可用走纸上作答 +
+//   补全答案跳转返回、多选只记录不判分、批注开关。
+// - 专项练习：选题页、隔离（不调 FSRS、不改到期时间）、空范围、
+//   重新加入复习。
 // - 亮/深 × 三档无溢出、不用图标字体。
-// 用 FakeRepo 覆盖 repository 调用（不碰真实数据库）；
-// submitCauseVerdict 按真实语义的子集实现（(d)+⑥、复查通过不加
-// 计数、不确定中性事件、子级 submission_id 幂等），写库本身的完整
-// 语义由 test/b14_m3_verdict_test.dart 对真实库覆盖。
+// 用 FakeRepo 覆盖 repository 调用（不碰真实数据库）；核对提交走
+// 真实 ReviewNotifier + 默认内存调度器（P1）。
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:quiz_master2/data/database.dart';
@@ -41,6 +38,7 @@ Question rq(
   List<String>? optionLabels,
   bool optionLabelsConfirmed = false,
   String? correctOption,
+  List<String> knowledgePointIds = const [],
 }) => Question(
   id: id,
   title: title,
@@ -59,6 +57,7 @@ Question rq(
   optionLabels: optionLabels,
   optionLabelsConfirmed: optionLabelsConfirmed,
   correctOption: correctOption,
+  knowledgePointIds: knowledgePointIds,
 );
 
 CauseRecord rec(
@@ -86,18 +85,6 @@ CauseRecord rec(
   lastCountedSessionId: lastCountedSessionId,
 );
 
-class FakeHistoryEvent {
-  FakeHistoryEvent({
-    required this.stableId,
-    required this.sessionId,
-    required this.verdict,
-  });
-
-  final String stableId;
-  final String sessionId;
-  final String verdict;
-}
-
 class FakeReviewRepo extends QuestionRepository {
   FakeReviewRepo({
     required this.questions,
@@ -121,11 +108,7 @@ class FakeReviewRepo extends QuestionRepository {
   bool throwOnLoad = false;
 
   final Map<String, List<({String result, DateTime reviewedAt})>> history = {};
-  final List<FakeHistoryEvent> historyEvents = [];
   final Map<String, AttemptData> attempts = {};
-  final Map<String, VerdictSubmitResult> submissionResults = {};
-  var _nextHistoryId = 0;
-  var submitVerdictCalls = 0;
 
   @override
   Future<List<Subject>> subjects() async => List.of(subjectsValue);
@@ -181,136 +164,21 @@ class FakeReviewRepo extends QuestionRepository {
   }
 
   @override
-  Future<VerdictSubmitResult> submitCauseVerdict({
-    required String questionId,
-    required CauseRecord record,
-    required String verdict,
-    required String verificationStatus,
-    required String verificationSource,
-    String? attemptId,
-    required String sessionId,
-    required String submissionId,
-    int cureChecks = 2,
-    int recheckIntervalDays = 7,
-    bool isRecheck = false,
-    DateTime? now,
-  }) async {
-    submitVerdictCalls++;
-    if (throwOnCheck) throw StateError('save failed');
-    final currentNow = now ?? DateTime.now();
-    final seen = submissionResults[submissionId];
-    if (seen != null) {
-      return VerdictSubmitResult(
-        record: seen.record,
-        counted: seen.counted,
-        alreadySubmitted: true,
-        historyId: seen.historyId,
-        cured: seen.cured,
-        isRecheckPassed: seen.isRecheckPassed,
-        isRecheckFailed: seen.isRecheckFailed,
-      );
-    }
-    final i = records.indexWhere(
-      (x) => x.questionId == questionId && x.cause == record.cause,
-    );
-    if (i < 0) throw CauseRecordMissingException(questionId, record.cause);
-    final current = records[i];
-    final verified = verificationStatus == '已核验';
-    var updated = current;
-    var counted = false;
-    var cured = false;
-    var recheckPassed = false;
-    var recheckFailed = false;
-    final stableId = causeStableId(current);
-    final today = DateTime(
-        currentNow.year, currentNow.month, currentNow.day);
-    if (verdict == '不确定') {
-      // 中性事件：只记 history，不改记录。
-    } else if (verdict == '未解决') {
-      updated = unsolvedReset(current, currentNow);
-      if (isRecheck) recheckFailed = true;
-    } else if (verdict == '已解决' && verified) {
-      final sameSessionSolved = historyEvents.any((e) =>
-          e.stableId == stableId &&
-          e.sessionId == sessionId &&
-          e.verdict == '已解决');
-      if (!sameSessionSolved) {
-        final anchorOk = current.lastCountedSuccessAt == null ||
-            (sessionId != current.lastCountedSessionId &&
-                currentNow.millisecondsSinceEpoch -
-                        current.lastCountedSuccessAt! >=
-                    cureMinIntervalMs);
-        if (anchorOk) {
-          if (isRecheck) {
-            recheckPassed = true;
-            updated = current.copyWith(
-              lastCheck: currentNow,
-              recheckDate:
-                  today.add(Duration(days: recheckIntervalDays)),
-            );
-          } else {
-            counted = true;
-            final count = current.solvedCount + 1;
-            if (count >= cureChecks) {
-              cured = true;
-              updated = current.copyWith(
-                status: CauseStatus.solved,
-                solvedCount: count,
-                lastCheck: currentNow,
-                recheckDate:
-                    today.add(Duration(days: recheckIntervalDays)),
-                lastCountedSuccessAt:
-                    currentNow.millisecondsSinceEpoch,
-                lastCountedSessionId: sessionId,
-              );
-            } else {
-              updated = current.copyWith(
-                status: CauseStatus.inProgress,
-                solvedCount: count,
-                lastCheck: currentNow,
-                clearRecheckDate: true,
-                lastCountedSuccessAt:
-                    currentNow.millisecondsSinceEpoch,
-                lastCountedSessionId: sessionId,
-              );
-            }
-          }
-        }
-      }
-    }
-    records[i] = updated;
-    final historyId = ++_nextHistoryId;
-    historyEvents.add(FakeHistoryEvent(
-      stableId: stableId,
-      sessionId: sessionId,
-      verdict: verdict,
-    ));
-    final resultLabel = switch (verdict) {
-      '已解决' => 'solved',
-      '未解决' => 'unsolved',
-      _ => 'unsure',
-    };
-    (history[questionId] ??= []).add(
-      (result: resultLabel, reviewedAt: currentNow),
-    );
-    final result = VerdictSubmitResult(
-      record: updated,
-      counted: counted,
-      alreadySubmitted: false,
-      historyId: historyId,
-      cured: cured,
-      isRecheckPassed: recheckPassed,
-      isRecheckFailed: recheckFailed,
-    );
-    submissionResults[submissionId] = result;
-    return result;
-  }
-
-  @override
   Future<String> recordAttempt(AttemptData attempt) async {
+    if (throwOnCheck) throw StateError('save failed');
     attempts['${attempt.sessionId}|${attempt.questionId}'] = attempt;
     return attempt.id;
   }
+
+  @override
+  Future<List<KnowledgePoint>> knowledgePoints() async => const [
+    KnowledgePoint(
+      id: 'kp-lim',
+      subjectId: 'math',
+      chapter: '第一章',
+      name: '函数极限',
+    ),
+  ];
 
   @override
   Future<AttemptData?> loadAttempt({
@@ -323,15 +191,6 @@ class FakeReviewRepo extends QuestionRepository {
   Future<List<AttemptData>> loadAttemptsForSession(
           String sessionId) async =>
       attempts.values.where((a) => a.sessionId == sessionId).toList();
-
-  /// M3-10 断点恢复重建用：本会话里该错因是否已有 verdict 事件。
-  @override
-  Future<bool> hasSessionVerdict({
-    required String causeStableId,
-    required String sessionId,
-  }) async => historyEvents.any(
-    (e) => e.stableId == causeStableId && e.sessionId == sessionId,
-  );
 
   @override
   Future<void> rejoinCause({
@@ -355,7 +214,13 @@ class FakeReviewRepo extends QuestionRepository {
       return;
     }
     if (records[i].status == CauseStatus.solved) {
-      records[i] = unsolvedReset(records[i], DateTime.now());
+      records[i] = records[i].copyWith(
+        status: CauseStatus.inProgress,
+        solvedCount: 0,
+        lastCheck: DateTime.now(),
+        clearRecheckDate: true,
+        clearCountedAnchors: true,
+      );
     }
   }
 
@@ -476,8 +341,8 @@ FakeReviewRepo crossSubjectRepo() {
   return repo;
 }
 
-/// 只有 q1 一道待治题的库（单题会话、治愈路径短）。
-FakeReviewRepo singleRepo({int solvedCount = 0}) {
+/// 只有 q1 一道待治题的库（单题会话）。
+FakeReviewRepo singleRepo() {
   final repo = reviewRepo();
   repo.questions = [
     rq(
@@ -492,19 +357,7 @@ FakeReviewRepo singleRepo({int solvedCount = 0}) {
     ),
   ];
   repo.records = [
-    rec(
-      'q1',
-      '概念不清',
-      status: solvedCount > 0 ? CauseStatus.inProgress : CauseStatus.pending,
-      solvedCount: solvedCount,
-      joinedAt: DateTime(2026, 11, 10),
-      lastCountedSuccessAt: solvedCount > 0
-          ? DateTime.now()
-              .subtract(const Duration(hours: 25))
-              .millisecondsSinceEpoch
-          : null,
-      lastCountedSessionId: solvedCount > 0 ? 'sess-old' : null,
-    ),
+    rec('q1', '概念不清', joinedAt: DateTime(2026, 11, 10)),
   ];
   return repo;
 }
@@ -528,6 +381,7 @@ FakeReviewRepo choiceRepo({bool labelsConfirmed = true, String? correctOption = 
       optionLabels: const ['A', 'B', 'C', 'D'],
       optionLabelsConfirmed: labelsConfirmed,
       correctOption: correctOption,
+      knowledgePointIds: const ['kp-lim'],
     ),
   ];
   repo.records = [
@@ -579,35 +433,6 @@ FakeReviewRepo archivedRepo({bool archived = true}) {
   repo.records = [
     ...repo.records,
     rec('q9', '概念不清', joinedAt: DateTime(2026, 11, 9)),
-  ];
-  return repo;
-}
-
-/// 待定1：只有一道复查到期的题——已解决、solvedCount 已满 2、
-/// 复查日是昨天（已到期）。
-FakeReviewRepo recheckRepo() {
-  final repo = reviewRepo();
-  repo.questions = [
-    rq(
-      'q1',
-      '函数极限',
-      errorTypes: const ['概念不清'],
-      answer: '3',
-      explanation: 'lim sin3x/x = 3。',
-      notes: '当时没看清题目。',
-      createdAt: DateTime(2026, 11, 8),
-      reviewJoined: true,
-    ),
-  ];
-  repo.records = [
-    rec(
-      'q1',
-      '概念不清',
-      status: CauseStatus.solved,
-      solvedCount: 2,
-      recheckDate: DateTime.now().subtract(const Duration(days: 1)),
-      joinedAt: DateTime(2026, 11, 10),
-    ),
   ];
   return repo;
 }
@@ -701,42 +526,20 @@ Future<void> pickMenuItem<T>(
   await tester.pumpAndSettle();
 }
 
-/// 纸上作答的题走完“看题 → 作答 → 核对”三段（核对确认默认选“符合”）。
-Future<void> walkPaperToCheck(
-  WidgetTester tester, {
-  String checkConfirm = '已对照，关键答案/步骤符合',
-}) async {
+/// 纸上作答的题走完“看题 → 作答 → 核对”三段。
+Future<void> walkPaperToCheck(WidgetTester tester) async {
   await tapButton(tester, '开始作答');
   await tapButton(tester, '我已完成作答');
-  await tapText(tester, checkConfirm);
 }
 
-/// 单选题走完“看题 → 作答（点选 + 置信度 + 提交）→ 核对”。
+/// 单选题走完“看题 → 作答（点选 + 提交）→ 核对”。
 Future<void> walkObjectiveToCheck(
   WidgetTester tester, {
   required String option,
-  String confidence = '确定',
 }) async {
   await tapButton(tester, '开始作答');
   await tapButton(tester, option);
-  await tapButton(tester, confidence);
   await tapButton(tester, '提交答案');
-}
-
-/// 自查步：给当前题的全部本轮错因选同一个 verdict。
-Future<void> checkAll(
-  WidgetTester tester,
-  String verdict,
-) async {
-  await tapButton(tester, '下一步：自查');
-  final buttons = find.widgetWithText(QmButton, verdict);
-  final count = buttons.evaluate().length;
-  for (var i = 0; i < count; i++) {
-    await tester.ensureVisible(buttons.at(i));
-    await tester.pumpAndSettle();
-    await tester.tap(buttons.at(i));
-    await tester.pumpAndSettle();
-  }
 }
 
 void main() {
@@ -968,8 +771,8 @@ void main() {
     });
   });
 
-  group('会话五段', () {
-    testWidgets('五段走完一题：看题 → 作答 → 核对 → 错因自查 → 下一题 → 小结', (tester) async {
+  group('会话三步', () {
+    testWidgets('三步走完一题：看题 → 作答 → 核对 → 下一题 → 小结', (tester) async {
       await pumpReview(tester, repo: singleRepo());
       await tapButton(tester, '开始复习');
       expect(find.textContaining('第 1 / 1 道题'), findsOneWidget);
@@ -978,95 +781,26 @@ void main() {
       await walkPaperToCheck(tester);
       expect(find.text('③ 核对'), findsOneWidget);
       expect(find.textContaining('lim sin3x/x = 3。'), findsOneWidget);
-      await tapButton(tester, '下一步：自查');
-      expect(find.text('④ 错因自查'), findsOneWidget);
-      await tapText(tester, '已解决');
-      await tapButton(tester, '看总结');
+      await tapButton(tester, '确认核对，下一题');
       expect(find.text('本轮复习总结'), findsOneWidget);
-      expect(find.textContaining('今天解决了'), findsOneWidget);
-      expect(find.textContaining('待解决 → 解决中'), findsOneWidget);
+      expect(
+        find.textContaining('完成 1 道题 · 答对 0 道 · 答错 0 道 · 未判分 1 道'),
+        findsOneWidget,
+      );
+      expect(find.textContaining('用时'), findsOneWidget);
+      expect(find.text('本次没有按知识点排出的薄弱点。'), findsOneWidget);
       await tapButton(tester, '回复习列表');
       expect(find.text('复习列表还是空的'), findsNothing);
       expect(find.textContaining('概念不清'), findsOneWidget); // 单题库：仅待治行
     });
 
-    testWidgets('自查“已解决”满 2 次算已解决：总结计 1 个已解决', (tester) async {
-      await pumpReview(tester, repo: singleRepo(solvedCount: 1));
-      await tapButton(tester, '开始复习');
-      await walkPaperToCheck(tester);
-      await tapButton(tester, '下一步：自查');
-      await tapText(tester, '已解决');
-      await tapButton(tester, '看总结');
-      expect(find.textContaining('今天解决了 1 个错因'), findsOneWidget);
-      expect(find.textContaining('解决中 → 已解决'), findsOneWidget);
-      // “下次复查”出现两次：小结的下次复查行 + 本条变化记录的备注。
-      expect(find.textContaining('下次复查'), findsNWidgets(2));
-    });
-
-    testWidgets('待定1：复查通过不加计数——已满 2 次治愈后复查通过仍为 2', (tester) async {
-      final repo = recheckRepo();
-      await pumpReview(tester, repo: repo);
-      // 复查到期的题在列表里，带复查标记。
-      expect(find.text('复查'), findsOneWidget);
-      await tapButton(tester, '开始复习');
-      await walkPaperToCheck(tester);
-      await tapButton(tester, '下一步：自查');
-      // 自查选项是 QmButton；复查记录的状态 pill 也叫“已解决”，
-      // 不能用 tapText（会命中两个），按 QmButton 精确定位。
-      final checkButton = find.widgetWithText(QmButton, '已解决');
-      await tester.ensureVisible(checkButton);
-      await tester.pumpAndSettle();
-      await tester.tap(checkButton);
-      await tester.pumpAndSettle();
-      await tapButton(tester, '看总结');
-      // “复查通过”出现两次：小结的复查结果行 + 本条变化记录的备注。
-      expect(find.textContaining('复查通过'), findsNWidgets(2));
-      final r = repo.records.single;
-      expect(r.status, CauseStatus.solved);
-      expect(r.solvedCount, 2);
-      final today = DateTime.now();
-      final todayStart = DateTime(today.year, today.month, today.day);
-      expect(r.recheckDate, isNotNull);
-      expect(!r.recheckDate!.isBefore(todayStart), isTrue);
-    });
-
-    testWidgets('自查要全选完才能“下一题”：双错因题先选一个仍禁用', (tester) async {
-      await pumpReview(tester);
-      await tapButton(tester, '开始复习');
-      // q1 一因走完，到 q2（双错因）。
-      await walkPaperToCheck(tester);
-      await checkAll(tester, '已解决');
-      await tapButton(tester, '下一题');
-      expect(find.textContaining('第 2 / 2 道题'), findsOneWidget);
-      await walkPaperToCheck(tester);
-      await tapButton(tester, '下一步：自查');
-      // 只选第一个错因。
-      final first = find.text('已解决').first;
-      await tester.ensureVisible(first);
-      await tester.pumpAndSettle();
-      await tester.tap(first);
-      await tester.pumpAndSettle();
-      final nextBtn =
-          find.widgetWithText(QmButton, '看总结').evaluate().first.widget
-              as QmButton;
-      expect(nextBtn.onPressed, isNull);
-      // 选完第二个才能走。
-      final second = find.text('已解决').last;
-      await tester.ensureVisible(second);
-      await tester.pumpAndSettle();
-      await tester.tap(second);
-      await tester.pumpAndSettle();
-      await tapButton(tester, '看总结');
-      expect(find.text('本轮复习总结'), findsOneWidget);
-    });
-
-    testWidgets('跳过单题队列直接留到下次：不写 verdict，进总结', (tester) async {
+    testWidgets('跳过单题队列直接留到下次：不写 attempt，进总结', (tester) async {
       await pumpReview(tester, repo: singleRepo());
       await tapButton(tester, '开始复习');
       await tapButton(tester, '跳过');
       // 单题队列：第一次跳过不能马上再次出现，直接留到下次出总结。
       expect(find.text('本轮复习总结'), findsOneWidget);
-      expect(find.text('这一轮还没有自查记录。'), findsOneWidget);
+      expect(find.text('本次没有按知识点排出的薄弱点。'), findsOneWidget);
       expect(find.textContaining('留待下次 1 道'), findsOneWidget);
     });
 
@@ -1119,17 +853,15 @@ void main() {
       expect(find.text('整题图 · 放大查看'), findsNothing);
     });
 
-    testWidgets('保存失败：自查提交抛错，出错误横幅并留在自查步', (tester) async {
+    testWidgets('保存失败：核对提交抛错，出错误横幅并留在核对步', (tester) async {
       final repo = singleRepo();
       repo.throwOnCheck = true;
       await pumpReview(tester, repo: repo);
       await tapButton(tester, '开始复习');
       await walkPaperToCheck(tester);
-      await tapButton(tester, '下一步：自查');
-      await tapText(tester, '已解决');
-      await tapButton(tester, '看总结');
+      await tapButton(tester, '确认核对，下一题');
       expect(find.textContaining('复习记录保存失败'), findsOneWidget);
-      expect(find.text('④ 错因自查'), findsOneWidget);
+      expect(find.text('③ 核对'), findsOneWidget);
       expect(find.text('本轮复习总结'), findsNothing);
     });
 
@@ -1145,43 +877,34 @@ void main() {
   });
 
   group('软件内答题', () {
-    testWidgets('单选点选 + 置信度 + 客观判分：答对', (tester) async {
+    testWidgets('单选点选 + 客观判分：答对进 FSRS，下次时间按 FSRS 算', (tester) async {
       await pumpReview(tester, repo: choiceRepo());
       await tapButton(tester, '开始复习');
       await walkObjectiveToCheck(tester, option: 'B');
       expect(find.text('回答正确'), findsOneWidget);
-      await tapButton(tester, '下一步：自查');
-      // 证据关联判断只在答对且信心确定时出现。
-      expect(find.textContaining('本次作答是否直接检验了这个错因'), findsOneWidget);
-      await tapText(tester, '是');
-      await tapText(tester, '已解决');
-      await tapButton(tester, '看总结');
-      expect(find.textContaining('未核验自评 0 个'), findsOneWidget);
+      await tapButton(tester, '确认核对，下一题');
+      expect(find.text('本轮复习总结'), findsOneWidget);
+      expect(
+        find.textContaining('完成 1 道题 · 答对 1 道 · 答错 0 道 · 未判分 0 道'),
+        findsOneWidget,
+      );
+      expect(find.textContaining('下次复习最早'), findsOneWidget);
     });
 
-    testWidgets('单选点选：答错不允许记为已核验已解决', (tester) async {
+    testWidgets('单选点选：答错进薄弱点', (tester) async {
       await pumpReview(tester, repo: choiceRepo());
       await tapButton(tester, '开始复习');
       await walkObjectiveToCheck(tester, option: 'A');
       expect(find.text('回答错误'), findsOneWidget);
-      await tapButton(tester, '下一步：自查');
-      // 答错时无客观证据可用，不出现证据关联判断。
-      expect(find.textContaining('本次作答是否直接检验了这个错因'), findsNothing);
-      await tapText(tester, '已解决');
-      await tapButton(tester, '看总结');
-      expect(find.textContaining('未核验自评 1 个'), findsOneWidget);
-    });
-
-    testWidgets('证据关联=否：客观答对也不推进治愈', (tester) async {
-      await pumpReview(tester, repo: choiceRepo());
-      await tapButton(tester, '开始复习');
-      await walkObjectiveToCheck(tester, option: 'B');
-      await tapButton(tester, '下一步：自查');
-      await tapText(tester, '否');
-      await tapText(tester, '已解决');
-      await tapButton(tester, '看总结');
-      expect(find.textContaining('未核验自评 1 个'), findsOneWidget);
-      expect(find.textContaining('今天解决了 0 个错因'), findsOneWidget);
+      await tapButton(tester, '确认核对，下一题');
+      expect(find.text('本轮复习总结'), findsOneWidget);
+      expect(
+        find.textContaining('完成 1 道题 · 答对 0 道 · 答错 1 道 · 未判分 0 道'),
+        findsOneWidget,
+      );
+      expect(find.textContaining('薄弱点（按答错题数排）：'), findsOneWidget);
+      expect(find.text('函数极限'), findsOneWidget); // 知识点名
+      expect(find.text('答错 1 道'), findsOneWidget);
     });
 
     testWidgets('配置有效但未确认的单选题显示选项按钮（不读确认列）', (tester) async {
@@ -1195,7 +918,6 @@ void main() {
       expect(find.textContaining('选项标签尚未确认'), findsNothing);
       expect(find.textContaining('未配置有效答案'), findsNothing);
       await tapButton(tester, 'B');
-      await tapButton(tester, '确定');
       await tapButton(tester, '提交答案');
       expect(find.text('回答正确'), findsOneWidget);
     });
@@ -1224,7 +946,6 @@ void main() {
       await tapButton(tester, '开始作答');
       expect(find.widgetWithText(QmButton, 'A'), findsOneWidget);
       await tapButton(tester, 'B');
-      await tapButton(tester, '确定');
       await tapButton(tester, '提交答案');
       expect(find.text('回答正确'), findsOneWidget);
     });
@@ -1255,27 +976,15 @@ void main() {
       expect(find.textContaining('B、C'), findsOneWidget);
     });
 
-    testWidgets('主观核对确认选“无法判断”：不推进治愈', (tester) async {
-      await pumpReview(tester, repo: singleRepo());
-      await tapButton(tester, '开始复习');
-      await walkPaperToCheck(tester, checkConfirm: '无法判断');
-      await tapButton(tester, '下一步：自查');
-      await tapText(tester, '已解决');
-      await tapButton(tester, '看总结');
-      expect(find.textContaining('未核验自评 1 个'), findsOneWidget);
-      expect(find.textContaining('今天解决了 0 个错因'), findsOneWidget);
-    });
-
-    testWidgets('置信度必选：不选置信度提交按钮不可点', (tester) async {
+    testWidgets('未选选项提交按钮不可点：选了选项后可点', (tester) async {
       await pumpReview(tester, repo: choiceRepo());
       await tapButton(tester, '开始复习');
       await tapButton(tester, '开始作答');
-      await tapButton(tester, 'B');
       final submit =
           find.widgetWithText(QmButton, '提交答案').evaluate().first.widget
               as QmButton;
       expect(submit.onPressed, isNull);
-      await tapButton(tester, '确定');
+      await tapButton(tester, 'B');
       final submit2 =
           find.widgetWithText(QmButton, '提交答案').evaluate().first.widget
               as QmButton;
@@ -1284,27 +993,25 @@ void main() {
   });
 
   group('专项练习', () {
-    testWidgets('选题页 → 会话 → 小结：不推进治愈、不写正式 verdict', (tester) async {
+    testWidgets('选题页 → 会话 → 小结：不改变到期时间', (tester) async {
       final repo = reviewRepo();
       await pumpReview(tester, repo: repo);
       await tapButton(tester, '专项练习');
       expect(find.text('专项练习'), findsOneWidget);
-      expect(find.textContaining('本次练习不改变治疗进度'), findsOneWidget);
+      expect(find.textContaining('本次练习不改变到期时间'), findsOneWidget);
       await tapButton(tester, '加入时间');
       await tapButton(tester, '开始练习');
       // 4 道题、4 个错因：q1 1 个 + q2 2 个 + q3 1 个 + q4 0 个
       //（q4 无错因记录；q5 不在池内）。
       expect(find.textContaining('本轮共 4 道题、4 个错因'), findsOneWidget);
-      expect(find.textContaining('专项练习：本次练习不改变治疗进度'), findsOneWidget);
+      expect(find.textContaining('专项练习：本次练习不改变到期时间'), findsOneWidget);
       for (var i = 0; i < 4; i++) {
         await tapButton(tester, '开始作答');
         await tapButton(tester, '我已完成作答');
         await tapButton(tester, '下一题');
       }
       expect(find.text('本次专项练习小结'), findsOneWidget);
-      expect(find.textContaining('本次练习不改变治疗进度'), findsOneWidget);
-      expect(repo.submitVerdictCalls, 0);
-      expect(repo.historyEvents, isEmpty);
+      expect(find.textContaining('本次练习不改变到期时间'), findsOneWidget);
       expect(repo.records.firstWhere((r) => r.questionId == 'q1').solvedCount, 0);
     });
 
@@ -1347,25 +1054,10 @@ void main() {
           repo.records.firstWhere((r) => r.questionId == 'q3');
       expect(record.status, CauseStatus.inProgress);
       expect(record.solvedCount, 0);
-      expect(repo.submitVerdictCalls, 0);
     });
   });
 
-  group('B5 SR-P1-9 / SR-P1-12 / SR-P1-13', () {
-    testWidgets('SR-P1-9：上次自查显示最近一次，不是第一次', (tester) async {
-      final repo = singleRepo();
-      // 真实 reviewHistory() 按 reviewed_at DESC 返回：首条即最新。
-      repo.history['q1'] = [
-        (result: 'solved', reviewedAt: DateTime(2026, 11, 9)),
-        (result: 'unsolved', reviewedAt: DateTime(2026, 11, 1)),
-      ];
-      await pumpReview(tester, repo: repo);
-      await tapButton(tester, '开始复习');
-      expect(find.text('上次自查'), findsOneWidget);
-      expect(find.text('2026-11-09 · 「已解决」'), findsOneWidget);
-      expect(find.textContaining('2026-11-01'), findsNothing);
-    });
-
+  group('B5 SR-P1-12 / SR-P1-13', () {
     testWidgets('SR-P1-12：复习每页条数改后，进会话再暂停回列表，仍保留', (tester) async {
       final repo = reviewRepo(pageSize: 1);
       await pumpReview(tester, repo: repo);
@@ -1583,8 +1275,7 @@ void main() {
       expect(find.textContaining('数学 · 计算错误'), findsNothing);
       // 走完 q2 的单个错因，到第 2 道题：是英语题，文案仍是错因口径。
       await walkPaperToCheck(tester);
-      await checkAll(tester, '已解决');
-      await tapButton(tester, '下一题');
+      await tapButton(tester, '确认核对，下一题');
       expect(find.textContaining('第 2 / 2 道题'), findsOneWidget);
       expect(find.textContaining('错因「计算错误」'), findsOneWidget);
       expect(find.textContaining('英语 · 材料题｜英语完形填空'), findsOneWidget);

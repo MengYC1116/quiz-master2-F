@@ -372,7 +372,12 @@ class QuestionRepository {
 
   /// 十四批 M3：单条错因 verdict 提交（M3-7 治愈规则 + M3-8 核验字段 +
   /// M3-10 幂等）。每错因一次独立事务；调用方按题循环，跨错因部分
-  /// 失败时已写错因保留、只补未写成的（见 review_notifier.finishQuestion）。
+  /// 失败时已写错因保留、只补未写成的。
+  ///
+  /// P2（2026-11-25）：产品流程不再调用本方法——新流程不写
+  /// review_history 的 verdict / verification_* 字段（停止写入，
+  /// 不物理删除，历史查询能力保留）。本方法仅供旧写入层测试
+  /// （b14_m3_verdict_test）保留，P5 迁移时决定是否移除。
   Future<VerdictSubmitResult> submitCauseVerdict({
     required String questionId,
     required CauseRecord record,
@@ -415,6 +420,10 @@ class QuestionRepository {
       _db.loadAttemptsForSession(sessionId: sessionId);
 
   /// 十四批 M3（M3-10 断点恢复重建用）：本会话里该错因是否已有 verdict 事件。
+  ///
+  /// P2（2026-11-25）：产品流程不再调用本方法——会话恢复只认
+  /// attempts 行（见 _validateSavedSession）。仅供旧写入层保留，
+  /// P5 迁移时决定是否移除。
   Future<bool> hasSessionVerdict({
     required String causeStableId,
     required String sessionId,

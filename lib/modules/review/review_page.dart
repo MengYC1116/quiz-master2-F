@@ -1,17 +1,17 @@
-// 复习页：错因治疗模型（M3 重写）。
+// 复习页（P2 简化基线，D2）。
 //
 // 列表：按学习状态分组（①已逾期复查 → ②今日到期复查 → ③未解决错因 →
 // ④已掌握未到期 → ⑤未加入复习），一题一行（错因数与状态）；页顶
 // 今日待复习（X 道题 / Y 个错因）+ “开始复习”主按钮 + “专项练习”
 // 次按钮；学科/题型/错因筛选保留；已治愈区与未加入盒保留。
-// 会话：五段统一流程（看题 → 作答 → 核对 → 错因自查（仅到期复习）→
-// 下一题 → 小结），一道题内部的状态变化，不是每段翻一页；一题多错因
-// 时题目只展示一次、用户只需重做一次、答案只需揭示一次，各错因分别
-// 记录 verdict；全部操作点按（鼠标/触屏），不设键盘快捷键。
-// 业务口径沿用基线（repository.submitCauseVerdict / recordAttempt /
-// reviewState；判定表与治愈规则见 lib/data/review_engine.dart）。
-// 旧翻卡模型不复活，不出现 1/3/7/14 天旧复习状态；旧四步
-// （看错因/写补救/重做/自查）已废止，补救改为自查区的对策回顾。
+// 会话：三步统一流程（看题 → 作答 → 核对 → 下一题 → 小结），一道题
+// 内部的状态变化，不是每段翻一页；一题多错因时题目只展示一次、用户
+// 只需重做一次、答案只需揭示一次；核对页一次提交：写 attempts 正式
+// 记录 + 调 FSRS（到期复习且可判分时），专项练习不调 FSRS、不改到期
+// 时间。全部操作点按（鼠标/触屏），不设键盘快捷键。
+// 业务口径沿用基线（repository.recordAttempt / reviewState /
+// reviewScheduler；客观判分见 lib/data/review_engine.dart）。
+// 旧翻卡模型不复活，不出现 1/3/7/14 天旧复习状态。
 //
 // ARCH-PLAN-A 第 3 阶段：业务数据 + 会话状态收进 [reviewProvider]
 // （`lib/state/review_notifier.dart`）；本页只留 widget 与纯界面
@@ -85,8 +85,7 @@ class _ReviewView extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    // 只订阅模式切换要的字段：自查点选（只改 verdicts）不会
-    // 让整页重建，只有自查步自己重建。
+    // 只订阅模式切换要的字段：会话内点选不让整页重建，只有当前步重建。
     final (loading, inSession, showSummary, showPicker) = ref.watch(
       reviewProvider.select(
         (s) => (s.loading, s.inSession, s.showSummary, s.showPracticePicker),
@@ -126,11 +125,18 @@ Widget _centered(BuildContext context, Widget child) {
   );
 }
 
-String _historyLabel(String r) => switch (r) {
-  'solved' => '已解决',
-  'unsolved' => '未解决',
-  _ => '不确定',
-};
+/// 小结用时：不足 1 分钟按秒计，否则按“X 分 Y 秒”计。
+String _formatDuration(int seconds) {
+  if (seconds < 60) return '$seconds 秒';
+  return '${seconds ~/ 60} 分 ${seconds % 60} 秒';
+}
+
+/// 小结弱点：按答错题数从多到少，取前 5 个知识点。
+List<MapEntry<String, int>> _weakKpEntries(ReviewState st) {
+  final entries = st.sumWeakKp.entries.toList()
+    ..sort((a, b) => b.value.compareTo(a.value));
+  return entries.take(5).toList();
+}
 
 /// 下拉（HTML `.nb-fsel`：36 高、13.5px、line-strong 边、圆角 10；
 /// 与错题本 `_styledDropdown` 同款）。
@@ -1186,7 +1192,7 @@ class _PracticePickerView extends ConsumerWidget {
           Text('专项练习', style: Theme.of(context).textTheme.titleLarge),
           SizedBox(height: 6 * scale),
           Text(
-            '只练，不治：本次练习不改变治疗进度、不写正式自查记录。',
+            '只练，不排：本次练习不改变到期时间、不参与 FSRS 调度。',
             style: TextStyle(
               fontSize: DesignTokens.bodySmallFontSize,
               color: palette.muted,
@@ -1354,7 +1360,7 @@ class _PracticePickerView extends ConsumerWidget {
 // ---------- 会话 ----------
 
 /// 会话视图：头信息 + 步骤指示 + 当前段。只订阅 `stage`（段切换）
-/// 与“当前题是否还在”；自查点选只改 `verdicts`，这里不订阅、不重建。
+/// 与“当前题是否还在”。
 class _SessionView extends ConsumerWidget {
   const _SessionView({required this.onOpenDetail});
 
@@ -1396,7 +1402,6 @@ class _SessionView extends ConsumerWidget {
           if (stage == SessionStage.answer)
             _StepAnswer(onOpenDetail: onOpenDetail),
           if (stage == SessionStage.check) const _StepCheck(),
-          if (stage == SessionStage.selfCheck) const _StepSelfCheck(),
           if (stage == SessionStage.done) const _StepDone(),
         ],
       ),
@@ -1404,7 +1409,7 @@ class _SessionView extends ConsumerWidget {
   }
 }
 
-/// 自查保存失败横幅（只订阅 `saveError`）。
+/// 核对保存失败横幅（只订阅 `saveError`）。
 class _SessionSaveErrorBanner extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -1412,7 +1417,7 @@ class _SessionSaveErrorBanner extends ConsumerWidget {
     if (!saveError) return const SizedBox.shrink();
     return QmBanner(
       tone: QmBannerTone.error,
-      message: '复习记录保存失败，本次自查还没有存下。请重试，或重启应用后再复习。',
+      message: '复习记录保存失败，本次核对还没有存下。请重试，或重启应用后再复习。',
       onDismiss: () => ref.read(reviewProvider.notifier).dismissSaveError(),
     );
   }
@@ -1540,7 +1545,7 @@ class _SessionMeta extends ConsumerWidget {
         if (mode == ReviewMode.practice) ...[
           SizedBox(height: 6 * scale),
           Text(
-            '专项练习：本次练习不改变治疗进度。',
+            '专项练习：本次练习不改变到期时间。',
             style: TextStyle(
               fontSize: DesignTokens.reviewMetaFontSize,
               color: palette.muted,
@@ -1565,8 +1570,7 @@ class _StepIndicator extends StatelessWidget {
       SessionStage.view => 0,
       SessionStage.answer => 1,
       SessionStage.check => 2,
-      SessionStage.selfCheck => 3,
-      SessionStage.done => 3,
+      SessionStage.done => 2,
     };
     return Wrap(
       spacing: 6 * scale,
@@ -1616,17 +1620,15 @@ class _StepView extends ConsumerWidget {
         return (
           q,
           sq,
-          s.historyByQ[q.id],
           s.subjectOf(q.subjectId),
           s.isPracticeSession,
         );
       }),
     );
     if (m == null) return const SizedBox.shrink();
-    final (question, sq, history, subject, isPractice) = m;
+    final (question, sq, subject, isPractice) = m;
     final scale = qmScaleOf(context);
     final palette = DesignTokens.of(Theme.of(context).brightness);
-    final lastCheck = history == null || history.isEmpty ? null : history.first;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -1665,12 +1667,6 @@ class _StepView extends ConsumerWidget {
                     ),
                   ),
               ],
-              if (lastCheck != null)
-                _KvRow(
-                  label: '上次自查',
-                  value:
-                      '${formatReviewDate(lastCheck.reviewedAt)} · 「${_historyLabel(lastCheck.result)}」',
-                ),
             ],
           ),
         ),
@@ -1725,9 +1721,8 @@ class _StepView extends ConsumerWidget {
     final st = ref.read(reviewProvider);
     final record = st.recordOf(qid, cause);
     if (record == null) return '待补充';
-    final count = '「已解决」${record.solvedCount} / ${st.settings.cureChecks} 次';
-    if (record.isRecheckDue) return '复查 · $count';
-    return '${record.status.label} · $count';
+    if (record.isRecheckDue) return '待复查';
+    return record.status.label;
   }
 
   String _nonRoundNote(WidgetRef ref, String qid, String cause) {
@@ -1787,26 +1782,22 @@ class _StepAnswer extends ConsumerWidget {
         SizedBox(height: 12 * scale),
         if (isSingle && canGrade) ...[
           _OptionButtons(question: question, sq: sq),
-          SizedBox(height: 12 * scale),
-          _ConfidencePicker(sq: sq),
           SizedBox(height: DesignTokens.reviewActsMarginTop * scale),
           _SessionActions(
             primaryLabel: '提交答案',
             primaryEnabled:
-                sq.selected != null &&
-                sq.selected!.isNotEmpty &&
-                sq.confidence != null,
+                sq.selected != null && sq.selected!.isNotEmpty,
             onPrimary: () =>
                 ref.read(reviewProvider.notifier).submitObjectiveAnswer(),
             secondaryLabel: '跳过',
             onSecondary: () =>
                 ref.read(reviewProvider.notifier).skipCurrent(),
           ),
-          if (sq.selected == null || sq.confidence == null)
+          if (sq.selected == null)
             Padding(
               padding: EdgeInsets.only(top: 8 * scale),
               child: Text(
-                '先点选一个选项，再选置信度，才能提交答案。',
+                '先点选一个选项，才能提交答案。',
                 style: TextStyle(
                   fontSize: DesignTokens.captionFontSize,
                   color: palette.muted,
@@ -1815,26 +1806,22 @@ class _StepAnswer extends ConsumerWidget {
             ),
         ] else if (isTF) ...[
           _TrueFalseButtons(sq: sq),
-          SizedBox(height: 12 * scale),
-          _ConfidencePicker(sq: sq),
           SizedBox(height: DesignTokens.reviewActsMarginTop * scale),
           _SessionActions(
             primaryLabel: '提交答案',
             primaryEnabled:
-                sq.selected != null &&
-                sq.selected!.isNotEmpty &&
-                sq.confidence != null,
+                sq.selected != null && sq.selected!.isNotEmpty,
             onPrimary: () =>
                 ref.read(reviewProvider.notifier).submitObjectiveAnswer(),
             secondaryLabel: '跳过',
             onSecondary: () =>
                 ref.read(reviewProvider.notifier).skipCurrent(),
           ),
-          if (sq.selected == null || sq.confidence == null)
+          if (sq.selected == null)
             Padding(
               padding: EdgeInsets.only(top: 8 * scale),
               child: Text(
-                '先点选“正确/错误”，再选置信度，才能提交答案。',
+                '先点选“正确/错误”，才能提交答案。',
                 style: TextStyle(
                   fontSize: DesignTokens.captionFontSize,
                   color: palette.muted,
@@ -1994,51 +1981,8 @@ class _TrueFalseButtons extends ConsumerWidget {
 
 double contextScale(BuildContext context) => qmScaleOf(context);
 
-/// 作答前置信度三选（仅选择/判断，提交前必选）。
-class _ConfidencePicker extends ConsumerWidget {
-  const _ConfidencePicker({required this.sq});
-
-  final SessionQuestionState sq;
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final scale = qmScaleOf(context);
-    final palette = DesignTokens.of(Theme.of(context).brightness);
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(
-          '这次作答有多大把握？',
-          style: TextStyle(
-            fontSize: DesignTokens.detailFieldLabelFontSize,
-            fontWeight: FontWeight.w700,
-            color: palette.ink2,
-          ),
-        ),
-        SizedBox(height: 5 * scale),
-        Wrap(
-          spacing: 10 * scale,
-          runSpacing: 8 * scale,
-          children: [
-            for (final c in ['确定', '不太确定', '猜的'])
-              QmButton(
-                label: c,
-                size: QmButtonSize.small,
-                variant: sq.confidence == c
-                    ? QmButtonVariant.primary
-                    : QmButtonVariant.secondary,
-                onPressed: () =>
-                    ref.read(reviewProvider.notifier).setConfidence(c),
-              ),
-          ],
-        ),
-      ],
-    );
-  }
-}
-
 /// ③ 核对：答案 + 解析分别展示、分别标状态；客观题同时显示对错；
-/// 主观题须做核对确认（P1-6）。
+/// 点“确认核对”一次提交（写 attempts + 调 FSRS，如适用），再进下一题。
 class _StepCheck extends ConsumerWidget {
   const _StepCheck();
 
@@ -2078,7 +2022,7 @@ class _StepCheck extends ConsumerWidget {
                 question.questionType == 'true_false') &&
             sq.selected != null) ...[
           _DetailBox(
-            child: const Text('本次作答不判分：只记录了你的选择与置信度。'),
+            child: const Text('本次作答不判分：只记录了你的选择。'),
           ),
           SizedBox(height: 12 * scale),
         ],
@@ -2099,38 +2043,7 @@ class _StepCheck extends ConsumerWidget {
         if (showCheckConfirm) ...[
           SizedBox(height: 12 * scale),
           Text(
-            '对照答案核对一下：',
-            style: TextStyle(
-              fontSize: DesignTokens.detailFieldLabelFontSize,
-              fontWeight: FontWeight.w700,
-              color: palette.ink2,
-            ),
-          ),
-          SizedBox(height: 5 * scale),
-          Wrap(
-            spacing: 10 * scale,
-            runSpacing: 8 * scale,
-            children: [
-              for (final c in [
-                '已对照，关键答案/步骤符合',
-                '已对照，有错误或明显遗漏',
-                '无法判断',
-                '尚未核对',
-              ])
-                QmButton(
-                  label: c,
-                  size: QmButtonSize.small,
-                  variant: sq.checkConfirm == c
-                      ? QmButtonVariant.primary
-                      : QmButtonVariant.secondary,
-                  onPressed: () =>
-                      ref.read(reviewProvider.notifier).setCheckConfirm(c),
-                ),
-            ],
-          ),
-          SizedBox(height: 6 * scale),
-          Text(
-            '只有选“符合”才具备软件标准答案核验资格；“显示过答案”不等于“已经核对”。',
+            '对照标准答案和解析核对一下，确认后进入下一题。',
             style: TextStyle(
               fontSize: DesignTokens.captionFontSize,
               color: palette.muted,
@@ -2142,7 +2055,7 @@ class _StepCheck extends ConsumerWidget {
         if (!hasAnswer && !graded && !question.answerPendingRecheck) ...[
           SizedBox(height: 12 * scale),
           Text(
-            '暂无标准答案/解析，可用手边教材、讲义自行核对；自查时可勾选外部核对。',
+            '暂无标准答案/解析，可用手边教材、讲义自行核对。',
             style: TextStyle(
               fontSize: DesignTokens.captionFontSize,
               color: palette.muted,
@@ -2154,7 +2067,7 @@ class _StepCheck extends ConsumerWidget {
           _SessionActions(
             primaryLabel: '下一题',
             onPrimary: () =>
-                ref.read(reviewProvider.notifier).nextPracticeQuestion(),
+                ref.read(reviewProvider.notifier).submitCheck(),
             secondaryLabel: '跳过',
             onSecondary: () =>
                 ref.read(reviewProvider.notifier).skipCurrent(),
@@ -2163,9 +2076,9 @@ class _StepCheck extends ConsumerWidget {
           _PracticeRejoinRow(question: question, sq: sq),
         ] else
           _SessionActions(
-            primaryLabel: '下一步：自查',
+            primaryLabel: '确认核对，下一题',
             onPrimary: () =>
-                ref.read(reviewProvider.notifier).enterSelfCheck(),
+                ref.read(reviewProvider.notifier).submitCheck(),
             secondaryLabel: '跳过',
             onSecondary: () =>
                 ref.read(reviewProvider.notifier).skipCurrent(),
@@ -2264,429 +2177,8 @@ class _PracticeRejoinRow extends ConsumerWidget {
   }
 }
 
-/// ④ 错因自查（仅到期复习）：逐错因选 verdict；客观题答对且信心确定
-/// 时逐错因做证据关联判断；无软件答案时选“已解决”出现外部核对勾选；
-/// 对策默认收起、可展开查看、可编辑。
-class _StepSelfCheck extends ConsumerWidget {
-  const _StepSelfCheck();
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    // 选择器必须空安全（见 `_SessionMeta`）。
-    final sel = ref.watch(
-      reviewProvider.select(
-        (s) => (
-          s.hasCurrentQuestion ? s.currentSessionQuestion : null,
-          s.currentQuestion,
-          s.sessionIndex,
-          s.sessionQuestions.length,
-          s.settings.cureChecks,
-          s.submitting,
-        ),
-      ),
-    );
-    final (sq, question, index, total, cureChecks, submitting) = sel;
-    if (sq == null || question == null) return const SizedBox.shrink();
-    final scale = qmScaleOf(context);
-    final st = ref.read(reviewProvider);
-    final allChecked = sq.causes.every(
-      (c) => sq.verdicts.containsKey(c) || sq.submittedCauses.contains(c),
-    );
-    final showEvidence =
-        sq.correct == 1 && sq.confidence == '确定' &&
-        objectiveGradingAvailable(question);
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(
-          '这道题的 ${sq.causes.length} 个错因挨着自查：这次做对，是因为错因已解决，还是只是记住了这道题的答案？',
-          style: const TextStyle(fontSize: 14),
-        ),
-        SizedBox(height: 10 * scale),
-        for (final cause in sq.causes)
-          _buildCheckBox(
-            context,
-            ref,
-            st,
-            sq,
-            question,
-            cause,
-            cureChecks,
-            showEvidence,
-          ),
-        SizedBox(height: DesignTokens.reviewActsMarginTop * scale),
-        _SessionActions(
-          primaryLabel: submitting
-              ? '提交中…'
-              : (index < total - 1 ? '下一题' : '看总结'),
-          primaryEnabled: allChecked && !submitting,
-          onPrimary: () => ref.read(reviewProvider.notifier).finishQuestion(),
-          secondaryLabel: '跳过',
-          onSecondary: () => ref.read(reviewProvider.notifier).skipCurrent(),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildCheckBox(
-    BuildContext context,
-    WidgetRef ref,
-    ReviewState st,
-    SessionQuestionState sq,
-    Question question,
-    String cause,
-    int cureChecks,
-    bool showEvidence,
-  ) {
-    final scale = qmScaleOf(context);
-    final palette = DesignTokens.of(Theme.of(context).brightness);
-    final notifier = ref.read(reviewProvider.notifier);
-    final record = st.recordOf(sq.questionId, cause);
-    final selected = sq.verdicts[cause];
-    final submitted = sq.submittedCauses.contains(cause);
-    final invalid = sq.invalidCauses.contains(cause);
-    final evidence = sq.evidenceLinks[cause];
-    final externalChecked = sq.externalChecked[cause] ?? false;
-    final needsExternal =
-        selected == '已解决' &&
-        !question.hasValidStandardAnswer &&
-        !objectiveGradingAvailable(question);
-    return Padding(
-      padding: EdgeInsets.only(top: 10 * scale),
-      child: _DetailBox(
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Wrap(
-              spacing: 8 * scale,
-              runSpacing: 6 * scale,
-              crossAxisAlignment: WrapCrossAlignment.center,
-              children: [
-                Text(
-                  cause,
-                  style: TextStyle(
-                    fontSize: DesignTokens.bodySmallFontSize,
-                    fontWeight: FontWeight.w700,
-                    color: palette.ink,
-                  ),
-                ),
-                if (record != null)
-                  QmStatusPill.cause(switch (record.status) {
-                    CauseStatus.pending => QmCauseStatus.pending,
-                    CauseStatus.inProgress => QmCauseStatus.inProgress,
-                    CauseStatus.solved => QmCauseStatus.solved,
-                  }),
-                if (record != null)
-                  Text(
-                    '「已解决」${record.solvedCount} / $cureChecks 次',
-                    style: TextStyle(
-                      fontSize: DesignTokens.reviewMetaFontSize,
-                      color: palette.muted,
-                    ),
-                  ),
-                if (record != null && record.isRecheckDue)
-                  QmStatusPill.cause(QmCauseStatus.recheck),
-                if (record != null &&
-                    record.lastCountedSuccessAt != null)
-                  Text(
-                    '下次可计入治愈的最早时间：${formatReviewDate(DateTime.fromMillisecondsSinceEpoch(record.lastCountedSuccessAt! + cureMinIntervalMs))}',
-                    style: TextStyle(
-                      fontSize: DesignTokens.captionFontSize,
-                      color: palette.muted,
-                    ),
-                  ),
-                if (submitted)
-                  Text(
-                    '已提交',
-                    style: TextStyle(
-                      fontSize: DesignTokens.captionFontSize,
-                      color: palette.muted,
-                    ),
-                  ),
-              ],
-            ),
-            if (invalid) ...[
-              SizedBox(height: 6 * scale),
-              Text(
-                '该错因已失效',
-                style: TextStyle(
-                  fontSize: DesignTokens.captionFontSize,
-                  color: palette.muted,
-                ),
-              ),
-            ],
-            SizedBox(height: 8 * scale),
-            _RemedyViewer(
-              record: record,
-              cause: cause,
-            ),
-            SizedBox(height: 8 * scale),
-            if (!submitted) ...[
-              Wrap(
-                spacing: 10 * scale,
-                runSpacing: 8 * scale,
-                children: [
-                  for (final op in const ['已解决', '未解决', '不确定'])
-                    QmButton(
-                      label: op,
-                      size: QmButtonSize.small,
-                      variant: selected == op
-                          ? QmButtonVariant.primary
-                          : QmButtonVariant.secondary,
-                      onPressed: () => notifier.setVerdict(cause, op),
-                    ),
-                ],
-              ),
-              if (selected == '不确定') ...[
-                SizedBox(height: 6 * scale),
-                Text(
-                  '选「不确定」记为一次中性复习事件，不推进治愈、不改治疗状态，下次还要重新练这道题。',
-                  style: TextStyle(
-                    fontSize: DesignTokens.captionFontSize,
-                    color: palette.muted,
-                  ),
-                ),
-              ],
-              if (showEvidence) ...[
-                SizedBox(height: 10 * scale),
-                Text(
-                  '本次作答是否直接检验了这个错因？',
-                  style: TextStyle(
-                    fontSize: DesignTokens.detailFieldLabelFontSize,
-                    fontWeight: FontWeight.w700,
-                    color: palette.ink2,
-                  ),
-                ),
-                SizedBox(height: 5 * scale),
-                Wrap(
-                  spacing: 10 * scale,
-                  runSpacing: 8 * scale,
-                  children: [
-                    for (final op in ['是', '否', '不确定'])
-                      QmButton(
-                        label: op,
-                        size: QmButtonSize.small,
-                        variant: evidence == op
-                            ? QmButtonVariant.primary
-                            : QmButtonVariant.secondary,
-                        onPressed: () =>
-                            notifier.setEvidenceLink(cause, op),
-                      ),
-                  ],
-                ),
-                if (evidence == null)
-                  Padding(
-                    padding: EdgeInsets.only(top: 4 * scale),
-                    child: Text(
-                      '不选则该错因按未核验处理。',
-                      style: TextStyle(
-                        fontSize: DesignTokens.captionFontSize,
-                        color: palette.muted,
-                      ),
-                    ),
-                  ),
-              ],
-              if (needsExternal) ...[
-                SizedBox(height: 10 * scale),
-                InkWell(
-                  onTap: () => notifier.setExternalChecked(
-                    cause,
-                    !externalChecked,
-                  ),
-                  child: Row(
-                    children: [
-                      Checkbox(
-                        value: externalChecked,
-                        onChanged: (v) => notifier.setExternalChecked(
-                          cause,
-                          v ?? false,
-                        ),
-                      ),
-                      const Expanded(
-                        child: Text('我已对照课本/讲义等可靠外部资料核对'),
-                      ),
-                    ],
-                  ),
-                ),
-                Text(
-                  '不勾选即按未核验处理，不推进治愈。',
-                  style: TextStyle(
-                    fontSize: DesignTokens.captionFontSize,
-                    color: palette.muted,
-                  ),
-                ),
-              ],
-            ],
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-/// 对策回顾（M3-12）：默认先让用户尝试回忆，可展开查看上次对策，
-/// 不强制每次重新填写；觉得不适用时可编辑，保存后覆盖当前对策。
-class _RemedyViewer extends ConsumerStatefulWidget {
-  const _RemedyViewer({required this.record, required this.cause});
-
-  final CauseRecord? record;
-  final String cause;
-
-  @override
-  ConsumerState<_RemedyViewer> createState() => _RemedyViewerState();
-}
-
-class _RemedyViewerState extends ConsumerState<_RemedyViewer> {
-  bool _expanded = false;
-  bool _editing = false;
-  final _controller = TextEditingController();
-
-  @override
-  void dispose() {
-    _controller.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final record = widget.record;
-    final lastRemedy =
-        record == null || record.remedyHistory.isEmpty
-            ? null
-            : record.remedyHistory.first;
-    final scale = qmScaleOf(context);
-    final palette = DesignTokens.of(Theme.of(context).brightness);
-    if (lastRemedy == null && !_editing) {
-      return Row(
-        children: [
-          Expanded(
-            child: Text(
-              '还没有保存过对策，先自己想一想这次该怎么补。',
-              style: TextStyle(
-                fontSize: DesignTokens.captionFontSize,
-                color: palette.muted,
-              ),
-            ),
-          ),
-          QmButton(
-            label: '写对策',
-            size: QmButtonSize.small,
-            variant: QmButtonVariant.secondary,
-            onPressed: () => setState(() => _editing = true),
-          ),
-        ],
-      );
-    }
-    if (_editing) {
-      return Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          TextField(
-            controller: _controller,
-            maxLines: 3,
-            style: TextStyle(
-              fontSize: DesignTokens.reviewRemedyFontSize,
-              color: palette.ink,
-            ),
-            decoration: InputDecoration(
-              hintText: '这次怎么补「${widget.cause}」：自己写，不套模板',
-              hintStyle: TextStyle(color: palette.muted),
-              contentPadding: EdgeInsets.symmetric(
-                horizontal: 12 * scale,
-                vertical: 10 * scale,
-              ),
-              border: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(
-                  DesignTokens.radius * scale,
-                ),
-                borderSide: BorderSide(color: palette.lineStrong),
-              ),
-              filled: true,
-              fillColor: palette.surface,
-            ),
-          ),
-          SizedBox(height: 6 * scale),
-          Row(
-            children: [
-              QmButton(
-                label: '保存对策',
-                size: QmButtonSize.small,
-                onPressed: () async {
-                  await ref
-                      .read(reviewProvider.notifier)
-                      .saveRemedyDraft(widget.cause, _controller.text);
-                  if (mounted) {
-                    setState(() {
-                      _editing = false;
-                      _controller.clear();
-                    });
-                  }
-                },
-              ),
-              SizedBox(width: 8 * scale),
-              QmButton(
-                label: '取消',
-                size: QmButtonSize.small,
-                variant: QmButtonVariant.secondary,
-                onPressed: () => setState(() {
-                  _editing = false;
-                  _controller.clear();
-                }),
-              ),
-            ],
-          ),
-        ],
-      );
-    }
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Row(
-          children: [
-            Expanded(
-              child: Text(
-                '上次对策（先自己回忆，可展开查看）',
-                style: TextStyle(
-                  fontSize: DesignTokens.captionFontSize,
-                  color: palette.muted,
-                ),
-              ),
-            ),
-            QmButton(
-              label: _expanded ? '收起' : '展开查看',
-              size: QmButtonSize.small,
-              variant: QmButtonVariant.secondary,
-              onPressed: () => setState(() => _expanded = !_expanded),
-            ),
-            SizedBox(width: 8 * scale),
-            QmButton(
-              label: '编辑',
-              size: QmButtonSize.small,
-              variant: QmButtonVariant.secondary,
-              onPressed: () => setState(() {
-                _editing = true;
-                _controller.text = '';
-              }),
-            ),
-          ],
-        ),
-        if (_expanded) ...[
-          SizedBox(height: 4 * scale),
-          Text(
-            lastRemedy!,
-            style: TextStyle(
-              fontSize: DesignTokens.bodySmallFontSize,
-              color: palette.ink2,
-            ),
-          ),
-        ],
-      ],
-    );
-  }
-}
-
-/// 已提交全部错因 verdict 后的过渡态（正常情况下 finishQuestion
-/// 直接进下一题；本态只在恢复后遇到已提交的题时出现）。
+/// 已核对提交后的过渡态（正常情况下 submitCheck 直接进下一题；
+/// 本态只在恢复后遇到已提交的题时出现）。
 class _StepDone extends ConsumerWidget {
   const _StepDone();
 
@@ -2695,7 +2187,7 @@ class _StepDone extends ConsumerWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const Text('这道题的错因已全部提交。'),
+        const Text('这道题已核对完成。'),
         SizedBox(height: DesignTokens.reviewActsMarginTop * qmScaleOf(context)),
         _SessionActions(
           primaryLabel: '下一题',
@@ -2736,72 +2228,50 @@ class _SummaryView extends ConsumerWidget {
                 SizedBox(height: 6 * scale),
                 if (isPractice) ...[
                   Text(
-                    '练习 ${st.sumCompleted} 道题 · 答对 ${st.sumObjCorrect} 道 · 答错 ${st.sumObjWrong} 道 · 猜对 ${st.sumObjGuessed} 道（猜的答对不计入掌握）',
+                    '练习 ${st.sumCompleted} 道题 · 答对 ${st.sumObjCorrect} 道 · 答错 ${st.sumObjWrong} 道 · 未判分 ${st.sumUngraded} 道',
                   ),
                   SizedBox(height: 6 * scale),
-                  const Text('本次练习不改变治疗进度。'),
+                  Text('用时 ${_formatDuration(st.sumElapsedSeconds)}'),
+                  SizedBox(height: 6 * scale),
+                  const Text('本次练习不改变到期时间。'),
                 ] else ...[
-                  Text.rich(
-                    TextSpan(
-                      style: const TextStyle(fontSize: 14),
-                      children: [
-                        const TextSpan(text: '完成 '),
-                        TextSpan(
-                          text: '${st.sumCompleted}',
-                          style: const TextStyle(fontWeight: FontWeight.w700),
-                        ),
-                        const TextSpan(text: ' 道题 · 处理 '),
-                        TextSpan(
-                          text: '${st.sumHandled}',
-                          style: const TextStyle(fontWeight: FontWeight.w700),
-                        ),
-                        const TextSpan(text: ' 个错因 · 新治愈 '),
-                        TextSpan(
-                          text: '${st.curedNow}',
-                          style: const TextStyle(fontWeight: FontWeight.w700),
-                        ),
-                        const TextSpan(text: ' 个错因'),
-                      ],
-                    ),
+                  Text(
+                    '完成 ${st.sumCompleted} 道题 · 答对 ${st.sumObjCorrect} 道 · 答错 ${st.sumObjWrong} 道 · 未判分 ${st.sumUngraded} 道',
                   ),
                   SizedBox(height: 6 * scale),
-                  Text(
-                    '复查通过 ${st.sumRecheckPassed} 个 · 打回 ${st.sumRecheckFailed} 个 · 未核验自评 ${st.sumUnverified} 个 · 未判分/无标准答案 ${st.sumUngraded} 道',
-                  ),
+                  Text('用时 ${_formatDuration(st.sumElapsedSeconds)}'),
                   SizedBox(height: 6 * scale),
                   Text(
-                    '跳过 ${st.sumSkipped} 道 · 留待下次 ${st.sumDeferred} 道 · 本次客观作答答对 ${st.sumObjCorrect} 道 / 答错 ${st.sumObjWrong} 道（仅有答案的题）',
+                    '跳过 ${st.sumSkipped} 道 · 留待下次 ${st.sumDeferred} 道',
                   ),
-                  if (st.sumNextRecheckDate != null) ...[
+                  if (st.sumNextDueDate != null) ...[
                     SizedBox(height: 6 * scale),
                     Text(
-                      '下次复查 ${formatReviewDate(st.sumNextRecheckDate!)}',
+                      '下次复习最早 ${formatReviewDate(st.sumNextDueDate!)}',
                     ),
                   ],
-                  SizedBox(height: 6 * scale),
-                  Text(
-                    '今天解决了 ${st.curedNow} 个错因 · 还有 ${st.summaryRemaining} 个未解决，留在列表里接着解决',
-                  ),
                 ],
                 SizedBox(height: 8 * scale),
-                if (st.changes.isEmpty)
+                if (st.sumWeakKp.isEmpty)
                   Text(
-                    '这一轮还没有自查记录。',
+                    '本次没有按知识点排出的薄弱点。',
                     style: TextStyle(
                       fontSize: DesignTokens.bodySmallFontSize,
                       color: DesignTokens.of(Theme.of(context).brightness)
                           .muted,
                     ),
                   )
-                else
-                  for (final c in st.changes)
+                else ...[
+                  const Text(
+                    '薄弱点（按答错题数排）：',
+                    style: TextStyle(fontWeight: FontWeight.w700),
+                  ),
+                  for (final entry in _weakKpEntries(st))
                     _KvRow(
-                      label: '${c.subjectName} · ${c.cause}',
-                      value:
-                          '「${c.questionTitle}」：${c.before} → ${c.after}'
-                          '${c.recheckDate != null ? ' · 下次复查 ${formatReviewDate(c.recheckDate!)}（${formatReviewMd(c.recheckDate!)}）' : ''}'
-                          ' · ${c.note}',
+                      label: st.kpNames[entry.key] ?? '待补充',
+                      value: '答错 ${entry.value} 道',
                     ),
+                ],
                 SizedBox(height: 12 * scale),
                 Wrap(
                   spacing: 8 * scale,

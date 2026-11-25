@@ -5,12 +5,13 @@
 // 崩溃窗口（verdict 事务已提交、review_state 未更新）+ 题目版本已变化时，
 // 会先按“未提交”执行 refresh 而不是按“已提交”执行 remove，已提交题目
 // 可能被刷新成新版本继续留在同一会话。
-// 新顺序：先按当前 sessionId 从数据库重建真实提交状态（逐错因
-// hasSessionVerdict + attempt 行是否存在），再执行版本判定；已提交且
-// 版本变化按既定规则移出当前会话。另：不再用题目级 reviewHistory(qid)
-// 是否为空决定是否清空 submittedCauses——改为按当前 sessionId +
-// causeStableId 逐项核验，避免其他 session 的历史让当前 session
-// 错误保留旧提交标记。
+// 新顺序：先按当前 sessionId 从数据库重建真实提交状态（attempt 行
+// 是否存在），再执行版本判定；已提交且版本变化按既定规则移出当前会话。
+// P2（2026-11-25）：恢复只认 attempts 行，不再读 review_history
+// verdict——新流程不写 verdict；已写客观记录视为已完成不重计分。
+// 另：不再用题目级 reviewHistory(qid) 是否为空决定提交态——改为按
+// 当前 sessionId 查 attempt 行，避免其他 session 的历史让当前
+// session 错误保留旧提交标记。
 // 走真实内存库 + 真实仓库 + 真实 ReviewNotifier（ProviderContainer），
 // 不调真实接口。
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -51,8 +52,8 @@ void main() {
   /// 版本快照（answer 2 / content 3），默认无提交、无 attempt。
   Map<String, Object?> savedSq(
     String qid, {
-    Set<String> submittedCauses = const {},
     String? attemptId,
+    bool checkSubmitted = false,
   }) => SessionQuestionState(
     questionId: qid,
     causes: const ['计算错误'],
@@ -60,9 +61,32 @@ void main() {
     contentVersionAtStart: 3,
     questionSubmissionId: 'qs-$qid',
     attemptSubmissionId: 'attsub-$qid',
-    submittedCauses: submittedCauses,
     attemptId: attemptId,
+    checkSubmitted: checkSubmitted,
   ).toJson();
+
+  /// 模拟崩溃窗口里已写库的核对提交：本会话的 attempt 行已存在，
+  /// review_state 没来得及更新（快照仍是未提交）。
+  Future<void> seedCommittedAttempt({
+    required String sessionId,
+    required String questionId,
+    String status = '已完成作答',
+  }) async {
+    await repo.recordAttempt(
+      AttemptData(
+        id: 'att-$questionId',
+        questionId: questionId,
+        sessionId: sessionId,
+        mode: ReviewMode.due,
+        correct: null,
+        answerVersion: 2,
+        contentVersion: 3,
+        status: status,
+        submissionId: 'attsub-$questionId',
+        createdAt: DateTime.now().millisecondsSinceEpoch,
+      ),
+    );
+  }
 
   Future<void> saveSession({
     required Map<String, Map<String, Object?>> perQuestionState,
@@ -104,24 +128,16 @@ void main() {
   });
 
   group('十四批 M5 修复轮 3：崩溃窗口恢复先重建提交状态再判版本', () {
-    test('数据库 verdict 已提交、review_state 未更新、题目版本随后变化、重启恢复：已提交题目被移出而不是刷新', () async {
-      final rec1 = await seedCause('q1');
+    test('数据库 attempt 已提交、review_state 未更新、题目版本随后变化、重启恢复：已提交题目被移出而不是刷新', () async {
+      await seedCause('q1');
       await seedCause('q2');
       // 会话开始时的快照：两题都未提交、版本快照 answer 2 / content 3。
       await saveSession(
         perQuestionState: {'q1': savedSq('q1'), 'q2': savedSq('q2')},
       );
-      // 崩溃窗口：verdict 事务已提交（纸上作答，无 attempt，
-      // hasAttempt 为 false），review_state 没来得及更新。
-      await repo.submitCauseVerdict(
-        questionId: 'q1',
-        record: rec1,
-        verdict: ReviewVerdict.solved,
-        verificationStatus: Verification.unverified,
-        verificationSource: Verification.unverified,
-        sessionId: 'sess-1',
-        submissionId: childSubmissionId('qs-q1', causeStableId(rec1)),
-      );
+      // 崩溃窗口：核对提交已写库（attempt 行已存在，纸上作答，
+      // correct 为 null），review_state 没来得及更新。
+      await seedCommittedAttempt(sessionId: 'sess-1', questionId: 'q1');
       // 题目版本随后变化（详情页改过内容）：content 3 → 4。
       final q1 = (await repo.questionById('q1'))!;
       await repo.save(q1.copyWith(contentVersion: 4));
@@ -147,20 +163,12 @@ void main() {
     });
 
     test('对照：同样崩溃窗口但版本不变，已提交题目保留且提交标记从库重建', () async {
-      final rec1 = await seedCause('q1');
+      await seedCause('q1');
       await seedCause('q2');
       await saveSession(
         perQuestionState: {'q1': savedSq('q1'), 'q2': savedSq('q2')},
       );
-      await repo.submitCauseVerdict(
-        questionId: 'q1',
-        record: rec1,
-        verdict: ReviewVerdict.solved,
-        verificationStatus: Verification.unverified,
-        verificationSource: Verification.unverified,
-        sessionId: 'sess-1',
-        submissionId: childSubmissionId('qs-q1', causeStableId(rec1)),
-      );
+      await seedCommittedAttempt(sessionId: 'sess-1', questionId: 'q1');
 
       final s = await loadState();
       expect(s.resume, isNotNull);
@@ -172,38 +180,37 @@ void main() {
         (sq) => sq.questionId == 'q1',
       );
       expect(
-        resumed1.submittedCauses,
-        contains('计算错误'),
-        reason: 'review_state 里是空的，提交标记必须从数据库 verdict 行重建',
+        resumed1.checkSubmitted,
+        isTrue,
+        reason: 'review_state 里是空的，提交标记必须从数据库 attempt 行重建',
       );
+      expect(resumed1.stage, SessionStage.done);
+      expect(resumed1.attemptId, 'att-q1');
     });
   });
 
   group('十四批 M5 修复轮 3：提交状态按当前 session 逐项核验', () {
     test('当前 session 无记录、其他 session 有历史时，不错误保留旧提交标记与旧 attemptId', () async {
-      final rec1 = await seedCause('q1');
+      await seedCause('q1');
       await seedCause('q2');
-      // 其他 session 的 verdict 行（题目级 reviewHistory(qid) 非空，
-      // 但不是当前 session 的）。
-      await repo.submitCauseVerdict(
-        questionId: 'q1',
-        record: rec1,
-        verdict: ReviewVerdict.solved,
-        verificationStatus: Verification.unverified,
-        verificationSource: Verification.unverified,
-        sessionId: 'sess-other',
-        submissionId: childSubmissionId('qs-other', causeStableId(rec1)),
+      // 其他 session 的 attempt 行（不是当前 session 的）。
+      await seedCommittedAttempt(sessionId: 'sess-other', questionId: 'q1');
+      expect(
+        await repo.loadAttempt(sessionId: 'sess-other', questionId: 'q1'),
+        isNotNull,
       );
-      expect((await repo.reviewHistory('q1')).isNotEmpty, isTrue);
+      expect(
+        await repo.loadAttempt(sessionId: 'sess-1', questionId: 'q1'),
+        isNull,
+      );
       // 当前 session 的快照里留着 stale 的提交标记与 attemptId
-      // （库里当前 session 既无 verdict 行、也无 attempt 行）。
-      // 旧代码：submittedCauses 非空 + 题目级 history 非空 → 保留旧标记。
+      // （库里当前 session 无 attempt 行）。
       await saveSession(
         perQuestionState: {
           'q1': savedSq(
             'q1',
-            submittedCauses: {'计算错误'},
             attemptId: 'att-stale',
+            checkSubmitted: true,
           ),
           'q2': savedSq('q2'),
         },
@@ -215,8 +222,8 @@ void main() {
         (sq) => sq.questionId == 'q1',
       );
       expect(
-        resumed1.submittedCauses,
-        isEmpty,
+        resumed1.checkSubmitted,
+        isFalse,
         reason: '其他 session 的历史不得让当前 session 保留旧提交标记',
       );
       expect(

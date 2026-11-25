@@ -1,23 +1,20 @@
 // ARCH-PLAN-A 第 3 阶段：ReviewNotifier 单测（不启动 widget）。
-// 十四批 M3 重写：旧四步（recall/remedy/redo/check，按错因逐个走）
-// 已废止，改为五段统一流程（看题 → 作答 → 核对 → 错因自查 → 下一题
-// → 小结），一道题内部的状态变化；一题多错因时题目只展示一次、
-// 各错因分别记录 verdict。
+// P2 简化基线：三段统一流程（看题 → 作答 → 核对 → 下一题 → 小结），
+// 一道题内部的状态变化；核对提交是唯一正式提交入口（写 attempts +
+// 调 FSRS，如适用）。一题多错因时题目只展示一次。
 // 注入方式与 settings_controller_test.dart / home_provider_test.dart
 // 一致：ProviderContainer.test + repositoryProvider.overrideWithValue。
 // autoDispose 下单测要像页面 ref.watch 那样持一个监听保活
 // （D-36：只 read 不监听时 build 里的 microtask 首查还没写回就被
 // 销毁，轮询等不到 hasLoaded），见 `_container`。
-//
-// Fake 的 submitCauseVerdict 只模拟真实写库语义的子集（治愈规则
-// (d)+⑥、24h 锚点链、复查通过不加计数、不确定中性事件、子级
-// submission_id 幂等），供 notifier 流程断言；写库本身的完整语义
-// 由 test/b14_m3_verdict_test.dart 对真实库覆盖。
+// 调度器经 reviewSchedulerProvider 注入确定性实现（fuzzing 关），
+// 测试用 container.read(reviewSchedulerProvider) 拿同一实例断言。
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:quiz_master2/data/database.dart';
 import 'package:quiz_master2/data/repository.dart';
 import 'package:quiz_master2/data/review_engine.dart';
+import 'package:quiz_master2/data/review_scheduler.dart';
 import 'package:quiz_master2/models/models.dart';
 import 'package:quiz_master2/state/repository_provider.dart';
 import 'package:quiz_master2/state/review_notifier.dart';
@@ -71,19 +68,6 @@ CauseRecord _rec(
       lastCountedSessionId: lastCountedSessionId,
     );
 
-/// Fake 写库时记下的 verdict 事件（(d) 同会话重复检查与恢复校验用）。
-class FakeHistoryEvent {
-  FakeHistoryEvent({
-    required this.stableId,
-    required this.sessionId,
-    required this.verdict,
-  });
-
-  final String stableId;
-  final String sessionId;
-  final String verdict;
-}
-
 class FakeReviewNotifierRepo extends QuestionRepository {
   FakeReviewNotifierRepo({
     required this.questions,
@@ -105,14 +89,13 @@ class FakeReviewNotifierRepo extends QuestionRepository {
 
   final Map<String, List<({String result, DateTime reviewedAt})>> history =
       {};
-  final List<FakeHistoryEvent> historyEvents = [];
   final Map<String, AttemptData> attempts = {};
-  final Map<String, VerdictSubmitResult> submissionResults = {};
-  var _nextHistoryId = 0;
-  var submitVerdictCalls = 0;
 
   @override
   Future<List<Subject>> subjects() async => List.of(subjectsValue);
+
+  @override
+  Future<List<KnowledgePoint>> knowledgePoints() async => [];
 
   @override
   Future<AppSettings> settings() async {
@@ -160,138 +143,8 @@ class FakeReviewNotifierRepo extends QuestionRepository {
   }
 
   @override
-  Future<VerdictSubmitResult> submitCauseVerdict({
-    required String questionId,
-    required CauseRecord record,
-    required String verdict,
-    required String verificationStatus,
-    required String verificationSource,
-    String? attemptId,
-    required String sessionId,
-    required String submissionId,
-    int cureChecks = 2,
-    int recheckIntervalDays = 7,
-    bool isRecheck = false,
-    DateTime? now,
-  }) async {
-    submitVerdictCalls++;
-    if (throwOnCheck) throw StateError('save failed');
-    final currentNow = now ?? DateTime.now();
-    // 幂等：同一子级 submission_id 重试返回已有结果，不写新事件。
-    final seen = submissionResults[submissionId];
-    if (seen != null) {
-      return VerdictSubmitResult(
-        record: seen.record,
-        counted: seen.counted,
-        alreadySubmitted: true,
-        historyId: seen.historyId,
-        cured: seen.cured,
-        isRecheckPassed: seen.isRecheckPassed,
-        isRecheckFailed: seen.isRecheckFailed,
-      );
-    }
-    final i = records.indexWhere(
-        (x) => x.questionId == questionId && x.cause == record.cause);
-    if (i < 0) throw CauseRecordMissingException(questionId, record.cause);
-    final current = records[i];
-    final verified = verificationStatus == '已核验';
-    var updated = current;
-    var counted = false;
-    var cured = false;
-    var recheckPassed = false;
-    var recheckFailed = false;
-    final stableId = causeStableId(current);
-    final today = DateTime(
-        currentNow.year, currentNow.month, currentNow.day);
-    if (verdict == '不确定') {
-      // 中性事件：只记 history，不改记录、不刷新锚点。
-    } else if (verdict == '未解决') {
-      updated = unsolvedReset(current, currentNow);
-      if (isRecheck) recheckFailed = true;
-    } else if (verdict == '已解决' && verified) {
-      // (d) 同会话重复检查：同一会话已有“已解决”事件（包括未核验的）
-      // → 本次不计入、不刷新锚点。
-      final sameSessionSolved = historyEvents.any((e) =>
-          e.stableId == stableId &&
-          e.sessionId == sessionId &&
-          e.verdict == '已解决');
-      if (!sameSessionSolved) {
-        // ⑥ 锚点链：首次计入，或不同会话且距上次已计入成功 ≥ 24h。
-        final anchorOk = current.lastCountedSuccessAt == null ||
-            (sessionId != current.lastCountedSessionId &&
-                currentNow.millisecondsSinceEpoch -
-                        current.lastCountedSuccessAt! >=
-                    cureMinIntervalMs);
-        if (anchorOk) {
-          if (isRecheck) {
-            // 复查通过不增加初次治愈次数，只推复查日。
-            recheckPassed = true;
-            updated = current.copyWith(
-              lastCheck: currentNow,
-              recheckDate:
-                  today.add(Duration(days: recheckIntervalDays)),
-            );
-          } else {
-            counted = true;
-            final count = current.solvedCount + 1;
-            if (count >= cureChecks) {
-              cured = true;
-              updated = current.copyWith(
-                status: CauseStatus.solved,
-                solvedCount: count,
-                lastCheck: currentNow,
-                recheckDate:
-                    today.add(Duration(days: recheckIntervalDays)),
-                lastCountedSuccessAt:
-                    currentNow.millisecondsSinceEpoch,
-                lastCountedSessionId: sessionId,
-              );
-            } else {
-              updated = current.copyWith(
-                status: CauseStatus.inProgress,
-                solvedCount: count,
-                lastCheck: currentNow,
-                clearRecheckDate: true,
-                lastCountedSuccessAt:
-                    currentNow.millisecondsSinceEpoch,
-                lastCountedSessionId: sessionId,
-              );
-            }
-          }
-        }
-      }
-    }
-    // 未核验的“已解决”：只记 history，不改记录、不计入。
-    records[i] = updated;
-    final historyId = ++_nextHistoryId;
-    historyEvents.add(FakeHistoryEvent(
-      stableId: stableId,
-      sessionId: sessionId,
-      verdict: verdict,
-    ));
-    final resultLabel = switch (verdict) {
-      '已解决' => 'solved',
-      '未解决' => 'unsolved',
-      _ => 'unsure',
-    };
-    (history[questionId] ??= []).add(
-      (result: resultLabel, reviewedAt: currentNow),
-    );
-    final result = VerdictSubmitResult(
-      record: updated,
-      counted: counted,
-      alreadySubmitted: false,
-      historyId: historyId,
-      cured: cured,
-      isRecheckPassed: recheckPassed,
-      isRecheckFailed: recheckFailed,
-    );
-    submissionResults[submissionId] = result;
-    return result;
-  }
-
-  @override
   Future<String> recordAttempt(AttemptData attempt) async {
+    if (throwOnCheck) throw StateError('save failed');
     attempts['${attempt.sessionId}|${attempt.questionId}'] = attempt;
     return attempt.id;
   }
@@ -307,15 +160,6 @@ class FakeReviewNotifierRepo extends QuestionRepository {
   Future<List<AttemptData>> loadAttemptsForSession(
           String sessionId) async =>
       attempts.values.where((a) => a.sessionId == sessionId).toList();
-
-  /// M3-10 断点恢复重建用：本会话里该错因是否已有 verdict 事件。
-  @override
-  Future<bool> hasSessionVerdict({
-    required String causeStableId,
-    required String sessionId,
-  }) async => historyEvents.any(
-    (e) => e.stableId == causeStableId && e.sessionId == sessionId,
-  );
 
   @override
   Future<void> rejoinCause({
@@ -339,7 +183,13 @@ class FakeReviewNotifierRepo extends QuestionRepository {
       return;
     }
     if (records[i].status == CauseStatus.solved) {
-      records[i] = unsolvedReset(records[i], DateTime.now());
+      records[i] = records[i].copyWith(
+        status: CauseStatus.inProgress,
+        solvedCount: 0,
+        lastCheck: DateTime.now(),
+        clearRecheckDate: true,
+        clearCountedAnchors: true,
+      );
     }
   }
 
@@ -404,7 +254,7 @@ FakeReviewNotifierRepo _reviewRepo({int pageSize = 10}) {
   );
 }
 
-FakeReviewNotifierRepo _singleRepo({int solvedCount = 0}) {
+FakeReviewNotifierRepo _singleRepo() {
   final repo = _reviewRepo();
   repo.questions = [
     _rq('q1', '函数极限',
@@ -413,38 +263,17 @@ FakeReviewNotifierRepo _singleRepo({int solvedCount = 0}) {
         reviewJoined: true),
   ];
   repo.records = [
-    _rec('q1', '概念不清',
-        status: solvedCount > 0 ? CauseStatus.inProgress : CauseStatus.pending,
-        solvedCount: solvedCount,
-        joinedAt: DateTime(2026, 11, 10),
-        // 已有 1 次已计入成功：上次会话距今 25 小时（过 24h 锚点）。
-        lastCountedSuccessAt: solvedCount > 0
-            ? DateTime.now()
-                .subtract(const Duration(hours: 25))
-                .millisecondsSinceEpoch
-            : null,
-        lastCountedSessionId: solvedCount > 0 ? 'sess-old' : null),
+    _rec('q1', '概念不清', joinedAt: DateTime(2026, 11, 10)),
   ];
   return repo;
 }
 
-FakeReviewNotifierRepo _recheckRepo() {
-  final repo = _reviewRepo();
-  repo.questions = [
-    _rq('q1', '函数极限',
-        errorTypes: const ['概念不清'],
-        createdAt: DateTime(2026, 11, 8),
-        reviewJoined: true),
-  ];
-  repo.records = [
-    _rec('q1', '概念不清',
-        status: CauseStatus.solved,
-        solvedCount: 2,
-        recheckDate: DateTime.now().subtract(const Duration(days: 1)),
-        joinedAt: DateTime(2026, 11, 10)),
-  ];
-  return repo;
-}
+/// P2：确定性调度器（fuzzing 关），经 reviewSchedulerProvider 注入；
+/// 测试用 container.read(reviewSchedulerProvider) 拿同一实例断言 FSRS 状态。
+FsrsReviewScheduler _testScheduler() => FsrsReviewScheduler(
+  config: const SchedulerConfig(enableFuzzing: false),
+  store: InMemoryCardStore(),
+);
 
 ProviderContainer _container(
   FakeReviewNotifierRepo repo, {
@@ -453,6 +282,7 @@ ProviderContainer _container(
   final container = ProviderContainer.test(
     overrides: [
       repositoryProvider.overrideWithValue(repo),
+      reviewSchedulerProvider.overrideWithValue(_testScheduler()),
       if (initialSubjectId != null)
         reviewInitialProvider.overrideWithValue(
           ReviewInitial(subjectId: initialSubjectId),
@@ -475,30 +305,16 @@ Future<void> _waitFor(
   }
 }
 
-/// 走完单错因题的前三段，到自查步（纸上作答：无软件答案，默认走外部
-/// 核对勾选；不勾选时为未核验自评）。
-Future<void> _walkToSelfCheck(
-  ReviewNotifier notifier, {
-  String cause = '概念不清',
-  String verdict = '已解决',
-  bool externalChecked = false,
-}) async {
+/// 走完一道题的前两段，到核对步（纸上作答：无标准答案，不判分）。
+Future<void> _walkToCheck(ReviewNotifier notifier) async {
   notifier.beginAnswer();
   await notifier.completePaperAnswer();
-  notifier.enterSelfCheck();
-  notifier.setVerdict(cause, verdict);
-  if (externalChecked) notifier.setExternalChecked(cause, true);
 }
 
-/// 双错因题（q2）走完自查：两个错因都选“已解决”+ 外部核对。
-Future<void> _walkQ2ToSelfCheck(ReviewNotifier notifier) async {
-  notifier.beginAnswer();
-  await notifier.completePaperAnswer();
-  notifier.enterSelfCheck();
-  notifier.setVerdict('方法不会', '已解决');
-  notifier.setExternalChecked('方法不会', true);
-  notifier.setVerdict('计算错误', '已解决');
-  notifier.setExternalChecked('计算错误', true);
+/// 走完一道题并核对提交（P2：核对提交是唯一正式提交入口）。
+Future<void> _walkAndCommit(ReviewNotifier notifier) async {
+  await _walkToCheck(notifier);
+  await notifier.submitCheck();
 }
 
 void main() {
@@ -575,9 +391,8 @@ void main() {
     });
   });
 
-  group('ReviewNotifier 会话：治愈与自查', () {
-    test('五段走完单题（外部核对）：自查 1 次未满 2 次，总结“待解决 → 解决中”，剩余 1',
-        () async {
+  group('ReviewNotifier 会话：三步流程与核对提交', () {
+    test('三步走完单题（纸上作答不判分）：核对提交写一条 attempt，小结只报对错/用时', () async {
       final repo = _singleRepo();
       final container = _container(repo);
       final notifier = container.read(reviewProvider.notifier);
@@ -588,114 +403,49 @@ void main() {
       expect(s.sessionQuestions.length, 1);
       expect(s.sessionTotals, (1, 1));
       expect(s.scopeLabel, '全部待解决错因');
-      await _walkToSelfCheck(notifier, externalChecked: true);
-      await notifier.finishQuestion();
+      // 作答只记内存，不写库。
+      notifier.beginAnswer();
+      await notifier.completePaperAnswer();
+      s = container.read(reviewProvider);
+      expect(s.currentSessionQuestion.stage, SessionStage.check);
+      expect(repo.attempts, isEmpty);
+      // 核对提交：写一条 attempt（已完成作答，correct=NULL），不调 FSRS。
+      expect(await notifier.submitCheck(), isTrue);
       await _waitFor(container, (s) => s.showSummary);
       s = container.read(reviewProvider);
       expect(s.showSummary, isTrue);
-      expect(s.curedNow, 0);
-      expect(s.summaryRemaining, 1);
-      expect(s.changes.length, 1);
-      expect(s.changes.single.before, '待解决');
-      expect(s.changes.single.after, '解决中');
-      expect(s.sumUnverified, 0);
-      expect(repo.records.single.solvedCount, 1);
-      expect(repo.records.single.status, CauseStatus.inProgress);
-      // 纸上作答建了一条 attempt（已完成作答，correct=NULL）。
+      expect(s.sumCompleted, 1);
+      expect(s.sumHandled, 1);
+      expect(s.sumUngraded, 1);
+      expect(s.sumObjCorrect, 0);
+      expect(s.sumObjWrong, 0);
+      expect(s.sumWeakKp, isEmpty);
+      expect(s.sumNextDueDate, isNull);
+      expect(s.sumElapsedSeconds, greaterThanOrEqualTo(0));
       expect(repo.attempts.length, 1);
       expect(repo.attempts.values.single.status, '已完成作答');
       expect(repo.attempts.values.single.correct, isNull);
-    });
-
-    test('自查“已解决”满 2 次算已解决：总结计 1 个已解决', () async {
-      final repo = _singleRepo(solvedCount: 1);
-      final container = _container(repo);
-      final notifier = container.read(reviewProvider.notifier);
-      await notifier.load();
-      await notifier.startSession();
-      await _walkToSelfCheck(notifier, externalChecked: true);
-      await notifier.finishQuestion();
-      await _waitFor(container, (s) => s.showSummary);
-      final s = container.read(reviewProvider);
-      expect(s.curedNow, 1);
-      expect(s.summaryRemaining, 0);
-      expect(s.changes.single.after, '已解决');
-      expect(s.changes.single.recheckDate, isNotNull);
-      expect(s.changes.single.note, contains('已解决，下次复查'));
-      expect(repo.records.single.status, CauseStatus.solved);
-      expect(repo.records.single.solvedCount, 2);
-    });
-
-    test('复查通过不加计数——已满 2 次治愈后复查通过仍为 2', () async {
-      final repo = _recheckRepo();
-      final container = _container(repo);
-      final notifier = container.read(reviewProvider.notifier);
-      await notifier.load();
-      await notifier.startSession();
-      await _walkToSelfCheck(notifier, externalChecked: true);
-      await notifier.finishQuestion();
-      await _waitFor(container, (s) => s.showSummary);
-      final s = container.read(reviewProvider);
-      expect(s.changes.single.note, contains('复查通过'));
-      expect(s.sumRecheckPassed, 1);
-      expect(repo.records.single.solvedCount, 2);
-      expect(repo.records.single.status, CauseStatus.solved);
-      expect(repo.records.single.recheckDate, isNotNull);
-    });
-
-    test('选“不确定”记中性事件：记录不动，总结留一行说明', () async {
-      final repo = _singleRepo();
-      final container = _container(repo);
-      final notifier = container.read(reviewProvider.notifier);
-      await notifier.load();
-      await notifier.startSession();
-      await _walkToSelfCheck(notifier, verdict: '不确定');
-      await notifier.finishQuestion();
-      await _waitFor(container, (s) => s.showSummary);
-      final s = container.read(reviewProvider);
-      expect(s.curedNow, 0);
-      expect(s.changes.single.after, '待解决');
-      expect(s.changes.single.note, contains('不确定'));
-      expect(repo.records.single.status, CauseStatus.pending);
+      // 错因记录本身不动（新流程不推进治愈）。
       expect(repo.records.single.solvedCount, 0);
-      // 中性事件写了库（history 有一行），但不改治疗记录。
-      expect(repo.historyEvents.length, 1);
-      expect(repo.historyEvents.single.verdict, '不确定');
-      expect(repo.history['q1']?.length, 1);
-    });
-
-    test('未核验自评不推进治愈：不勾选外部核对，次数不动', () async {
-      final repo = _singleRepo();
-      final container = _container(repo);
-      final notifier = container.read(reviewProvider.notifier);
-      await notifier.load();
-      await notifier.startSession();
-      await _walkToSelfCheck(notifier, externalChecked: false);
-      await notifier.finishQuestion();
-      await _waitFor(container, (s) => s.showSummary);
-      final s = container.read(reviewProvider);
-      expect(s.curedNow, 0);
-      expect(s.sumUnverified, 1);
-      expect(s.changes.single.note, contains('未核验'));
       expect(repo.records.single.status, CauseStatus.pending);
-      expect(repo.records.single.solvedCount, 0);
     });
 
-    test('保存失败：自查提交抛错，出 saveError 并留在自查步', () async {
+    test('核对提交失败：recordAttempt 抛错，出 saveError 并留在核对步', () async {
       final repo = _singleRepo()..throwOnCheck = true;
       final container = _container(repo);
       final notifier = container.read(reviewProvider.notifier);
       await notifier.load();
       await notifier.startSession();
-      await _walkToSelfCheck(notifier, externalChecked: true);
-      await notifier.finishQuestion();
+      await _walkToCheck(notifier);
+      expect(await notifier.submitCheck(), isFalse);
       final s = container.read(reviewProvider);
       expect(s.saveError, isTrue);
       expect(s.showSummary, isFalse);
       expect(
         s.currentSessionQuestion.stage,
-        SessionStage.selfCheck,
+        SessionStage.check,
       );
+      expect(repo.attempts, isEmpty);
     });
 
     test('按组开始解决：只治该组的错因', () async {
@@ -717,35 +467,32 @@ void main() {
       expect(s.scopeLabel, '数学 · 计算错误');
     });
 
-    test('一题多错因：题目只展示一次，两个错因分别提交', () async {
+    test('一题多错因：题目只展示一次，一题一条 attempt', () async {
       final repo = _reviewRepo();
       final container = _container(repo);
       final notifier = container.read(reviewProvider.notifier);
       await notifier.load();
       await notifier.startSession();
       // q1 走完，到 q2（双错因）。
-      await _walkToSelfCheck(notifier, externalChecked: true);
-      await notifier.finishQuestion();
+      await _walkAndCommit(notifier);
       var s = container.read(reviewProvider);
       expect(s.sessionIndex, 1);
       expect(s.currentSessionQuestion.questionId, 'q2');
       expect(s.currentSessionQuestion.causes,
           ['方法不会', '计算错误']);
-      await _walkQ2ToSelfCheck(notifier);
-      await notifier.finishQuestion();
+      await _walkAndCommit(notifier);
       await _waitFor(container, (s) => s.showSummary);
       s = container.read(reviewProvider);
       expect(s.showSummary, isTrue);
+      expect(s.sumCompleted, 2);
       expect(s.sumHandled, 3);
-      expect(s.changes.length, 3);
-      // q2 的两个错因各提交一次，attempt 仍只有两条（一题一条）。
+      // 两道题各一条 attempt（一题一条）。
       expect(repo.attempts.length, 2);
-      expect(repo.submitVerdictCalls, 3);
     });
   });
 
   group('ReviewNotifier 会话：跳过与断点', () {
-    test('跳过单题队列直接留到下次：不写 verdict，进总结', () async {
+    test('跳过单题队列直接留到下次：不写 attempt，进总结', () async {
       final repo = _singleRepo();
       final container = _container(repo);
       final notifier = container.read(reviewProvider.notifier);
@@ -755,11 +502,9 @@ void main() {
       await _waitFor(container, (s) => s.showSummary);
       final s = container.read(reviewProvider);
       expect(s.showSummary, isTrue);
-      expect(s.changes, isEmpty);
-      expect(s.curedNow, 0);
+      expect(s.sumCompleted, 0);
       expect(s.sumDeferred, 1);
       expect(s.sumSkipped, 1);
-      expect(repo.submitVerdictCalls, 0);
       // 只跳过、从未作答的题不建 attempt。
       expect(repo.attempts, isEmpty);
     });
@@ -795,16 +540,16 @@ void main() {
       );
       expect(s.sumDeferred, 1);
       expect(s.sumSkipped, 3);
-      expect(repo.submitVerdictCalls, 0);
     });
 
-    test('跳过后重遇恢复原状态：已完成作答的题不重新给答题机会', () async {
+    test('跳过后重遇恢复原状态：核对步的题不重新给答题机会，可直接核对提交', () async {
       final repo = _reviewRepo();
       final container = _container(repo);
       final notifier = container.read(reviewProvider.notifier);
       await notifier.load();
       await notifier.startSession();
-      // q1 作答到核对步再跳过 → 队尾，状态保留。
+      // q1 作答到核对步再跳过 → 队尾，状态保留（P2：attempt 只在
+      // 核对提交时才写，跳过前 attemptId 为空）。
       notifier.beginAnswer();
       await notifier.completePaperAnswer();
       var s = container.read(reviewProvider);
@@ -813,19 +558,19 @@ void main() {
       s = container.read(reviewProvider);
       expect(s.currentSessionQuestion.questionId, 'q2');
       expect(s.sessionQuestions.last.stage, SessionStage.check);
-      expect(s.sessionQuestions.last.attemptId, isNotNull);
-      // 跳过 q2 → 回到 q1，仍在核对步，attempt 保留。
+      expect(s.sessionQuestions.last.attemptId, isNull);
+      // 跳过 q2 → 回到 q1，仍在核对步。
       await notifier.skipCurrent();
       s = container.read(reviewProvider);
       expect(s.currentSessionQuestion.questionId, 'q1');
       expect(s.currentSessionQuestion.stage, SessionStage.check);
-      expect(s.currentSessionQuestion.attemptId, isNotNull);
-      // 仍可继续自查，不重新作答。
-      notifier.enterSelfCheck();
-      expect(
-        container.read(reviewProvider).currentSessionQuestion.stage,
-        SessionStage.selfCheck,
-      );
+      expect(s.currentSessionQuestion.attemptId, isNull);
+      // 仍可直接核对提交，不重新作答；提交后进 q2。
+      expect(await notifier.submitCheck(), isTrue);
+      s = container.read(reviewProvider);
+      expect(s.currentSessionQuestion.questionId, 'q2');
+      expect(s.currentSessionQuestion.stage, SessionStage.view);
+      expect(repo.attempts.length, 1);
     });
 
     test('暂停后断点续治：继续解决回到中断的题', () async {
@@ -835,8 +580,7 @@ void main() {
       await notifier.load();
       await notifier.startSession();
       // q1 走完，到 q2 再暂停。
-      await _walkToSelfCheck(notifier, externalChecked: true);
-      await notifier.finishQuestion();
+      await _walkAndCommit(notifier);
       await notifier.pauseSession();
       var s = container.read(reviewProvider);
       expect(s.inSession, isFalse);
@@ -851,20 +595,19 @@ void main() {
       expect(s.currentSessionQuestion.questionId, 'q2');
     });
 
-    test('崩溃窗口恢复：数据库已写、review_state 未更新时，按 history 重建已提交态', () async {
+    test('崩溃窗口恢复：数据库已写、review_state 未更新时，按 attempts 行重建已提交态', () async {
       final repo = _reviewRepo();
       final container = _container(repo);
       final notifier = container.read(reviewProvider.notifier);
       await notifier.load();
       await notifier.startSession();
-      // q1 自查已解决 + 外部核对（已核验）→ 提交写库（history 有行）。
-      await _walkToSelfCheck(notifier, externalChecked: true);
-      await notifier.finishQuestion();
-      expect(repo.historyEvents.length, 1);
+      // q1 核对提交已写库（attempt 行已存在）。
+      await _walkAndCommit(notifier);
+      expect(repo.attempts.length, 1);
       await notifier.pauseSession();
       expect(repo.savedState, isNotNull);
       // 模拟崩溃窗口：review_state 没来得及更新——把 perQuestionState
-      // 里的已提交标记抹掉（只留队列与位置），history 仍在。
+      // 里的已提交标记抹掉（只留队列与位置），attempt 行仍在。
       final stale = repo.savedState!;
       repo.savedState = ReviewSessionState(
         queue: stale.queue,
@@ -875,25 +618,32 @@ void main() {
         skips: stale.skips,
         perQuestionState: {
           for (final e in stale.perQuestionState.entries)
-            e.key: {...e.value, 'submitted_causes': <String>[]},
+            e.key: {
+              ...e.value,
+              'check_submitted': false,
+              'attempt_id': null,
+            },
         },
       );
-      // 真实库里 history 行与 verdict 事件是同一批写入。
-      repo.history['q1'] = [(result: 'solved', reviewedAt: DateTime.now())];
       await notifier.load();
       final s = container.read(reviewProvider);
       expect(s.resume, isNotNull);
       final resumed = s.resume!.sessionQuestions.firstWhere(
         (sq) => sq.questionId == 'q1',
       );
-      expect(resumed.submittedCauses, contains('概念不清'));
+      expect(resumed.checkSubmitted, isTrue);
+      expect(resumed.stage, SessionStage.done);
+      expect(
+        resumed.attemptId,
+        repo.attempts.values.single.id,
+      );
       // 恢复本身不重新提交、不重复计数。
-      expect(repo.historyEvents.length, 1);
+      expect(repo.attempts.length, 1);
       expect(
         repo.records
             .firstWhere((r) => r.questionId == 'q1')
             .solvedCount,
-        1,
+        0,
       );
     });
 
@@ -923,9 +673,8 @@ void main() {
       final notifier = container.read(reviewProvider.notifier);
       await notifier.load();
       await notifier.startSession();
-      // q1 纸上作答完成（attempt 已建），停在核对步。
-      notifier.beginAnswer();
-      await notifier.completePaperAnswer();
+      // q1 核对提交完成（attempt 已建），已进 q2。
+      await _walkAndCommit(notifier);
       await notifier.pauseSession();
       // 暂停后答案与内容版本都变了。
       final qi = repo.questions.indexWhere((q) => q.id == 'q1');
@@ -985,7 +734,7 @@ void main() {
   });
 
   group('ReviewNotifier 专项练习', () {
-    test('专项练习不推进治愈、不写正式 verdict', () async {
+    test('专项练习不调 FSRS、不写正式复习记录', () async {
       final repo = _reviewRepo();
       final container = _container(repo);
       final notifier = container.read(reviewProvider.notifier);
@@ -1002,20 +751,19 @@ void main() {
         s.sessionQuestions.map((e) => e.questionId).toSet(),
         {'q1', 'q2', 'q3', 'q4'},
       );
-      // 四题都纸上作答 + 下一题走完。
+      // 四题都纸上作答 + 核对提交走完。
       for (var i = 0; i < 4; i++) {
         notifier.beginAnswer();
         await notifier.completePaperAnswer();
-        await notifier.nextPracticeQuestion();
+        await notifier.submitCheck();
       }
       await _waitFor(container, (s) => s.showSummary);
       s = container.read(reviewProvider);
       expect(s.showSummary, isTrue);
       expect(s.sumCompleted, 4);
-      expect(s.curedNow, 0);
-      expect(repo.submitVerdictCalls, 0);
-      expect(repo.historyEvents, isEmpty);
-      // 治疗状态一点没动。
+      expect(s.sumUngraded, 4);
+      expect(s.sumNextDueDate, isNull);
+      // 错因记录一点没动。
       expect(
         repo.records
             .where((r) => r.questionId == 'q1')
@@ -1048,8 +796,6 @@ void main() {
           .single;
       expect(record.status, CauseStatus.inProgress);
       expect(record.solvedCount, 0);
-      // 本次练习记录不受影响：不写 verdict。
-      expect(repo.submitVerdictCalls, 0);
     });
   });
 }

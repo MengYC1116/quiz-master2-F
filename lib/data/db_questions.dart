@@ -101,6 +101,10 @@ Future<void> syncCauseRecordsIntoImpl(QuizDatabase db, Question q) async {
 /// 十四批 M3：本函数保留给旧调用方（兼容旧口径：不确定不写库、
 /// 已解决按旧计数）。新会话走 [submitCauseVerdictIntoImpl]（M3-7
 /// 治愈规则 + M3-8 核验字段 + M3-10 幂等），旧口径不再扩大使用。
+/// P2（2026-11-25）审计：本函数在产品流程里已无调用方（只剩旧测试
+/// 直接调 AppDatabase.recordSelfCheckInto）；它是 review_history
+/// 的第二个写入点，P2 起与 submitCauseVerdictIntoImpl 一样停止写入，
+/// 只保留历史查询能力，P5 决定是否移除。
 Future<CauseRecord> recordSelfCheckIntoImpl(
   QuizDatabase db, {
   required CauseRecord updated,
@@ -234,6 +238,121 @@ class VerdictSubmitResult {
   /// 复查通过 / 复查失败（小结汇总用；非复查项均为 false）。
   final bool isRecheckPassed;
   final bool isRecheckFailed;
+}
+
+/// 两次治愈成功之间的最小间隔（M3-7 ⑥）：24 小时。
+///
+/// P2：治愈判定已从产品流程删除，本常量与下面的 [CureEvaluation] /
+/// [evaluateCure] 仅供旧写入层 [submitCauseVerdictIntoImpl] 保留
+/// （P2 起产品流程不再写 verdict，P5 决定是否移除整个写入层）。
+const int cureMinIntervalMs = 24 * 60 * 60 * 1000;
+
+/// 一次已核验“已解决”能否计入治愈的判定结果（旧写入层用，P2 已废止）。
+class CureEvaluation {
+  const CureEvaluation({
+    required this.counted,
+    required this.newSolvedCount,
+    required this.newStatus,
+    this.newRecheckDate,
+    this.newLastCountedSuccessAt,
+    this.newLastCountedSessionId,
+  });
+
+  /// 本次是否计入治愈次数。
+  final bool counted;
+
+  /// 计入后的 solvedCount（不计入时保持原值）。
+  final int newSolvedCount;
+
+  /// 计入/复查后的状态。
+  final CauseStatus newStatus;
+
+  /// 治愈或复查通过后的下次复查日（未治愈时为 null）。
+  final DateTime? newRecheckDate;
+
+  /// 计入后要保存的锚点（不计入时为 null，调用方不刷新锚点）。
+  final int? newLastCountedSuccessAt;
+  final String? newLastCountedSessionId;
+}
+
+/// 判定一次已核验“已解决”是否计入治愈（纯函数；调用方须先完成
+/// 同会话重复检查，把 [alreadySolvedInSession] 传进来——事务内按
+/// cause_id + session_id 查 review_history，含第一次未核验的
+/// “已解决”，不能只查已计入成功的事件）。
+///
+/// 规则：
+/// - isRecheck（已治愈错因的复查通过）：不增加初次治愈次数，锚点不动，
+///   状态保持已解决、复查日顺延。
+/// - cureChecks == 1：一次有效成功直接治愈，不等待 24 小时。
+/// - 首次计入（锚点为空）：计数并保存锚点。
+/// - 后续：须同时满足 session 与上次计入会话不同、且距上次计入成功
+///   ≥ 24 小时；计入后更新两个锚点；不足 24 小时不计数、不刷新锚点。
+/// - alreadySolvedInSession（(d)）：本次只记 history，不计数、不刷新锚点。
+CureEvaluation evaluateCure({
+  required CauseRecord record,
+  required String sessionId,
+  required int nowMs,
+  required int cureChecks,
+  required int recheckIntervalDays,
+  bool isRecheck = false,
+  bool alreadySolvedInSession = false,
+}) {
+  final today = DateTime.fromMillisecondsSinceEpoch(nowMs);
+  final todayDate = DateTime(today.year, today.month, today.day);
+  final nextRecheck = todayDate.add(Duration(days: recheckIntervalDays));
+  if (isRecheck) {
+    // 复查通过：不增加初次治愈次数（HTML 口径），只顺延复查日。
+    return CureEvaluation(
+      counted: false,
+      newSolvedCount: record.solvedCount,
+      newStatus: CauseStatus.solved,
+      newRecheckDate: nextRecheck,
+    );
+  }
+  if (alreadySolvedInSession) {
+    // (d)：同一会话内同一错因第二次“已解决”只记 history，不推进治愈。
+    return CureEvaluation(
+      counted: false,
+      newSolvedCount: record.solvedCount,
+      newStatus: record.status,
+    );
+  }
+  bool counts;
+  if (cureChecks <= 1) {
+    counts = true;
+  } else if (record.lastCountedSuccessAt == null ||
+      record.lastCountedSessionId == null) {
+    counts = true;
+  } else {
+    counts =
+        record.lastCountedSessionId != sessionId &&
+        nowMs - record.lastCountedSuccessAt! >= cureMinIntervalMs;
+  }
+  if (!counts) {
+    return CureEvaluation(
+      counted: false,
+      newSolvedCount: record.solvedCount,
+      newStatus: record.status,
+    );
+  }
+  final newCount = record.solvedCount + 1;
+  if (newCount >= cureChecks) {
+    return CureEvaluation(
+      counted: true,
+      newSolvedCount: newCount,
+      newStatus: CauseStatus.solved,
+      newRecheckDate: nextRecheck,
+      newLastCountedSuccessAt: nowMs,
+      newLastCountedSessionId: sessionId,
+    );
+  }
+  return CureEvaluation(
+    counted: true,
+    newSolvedCount: newCount,
+    newStatus: CauseStatus.inProgress,
+    newLastCountedSuccessAt: nowMs,
+    newLastCountedSessionId: sessionId,
+  );
 }
 
 /// M3-7/M3-8/M3-10：单条错因 verdict 提交（每错因一次独立事务）。

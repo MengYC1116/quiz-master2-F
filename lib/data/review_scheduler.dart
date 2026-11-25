@@ -377,6 +377,13 @@ abstract class ReviewScheduler {
   /// 纯排版或分类标签改动不调。旧的作答事实记录保留在 attempts
   /// 里，不参与新版本重放。
   Future<void> resetQuestion(String questionId);
+
+  /// 该题当前卡片的下次到期时间（UTC），无卡时返回 null。
+  ///
+  /// P2 小结“下次时间”用：取本轮已核对题的下次到期时间里最早的一
+  /// 个展示。未开始正式复习的卡（firstReviewedAt 为空）不算——
+  /// 它的 due 是 FSRS 新卡默认值，不是真正的下次复习时间。
+  Future<DateTime?> nextDueAt(String questionId);
 }
 
 /// [ReviewScheduler] 的 FSRS-6 实现，封装层唯一认识 FSRS 包的地方。
@@ -489,6 +496,13 @@ class FsrsReviewScheduler implements ReviewScheduler {
         firstReviewedAt: null,
       ),
     );
+  }
+
+  @override
+  Future<DateTime?> nextDueAt(String questionId) async {
+    final stored = await store.load(questionId);
+    if (stored == null || stored.firstReviewedAt == null) return null;
+    return stored.card.due;
   }
 
   Future<StoredCard> _initializeAndLoad(String questionId) async {

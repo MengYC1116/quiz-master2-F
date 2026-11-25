@@ -1,9 +1,9 @@
 // ARCH-PLAN-A 第 3 阶段：复习页的状态层。
 //
-// 十四批 M3 重写会话层：旧四步（recall/remedy/redo/check，按错因逐个
-// 走）废止，改为五段统一流程（M3-3：看题 → 作答 → 核对 → 错因自查
-// （仅到期复习）→ 下一题 → 小结），一道题内部的状态变化，不是每段
-// 翻一页。题目是会话单位，错因是治疗单位，答题结果是证据。
+// P2 简化基线（D2，2026-11-25）：三步统一流程（看题 → 作答 → 核对
+// → 下一题 → 小结），一道题内部的状态变化，不是每段翻一页。
+// 无置信度、无错因自查、无治愈判定、无软件判定掌握；掌握与否由用户
+// 自己判断。题目是会话单位，答题结果是客观对错事实。
 //
 // 状态是 [ReviewState]（列表数据 + 会话状态），唯一真源仍是 SQLite；
 // 本 Provider 只做“响应式读取 + 会话状态持有 + 写回”，不另存一份。
@@ -12,8 +12,8 @@
 // 写：`ref.read(reviewProvider.notifier).startSession(...)` 等。
 //
 // 会话状态归属：断点续治与跳过队列的实时会话状态由本 Provider 持有；
-// 自查结果、作答记录、治愈等持久化写回 SQLite（见
-// repository.submitCauseVerdict / recordAttempt）；详情页的复习记录
+// 核对提交（attempts 正式记录 + FSRS 调度）持久化写回 SQLite（见
+// submitCheck / repository.recordAttempt）；详情页的复习记录
 // 不持有会话状态。复习会话每次提交后本 Provider 的会话状态直接更新，
 // 不等待事件回绕。
 //
@@ -37,9 +37,9 @@ import 'dart:async';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../data/database.dart';
 import '../data/repository.dart';
 import '../data/review_engine.dart';
+import '../data/review_scheduler.dart';
 import '../models/models.dart';
 import 'repository_provider.dart';
 
@@ -51,7 +51,11 @@ import 'repository_provider.dart';
 final reviewProvider =
     NotifierProvider.autoDispose<ReviewNotifier, ReviewState>(
       ReviewNotifier.new,
-      dependencies: [reviewInitialProvider, repositoryProvider],
+      dependencies: [
+        reviewInitialProvider,
+        repositoryProvider,
+        reviewSchedulerProvider,
+      ],
     );
 
 /// 复习页的构造参数（初始落点）：带学科进来 → 该学科筛选；
@@ -76,10 +80,23 @@ final reviewInitialProvider = Provider<ReviewInitial>(
   (ref) => const ReviewInitial(),
 );
 
-/// 会话内一道题的阶段（M3-3 五段统一流程，一道题内部的状态变化）。
-enum SessionStage { view, answer, check, selfCheck, done }
+/// FSRS 调度器 Provider（P2）：默认内存 CardStore（P1）。
+///
+/// P5 接入 SQLite 后把这里的 store 换成 SQLite 实现（fsrs_cards 表），
+/// 调度器与业务代码都不改。测试用 override 注入确定性调度器
+/// （fuzzing 关）与独立的 InMemoryCardStore。
+final reviewSchedulerProvider = Provider<ReviewScheduler>(
+  (ref) => FsrsReviewScheduler(
+    config: const SchedulerConfig(),
+    store: InMemoryCardStore(),
+  ),
+);
 
-const stageLabels = ['① 看题', '② 作答', '③ 核对', '④ 错因自查'];
+/// 会话内一道题的阶段（P2 三步：看题 → 作答 → 核对；done 是核对
+/// 已提交后的过渡态，只在恢复后遇到已提交的题时出现）。
+enum SessionStage { view, answer, check, done }
+
+const stageLabels = ['① 看题', '② 作答', '③ 核对'];
 
 /// 会话内一道题的状态（M3-10 持久化单位）。immutable + copyWith；
 /// 每题的状态变化都产生新实例，`select` 能识别。
@@ -95,17 +112,11 @@ class SessionQuestionState {
     this.stage = SessionStage.view,
     this.attemptId,
     this.selected,
-    this.confidence,
     this.correct,
-    this.checkConfirm,
-    this.verdicts = const {},
-    this.evidenceLinks = const {},
-    this.externalChecked = const {},
-    this.submittedCauses = const {},
+    this.checkSubmitted = false,
     this.notesShown = false,
     this.skips = 0,
     this.deferred = false,
-    this.invalidCauses = const {},
   });
 
   /// 题 id。
@@ -140,26 +151,12 @@ class SessionQuestionState {
   /// 选择/判断/多选的点选（单选/判断为单元素列表；多选为多元素）。
   final List<String>? selected;
 
-  /// 作答前置信度（仅选择/判断；填空/解答与纸上作答为 null）。
-  final String? confidence;
-
   /// 客观判分结果（1 答对 / 0 答错 / null 不判分）。
   final int? correct;
 
-  /// 主观题核对确认四态（M3-4，P1-6；null = 未选）。
-  final String? checkConfirm;
-
-  /// 逐错因自查选择（错因 → 已解决/未解决/不确定）。
-  final Map<String, String> verdicts;
-
-  /// 逐错因证据关联判断（错因 → 是/否/不确定；M3-6A）。
-  final Map<String, String?> evidenceLinks;
-
-  /// 逐错因外部核对勾选（表 B 无软件答案时；默认不勾选）。
-  final Map<String, bool> externalChecked;
-
-  /// 已提交 verdict 的错因（提交成功后锁定，恢复重放不重复提交）。
-  final Set<String> submittedCauses;
+  /// 核对提交是否已完成（attempt 已写 + FSRS 已调，如适用）。
+  /// 恢复重放与重复点击靠它短路，不重写、不重计分。
+  final bool checkSubmitted;
 
   /// 批注笔记是否已显示（M3-16：默认隐藏；显示后题卡给视觉提示）。
   final bool notesShown;
@@ -170,15 +167,8 @@ class SessionQuestionState {
   /// 第二次跳过后移出本次会话（留到下次）。
   final bool deferred;
 
-  /// 已失效的错因（写库时记录不存在，跳过、不阻断其他错因）。
-  final Set<String> invalidCauses;
-
   bool get hasAttempt => attemptId != null;
   bool get isObjectiveSubmitted => hasAttempt && selected != null;
-  bool get allVerdictsSubmitted =>
-      causes.every(
-        (c) => submittedCauses.contains(c) || invalidCauses.contains(c),
-      );
 
   SessionQuestionState copyWith({
     List<String>? causes,
@@ -196,17 +186,11 @@ class SessionQuestionState {
     // 的推断类型），`is! List<String>?` 会把它误判为“未传”而丢掉
     // 本次点选——多选点选曾因此失效（M3 自验抓到）。
     Object? selected = _unset,
-    String? confidence,
     Object? correct = _unset,
-    Object? checkConfirm = _unset,
-    Map<String, String>? verdicts,
-    Map<String, String?>? evidenceLinks,
-    Map<String, bool>? externalChecked,
-    Set<String>? submittedCauses,
+    bool? checkSubmitted,
     bool? notesShown,
     int? skips,
     bool? deferred,
-    Set<String>? invalidCauses,
   }) {
     return SessionQuestionState(
       questionId: questionId,
@@ -222,21 +206,13 @@ class SessionQuestionState {
       selected: identical(selected, _unset)
           ? this.selected
           : selected as List<String>?,
-      confidence: confidence ?? this.confidence,
       correct: identical(correct, _unset)
           ? this.correct
           : correct as int?,
-      checkConfirm: identical(checkConfirm, _unset)
-          ? this.checkConfirm
-          : checkConfirm as String?,
-      verdicts: verdicts ?? this.verdicts,
-      evidenceLinks: evidenceLinks ?? this.evidenceLinks,
-      externalChecked: externalChecked ?? this.externalChecked,
-      submittedCauses: submittedCauses ?? this.submittedCauses,
+      checkSubmitted: checkSubmitted ?? this.checkSubmitted,
       notesShown: notesShown ?? this.notesShown,
       skips: skips ?? this.skips,
       deferred: deferred ?? this.deferred,
-      invalidCauses: invalidCauses ?? this.invalidCauses,
     );
   }
 
@@ -249,13 +225,8 @@ class SessionQuestionState {
     'stage': stage.name,
     'attempt_id': attemptId,
     'selected': selected,
-    'confidence': confidence,
     'correct': correct,
-    'check_confirm': checkConfirm,
-    'verdicts': verdicts,
-    'evidence_links': evidenceLinks,
-    'external_checked': externalChecked,
-    'submitted_causes': submittedCauses.toList(),
+    'check_submitted': checkSubmitted,
     'notes_shown': notesShown,
     'skips': skips,
     'deferred': deferred,
@@ -275,36 +246,13 @@ class SessionQuestionState {
         orElse: () => SessionStage.view,
       );
     }
+    // P2 旧会话兼容：旧 selfCheck 阶段不再自查，先回到核对步；
+    // _validateSavedSession 再按库里有无 attempts 行决定完成或重做。
+    if (rawStage == 'selfCheck') stage = SessionStage.check;
     List<String>? selected;
     final rawSelected = json['selected'];
     if (rawSelected is List) {
       selected = rawSelected.map((e) => e.toString()).toList();
-    }
-    Map<String, String> verdicts = {};
-    final rawVerdicts = json['verdicts'];
-    if (rawVerdicts is Map) {
-      verdicts = rawVerdicts.map(
-        (k, v) => MapEntry(k.toString(), v.toString()),
-      );
-    }
-    Map<String, String?> evidenceLinks = {};
-    final rawLinks = json['evidence_links'];
-    if (rawLinks is Map) {
-      evidenceLinks = rawLinks.map(
-        (k, v) => MapEntry(k.toString(), v?.toString()),
-      );
-    }
-    Map<String, bool> externalChecked = {};
-    final rawExternal = json['external_checked'];
-    if (rawExternal is Map) {
-      externalChecked = rawExternal.map(
-        (k, v) => MapEntry(k.toString(), v == true),
-      );
-    }
-    Set<String> submitted = {};
-    final rawSubmitted = json['submitted_causes'];
-    if (rawSubmitted is List) {
-      submitted = rawSubmitted.map((e) => e.toString()).toSet();
     }
     return SessionQuestionState(
       questionId: questionId,
@@ -323,13 +271,8 @@ class SessionQuestionState {
       stage: stage,
       attemptId: json['attempt_id']?.toString(),
       selected: selected,
-      confidence: json['confidence']?.toString(),
       correct: (json['correct'] as num?)?.toInt(),
-      checkConfirm: json['check_confirm']?.toString(),
-      verdicts: verdicts,
-      evidenceLinks: evidenceLinks,
-      externalChecked: externalChecked,
-      submittedCauses: submitted,
+      checkSubmitted: json['check_submitted'] == true,
       notesShown: json['notes_shown'] == true,
       skips: (json['skips'] as num?)?.toInt() ?? 0,
       deferred: json['deferred'] == true,
@@ -390,27 +333,6 @@ class CauseBlock {
   }
 }
 
-/// 本轮一条状态变化（总结页每行）。
-class SessionChange {
-  SessionChange({
-    required this.questionTitle,
-    required this.subjectName,
-    required this.cause,
-    required this.before,
-    required this.after,
-    this.recheckDate,
-    required this.note,
-  });
-
-  final String questionTitle;
-  final String subjectName;
-  final String cause;
-  final String before;
-  final String after;
-  final DateTime? recheckDate;
-  final String note;
-}
-
 /// 已保存的断点（M3-10 轻量会话持久化恢复后的会话）。
 class ResumeInfo {
   ResumeInfo({
@@ -426,7 +348,7 @@ class ResumeInfo {
   final String mode;
 }
 
-/// 复习页日期格式（`_finishQuestion` 的总结文案与已解决区详情共用）。
+/// 复习页日期格式（总结文案与已解决区详情共用）。
 String formatReviewDate(DateTime d) =>
     '${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
 
@@ -475,24 +397,20 @@ class ReviewState {
     this.practiceCount = 10,
     this.practiceRandom = true,
     this.submitting = false,
-    this.curedNow = 0,
-    this.changes = const [],
-    this.summaryRemaining = 0,
     this.scopeLabel = '全部待解决错因',
     this.saveError = false,
-    this.historyByQ = const {},
     this.sumCompleted = 0,
     this.sumHandled = 0,
-    this.sumRecheckPassed = 0,
-    this.sumRecheckFailed = 0,
-    this.sumUnverified = 0,
     this.sumUngraded = 0,
     this.sumSkipped = 0,
     this.sumDeferred = 0,
     this.sumObjCorrect = 0,
     this.sumObjWrong = 0,
-    this.sumObjGuessed = 0,
-    this.sumNextRecheckDate,
+    this.sumWeakKp = const {},
+    this.sumNextDueDate,
+    this.sumElapsedSeconds = 0,
+    this.sessionStartedAt,
+    this.kpNames = const {},
     this.rejoinNotice,
   });
 
@@ -557,7 +475,7 @@ class ReviewState {
   /// 复查日期的错因）。
   final int futureRecheckCount;
 
-  // ---- 会话状态（M3 五段流程） ----
+  // ---- 会话状态（P2 三步流程） ----
 
   final bool inSession;
   final bool showSummary;
@@ -573,33 +491,36 @@ class ReviewState {
   final int practiceCount;
   final bool practiceRandom;
 
-  /// 提交进行中锁（M3-14 防重复提交：提交中禁用提交按钮）。
+  /// 提交进行中锁（P2 防重复提交：提交中禁用提交按钮）。
   final bool submitting;
-  final int curedNow;
-  final List<SessionChange> changes;
-  final int summaryRemaining;
   final String scopeLabel;
   final bool saveError;
 
-  /// 会话内各题的自查历史（`reviewHistory`，按 reviewed_at DESC）。
-  final Map<String, List<({String result, DateTime reviewedAt})>> historyByQ;
-
-  // ---- 小结汇总（M3-15，到期复习 / 专项练习共用计数） ----
+  // ---- 小结汇总（P2：只报对错数、用时、按知识点排的弱点、下次时间） ----
   final int sumCompleted;
   final int sumHandled;
-  final int sumRecheckPassed;
-  final int sumRecheckFailed;
-  final int sumUnverified;
   final int sumUngraded;
   final int sumSkipped;
   final int sumDeferred;
   final int sumObjCorrect;
   final int sumObjWrong;
 
-  /// 本次客观作答里“猜的”却答对的题数（M3-15 专项练习小结用；
-  /// 猜对不计入掌握，单独列出不混入答对统计口径）。
-  final int sumObjGuessed;
-  final DateTime? sumNextRecheckDate;
+  /// 本轮答错的客观题按知识点汇总（知识点 id → 答错题数），
+  /// 小结按答错数从多到少展示弱点。
+  final Map<String, int> sumWeakKp;
+
+  /// 本轮已核对题的下次到期时间里最早的一个（FSRS 算出；
+  /// 无已核对的到期复习题时为 null）。
+  final DateTime? sumNextDueDate;
+
+  /// 本轮会话用时（秒，从进入会话到出小结）。
+  final int sumElapsedSeconds;
+
+  /// 进入本轮会话的时间（用时起点；暂停续接后重新计时）。
+  final DateTime? sessionStartedAt;
+
+  /// 知识点 id → 名称（小结弱点展示用；load() 时读库）。
+  final Map<String, String> kpNames;
 
   /// 专项练习“已重新加入复习”的反馈文案（用后即清）。
   final String? rejoinNotice;
@@ -642,24 +563,20 @@ class ReviewState {
     int? practiceCount,
     bool? practiceRandom,
     bool? submitting,
-    int? curedNow,
-    List<SessionChange>? changes,
-    int? summaryRemaining,
     String? scopeLabel,
     bool? saveError,
-    Map<String, List<({String result, DateTime reviewedAt})>>? historyByQ,
     int? sumCompleted,
     int? sumHandled,
-    int? sumRecheckPassed,
-    int? sumRecheckFailed,
-    int? sumUnverified,
     int? sumUngraded,
     int? sumSkipped,
     int? sumDeferred,
     int? sumObjCorrect,
     int? sumObjWrong,
-    int? sumObjGuessed,
-    Object? sumNextRecheckDate = _unset,
+    Map<String, int>? sumWeakKp,
+    Object? sumNextDueDate = _unset,
+    int? sumElapsedSeconds,
+    Object? sessionStartedAt = _unset,
+    Map<String, String>? kpNames,
     Object? rejoinNotice = _unset,
   }) {
     return ReviewState(
@@ -714,26 +631,24 @@ class ReviewState {
       practiceCount: practiceCount ?? this.practiceCount,
       practiceRandom: practiceRandom ?? this.practiceRandom,
       submitting: submitting ?? this.submitting,
-      curedNow: curedNow ?? this.curedNow,
-      changes: changes ?? this.changes,
-      summaryRemaining: summaryRemaining ?? this.summaryRemaining,
       scopeLabel: scopeLabel ?? this.scopeLabel,
       saveError: saveError ?? this.saveError,
-      historyByQ: historyByQ ?? this.historyByQ,
       sumCompleted: sumCompleted ?? this.sumCompleted,
       sumHandled: sumHandled ?? this.sumHandled,
-      sumRecheckPassed: sumRecheckPassed ?? this.sumRecheckPassed,
-      sumRecheckFailed: sumRecheckFailed ?? this.sumRecheckFailed,
-      sumUnverified: sumUnverified ?? this.sumUnverified,
       sumUngraded: sumUngraded ?? this.sumUngraded,
       sumSkipped: sumSkipped ?? this.sumSkipped,
       sumDeferred: sumDeferred ?? this.sumDeferred,
       sumObjCorrect: sumObjCorrect ?? this.sumObjCorrect,
       sumObjWrong: sumObjWrong ?? this.sumObjWrong,
-      sumObjGuessed: sumObjGuessed ?? this.sumObjGuessed,
-      sumNextRecheckDate: sumNextRecheckDate == _unset
-          ? this.sumNextRecheckDate
-          : sumNextRecheckDate as DateTime?,
+      sumWeakKp: sumWeakKp ?? this.sumWeakKp,
+      sumNextDueDate: sumNextDueDate == _unset
+          ? this.sumNextDueDate
+          : sumNextDueDate as DateTime?,
+      sumElapsedSeconds: sumElapsedSeconds ?? this.sumElapsedSeconds,
+      sessionStartedAt: sessionStartedAt == _unset
+          ? this.sessionStartedAt
+          : sessionStartedAt as DateTime?,
+      kpNames: kpNames ?? this.kpNames,
       rejoinNotice: rejoinNotice == _unset
           ? this.rejoinNotice
           : rejoinNotice as String?,
@@ -775,10 +690,6 @@ class ReviewState {
       hasCurrentQuestion
           ? questionOf(currentSessionQuestion.questionId)
           : null;
-
-  /// 当前题的自查历史（会话内看题步“上次自查”用）。
-  List<({String result, DateTime reviewedAt})>? get currentHistory =>
-      currentQuestion == null ? null : historyByQ[currentQuestion!.id];
 
   /// 全部错因记录（分组两边之和：待治 + 已治愈；会话选题与恢复校验用）。
   List<CauseRecord> get allCauseRecords {
@@ -996,6 +907,7 @@ class ReviewNotifier extends Notifier<ReviewState> {
       final subjectList = subjects;
       final questions = await repo.all(includeArchived: true);
       final records = await repo.causeRecords();
+      final kps = await repo.knowledgePoints();
       final byQ = <String, List<CauseRecord>>{};
       for (final r in records) {
         (byQ[r.questionId] ??= []).add(r);
@@ -1103,6 +1015,7 @@ class ReviewNotifier extends Notifier<ReviewState> {
         causeFilter: causeFilter,
         notJoined: notJoined,
         pendingByQ: pendingByQ,
+        kpNames: {for (final kp in kps) kp.id: kp.name},
         resume: resume,
         resumeExpired: resume == null && _expiredSessionInThisLoad,
         futureRecheckCount: futureRecheckCount,
@@ -1129,7 +1042,7 @@ class ReviewNotifier extends Notifier<ReviewState> {
   /// 校验保存的会话快照（M3-10）：题目已删除、错因已删除/已治愈/
   /// 已不在范围 → 该项安全移除；答案/内容版本变化按
   /// versionCheck 处理（未作答刷新快照、已提交移出会话）；
-  /// 恢复以 review_history/attempts 的实际写入为准重建提交状态。
+  /// 恢复以 attempts 的实际写入为准重建提交状态（P2：只认 attempts 行）。
   /// 返回有效的 ResumeInfo；快照整体失效时清掉 review_state 并返回 null。
   Future<ResumeInfo?> _validateSavedSession({
     required QuestionRepository repo,
@@ -1197,33 +1110,30 @@ class ReviewNotifier extends Notifier<ReviewState> {
         savedState ?? const {},
       );
       // 先从数据库重建真实提交状态，再做版本判定（十四批 M5 修复轮 3，
-      // D-156，GPT fix2 P1-3）：崩溃窗口（verdict 事务已提交、
+      // D-156，GPT fix2 P1-3）：崩溃窗口（核对提交已写库、
       // review_state 未更新）下，per_question_state 仍显示未提交；
       // 若先按缓存判版本，已提交题目会在版本变化时被刷新成新版本
       // 继续留在同一会话，而不是按既定规则移出。提交状态以数据库
-      // 实际写入为准（M3-10，不只相信渲染层缓存）：对本轮每个错因
-      // 按当前 sessionId + causeStableId 查库里本会话是否已有
-      // verdict 事件（不限 verdict，submittedCauses 是“已提交过”）；
-      // attempt 是否存在同样以库为准——库里有 attempt 行就采用它的
-      // id（覆盖缓存缺失的 attemptId），库里没有就清掉缓存里的旧 id。
-      // 重复计数仍由数据层 (d) 规则挡，这里只重建提交态。
-      final rebuiltSubmitted = <String>{};
-      for (final cause in causes) {
-        final r = recordByCause[cause];
-        if (r == null) continue;
-        final hasVerdict = await repo.hasSessionVerdict(
-          causeStableId: causeStableId(r),
-          sessionId: sessionId,
-        );
-        if (hasVerdict) rebuiltSubmitted.add(cause);
-      }
+      // 实际写入为准（P2：只认 attempts 行，不认 review_history
+      // verdict——P2 起产品流程不再写 verdict）：库里有本会话的
+      // attempt 行就采用它的 id（覆盖缓存缺失的 attemptId），库里
+      // 没有就清掉缓存里的旧 id；attempt 状态为“跳过”时不算已提交
+      // （跳过后重遇仍可核对提交）。
       final dbAttempt = await repo.loadAttempt(
         sessionId: sessionId,
         questionId: qid,
       );
       final rebuiltAttemptId = dbAttempt?.id;
-      final rebuiltHasSubmitted =
-          rebuiltAttemptId != null || rebuiltSubmitted.isNotEmpty;
+      // P2 旧会话兼容（实施方案 v2 §7，不动迁移）：
+      // - 看题/作答阶段 → 保留当前题恢复原阶段；
+      // - 核对未提交 → 回到核对步，提交时只写一次（attempt 不存在，
+      //   checkSubmitted 为 false，submitCheck 按同一 eventId 写）；
+      // - 已写客观记录（attempt 存在且非“跳过”）→ 视为已完成，
+      //   不重计分（stage 置 done、checkSubmitted 置 true）；
+      // - 旧 selfCheck 阶段 → fromJson 已映射回核对步，再按有无
+      //   客观记录决定完成（done）或重做（check）。
+      final committed = dbAttempt != null && dbAttempt.status != '跳过';
+      final rebuiltHasSubmitted = committed;
       // 版本检查：快照版本与当前版本同时比较（用重建后的提交态判）。
       final versionAction = versionCheck(
         snapshotAnswerVersion: sq.answerVersionAtStart,
@@ -1244,21 +1154,18 @@ class ReviewNotifier extends Notifier<ReviewState> {
           contentVersionAtStart: q.contentVersion,
           stage: SessionStage.view,
           selected: null,
-          confidence: null,
           correct: null,
-          checkConfirm: null,
         );
         removedAny = true;
       }
-      // 应用重建的提交状态：只认当前 session 的逐项核验结果。
-      // 不再用题目级 reviewHistory(qid) 是否为空决定是否清空
-      // submittedCauses——那是题目级历史查询，其他 session 的历史
-      // 会让当前 session 错误保留旧提交标记；重建集合本身已是
-      // “当前 session 有 verdict 行”的错因， stale 标记随之丢掉。
+      // 应用重建的提交状态：stale 的 checkSubmitted / attemptId
+      // （库里没有当前 session 的 attempt 行）随之丢掉，不让恢复
+      // 后误以为已提交。
       sq = sq.copyWith(
-        submittedCauses: rebuiltSubmitted,
         attemptId: rebuiltAttemptId,
         clearAttemptId: rebuiltAttemptId == null,
+        stage: committed ? SessionStage.done : sq.stage,
+        checkSubmitted: committed,
       );
       sessionQuestions.add(sq);
     }
@@ -1424,16 +1331,6 @@ class ReviewNotifier extends Notifier<ReviewState> {
     }).toList();
   }
 
-  Future<void> _loadHistoryForSession() async {
-    final repo = _repo;
-    final map = <String, List<({String result, DateTime reviewedAt})>>{};
-    for (final sq in state.sessionQuestions) {
-      map[sq.questionId] ??= await repo.reviewHistory(sq.questionId);
-    }
-    if (_disposed) return;
-    state = state.copyWith(historyByQ: map);
-  }
-
   /// 把当前会话快照写进 review_state（M3-10 轻量持久化）。
   Future<void> _persistSession(
     List<SessionQuestionState> questions,
@@ -1496,20 +1393,17 @@ class ReviewNotifier extends Notifier<ReviewState> {
       scopeLabel: scopeLabel,
       submitting: false,
       saveError: false,
-      curedNow: 0,
-      changes: const [],
       sumCompleted: 0,
       sumHandled: 0,
-      sumRecheckPassed: 0,
-      sumRecheckFailed: 0,
-      sumUnverified: 0,
       sumUngraded: 0,
       sumSkipped: 0,
       sumDeferred: 0,
       sumObjCorrect: 0,
       sumObjWrong: 0,
-      sumObjGuessed: 0,
-      sumNextRecheckDate: null,
+      sumWeakKp: const {},
+      sumNextDueDate: null,
+      sumElapsedSeconds: 0,
+      sessionStartedAt: DateTime.now(),
       inSession: true,
       showSummary: false,
       showPracticePicker: false,
@@ -1529,7 +1423,11 @@ class ReviewNotifier extends Notifier<ReviewState> {
         startIndex: r.sessionIndex,
         scopeLabel: state.scopeLabelForSession(r.sessionQuestions),
       );
-      await _loadHistoryForSession();
+      return;
+    }
+    if (state.resume != null) {
+      // 单行表 review_state 只能存一个会话：已有未完成会话时不直接
+      // 覆盖（页面 _startDue 已先二选一；这里是兜底，防直接调用丢断点）。
       return;
     }
     final questions = _buildDueSessionQuestions(
@@ -1560,7 +1458,6 @@ class ReviewNotifier extends Notifier<ReviewState> {
           : state.scopeLabelForFilters(),
     );
     await _persistCurrentSession();
-    await _loadHistoryForSession();
   }
 
   /// 恢复条“从头开始”：清掉保存的断点，丢掉恢复信息，从头开新会话。
@@ -1636,6 +1533,12 @@ class ReviewNotifier extends Notifier<ReviewState> {
 
   /// 开始专项练习：所选范围无题时显示专项练习空状态，不进入空白会话。
   Future<void> startPracticeSession() async {
+    if (state.resume != null) {
+      // 已有未完成会话（到期复习或专项练习）时不直接覆盖单行表
+      // review_state：页面 _startPractice 已先二选一；这里是兜底，
+      // 防从错题本批量开专项练习时丢掉正式复习的断点。
+      return;
+    }
     final questions = _buildPracticeSessionQuestions();
     if (questions.isEmpty) {
       state = state.copyWith(practiceEmpty: true);
@@ -1650,7 +1553,6 @@ class ReviewNotifier extends Notifier<ReviewState> {
       scopeLabel: '专项练习',
     );
     await _persistCurrentSession();
-    await _loadHistoryForSession();
   }
 
   // ---------- 会话：暂停 / 返回 ----------
@@ -1684,7 +1586,11 @@ class ReviewNotifier extends Notifier<ReviewState> {
   void selectOption(String label) {
     if (!state.hasCurrentQuestion) return;
     final sq = state.currentSessionQuestion;
-    if (sq.hasAttempt) return;
+    // 提交进核对步后锁定，不可改选（P2：attempt 只在核对提交时才写，
+    // 锁的依据是阶段，不再是 attemptId）。
+    if (sq.stage == SessionStage.check || sq.stage == SessionStage.done) {
+      return;
+    }
     final q = state.currentQuestion;
     if (q == null) return;
     if (q.questionType == 'choice_multi' ||
@@ -1703,189 +1609,184 @@ class ReviewNotifier extends Notifier<ReviewState> {
     }
   }
 
-  void setConfidence(String confidence) {
-    if (!state.hasCurrentQuestion) return;
-    _updateCurrent(
-      state.currentSessionQuestion.copyWith(confidence: confidence),
-    );
-  }
-
-  void setCheckConfirm(String value) {
-    if (!state.hasCurrentQuestion) return;
-    _updateCurrent(
-      state.currentSessionQuestion.copyWith(checkConfirm: value),
-    );
-  }
-
   void toggleNotesShown() {
     if (!state.hasCurrentQuestion) return;
     final sq = state.currentSessionQuestion;
     _updateCurrent(sq.copyWith(notesShown: !sq.notesShown));
   }
 
-  void setVerdict(String cause, String label) {
-    if (!state.hasCurrentQuestion) return;
-    final sq = state.currentSessionQuestion;
-    if (sq.submittedCauses.contains(cause)) return;
-    _updateCurrent(
-      sq.copyWith(verdicts: {...sq.verdicts, cause: label}),
-    );
-  }
-
-  void setEvidenceLink(String cause, String link) {
-    if (!state.hasCurrentQuestion) return;
-    final sq = state.currentSessionQuestion;
-    if (sq.submittedCauses.contains(cause)) return;
-    _updateCurrent(
-      sq.copyWith(evidenceLinks: {...sq.evidenceLinks, cause: link}),
-    );
-  }
-
-  void setExternalChecked(String cause, bool checked) {
-    if (!state.hasCurrentQuestion) return;
-    final sq = state.currentSessionQuestion;
-    if (sq.submittedCauses.contains(cause)) return;
-    _updateCurrent(
-      sq.copyWith(externalChecked: {...sq.externalChecked, cause: checked}),
-    );
-  }
-
-  /// 自查区编辑对策：保存后覆盖当前对策（M3-12）。
-  Future<void> saveRemedyDraft(String cause, String text) async {
-    if (!state.hasCurrentQuestion) return;
-    final sq = state.currentSessionQuestion;
-    final record = state.recordOf(sq.questionId, cause);
-    if (record == null || text.trim().isEmpty) return;
-    final repo = _repo;
-    await repo.saveRemedy(record, text);
-    if (_disposed) return;
-    await load();
-  }
-
-  /// 提交客观答案（选择/判断，标签已确认时）：点选 → 置信度 → 提交 →
-  /// 锁定。提交前置信度必选；未选置信度时不提交（页面禁用提交按钮）。
-  /// 返回 false 表示本次未提交（未选选项/未选置信度/已提交过）。
+  /// 提交客观答案（选择/判断）：点选 → 提交 → 锁定并进核对步。
+  /// P2：这里只在内存里记下选择与判分结果，不写库、不计小结；
+  /// 正式记录 + FSRS 调度统一由核对页的 [submitCheck] 一次提交。
+  /// 返回 false 表示本次未提交（未选选项/已进核对步）。
   Future<bool> submitObjectiveAnswer() async {
     if (!state.hasCurrentQuestion || state.sessionId == null) return false;
     final sq = state.currentSessionQuestion;
-    if (sq.hasAttempt) return false;
+    if (sq.stage == SessionStage.check || sq.stage == SessionStage.done) {
+      return false;
+    }
     final q = state.currentQuestion;
     if (q == null) return false;
     final selected = sq.selected;
     if (selected == null || selected.isEmpty) return false;
     if (selected.length != 1) return false;
-    if (sq.confidence == null ||
-        !Confidence.values.contains(sq.confidence)) {
-      return false;
-    }
-    final repo = _repo;
-    final label = selected.single;
-    final correct = gradeObjective(q, label);
-    final attempt = AttemptData(
-      id: newReviewUuid('att'),
-      questionId: q.id,
-      sessionId: state.sessionId!,
-      mode: state.sessionMode ?? ReviewMode.due,
-      selected: [label],
-      correct: correct,
-      confidence: sq.confidence,
-      answerVersion: q.answerVersion,
-      contentVersion: q.contentVersion,
-      status: '已提交',
-      causeIds: sq.causes,
-      submissionId: sq.attemptSubmissionId,
-      createdAt: DateTime.now().millisecondsSinceEpoch,
-    );
-    final attemptId = await repo.recordAttempt(attempt);
-    if (_disposed) return false;
+    final correct = gradeObjective(q, selected.single);
     _updateCurrent(
-      sq.copyWith(
-        attemptId: attemptId,
-        correct: correct,
-        stage: SessionStage.check,
-      ),
-    );
-    state = state.copyWith(
-      sumObjCorrect: state.sumObjCorrect + (correct == 1 ? 1 : 0),
-      sumObjWrong: state.sumObjWrong + (correct == 0 ? 1 : 0),
-      sumObjGuessed:
-          state.sumObjGuessed +
-          ((correct == 1 && sq.confidence == '猜的') ? 1 : 0),
-      sumUngraded: state.sumUngraded + (correct == null ? 1 : 0),
+      sq.copyWith(correct: correct, stage: SessionStage.check),
     );
     await _persistCurrentSession();
     return true;
   }
 
-  /// 多选/不定项只记录选择（本批不自动判分，correct=NULL）。
+  /// 多选/不定项只记录选择（不自动判分，correct=NULL），进核对步。
+  /// P2：只在内存里记下选择，不写库；正式记录由 [submitCheck] 提交。
   Future<bool> submitMultiAnswer() async {
     if (!state.hasCurrentQuestion || state.sessionId == null) return false;
     final sq = state.currentSessionQuestion;
-    if (sq.hasAttempt) return false;
+    if (sq.stage == SessionStage.check || sq.stage == SessionStage.done) {
+      return false;
+    }
     final q = state.currentQuestion;
     if (q == null) return false;
     final selected = sq.selected;
     if (selected == null || selected.isEmpty) return false;
-    final repo = _repo;
-    final attempt = AttemptData(
-      id: newReviewUuid('att'),
-      questionId: q.id,
-      sessionId: state.sessionId!,
-      mode: state.sessionMode ?? ReviewMode.due,
-      selected: selected,
-      correct: null,
-      confidence: sq.confidence,
-      answerVersion: q.answerVersion,
-      contentVersion: q.contentVersion,
-      status: '已提交',
-      causeIds: sq.causes,
-      submissionId: sq.attemptSubmissionId,
-      createdAt: DateTime.now().millisecondsSinceEpoch,
-    );
-    final attemptId = await repo.recordAttempt(attempt);
-    if (_disposed) return false;
     _updateCurrent(
-      sq.copyWith(
-        attemptId: attemptId,
-        correct: null,
-        stage: SessionStage.check,
-      ),
+      sq.copyWith(correct: null, stage: SessionStage.check),
     );
-    state = state.copyWith(sumUngraded: state.sumUngraded + 1);
     await _persistCurrentSession();
     return true;
   }
 
   /// 纸上作答完成（标签未确认的选择题、填空/计算/证明等）：点
-  /// “我已完成作答” → 显示标准答案/解析 → 核对。attempts 记
-  /// status=已完成作答，correct=NULL，不采集置信度。
+  /// “我已完成作答” → 显示标准答案/解析 → 核对。P2：只切段，
+  /// 不写 attempts；正式记录由 [submitCheck] 提交（correct=NULL）。
   Future<bool> completePaperAnswer() async {
     if (!state.hasCurrentQuestion || state.sessionId == null) return false;
     final sq = state.currentSessionQuestion;
-    if (sq.hasAttempt) return false;
+    if (sq.stage == SessionStage.check || sq.stage == SessionStage.done) {
+      return false;
+    }
     final q = state.currentQuestion;
     if (q == null) return false;
-    final repo = _repo;
-    final attempt = AttemptData(
-      id: newReviewUuid('att'),
-      questionId: q.id,
-      sessionId: state.sessionId!,
-      mode: state.sessionMode ?? ReviewMode.due,
-      answerVersion: q.answerVersion,
-      contentVersion: q.contentVersion,
-      status: '已完成作答',
-      causeIds: sq.causes,
-      submissionId: sq.attemptSubmissionId,
-      createdAt: DateTime.now().millisecondsSinceEpoch,
-    );
-    final attemptId = await repo.recordAttempt(attempt);
-    if (_disposed) return false;
-    _updateCurrent(
-      sq.copyWith(attemptId: attemptId, stage: SessionStage.check),
-    );
-    state = state.copyWith(sumUngraded: state.sumUngraded + 1);
+    _updateCurrent(sq.copyWith(stage: SessionStage.check));
     await _persistCurrentSession();
     return true;
+  }
+
+
+  /// P2 核对提交：本轮唯一正式提交入口。
+  ///
+  /// 四步收拢在一处（实施方案 v2 §4）：
+  /// ① 写一条正式复习客观对错记录（attempts；correct 为 null =
+  ///    无法判分，绝不把未判分写成 false；专项练习同样写 attempts，
+  ///    但不参与 FSRS）；② 到期复习且可判分时调
+  ///    [ReviewScheduler.recordAnswer]（Again/Good）；③ 卡状态保
+  ///    存（recordAnswer 内完成）；④ 下次到期时间由卡的 due 导出，
+  ///    记入小结（取本轮最早的一道）。
+  ///
+  /// 幂等：eventId 就是本题稳定的 attemptSubmissionId（建队时生成
+  /// 一次、存进 review_state，恢复重放沿用，重复点击不重生成）；
+  /// P1 的 recordAnswer 按 eventId 去重；attempts 写库按
+  /// UNIQUE(session_id, question_id) 更新同一行。重复调用
+  /// （重复点击 / 崩溃恢复重放）靠 checkSubmitted 短路：不重写、
+  /// 不重计分，直接进下一题。
+  ///
+  /// P5 接入 SQLite 后此处包事务，失败整笔回滚：①②③④须在同一
+  /// SQLite 事务内完成——attempts 行、fsrs_cards 行、事件账本
+  /// （eventId 已处理标记）同生同灭；任一步失败时整笔回滚，
+  /// 调用方重试仍用同一 eventId。当前内存 CardStore 下
+  /// recordAnswer 已在本方法内；attempts 写库失败时直接抛错，
+  /// 不调 FSRS、不记小结。
+  Future<bool> submitCheck() async {
+    if (!state.hasCurrentQuestion ||
+        state.sessionId == null ||
+        state.submitting) {
+      return false;
+    }
+    final sq = state.currentSessionQuestion;
+    if (sq.stage != SessionStage.check) return false;
+    if (sq.checkSubmitted) {
+      // 已提交（重复点击 / 恢复重放）：不重写、不重计分，直接下一题。
+      await _advanceQuestion();
+      return true;
+    }
+    final q = state.currentQuestion;
+    if (q == null) return false;
+    final sessionId = state.sessionId!;
+    final mode = state.sessionMode ?? ReviewMode.due;
+    final isPractice = state.isPracticeSession;
+    final now = DateTime.now();
+    state = state.copyWith(submitting: true, saveError: false);
+    try {
+      final repo = _repo;
+      // ① 写 attempts 正式记录（一次会话每题一条；重试时更新同一行）。
+      final attempt = AttemptData(
+        id: newReviewUuid('att'),
+        questionId: q.id,
+        sessionId: sessionId,
+        mode: mode,
+        selected: sq.selected,
+        correct: sq.correct,
+        confidence: null,
+        answerVersion: q.answerVersion,
+        contentVersion: q.contentVersion,
+        status: sq.selected != null ? '已提交' : '已完成作答',
+        causeIds: sq.causes,
+        submissionId: sq.attemptSubmissionId,
+        createdAt: now.millisecondsSinceEpoch,
+      );
+      final attemptId = await repo.recordAttempt(attempt);
+      // ②③④ 仅到期复习且可判分：调 FSRS；下次到期时间由卡的 due 导出。
+      DateTime? nextDue;
+      if (!isPractice && sq.correct != null) {
+        final scheduler = ref.read(reviewSchedulerProvider);
+        await scheduler.recordAnswer(
+          q.id,
+          sq.correct == 1 ? ReviewResult.good : ReviewResult.again,
+          now,
+          sq.attemptSubmissionId,
+        );
+        nextDue = await scheduler.nextDueAt(q.id);
+      }
+      if (_disposed) return false;
+      // 小结计数只在这里计一次（重复提交走上面的短路）。
+      final weakKp = Map<String, int>.from(state.sumWeakKp);
+      if (sq.correct == 0) {
+        for (final kp in q.knowledgePointIds) {
+          weakKp[kp] = (weakKp[kp] ?? 0) + 1;
+        }
+      }
+      final earliestNextDue = nextDue == null
+          ? state.sumNextDueDate
+          : (state.sumNextDueDate == null ||
+                  nextDue.isBefore(state.sumNextDueDate!))
+              ? nextDue
+              : state.sumNextDueDate;
+      _updateCurrent(
+        sq.copyWith(
+          attemptId: attemptId,
+          stage: SessionStage.done,
+          checkSubmitted: true,
+        ),
+      );
+      state = state.copyWith(
+        submitting: false,
+        sumCompleted: state.sumCompleted + 1,
+        sumHandled: state.sumHandled + (isPractice ? 0 : sq.causes.length),
+        sumObjCorrect: state.sumObjCorrect + (sq.correct == 1 ? 1 : 0),
+        sumObjWrong: state.sumObjWrong + (sq.correct == 0 ? 1 : 0),
+        sumUngraded: state.sumUngraded + (sq.correct == null ? 1 : 0),
+        sumWeakKp: weakKp,
+        sumNextDueDate: earliestNextDue,
+      );
+      await _persistCurrentSession();
+      await _advanceQuestion();
+      return true;
+    } catch (_) {
+      if (_disposed) return false;
+      state = state.copyWith(submitting: false, saveError: true);
+      return false;
+    }
   }
 
   /// 看题 → 作答（只切段，不创建 attempt；作答提交时才建）。
@@ -1897,27 +1798,10 @@ class ReviewNotifier extends Notifier<ReviewState> {
     unawaited(_persistCurrentSession());
   }
 
-  /// 核对 → 错因自查（仅到期复习）；专项练习核对后直接下一题。
-  void enterSelfCheck() {
-    if (!state.hasCurrentQuestion) return;
-    final sq = state.currentSessionQuestion;
-    if (sq.stage != SessionStage.check) return;
-    if (state.isPracticeSession) return;
-    _updateCurrent(sq.copyWith(stage: SessionStage.selfCheck));
-    unawaited(_persistCurrentSession());
-  }
-
-  /// 已提交全部错因 verdict 后的过渡态（恢复后遇到已提交的题时出现）：
+  /// 已核对提交后的过渡态（恢复后遇到已提交的题时出现）：
   /// 直接进下一题（或小结）。
   Future<void> advanceToNextQuestion() async {
     if (!state.hasCurrentQuestion) return;
-    await _advanceQuestion();
-  }
-
-  /// 专项练习：核对后直接下一题（不走治疗 verdict 流程）。
-  Future<void> nextPracticeQuestion() async {
-    if (!state.hasCurrentQuestion) return;
-    state = state.copyWith(sumCompleted: state.sumCompleted + 1);
     await _advanceQuestion();
   }
 
@@ -1931,7 +1815,9 @@ class ReviewNotifier extends Notifier<ReviewState> {
   Future<void> refreshAfterDetailVisit() async {
     if (!state.hasCurrentQuestion) return;
     final sq = state.currentSessionQuestion;
-    if (sq.hasAttempt) return;
+    if (sq.stage == SessionStage.check || sq.stage == SessionStage.done) {
+      return;
+    }
     final repo = _repo;
     final questions = await repo.all(includeArchived: true);
     Question? fresh;
@@ -1948,9 +1834,7 @@ class ReviewNotifier extends Notifier<ReviewState> {
         contentVersionAtStart: fresh.contentVersion,
         stage: SessionStage.view,
         selected: null,
-        confidence: null,
         correct: null,
-        checkConfirm: null,
       ),
     );
     await _persistCurrentSession();
@@ -1973,159 +1857,6 @@ class ReviewNotifier extends Notifier<ReviewState> {
       rejoinNotice: '「$cause」已重新加入复习，下次到期复习时会练到它',
     );
     await load();
-  }
-
-  /// 按题提交 verdict（“下一步”）：逐错因立即写库，不攒到会话结束；
-  /// 每错因一次独立事务（M3-14）。跨错因部分失败时停在该题、置
-  /// saveError，已写错因保留，用户重试只补未写成的错因。
-  Future<void> finishQuestion() async {
-    if (!state.hasCurrentQuestion ||
-        state.sessionId == null ||
-        state.submitting) {
-      return;
-    }
-    if (state.isPracticeSession) {
-      await nextPracticeQuestion();
-      return;
-    }
-    final repo = _repo;
-    final sq = state.currentSessionQuestion;
-    final q = state.currentQuestion;
-    if (q == null) {
-      await _advanceQuestion();
-      return;
-    }
-    state = state.copyWith(submitting: true, saveError: false);
-    var curedNow = state.curedNow;
-    final changes = [...state.changes];
-    var handled = 0;
-    var unverified = 0;
-    var recheckPassed = 0;
-    var recheckFailed = 0;
-    DateTime? nextRecheck;
-    var submitted = {...sq.submittedCauses};
-    var invalid = {...sq.invalidCauses};
-    var failed = false;
-    for (final cause in sq.causes) {
-      if (submitted.contains(cause)) continue;
-      final verdictLabel = sq.verdicts[cause];
-      if (verdictLabel == null) continue;
-      final record = state.recordOf(sq.questionId, cause);
-      if (record == null) {
-        invalid.add(cause);
-        continue;
-      }
-      final verification = resolveVerification(
-        question: q,
-        verdict: verdictLabel,
-        objectiveCorrect: sq.correct,
-        confidence: sq.confidence,
-        evidenceLink: sq.evidenceLinks[cause],
-        checkConfirm: sq.checkConfirm,
-        externalChecked: sq.externalChecked[cause] ?? false,
-        attemptId: sq.attemptId,
-      );
-      final wasRecheck = record.isRecheckDue;
-      final before = record.status.label;
-      try {
-        final result = await repo.submitCauseVerdict(
-          questionId: sq.questionId,
-          record: record,
-          verdict: verdictLabel,
-          verificationStatus: verification.status,
-          verificationSource: verification.source,
-          attemptId: verification.attemptId,
-          sessionId: state.sessionId!,
-          submissionId: childSubmissionId(
-            sq.questionSubmissionId,
-            causeStableId(record),
-          ),
-          cureChecks: state.settings.cureChecks,
-          recheckIntervalDays: state.settings.recheckIntervalDays,
-          isRecheck: wasRecheck,
-        );
-        submitted.add(cause);
-        handled++;
-        if (verdictLabel == ReviewVerdict.solved &&
-            !verification.isVerified) {
-          unverified++;
-        }
-        if (result.cured) curedNow++;
-        if (result.isRecheckPassed) recheckPassed++;
-        if (result.isRecheckFailed) recheckFailed++;
-        final after = result.record.status.label;
-        String note;
-        if (wasRecheck) {
-          note = verdictLabel == ReviewVerdict.solved
-              ? (verification.isVerified
-                    ? '复查通过，下次复查 ${result.record.recheckDate != null ? formatReviewDate(result.record.recheckDate!) : ''}'
-                    : '自评已解决但未核验，复查日不变，下次继续复查')
-              : '复查没过，打回解决中';
-        } else if (verdictLabel == ReviewVerdict.solved) {
-          note = result.record.status == CauseStatus.solved
-              ? '已解决，下次复查 ${result.record.recheckDate != null ? formatReviewDate(result.record.recheckDate!) : ''}'
-              : verification.isVerified
-              ? '还差 ${state.settings.cureChecks - result.record.solvedCount} 次已核验「已解决」解决'
-              : '未核验的自我判断，不推进治愈';
-        } else if (verdictLabel == ReviewVerdict.unsure) {
-          note = '选了不确定，不算，下次重新练这道题再自查一次';
-        } else {
-          note = '错因未解决，继续解决（答对了题也不算掌握）';
-        }
-        if (result.record.recheckDate != null) {
-          final d = result.record.recheckDate!;
-          if (nextRecheck == null || d.isBefore(nextRecheck)) {
-            nextRecheck = d;
-          }
-        }
-        changes.add(
-          SessionChange(
-            questionTitle: q.title,
-            subjectName: state.subjectOf(q.subjectId).name,
-            cause: cause,
-            before: before,
-            after: after,
-            recheckDate: result.record.status == CauseStatus.solved
-                ? result.record.recheckDate
-                : null,
-            note: note,
-          ),
-        );
-      } on CauseRecordMissingException {
-        invalid.add(cause);
-        continue;
-      } catch (_) {
-        failed = true;
-        break;
-      }
-    }
-    if (_disposed) return;
-    final updatedSq = sq.copyWith(
-      submittedCauses: submitted,
-      invalidCauses: invalid,
-      stage: failed ? sq.stage : SessionStage.done,
-    );
-    final questions = [...state.sessionQuestions];
-    questions[state.sessionIndex] = updatedSq;
-    state = state.copyWith(
-      sessionQuestions: questions,
-      submitting: false,
-      saveError: failed,
-      curedNow: curedNow,
-      changes: changes,
-      sumHandled: state.sumHandled + handled,
-      sumUnverified: state.sumUnverified + unverified,
-      sumRecheckPassed: state.sumRecheckPassed + recheckPassed,
-      sumRecheckFailed: state.sumRecheckFailed + recheckFailed,
-      sumNextRecheckDate: nextRecheck ?? state.sumNextRecheckDate,
-    );
-    await _persistCurrentSession();
-    if (failed) return;
-    // 全部本轮错因提交完成 → 下一题。
-    if (updatedSq.allVerdictsSubmitted) {
-      state = state.copyWith(sumCompleted: state.sumCompleted + 1);
-      await _advanceQuestion();
-    }
   }
 
   Future<void> _advanceQuestion() async {
@@ -2217,26 +1948,14 @@ class ReviewNotifier extends Notifier<ReviewState> {
   }
 
   Future<void> _finishSession() async {
-    // D-42：repo 入口处捕获一次（清断点 + 读记录 + 读题跨多次 await）。
     final repo = _repo;
     await repo.clearReviewState();
-    final records = await repo.causeRecords();
-    final questions = await repo.all(includeArchived: true);
-    final joinedIds = {
-      for (final q in questions)
-        // B6：与主列表同口径，已归档题不计入剩余（记录保留，取消归档回来）。
-        if (q.reviewJoined && q.isOrganized && !q.isArchived) q.id,
-    };
-    final remaining = records
-        .where(
-          (r) =>
-              joinedIds.contains(r.questionId) &&
-              (r.status != CauseStatus.solved || r.isRecheckDue),
-        )
-        .length;
     if (_disposed) return;
+    final elapsed = state.sessionStartedAt == null
+        ? 0
+        : DateTime.now().difference(state.sessionStartedAt!).inSeconds;
     state = state.copyWith(
-      summaryRemaining: remaining,
+      sumElapsedSeconds: elapsed,
       showSummary: true,
     );
     await load();
