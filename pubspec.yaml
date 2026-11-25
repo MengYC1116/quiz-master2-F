@@ -49,6 +49,11 @@ dependencies:
   flutter_math_fork: ^0.7.4
   desktop_drop: ^0.8.4
   crypto: ^3.0.8
+  # P1 FSRS 调度（2026-11-25，shuati-implementation-plan-v2 §3）：
+  # fsrs 2.0.1 精确锁定，不许浮动。注意 Scheduler() 自带默认值是旧版
+  # 权重（0.2172、1.1771、3.2602……），禁止直接用，必须由
+  # lib/data/review_scheduler.dart 显式传入官方 FSRS-6 21 个权重。
+  fsrs: 2.0.1
   flutter_secure_storage: ^10.3.4
   image: ^4.13.1
   # 十五批 M1-A：PDF 组卷导出（pdf 3.13.1，见 M1-DESIGN.md §14，只加 pdf）。
