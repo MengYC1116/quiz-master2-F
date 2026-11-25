@@ -48,11 +48,6 @@ class ShelfFakeRepo extends QuestionRepository {
   @override
   Future<List<KnowledgePoint>> knowledgePoints() async => const [];
 
-  @override
-  Future<Map<String, (int, int, int)>> subjectCounts({
-    bool includeArchived = false,
-  }) async => const {};
-
   // 2026-11-25 口径迁移 §2.1/§4：load() 封面到期数走这里（同款 D-225：
   // 不覆写会走真实库、页面卡 loading、pumpAndSettle 超时）。
   @override

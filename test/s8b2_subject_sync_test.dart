@@ -96,17 +96,11 @@ class B2FakeRepo extends QuestionRepository {
   Future<AppSettings> settings() async => AppSettings.defaults;
 
   @override
-  Future<Map<String, int>> homeRevCounts() async => rev;
-
-  @override
   Future<Map<String, int>> pendingOrganizeBySubject() async => pending;
 
   @override
   Future<({String kind, String subjectId, String title})?> recentTask() async =>
       null;
-
-  @override
-  Future<List<Question>> dueToday({bool includeArchived = false}) async => [];
 
   @override
   Future<List<CauseRecord>> causeRecords() async => [];

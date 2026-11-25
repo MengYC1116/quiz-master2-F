@@ -501,18 +501,11 @@ class _FakeHomeRepo extends QuestionRepository {
   Future<List<Subject>> subjects() async => Subject.all;
 
   @override
-  Future<Map<String, int>> homeRevCounts() async => const {};
-
-  @override
   Future<Map<String, int>> pendingOrganizeBySubject() async => const {};
 
   @override
   Future<({String kind, String subjectId, String title})?> recentTask() async =>
       null;
-
-  @override
-  Future<List<Question>> dueToday({bool includeArchived = false}) async =>
-      const [];
 
   @override
   Future<List<CauseRecord>> causeRecords() async => const [];

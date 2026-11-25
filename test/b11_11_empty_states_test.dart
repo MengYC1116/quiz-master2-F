@@ -217,10 +217,6 @@ class _B11OrganizeRepo extends QuestionRepository {
   @override
   Future<int> organizedTodayCount({DateTime? now}) async => 0;
 
-  @override
-  Future<List<Question>> dueToday({bool includeArchived = false}) async =>
-      const [];
-
   /// 十三批 M5：OCR 状态是 best-effort 加载（不 await）；返回空任务行
   /// 与“无 key”，不碰真实库（见 D-88）。
   @override
@@ -317,11 +313,6 @@ class _B11WrongbookRepo extends QuestionRepository {
 
   @override
   Future<List<KnowledgePoint>> knowledgePoints() async => const [];
-
-  @override
-  Future<Map<String, (int, int, int)>> subjectCounts(
-          {bool includeArchived = false}) async =>
-      const {'math': (0, 0, 0)};
 
   // 2026-11-25 口径迁移 §2.1/§4：load() 封面到期数走这里（同款 D-225：
   // 不覆写会走真实库、页面卡 loading、pumpAndSettle 超时）。

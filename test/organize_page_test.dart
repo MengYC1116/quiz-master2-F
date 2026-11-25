@@ -9,6 +9,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:quiz_master2/data/database.dart';
 import 'package:quiz_master2/data/repository.dart';
+import 'package:quiz_master2/data/review_scheduler.dart';
 import 'package:quiz_master2/models/models.dart';
 import 'package:quiz_master2/modules/organize/organize_page.dart';
 import 'package:quiz_master2/services/glm_ocr_client.dart';
@@ -167,15 +168,20 @@ class FakeOrganizeRepo extends QuestionRepository {
 
   /// B11-10：今日小结用（默认 0 / 空；用例可改；OrganizePage 只在
   /// 队列已空且库里有题时读这两个数）。
+  /// N2（待复习题数）2026-11-26 面 C 改读 FSRS 口径：`dueIdsValue`
+  /// 是 `fsrsDueQuestionIds` 返回的到期题 id（旧 `dueTodayValue` /
+  /// `dueToday()` 已随三方法删除而移除）。
   int organizedTodayValue = 0;
-  List<Question> dueTodayValue = const [];
+  List<String> dueIdsValue = const [];
 
   @override
   Future<int> organizedTodayCount({DateTime? now}) async => organizedTodayValue;
 
   @override
-  Future<List<Question>> dueToday({bool includeArchived = false}) async =>
-      List.of(dueTodayValue);
+  Future<List<String>> fsrsDueQuestionIds({
+    required ReviewScheduler scheduler,
+    DateTime? now,
+  }) async => List.of(dueIdsValue);
 
   /// 十三批 M5：OCR 状态是 best-effort 加载（不 await）；返回空任务行
   /// 与“无 key”，不碰真实库（见 D-88）。

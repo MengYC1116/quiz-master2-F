@@ -111,11 +111,6 @@ class FakeP0B2Repo extends QuestionRepository {
   @override
   Future<Set<String>> fsrsPoolQuestionIds() async => const {};
 
-  @override
-  Future<Map<String, (int, int, int)>> subjectCounts({
-    bool includeArchived = false,
-  }) async => const {'math': (0, 0, 0)};
-
   // 2026-11-25 口径迁移 §2.1/§4：load() 封面到期数走这里（同款 D-225：
   // 不覆写会走真实库、页面卡 loading、pumpAndSettle 超时）。
   @override

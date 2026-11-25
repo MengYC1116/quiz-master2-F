@@ -14,6 +14,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:quiz_master2/data/database.dart';
 import 'package:quiz_master2/data/drift/quiz_database.dart';
 import 'package:quiz_master2/data/repository.dart';
+import 'package:quiz_master2/data/review_scheduler.dart';
 import 'package:quiz_master2/models/models.dart';
 import 'package:quiz_master2/state/organize_notifier.dart';
 import 'package:quiz_master2/state/repository_provider.dart';
@@ -83,7 +84,6 @@ class WpbRepo extends QuestionRepository {
   int syncCauseRecordsCalls = 0;
   String? lastRecentKind;
   int organizedTodayValue = 0;
-  List<Question> dueTodayValue = const [];
   final Map<String, List<OcrJob>> ocrJobsById = {};
 
   Question? stored(String id) =>
@@ -234,9 +234,13 @@ class WpbRepo extends QuestionRepository {
   @override
   Future<int> organizedTodayCount({DateTime? now}) async => organizedTodayValue;
 
+  // 2026-11-26 面 C：旧 dueToday() 已删；本文件不测今日小结 N2，
+  // FSRS 到期恒返回空，避免走到真实调度器 / 真实库。
   @override
-  Future<List<Question>> dueToday({bool includeArchived = false}) async =>
-      List.of(dueTodayValue);
+  Future<List<String>> fsrsDueQuestionIds({
+    required ReviewScheduler scheduler,
+    DateTime? now,
+  }) async => const [];
 }
 
 WpbRepo _threeRepo() => WpbRepo(

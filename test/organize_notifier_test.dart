@@ -11,6 +11,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:quiz_master2/data/database.dart';
 import 'package:quiz_master2/data/repository.dart';
+import 'package:quiz_master2/data/review_scheduler.dart';
 import 'package:quiz_master2/models/models.dart';
 import 'package:quiz_master2/state/organize_notifier.dart';
 import 'package:quiz_master2/state/repository_provider.dart';
@@ -78,7 +79,9 @@ class FakeOrganizeNotifierRepo extends QuestionRepository {
   String? lastRecentKind;
 
   int organizedTodayValue = 0;
-  List<Question> dueTodayValue = const [];
+  // B11-10 N2：FSRS 到期题 id（2026-11-26 面 C：旧 dueTodayValue /
+  // dueToday() 已删，改读 fsrsDueQuestionIds）。
+  List<String> dueIdsValue = const [];
 
   @override
   Future<List<Subject>> subjects() async => List.of(subjectsValue);
@@ -183,8 +186,10 @@ class FakeOrganizeNotifierRepo extends QuestionRepository {
   Future<int> organizedTodayCount({DateTime? now}) async => organizedTodayValue;
 
   @override
-  Future<List<Question>> dueToday({bool includeArchived = false}) async =>
-      List.of(dueTodayValue);
+  Future<List<String>> fsrsDueQuestionIds({
+    required ReviewScheduler scheduler,
+    DateTime? now,
+  }) async => List.of(dueIdsValue);
 
   /// 十三批 M5：OCR 状态是 best-effort 加载（不 await）；返回空任务行
   /// 与“无 key”，不碰真实库（见 D-88）。
@@ -305,10 +310,7 @@ void main() {
       final repo = _threeRepo();
       repo.questions = [_oq('q1', '已整理题', isOrganized: true)];
       repo.organizedTodayValue = 3;
-      repo.dueTodayValue = [
-        _oq('q9', '待复习题', isOrganized: true, reviewJoined: true),
-        _oq('q8', '待复习题二', isOrganized: true, reviewJoined: true),
-      ];
+      repo.dueIdsValue = ['q9', 'q8'];
       final container = _container(repo);
       final notifier = container.read(organizeProvider.notifier);
       await notifier.refresh();
@@ -321,9 +323,7 @@ void main() {
       final emptyRepo = _threeRepo();
       emptyRepo.questions = [];
       emptyRepo.organizedTodayValue = 5;
-      emptyRepo.dueTodayValue = [
-        _oq('q9', '待复习题', isOrganized: true, reviewJoined: true),
-      ];
+      emptyRepo.dueIdsValue = ['q9'];
       final c2 = _container(emptyRepo);
       final n2 = c2.read(organizeProvider.notifier);
       await n2.refresh();

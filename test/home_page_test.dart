@@ -19,36 +19,9 @@ class FakeRepo extends QuestionRepository {
   Map<String, int> rev = {'math': 2, 'english': 1, 'politics': 0};
   Map<String, int> pending = {'math': 1, 'english': 2, 'politics': 0};
   List<String> todayNewIds = ['q-n1'];
-  // 旧口径桩（首页本身已不再读 dueToday / causeRecords）：
-  // test/b5_p1_1_subject_counts_test.dart 仍 import 本 FakeRepo 并填
-  // due / records（旧口径对照用），删了它编译不过；b5 的焦点卡旧文案
-  // 断言本身已随口径迁移失效，见面 1 汇报，勿在此处“修”b5。
-  List<Question> due = [
-    Question(
-      id: 'q-m1',
-      title: '函数极限',
-      subjectId: 'math',
-      isOrganized: true,
-      reviewJoined: true,
-      createdAt: DateTime(2026, 11, 10),
-    ),
-    Question(
-      id: 'q-m2',
-      title: '定积分',
-      subjectId: 'math',
-      isOrganized: true,
-      reviewJoined: true,
-      createdAt: DateTime(2026, 11, 10),
-    ),
-    Question(
-      id: 'q-e1',
-      title: '阅读理解',
-      subjectId: 'english',
-      isOrganized: true,
-      reviewJoined: true,
-      createdAt: DateTime(2026, 11, 10),
-    ),
-  ];
+  // 2026-11-26 面 C：旧口径桩 due / dueToday() 已随三方法删除而移除；
+  // records 仍保留（causeRecords 是现行方法，错因记录仍是复习列表
+  // 分组与详情页的线上状态）。
   List<CauseRecord> records = [
     CauseRecord(
       questionId: 'q-m1',
@@ -122,10 +95,6 @@ class FakeRepo extends QuestionRepository {
 
   @override
   Future<Map<String, int>> pendingOrganizeBySubject() async => pending;
-
-  @override
-  Future<List<Question>> dueToday({bool includeArchived = false}) async =>
-      List.of(due);
 
   @override
   Future<List<CauseRecord>> causeRecords() async => List.of(records);
