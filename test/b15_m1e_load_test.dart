@@ -172,6 +172,11 @@ void main() {
 
   group('50 道负载（S1b 复核）', () {
     test('普通/A：50 道小切片，完成，save 增量在 S1b 量级', () async {
+      // 测量类用例读 Linux /proc/self/status；Windows 无 /proc，跳过。
+      if (!Platform.isLinux) {
+        markTestSkipped('RSS 采样依赖 Linux /proc；产品行为由极端组用例覆盖');
+        return;
+      }
       final source = FakeExportQuestionSource();
       // 2126 px 宽：内容区宽显示时有效分辨率约 300 DPI → clarity ok →
       // COMPLETE（1300 px 仅约 183 DPI，落在 warning 档，会判 PARTIAL）。
@@ -204,6 +209,11 @@ void main() {
     }, timeout: const Timeout(Duration(minutes: 3)));
 
     test('普通/C：50 道短题干，完成，save 增量在 S1b 量级', () async {
+      // 测量类用例读 Linux /proc/self/status；Windows 无 /proc，跳过。
+      if (!Platform.isLinux) {
+        markTestSkipped('RSS 采样依赖 Linux /proc；产品行为由极端组用例覆盖');
+        return;
+      }
       final source = FakeExportQuestionSource();
       addCLoad(source);
       late PdfExportResult result;
@@ -232,6 +242,11 @@ void main() {
     }, timeout: const Timeout(Duration(minutes: 3)));
 
     test('高/A：50 道 2400px 切片，完成，save 增量在 S1b 量级', () async {
+      // 测量类用例读 Linux /proc/self/status；Windows 无 /proc，跳过。
+      if (!Platform.isLinux) {
+        markTestSkipped('RSS 采样依赖 Linux /proc；产品行为由极端组用例覆盖');
+        return;
+      }
       final source = FakeExportQuestionSource();
       addALoad(source, sliceW: 2400, sliceH: 800);
       late PdfExportResult result;
@@ -261,6 +276,11 @@ void main() {
     }, timeout: const Timeout(Duration(minutes: 5)));
 
     test('高/C：50 道 2400px 图块，完成，save 增量在 S1b 量级', () async {
+      // 测量类用例读 Linux /proc/self/status；Windows 无 /proc，跳过。
+      if (!Platform.isLinux) {
+        markTestSkipped('RSS 采样依赖 Linux /proc；产品行为由极端组用例覆盖');
+        return;
+      }
       final source = FakeExportQuestionSource();
       addCLoad(source, figureW: 2400, figureH: 800);
       late PdfExportResult result;

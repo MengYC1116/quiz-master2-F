@@ -758,6 +758,11 @@ void main() {
     const dir = '/home/hatch/workspace/figure-diag';
 
     test('q2_twin2_fig0_after_first_segment_not_at_stem_end', () {
+      // 夹具在 Linux 开发机上，不在仓库里；Win11 读不到，跳过。
+      if (!Platform.isLinux) {
+        markTestSkipped('figure-diag 夹具不在仓库内（Linux 开发机本地路径）');
+        return;
+      }
       final stem = File('$dir/twin2_stem.md').readAsStringSync();
       final figs = parseOcrFigures(
         File('$dir/twin2_figures.json').readAsStringSync(),
@@ -798,6 +803,11 @@ void main() {
     });
 
     test('q2_twin2_roundtrip_blocks_to_markdown', () {
+      // 夹具在 Linux 开发机上，不在仓库里；Win11 读不到，跳过。
+      if (!Platform.isLinux) {
+        markTestSkipped('figure-diag 夹具不在仓库内（Linux 开发机本地路径）');
+        return;
+      }
       final stem = File('$dir/twin2_stem.md').readAsStringSync();
       final figs = parseOcrFigures(
         File('$dir/twin2_figures.json').readAsStringSync(),
@@ -819,6 +829,11 @@ void main() {
     });
 
     test('q2_twin1_manual_anchor_unchanged', () {
+      // 夹具在 Linux 开发机上，不在仓库里；Win11 读不到，跳过。
+      if (!Platform.isLinux) {
+        markTestSkipped('figure-diag 夹具不在仓库内（Linux 开发机本地路径）');
+        return;
+      }
       final stem = File('$dir/twin1_stem.md').readAsStringSync();
       final figs = parseOcrFigures(
         File('$dir/twin1_figures.json').readAsStringSync(),

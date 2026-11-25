@@ -189,11 +189,16 @@ void main() {
     final sliceDir = Directory('${fixtureTmp.path}/slices');
     await sliceDir.create(recursive: true);
     // B10-2：窄切片现场生成（dart:ui，真实 zone），不再读磁盘夹具。
-    final copy = await writeFixtureFile(
-        sliceDir, 'q-real.png', await narrowSlicePngBytes());
-    sliceAbs = copy.path;
+    await writeFixtureFile(
+      sliceDir,
+      'q-real.png',
+      await narrowSlicePngBytes(),
+    );
     sliceRel = 'slices/q-real.png';
     AppDatabase.testDataDirectory = fixtureTmp.path;
+    // 预热路径须与产品解析出的路径逐字一致，分隔符也要一致，
+    // 否则 FileImage 缓存键对不上、预热白做，图量出来是 0 宽。
+    sliceAbs = AppDatabase.resolveDataPath(sliceRel)!;
   });
 
   tearDownAll(() async {

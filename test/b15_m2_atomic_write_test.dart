@@ -10,6 +10,7 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:path/path.dart' as p;
 import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
 import 'package:quiz_master2/services/pdf_export/atomic_file_writer.dart';
@@ -185,7 +186,10 @@ void main() {
         bytes: pdfBytes,
         expectedPages: pdfPages,
       );
-      expect(first.path, '${tempRoot.path}/错题本_数学_20261121（1）.pdf');
+      expect(
+        first.path,
+        p.join(tempRoot.path, '错题本_数学_20261121（1）.pdf'),
+      );
       expect(await first.readAsBytes(), pdfBytes);
       // 原文件未被破坏。
       expect(await target.readAsBytes(), oldBytes);
@@ -194,7 +198,10 @@ void main() {
         bytes: pdfBytes,
         expectedPages: pdfPages,
       );
-      expect(second.path, '${tempRoot.path}/错题本_数学_20261121（2）.pdf');
+      expect(
+        second.path,
+        p.join(tempRoot.path, '错题本_数学_20261121（2）.pdf'),
+      );
       expect(_leftoverTmpFiles(tempRoot), isEmpty);
     });
 

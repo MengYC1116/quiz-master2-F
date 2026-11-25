@@ -1273,8 +1273,12 @@ void main() {
       expect(await File('$path-wal').exists(), isFalse);
       expect(await File('$path-shm').exists(), isFalse);
     });
-
+    
     test('-wal 是目录：探针打不开，拒绝删除、文件原样保留', () async {
+      if (!Platform.isLinux) {
+      markTestSkipped('SQLite 只读探针在 Win11 上能打开目录 -wal，不走拒绝分支');
+      return;
+    }
       // SQLite 只读探针遇到目录 -wal 即打不开库（error 14），
       // 按保守口径拒绝删除、不删老库——附属删失败不抛错的分支
       // 是防 Windows 文件锁定的防御代码，Linux 单测无法直接

@@ -38,8 +38,10 @@ bool _bytesContain(List<int> haystack, List<int> needle) {
 String _hit(bool b) => b ? '命中' : '未命中';
 
 Future<Directory> _makeWorkDir() async {
-  final base =
-      Platform.environment['TMPDIR'] ?? '${Platform.environment['HOME']!}/workspace/flutter-test-tmp';
+  // Win11 上 TMPDIR / HOME 都未设（HOME! 会直接抛空断言）：退回系统临时目录。
+  final base = Platform.environment['TMPDIR'] ??
+      Platform.environment['HOME'] ??
+      Directory.systemTemp.path;
   final dir = Directory(
     p.join(
       base,

@@ -84,9 +84,9 @@ void main() {
   late FormulaRasterizer rasterizer;
 
   setUp(() {
+    // Win11 上 HOME 未设；用系统临时目录，避免拼出相对路径 null/workspace/…。
     tempRoot = Directory(
-      '${Platform.environment['HOME']}/workspace/flutter-test-tmp'
-      '/b18-p1-baseline',
+      '${Directory.systemTemp.path}/b18-p1-baseline',
     )..createSync(recursive: true);
     rasterizer = FormulaRasterizer();
   });

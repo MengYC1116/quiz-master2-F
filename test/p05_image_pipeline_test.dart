@@ -384,6 +384,11 @@ void main() {
 
   group('P0.5-6 EXIF 方向', () {
     test('手写解析：读出 1/3/6/8；PNG 与无 EXIF 的 JPG 返回 null', () async {
+      // 同文件其他用例一致：无真实页图就跳过（Win11 上无该目录）。
+      if (!File(_page1).existsSync()) {
+        markTestSkipped('本机无真实页图 $_page1');
+        return;
+      }
       TestWidgetsFlutterBinding.ensureInitialized();
       for (final ori in [1, 3, 6, 8]) {
         // B10-2：EXIF 固件 base64 内嵌（test_fixtures.dart）。

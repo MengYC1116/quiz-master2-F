@@ -405,7 +405,16 @@ void main() {
     // resetForTest 也把 testDataDirectory 置 null。
     TestWidgetsFlutterBinding.instance.imageCache.clear();
     await AppDatabase.resetForTest();
-    await _testTmp.delete(recursive: true);
+    // Windows 上删目录时可能仍有句柄未释放（errno 32）：重试 5 次。
+    for (var i = 0; i < 5; i++) {
+      try {
+        await _testTmp.delete(recursive: true);
+        break;
+      } catch (_) {
+        if (i == 4) break;
+        await Future.delayed(const Duration(milliseconds: 200));
+      }
+    }
   });
 
   group('load', () {

@@ -31,6 +31,9 @@ import 'package:quiz_master2/services/single_instance.dart';
 String _dartExecutable() {
   final override = Platform.environment['SINGLE_INSTANCE_TEST_DART'];
   if (override != null && override.isNotEmpty) return override;
+  // Win11 上可执行文件叫 dart.exe（单写 dart 会 ProcessException
+  // “系统找不到指定的文件”）。
+  final exe = Platform.isWindows ? 'dart.exe' : 'dart';
   final flutterRoot = Platform.environment['FLUTTER_ROOT'];
   if (flutterRoot != null && flutterRoot.isNotEmpty) {
     final bundled = p.join(
@@ -39,8 +42,21 @@ String _dartExecutable() {
       'cache',
       'dart-sdk',
       'bin',
-      'dart',
+      exe,
     );
+    if (File(bundled).existsSync()) return bundled;
+  }
+  // Win11 跑 flutter test 时 FLUTTER_ROOT / HOME 都未设，PATH 里只有
+  // flutter\bin\dart.bat（CreateProcess 不能直接跑 .bat）。从当前进程
+  //（<flutter>/bin/cache/artifacts/engine/<platform>/flutter_tester.exe）
+  // 反推 SDK 缓存目录，直接取 dart-sdk/bin/dart.exe。
+  final cacheDir = File(Platform.resolvedExecutable)
+      .parent
+      .parent
+      .parent
+      .parent;
+  if (p.basename(cacheDir.path) == 'cache') {
+    final bundled = p.join(cacheDir.path, 'dart-sdk', 'bin', exe);
     if (File(bundled).existsSync()) return bundled;
   }
   final home = Platform.environment['HOME'];
@@ -54,11 +70,32 @@ String _dartExecutable() {
       'cache',
       'dart-sdk',
       'bin',
-      'dart',
+      exe,
     );
     if (File(bundled).existsSync()) return bundled;
   }
+  if (Platform.isWindows) {
+    final found = _whereDartExe();
+    if (found != null) return found;
+  }
   return 'dart';
+}
+
+/// Windows：用 where.exe 找 PATH 上真正的 dart.exe（dart.bat 跑不了）。
+String? _whereDartExe() {
+  try {
+    final r = Process.runSync('where.exe', ['dart.exe']);
+    if (r.exitCode == 0) {
+      for (final line in const LineSplitter().convert('${r.stdout}')) {
+        final path = line.trim();
+        if (path.toLowerCase().endsWith('dart.exe') &&
+            File(path).existsSync()) {
+          return path;
+        }
+      }
+    }
+  } catch (_) {}
+  return null;
 }
 
 String get _harnessPath =>
@@ -143,6 +180,10 @@ void main() {
         _dartExecutable(),
         [_harnessPath, 'try', dataDir.path],
         workingDirectory: Directory.current.path,
+        // Win11：子进程按 UTF-8 输出，Process.run 默认按系统编码
+        //（GBK）解码会把中文提示解成乱码，断言必挂。
+        stdoutEncoding: utf8,
+        stderrEncoding: utf8,
       );
       // 证据：第二个进程被拒——退出码 2，输出含 DENIED 与中文提示。
       expect(
@@ -169,6 +210,10 @@ void main() {
         _dartExecutable(),
         [_harnessPath, 'hold', dataDir.path, '1'],
         workingDirectory: Directory.current.path,
+        // Win11：子进程按 UTF-8 输出，Process.run 默认按系统编码
+        //（GBK）解码会把中文提示解成乱码，断言必挂。
+        stdoutEncoding: utf8,
+        stderrEncoding: utf8,
       );
       expect(first.exitCode, 0, reason: '持有者正常退出应为 0；输出：${first.stdout}${first.stderr}');
       expect(first.stdout.toString(), contains('HELD'));
@@ -178,6 +223,10 @@ void main() {
         _dartExecutable(),
         [_harnessPath, 'try', dataDir.path],
         workingDirectory: Directory.current.path,
+        // Win11：子进程按 UTF-8 输出，Process.run 默认按系统编码
+        //（GBK）解码会把中文提示解成乱码，断言必挂。
+        stdoutEncoding: utf8,
+        stderrEncoding: utf8,
       );
       expect(
         next.exitCode,
@@ -213,6 +262,10 @@ void main() {
         _dartExecutable(),
         [_harnessPath, 'try', dataDir.path],
         workingDirectory: Directory.current.path,
+        // Win11：子进程按 UTF-8 输出，Process.run 默认按系统编码
+        //（GBK）解码会把中文提示解成乱码，断言必挂。
+        stdoutEncoding: utf8,
+        stderrEncoding: utf8,
       );
       expect(
         next.exitCode,
@@ -309,6 +362,10 @@ void main() {
         _dartExecutable(),
         [_harnessPath, 'mainflow', dataDir.path],
         workingDirectory: Directory.current.path,
+        // Win11：子进程按 UTF-8 输出，Process.run 默认按系统编码
+        //（GBK）解码会把中文提示解成乱码，断言必挂。
+        stdoutEncoding: utf8,
+        stderrEncoding: utf8,
       );
       final out = '${proc.stdout}${proc.stderr}';
       expect(
@@ -340,6 +397,10 @@ void main() {
         _dartExecutable(),
         [_harnessPath, 'mainflow', dataFile.path],
         workingDirectory: Directory.current.path,
+        // Win11：子进程按 UTF-8 输出，Process.run 默认按系统编码
+        //（GBK）解码会把中文提示解成乱码，断言必挂。
+        stdoutEncoding: utf8,
+        stderrEncoding: utf8,
       );
       final out = '${proc.stdout}${proc.stderr}';
       expect(proc.exitCode, 3, reason: '实际输出：$out');
@@ -359,6 +420,10 @@ void main() {
         _dartExecutable(),
         [_harnessPath, 'mainflow', dataDir.path],
         workingDirectory: Directory.current.path,
+        // Win11：子进程按 UTF-8 输出，Process.run 默认按系统编码
+        //（GBK）解码会把中文提示解成乱码，断言必挂。
+        stdoutEncoding: utf8,
+        stderrEncoding: utf8,
       );
       final out = '${proc.stdout}${proc.stderr}';
       expect(proc.exitCode, 0, reason: '实际输出：$out');

@@ -81,6 +81,11 @@ List<String> _cardTexts(WidgetTester tester, int cardIndex) {
 void main() {
   group('Q1+Q2 共享不变量：视觉分组不改变底层块顺序', () {
     test('twin2：切分后拼回与原题干一致，文本拼接等于原块', () {
+      // 夹具在 Linux 开发机上，不在仓库里；Win11 读不到，跳过。
+      if (!Platform.isLinux) {
+        markTestSkipped('figure-diag 夹具不在仓库内（Linux 开发机本地路径）');
+        return;
+      }
       final stem = File('$_dir/twin2_stem.md').readAsStringSync();
       final figs = parseOcrFigures(
         File('$_dir/twin2_figures.json').readAsStringSync(),
@@ -168,6 +173,11 @@ void main() {
     testWidgets('twin2 编辑器：图块在两段落卡之间的独立卡位，保存拼回原题干', (
       tester,
     ) async {
+      // 夹具在 Linux 开发机上，不在仓库里；Win11 读不到，跳过。
+      if (!Platform.isLinux) {
+        markTestSkipped('figure-diag 夹具不在仓库内（Linux 开发机本地路径）');
+        return;
+      }
       late String stem;
       late List<OcrFigure> figs;
       late String md;

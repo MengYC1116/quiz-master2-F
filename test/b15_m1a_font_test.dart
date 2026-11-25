@@ -25,8 +25,9 @@ import 'package:quiz_master2/services/pdf_export/pdf_font.dart';
 /// 供外部核查（pdftotext / pdfinfo）留样的 PDF 写到这里。
 String get _verifyDir {
 final env = Platform.environment['B15_M1A_VERIFY_DIR'];
-if (env!= null && env.isNotEmpty) return env;
-return '${Platform.environment['HOME']}/workspace/flutter-test-tmp/b15-m1a-verify';
+if (env != null && env.isNotEmpty) return env;
+// Win11 上 HOME 未设；用系统临时目录，避免拼出相对路径 null/workspace/…。
+return '${Directory.systemTemp.path}/b15-m1a-verify';
 }
 
 Future<Uint8List> _pdfWithText(

@@ -1079,8 +1079,9 @@ void main() {
     late Directory spikesDir;
 
     setUpAll(() async {
+      // Win11 上 HOME 未设；用系统临时目录，避免拼出相对路径 null/workspace/…。
       spikesDir = Directory(
-        '${Platform.environment['HOME']}/workspace/batch15-work/spikes',
+        '${Directory.systemTemp.path}/batch15-work/spikes',
       );
       await spikesDir.create(recursive: true);
     });

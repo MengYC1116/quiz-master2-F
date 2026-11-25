@@ -167,7 +167,16 @@ void main() {
 
   tearDownAll(() async {
     await AppDatabase.resetForTest();
-    await tmp.delete(recursive: true);
+    // Windows 上删目录时可能仍有句柄未释放（errno 32）：重试 5 次。
+    for (var i = 0; i < 5; i++) {
+      try {
+        await tmp.delete(recursive: true);
+        break;
+      } catch (_) {
+        if (i == 4) break;
+        await Future.delayed(const Duration(milliseconds: 200));
+      }
+    }
   });
 
   testWidgets('落点是 DropTarget，占位文案已去掉', (tester) async {

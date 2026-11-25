@@ -332,7 +332,12 @@ void main() {
     testWidgets('数据库位置显示当前路径', (tester) async {
       await pumpSettings(tester);
       await openGroup(tester, '数据');
-      expect(find.textContaining('/quiz-master2.db'), findsOneWidget);
+      // 用平台分隔符拼，Win11 显示 C:\...\quiz-master2.db 也能命中；
+      // 不能用裸 'quiz-master2.db'——行说明文字里也有这个词，会匹配到 2 个。
+      expect(
+        find.textContaining('${Platform.pathSeparator}quiz-master2.db'),
+        findsOneWidget,
+      );
       expect(find.text('改位置'), findsOneWidget);
       expect(find.text('备份题库'), findsOneWidget);
       expect(find.text('选择备份文件…'), findsOneWidget);
