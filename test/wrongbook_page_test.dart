@@ -59,6 +59,7 @@ class FakeWrongbookRepo extends QuestionRepository {
     List<String> tagList = const [],
     List<CauseRecord> records = const [],
     this.counts = const {},
+    this.dueCounts = const {'math': 2, 'english': 1, 'politics': 0},
     List<Subject>? subjects,
     this.settingsValue = const AppSettings(),
   }) : questions = List.of(questions),
@@ -83,6 +84,10 @@ class FakeWrongbookRepo extends QuestionRepository {
   List<String> tagList;
   List<CauseRecord> records;
   Map<String, (int, int, int)> counts;
+  // 2026-11-25 口径迁移 §2.1/§4：封面改读 FSRS 到期数（Fake 可配；
+  // 待整理数不另配，走真实 pendingOrganizeBySubject——它只读
+  // Fake 已覆盖的 all()/subjects()）。
+  Map<String, int> dueCounts;
   List<Subject> subjectsValue;
   AppSettings settingsValue;
 
@@ -165,6 +170,13 @@ class FakeWrongbookRepo extends QuestionRepository {
   Future<Map<String, (int, int, int)>> subjectCounts({
     bool includeArchived = false,
   }) async => counts;
+
+  // 2026-11-25 口径迁移 §2.1/§4：封面到期数走这里，不碰真实调度器。
+  @override
+  Future<Map<String, int>> fsrsDueCountsBySubject({
+    required ReviewScheduler scheduler,
+    DateTime? now,
+  }) async => Map.of(dueCounts);
 
   @override
   Future<List<CauseRecord>> causeRecords() async => List.of(records);
@@ -647,9 +659,16 @@ void main() {
       // 书架无搜索框、无筛选按钮、无排序下拉。
       expect(find.byType(TextField), findsNothing);
       expect(find.text('筛选'), findsNothing);
-      // 封面数字行：数学已整理未掌握 3 道（q1/q2/q3；q7 已掌握不计入，
-      // SR-P2-38 决定 (a)，与列表默认视图同口径），要复习 2，待复查 0。
-      expect(find.text('3'), findsOneWidget);
+      // 封面数字行（2026-11-25 口径迁移 §2.1/§4）：两段，与首页
+      // 学科行同口径——到期 · 待整理。数学到期 2 · 待整理 1
+      //（q6 未整理）；英语到期 1 · 待整理 0；政治 0 · 0。
+      // 旧三数（道题/要复习/待复查）已撤下。
+      expect(find.text('到期'), findsNWidgets(3));
+      expect(find.text('待整理'), findsNWidgets(3));
+      expect(find.text('待复查'), findsNothing);
+      expect(find.text('要复习'), findsNothing);
+      expect(find.text('道题'), findsNothing);
+      expect(find.text('2'), findsOneWidget); // 数学到期 2
       // 分页器按 HTML 常驻：单页也显示。
       expect(find.text('第 1 / 1 页 · 共 3 本（每页最多 6 本）'), findsOneWidget);
       // 页内无边距、无图标字体。
@@ -718,7 +737,7 @@ void main() {
         find.byWidgetPredicate((w) => w is SizedBox && w.height == 40.4),
         findsNothing,
       );
-      // 深色计数牌（黑 .20 + 圆角 12）没了，数字改成裸露的三数字行。
+      // 深色计数牌（黑 .20 + 圆角 12）没了，数字改成裸露的两数字行。
       expect(
         find.byWidgetPredicate(
           (w) =>
@@ -735,7 +754,7 @@ void main() {
       final sub = tester.widget<Text>(find.text('错 题 本').first);
       expect(sub.style?.color, const Color.fromRGBO(255, 255, 255, 0.92));
       expect(sub.style?.letterSpacing, 7.44);
-      final label = tester.widget<Text>(find.text('道题').first);
+      final label = tester.widget<Text>(find.text('到期').first);
       expect(label.style?.color, const Color.fromRGBO(255, 255, 255, 0.85));
       expect(label.style?.fontSize, 10.5);
       // 渐变按板子值（每科 c → cd，58% / 58.2% 分界）。

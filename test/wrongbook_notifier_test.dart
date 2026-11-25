@@ -10,6 +10,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:quiz_master2/data/database.dart';
 import 'package:quiz_master2/data/repository.dart';
+import 'package:quiz_master2/data/review_scheduler.dart';
 import 'package:quiz_master2/models/models.dart';
 import 'package:quiz_master2/state/repository_provider.dart';
 import 'package:quiz_master2/state/wrongbook_notifier.dart';
@@ -101,6 +102,8 @@ class FakeWrongbookNotifierRepo extends QuestionRepository {
     'english': (1, 0, 0),
     'politics': (0, 0, 0),
   };
+  // 2026-11-25 口径迁移 §2.1/§4：封面到期数（Fake 可配）。
+  Map<String, int> dueCounts = {'math': 2, 'english': 1, 'politics': 0};
   AppSettings settingsValue = const AppSettings(
     wrongbookView: 'compact',
     pageSize: 20,
@@ -164,6 +167,15 @@ class FakeWrongbookNotifierRepo extends QuestionRepository {
   Future<Map<String, (int, int, int)>> subjectCounts({
     bool includeArchived = false,
   }) async => counts;
+
+  // 2026-11-25 口径迁移 §2.1/§4：封面到期数走这里，不碰真实调度器。
+  // 待整理数不另配，走真实 pendingOrganizeBySubject——它只读
+  // Fake 已覆盖的 all()/subjects()。
+  @override
+  Future<Map<String, int>> fsrsDueCountsBySubject({
+    required ReviewScheduler scheduler,
+    DateTime? now,
+  }) async => Map.of(dueCounts);
 
   @override
   Future<List<CauseRecord>> causeRecords() async => List.of(records);
@@ -286,6 +298,21 @@ void main() {
     expect(s2.viewMode, 'large');
     expect(s2.pageSize, 10);
     expect(s2.sort, 'new');
+  });
+
+  test('2026-11-25 口径迁移 §2.1/§4：load() 封面统计读 FSRS 到期数 + 待整理数', () async {
+    final (repo, notifier, container) = await _setUp();
+    addTearDown(container.dispose);
+    final s = container.read(wrongbookProvider);
+    expect(s.dueCounts, {'math': 2, 'english': 1, 'politics': 0});
+    // 待整理走真实 pendingOrganizeBySubject：q6 数学未整理为 1，
+    // 其余为 0（已归档的 q5 不计）。
+    expect(s.pendingOrganizeCounts, {'math': 1, 'english': 0, 'politics': 0});
+    // 改 Fake 的到期数再重读，封面跟着变（来源是 fsrsDueCountsBySubject，
+    // 不是旧 subjectCounts）。
+    repo.dueCounts = {'math': 0, 'english': 3, 'politics': 0};
+    await notifier.load();
+    expect(container.read(wrongbookProvider).dueCounts['english'], 3);
   });
 
   test('读库失败：loadError，不一直 loading', () async {

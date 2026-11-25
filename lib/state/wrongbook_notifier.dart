@@ -45,7 +45,11 @@ import 'subject_sort.dart';
 final wrongbookProvider =
     NotifierProvider.autoDispose<WrongbookNotifier, WrongbookState>(
       WrongbookNotifier.new,
-      dependencies: [wrongbookInitialProvider, repositoryProvider],
+      dependencies: [
+        wrongbookInitialProvider,
+        repositoryProvider,
+        reviewSchedulerProvider,
+      ],
     );
 
 /// 错题本页的构造参数（初始落点，二十三批 D-250 恢复 2026-11-16
@@ -117,7 +121,8 @@ class WrongbookState {
     this.exams = const [],
     this.allTags = const [],
     this.kps = const [],
-    this.counts = const {},
+    this.dueCounts = const {},
+    this.pendingOrganizeCounts = const {},
     this.recordsByQ = const {},
     this.view = WrongbookView.shelf,
     this.subjectId,
@@ -190,7 +195,15 @@ class WrongbookState {
   final List<Exam> exams;
   final List<String> allTags;
   final List<KnowledgePoint> kps;
-  final Map<String, (int, int, int)> counts;
+  /// 封面每科到期数（`fsrsDueCountsBySubject`；2026-11-25 口径迁移
+  /// §2.1/§4：与首页学科行、左导航复习角标同一口径；旧
+  /// `subjectCounts()` 三数（要复习/待复查/已解决）已不再用于封面）。
+  final Map<String, int> dueCounts;
+
+  /// 封面每科待整理数（`pendingOrganizeBySubject`；与首页学科行
+  /// 同一口径；2026-11-25 口径迁移 §2.1）。
+  final Map<String, int> pendingOrganizeCounts;
+
   final Map<String, List<CauseRecord>> recordsByQ;
 
   final WrongbookView view;
@@ -285,7 +298,8 @@ class WrongbookState {
     List<Exam>? exams,
     List<String>? allTags,
     List<KnowledgePoint>? kps,
-    Map<String, (int, int, int)>? counts,
+    Map<String, int>? dueCounts,
+    Map<String, int>? pendingOrganizeCounts,
     Map<String, List<CauseRecord>>? recordsByQ,
     WrongbookView? view,
     Object? subjectId = _unset,
@@ -343,7 +357,9 @@ class WrongbookState {
       exams: exams ?? this.exams,
       allTags: allTags ?? this.allTags,
       kps: kps ?? this.kps,
-      counts: counts ?? this.counts,
+      dueCounts: dueCounts ?? this.dueCounts,
+      pendingOrganizeCounts:
+          pendingOrganizeCounts ?? this.pendingOrganizeCounts,
       recordsByQ: recordsByQ ?? this.recordsByQ,
       view: view ?? this.view,
       subjectId: subjectId == _unset ? this.subjectId : subjectId as String?,
@@ -1127,9 +1143,11 @@ class WrongbookNotifier extends Notifier<WrongbookState> {
   ///（B2 leftover：从详情返回、批量操作、点星等刷新后不弹回默认视图）。
   Future<void> load() async {
     // D-42：build() 的 microtask 首查可能在页面已离开、Provider 已销毁后
-    // 才跑——先判 _disposed 再碰 ref；repo 入口处捕获一次，之后不再 ref.read。
+    // 才跑——先判 _disposed 再碰 ref；repo / scheduler 入口处捕获一次，
+    // 之后不再 ref.read。
     if (_disposed) return;
     final repo = _repo;
+    final scheduler = ref.read(reviewSchedulerProvider);
     try {
       final subjects = await repo.subjects();
       final questions = await repo.all(includeArchived: true);
@@ -1137,7 +1155,13 @@ class WrongbookNotifier extends Notifier<WrongbookState> {
       final exams = await repo.exams();
       final tags = await repo.tags();
       final kps = await repo.knowledgePoints();
-      final counts = await repo.subjectCounts();
+      // 2026-11-25 口径迁移 §2.1/§4 第 1 项：封面统计不再读旧口径
+      // `subjectCounts()`（要复习/待复查/已解决），改读 FSRS 到期数
+      // + 待整理数，与首页学科行同一口径。`subjectCounts()` 本体不动。
+      final dueCounts = await repo.fsrsDueCountsBySubject(
+        scheduler: scheduler,
+      );
+      final pendingOrganizeCounts = await repo.pendingOrganizeBySubject();
       final records = await repo.causeRecords();
       final settings = await repo.settings();
       // 十九批 A3：已存查找同批读回（repo 层读失败兜底空列表，
@@ -1184,7 +1208,8 @@ class WrongbookNotifier extends Notifier<WrongbookState> {
         exams: exams,
         allTags: tags,
         kps: kps,
-        counts: counts,
+        dueCounts: dueCounts,
+        pendingOrganizeCounts: pendingOrganizeCounts,
         recordsByQ: byQ,
         filterErrorType: filterErrorType,
         // 十六批 B（D-190）：导出勾选只收敛已不存在的题（删题 / 恢复

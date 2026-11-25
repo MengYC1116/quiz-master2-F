@@ -163,7 +163,11 @@ void main() {
       expect(find.text('主题'), findsOneWidget);
       await openGroup(tester, '复习');
       expect(find.text('主题'), findsNothing);
-      expect(find.text('复查间隔'), findsOneWidget);
+      // 2026-11-25 口径迁移 §5 第 8 项 (a)：复查间隔 / 几次自查
+      // 算已解决两行已隐藏；其余行（每次复习解决几个错因）在。
+      expect(find.text('复查间隔'), findsNothing);
+      expect(find.text('几次自查算已解决'), findsNothing);
+      expect(find.text('每次复习解决几个错因'), findsOneWidget);
     });
 
     testWidgets('点同一组标题收起', (tester) async {
@@ -223,15 +227,11 @@ void main() {
       expect(find.text('手动加入：在题目详情点「加入复习」。'), findsOneWidget);
     });
 
-    testWidgets('复查间隔/自查次数/每轮错因数/跳过次数切换', (tester) async {
+    testWidgets('每轮错因数/跳过次数切换（复查间隔与自查次数行已隐藏，见 §5 8(a)）', (tester) async {
       final applied = await pumpSettings(tester);
       await openGroup(tester, '复习');
-      await tester.tap(find.text('14 天'));
-      await tester.pumpAndSettle();
-      expect(applied.last.recheckIntervalDays, 14);
-      await tester.tap(find.text('3 次'));
-      await tester.pumpAndSettle();
-      expect(applied.last.cureChecks, 3);
+      expect(find.text('复查间隔'), findsNothing);
+      expect(find.text('几次自查算已解决'), findsNothing);
       await tester.tap(find.text('5 个'));
       await tester.pumpAndSettle();
       expect(applied.last.causesPerSession, 5);

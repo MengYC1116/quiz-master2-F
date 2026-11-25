@@ -41,7 +41,7 @@ void main() {
       expect(eng.letterSpacing, 3.4);
       expect(eng.color, const Color.fromRGBO(255, 255, 255, 0.75));
       // 数字 21px/900/等宽；标签 10.5px/白 .85/字距 0.84。
-      final num = tester.widget<Text>(find.text('3')).style!;
+      final num = tester.widget<Text>(find.text('2')).style!;
       expect(num.fontSize, 21);
       expect(num.fontWeight, FontWeight.w900);
       // FontFeature 不重写 ==，按字段断言（tabularFigures = tnum/1）。
@@ -49,11 +49,11 @@ void main() {
       expect(num.fontFeatures!.first.feature, 'tnum');
       expect(num.fontFeatures!.first.value, 1);
       expect(num.color, Colors.white);
-      final label = tester.widget<Text>(find.text('待复查').first).style!;
+      final label = tester.widget<Text>(find.text('到期').first).style!;
       expect(label.fontSize, 10.5);
       expect(label.letterSpacing, 0.84);
       expect(label.color, const Color.fromRGBO(255, 255, 255, 0.85));
-      // 三数字行顶部分隔线：1px 白 40%（每本书一条）。
+      // 两数字行顶部分隔线：1px 白 40%（每本书一条）。
       for (final name in ['数学', '英语', '政治']) {
         expect(
           find.descendant(
@@ -74,12 +74,15 @@ void main() {
       }
     });
 
-    testWidgets('三数字行是真实数据：数学 3/2/0、英语 2/1/1、政治 0/0/0', (
+    testWidgets('两数字行是真实数据：数学 到期 2 · 待整理 1、英语 1 · 0、政治 0 · 0', (
       tester,
     ) async {
       await pumpWrongbook(tester);
       await openShelfFromList(tester);
-      // 每本书内按顺序取三个纯数字 Text（道题/要复习/待复查）。
+      // 每本书内按顺序取两个纯数字 Text（到期/待整理）。
+      // 到期数是 Fake 的 dueCounts（数学 2、英语 1、政治 0）；
+      // 待整理数走真实 pendingOrganizeBySubject（数学 q6 未整理为 1，
+      // 其余为 0）。
       List<String> statsOf(String name) {
         final row = find.descendant(
           of: bookBox(name),
@@ -93,10 +96,9 @@ void main() {
         return row.evaluate().map((e) => (e.widget as Text).data!).toList();
       }
 
-      expect(statsOf('数学'), ['3', '2', '0']);
-      // 英语：q4 未掌握 + q8 复查到期不算已掌握，共 2 道。
-      expect(statsOf('英语'), ['2', '1', '1']);
-      expect(statsOf('政治'), ['0', '0', '0']);
+      expect(statsOf('数学'), ['2', '1']);
+      expect(statsOf('英语'), ['1', '0']);
+      expect(statsOf('政治'), ['0', '0']);
     });
 
     testWidgets('书页边：右沿 8px、上下各 inset 4px', (tester) async {

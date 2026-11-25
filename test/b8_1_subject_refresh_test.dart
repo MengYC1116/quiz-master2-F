@@ -10,6 +10,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:quiz_master2/data/database.dart';
 import 'package:quiz_master2/data/repository.dart';
+import 'package:quiz_master2/data/review_scheduler.dart';
 import 'package:quiz_master2/models/exam_event.dart';
 import 'package:quiz_master2/models/models.dart';
 import 'package:quiz_master2/modules/collect/collect_page.dart';
@@ -76,6 +77,14 @@ class _B8FakeRepo extends QuestionRepository {
   Future<Map<String, (int, int, int)>> subjectCounts(
           {bool includeArchived = false}) async =>
       const {};
+
+  // 2026-11-25 口径迁移 §2.1/§4：load() 封面到期数走这里（同款 D-225：
+  // 不覆写会走真实库、页面卡 loading、pumpAndSettle 超时）。
+  @override
+  Future<Map<String, int>> fsrsDueCountsBySubject({
+    required ReviewScheduler scheduler,
+    DateTime? now,
+  }) async => const {};
 
   @override
   Future<List<CauseRecord>> causeRecords() async => const [];
