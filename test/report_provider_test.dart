@@ -2,6 +2,8 @@
 // 注入方式与 settings_controller_test.dart 一致：ProviderContainer.test
 // + repositoryProvider.overrideWithValue(FakeRepo)。
 // 夹具口径与 report_page_test.dart 的默认库一致（日期一律相对今天取）。
+// FSRS 口径迁移（Meng 2026-11-25 定）：三个核心数、两组 Top 5、分布
+// 全部按 attempts / 题目集合新定义重写断言；weakStats 不变，只做回归。
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:quiz_master2/data/database.dart';
@@ -15,6 +17,8 @@ DateTime get _today {
   final now = DateTime.now();
   return DateTime(now.year, now.month, now.day);
 }
+
+int get _nowMs => _today.millisecondsSinceEpoch;
 
 Question _tq(
   String id,
@@ -62,12 +66,34 @@ CauseRecord _trec(
 KnowledgePoint _tkp(String id, String subjectId, String chapter, String name) =>
     KnowledgePoint(id: id, subjectId: subjectId, chapter: chapter, name: name);
 
+AttemptData _att(
+  String qid,
+  String mode,
+  int? correct,
+  int createdAtMs, {
+  List<String> causeIds = const [],
+  String sessionId = 'sess-1',
+}) =>
+    AttemptData(
+      id: 'att-$qid-$createdAtMs-$correct-$sessionId',
+      questionId: qid,
+      sessionId: sessionId,
+      mode: mode,
+      correct: correct,
+      answerVersion: 1,
+      contentVersion: 0,
+      status: '已提交',
+      causeIds: causeIds,
+      submissionId: 'sub-$qid-$createdAtMs-$correct-$sessionId',
+      createdAt: createdAtMs,
+    );
+
 class FakeReportRepo extends QuestionRepository {
   FakeReportRepo({
     required this.questions,
     required this.records,
     required this.kps,
-    this.history = const {},
+    this.attemptsValue = const [],
     this.throwOnLoad = false,
     List<Subject>? subjects,
   })  : subjectsValue = subjects ?? Subject.all,
@@ -76,7 +102,7 @@ class FakeReportRepo extends QuestionRepository {
   List<Question> questions;
   List<CauseRecord> records;
   List<KnowledgePoint> kps;
-  Map<String, List<({String result, DateTime reviewedAt})>> history;
+  List<AttemptData> attemptsValue;
   bool throwOnLoad;
   List<Subject> subjectsValue;
 
@@ -95,9 +121,9 @@ class FakeReportRepo extends QuestionRepository {
     return List.of(records);
   }
 
-  // P3 入口 3：样本量统计用的 attempts 与池内标记（Fake 不碰真实数据库）。
   @override
-  Future<List<AttemptData>> loadAllAttempts() async => const [];
+  Future<List<AttemptData>> loadAllAttempts() async =>
+      List.of(attemptsValue);
 
   @override
   Future<Set<String>> fsrsPoolQuestionIds() async => const {};
@@ -107,17 +133,21 @@ class FakeReportRepo extends QuestionRepository {
 
   @override
   Future<AppSettings> settings() async => AppSettings.defaults;
-
-  @override
-  Future<List<({String result, DateTime reviewedAt})>> reviewHistory(
-          String questionId) async =>
-      List.of(history[questionId] ?? const []);
 }
 
 /// 与 report_page_test.dart 的默认库同一份数据：本周 8 道题
 ///（q-old 是 40 天前的题，只在“全部”里出现）。
-FakeReportRepo _defaultRepo({bool withHistory = true}) {
+///
+/// 本周正式作答（attempts）：q1 答对 1 次 + 答错 1 次 + 未判分 1 次；
+/// q2 正式答错 1 次 + 专项答对 1 次（专项不计核心数）；q3 正式答对 2 次；
+/// q4/q5/q6 正式答错各 1 次；q7 正式答对 1 次；q8 正式答错 1 次
+///（错因两个：方法不会、概念不清）；q-old 40 天前正式答错 1 次。
+/// 本周：答对 4 次（q1 + q3×2 + q7），答错 6 道
+///（q1/q2/q4/q5/q6/q8），已判分 10 次，答对率 40%。
+FakeReportRepo _defaultRepo() {
   final today = _today;
+  final now = _nowMs;
+  final old = today.subtract(const Duration(days: 40)).millisecondsSinceEpoch;
   final questions = [
     _tq('q1', '函数极限', errorTypes: ['概念不清'],
         knowledgePointIds: ['kp-limit']),
@@ -160,20 +190,27 @@ FakeReportRepo _defaultRepo({bool withHistory = true}) {
     _tkp('kp-history', 'politics', '史纲', '时间轴'),
     _tkp('kp-marx', 'politics', '马原', '矛盾观'),
   ];
-  final history = withHistory
-      ? {
-          'q4': [
-            (result: 'solved', reviewedAt: today),
-            (result: 'solved', reviewedAt: today),
-            (result: 'unsolved', reviewedAt: today),
-          ],
-        }
-      : <String, List<({String result, DateTime reviewedAt})>>{};
+  final attempts = [
+    _att('q1', ReviewMode.due, 1, now, sessionId: 's1'),
+    _att('q1', ReviewMode.due, 0, now, causeIds: ['概念不清'],
+        sessionId: 's2'),
+    _att('q1', ReviewMode.due, null, now, sessionId: 's3'),
+    _att('q2', ReviewMode.due, 0, now, causeIds: ['方法不会']),
+    _att('q2', ReviewMode.practice, 1, now),
+    _att('q3', ReviewMode.due, 1, now, sessionId: 's1'),
+    _att('q3', ReviewMode.due, 1, now, sessionId: 's2'),
+    _att('q4', ReviewMode.due, 0, now, causeIds: ['概念不清']),
+    _att('q5', ReviewMode.due, 0, now, causeIds: ['审题失误']),
+    _att('q6', ReviewMode.due, 0, now, causeIds: ['审题失误']),
+    _att('q7', ReviewMode.due, 1, now),
+    _att('q8', ReviewMode.due, 0, now, causeIds: ['方法不会', '概念不清']),
+    _att('q-old', ReviewMode.due, 0, old, causeIds: ['概念不清']),
+  ];
   return FakeReportRepo(
     questions: questions,
     records: records,
     kps: kps,
-    history: history,
+    attemptsValue: attempts,
   );
 }
 
@@ -194,17 +231,20 @@ Future<void> _waitLoaded(ProviderContainer container) async {
 
 void main() {
   group('ReportNotifier', () {
-    test('load()：已解决 1 · 待解决 4 · 复查通过率 67%', () async {
+    test('load()：正式答对 4 次 · 正式答错 6 道 · 答对率 40%', () async {
       final container = _container(_defaultRepo());
       await container.read(reportProvider.notifier).load();
       final s = container.read(reportProvider);
       expect(s.loading, isFalse);
       expect(s.loadError, isFalse);
-      expect(s.solvedCount, 1);
-      expect(s.pendingCount, 4);
-      expect(s.judgedHistory.length, 3);
-      expect(s.judgedPassed, 2);
-      expect(s.passRate, 67);
+      // 答对按作答次数计：q1 1 次 + q3 2 次 + q7 1 次；专项答对不计，
+      // 未判分不计。
+      expect(s.formalCorrectCount, 4);
+      // 答错按题去重：q1/q2/q4/q5/q6/q8 共 6 道。
+      expect(s.formalWrongQuestionCount, 6);
+      expect(s.gradedFormalCount, 10);
+      expect(s.gradedFormalCorrectCount, 4);
+      expect(s.passRate, 40);
       expect(s.nextSentence, '先解决数学的方法不会。');
     });
 
@@ -216,42 +256,53 @@ void main() {
       container.read(reportProvider);
       await _waitLoaded(container);
       expect(container.read(reportProvider).loading, isFalse);
-      expect(container.read(reportProvider).solvedCount, 1);
+      expect(container.read(reportProvider).formalCorrectCount, 4);
     });
 
-    test('无复查记录时通过率为 null', () async {
-      final container = _container(_defaultRepo(withHistory: false));
+    test('无已判分记录时答对率为 null', () async {
+      final container = _container(
+        FakeReportRepo(
+          questions: [_tq('q1', '题', errorTypes: ['概念不清'])],
+          records: [_trec('q1', '概念不清')],
+          kps: [],
+          attemptsValue: [_att('q1', ReviewMode.due, null, _nowMs)],
+        ),
+      );
       await container.read(reportProvider.notifier).load();
       final s = container.read(reportProvider);
       expect(s.passRate, isNull);
-      expect(s.judgedHistory, isEmpty);
+      expect(s.gradedFormalCount, 0);
+      expect(s.formalCorrectCount, 0);
+      expect(s.formalWrongQuestionCount, 0);
     });
 
-    test('弱点：原因组 7 个、知识点组 6 个，矛盾观 2 道排第一', () async {
+    test('弱点：原因组 7 个、知识点组 7 个，矛盾观 2 道排第一', () async {
       final container = _container(_defaultRepo());
       await container.read(reportProvider.notifier).load();
       final s = container.read(reportProvider);
       expect(s.causeGroups.length, 7);
-      expect(s.kpGroups.length, 6);
+      expect(s.kpGroups.length, 7);
       expect(s.kpGroups.first.key, 'kp-marx');
       expect(s.kpGroups.first.count, 2);
-      // 英语的概念不清已解决，不进原因组。
+      // D-259：已解决记录不再排除任何题——q4 的错因虽已解决，
+      // 它正式答错过，英语的概念不清组与学术词汇组都在列。
       expect(
         s.causeGroups.where(
           (g) => g.subjectId == 'english' && g.key == '概念不清',
         ),
-        isEmpty,
+        hasLength(1),
+      );
+      expect(
+        s.kpGroups.where((g) => g.key == 'kp-vocab'),
+        hasLength(1),
       );
     });
 
-    test('分布只按学科、扣已掌握：本周数学 3 · 英语 1 · 政治 3', () async {
+    test('分布：范围内作答题数，本周数学 3 · 英语 2 · 政治 3', () async {
       final container = _container(_defaultRepo());
       await container.read(reportProvider.notifier).load();
       final s = container.read(reportProvider);
-      final qsIn = s.questionsInRange;
-      expect(qsIn.where((q) => q.subjectId == 'math').length, 3);
-      expect(qsIn.where((q) => q.subjectId == 'english').length, 1);
-      expect(qsIn.where((q) => q.subjectId == 'politics').length, 3);
+      expect(s.answeredBySubject, {'math': 3, 'english': 2, 'politics': 3});
     });
 
     test('SR-P1-11：未整理题与已归档题不进弱点与分布', () async {
@@ -266,6 +317,9 @@ void main() {
         ],
         records: [_trec('q1', '概念不清')],
         kps: [_tkp('kp-limit', 'math', '函数与极限', '函数极限')],
+        attemptsValue: [
+          _att('q1', ReviewMode.due, 0, _nowMs, causeIds: ['概念不清']),
+        ],
       );
       final container = _container(repo);
       await container.read(reportProvider.notifier).load();
@@ -273,6 +327,7 @@ void main() {
       expect(s.questionsInRange.length, 1);
       expect(s.causeGroups.single.count, 1);
       expect(s.kpGroups.single.count, 1);
+      expect(s.answeredBySubject, {'math': 1});
     });
 
     test('setRange：切到“全部”旧题进来，数学分布变 4 道，不重读库', () async {
@@ -281,23 +336,32 @@ void main() {
       await notifier.load();
       var s = container.read(reportProvider);
       expect(s.range, 'week');
-      expect(s.questionsInRange.length, 7);
+      expect(s.questionsInRange.length, 8);
       expect(s.records.length, 5);
+      expect(s.formalWrongQuestionCount, 6);
+      expect(s.passRate, 40);
       notifier.setRange('all');
       s = container.read(reportProvider);
       expect(s.range, 'all');
-      expect(s.questionsInRange.length, 8);
+      expect(s.questionsInRange.length, 9);
       expect(
         s.questionsInRange.where((q) => q.subjectId == 'math').length,
         4,
       );
+      // 旧题的正式答错进来：答错 7 道，已判分 11 次，答对率 36%。
+      expect(s.formalWrongQuestionCount, 7);
+      expect(s.gradedFormalCount, 11);
+      expect(s.passRate, 36);
+      expect(s.nextSentence, '先解决数学的概念不清。');
       // 切范围只重算派生值：读库数据本身没变。
       expect(s.records.length, 5);
       expect(s.rangeNote, '全部时间 · 数字按这个时间段算');
     });
 
-    test('待解决按范围过滤（S8 B1）：本周 2 · 全部 3，已解决恒为 1', () async {
+    test('核心数按范围过滤（attempts.created_at）：本周与全部', () async {
       final today = _today;
+      final now = _nowMs;
+      final old = today.subtract(const Duration(days: 40)).millisecondsSinceEpoch;
       final questions = [
         _tq('qA', '题 A', errorTypes: ['概念不清']),
         _tq('qB', '题 B', errorTypes: ['方法不会']),
@@ -305,24 +369,74 @@ void main() {
         _tq('qD', '题 D', errorTypes: ['审题失误']),
         _tq('qE', '题 E', errorTypes: ['概念不清']),
       ];
-      final records = [
-        _trec('qA', '概念不清', lastCheck: today),
-        _trec('qC', '计算错误',
-            lastCheck: today.subtract(const Duration(days: 40))),
-        _trec('qD', '审题失误'),
-        _trec('qE', '概念不清',
-            status: CauseStatus.solved, solvedCount: 2, lastCheck: today),
+      final attempts = [
+        _att('qA', ReviewMode.due, 0, now, causeIds: ['概念不清']),
+        _att('qB', ReviewMode.due, 1, now),
+        _att('qC', ReviewMode.due, 0, old, causeIds: ['计算错误']),
+        _att('qD', ReviewMode.due, null, now),
+        _att('qE', ReviewMode.due, 1, old),
       ];
       final container = _container(
-        FakeReportRepo(questions: questions, records: records, kps: []),
+        FakeReportRepo(
+          questions: questions,
+          records: const [],
+          kps: const [],
+          attemptsValue: attempts,
+        ),
       );
       final notifier = container.read(reportProvider.notifier);
       await notifier.load();
-      expect(container.read(reportProvider).pendingCount, 2);
-      expect(container.read(reportProvider).solvedCount, 1);
+      // 本周：答对 1 次（qB），答错 1 道（qA），已判分 2 次，答对率 50%。
+      expect(container.read(reportProvider).formalCorrectCount, 1);
+      expect(container.read(reportProvider).formalWrongQuestionCount, 1);
+      expect(container.read(reportProvider).passRate, 50);
       notifier.setRange('all');
-      expect(container.read(reportProvider).pendingCount, 3);
-      expect(container.read(reportProvider).solvedCount, 1);
+      // 全部：答对 2 次，答错 2 道，已判分 4 次，答对率仍 50%。
+      expect(container.read(reportProvider).formalCorrectCount, 2);
+      expect(container.read(reportProvider).formalWrongQuestionCount, 2);
+      expect(container.read(reportProvider).passRate, 50);
+    });
+
+    test('同一题多次答错：答错题数只算 1 道，归因取最早一次的错因', () async {
+      final now = _nowMs;
+      final container = _container(
+        FakeReportRepo(
+          questions: [
+            _tq('q1', '题', errorTypes: ['概念不清'],
+                knowledgePointIds: ['kp-limit']),
+          ],
+          records: [_trec('q1', '概念不清')],
+          kps: [_tkp('kp-limit', 'math', '函数与极限', '函数极限')],
+          attemptsValue: [
+            _att('q1', ReviewMode.due, 0, now, causeIds: ['方法不会'],
+                sessionId: 's1'),
+            _att('q1', ReviewMode.due, 0, now + 1000,
+                causeIds: ['概念不清'], sessionId: 's2'),
+          ],
+        ),
+      );
+      await container.read(reportProvider.notifier).load();
+      final s = container.read(reportProvider);
+      expect(s.formalWrongQuestionCount, 1);
+      expect(s.causeGroups.length, 1);
+      expect(s.causeGroups.single.key, '方法不会');
+    });
+
+    test('weakStats 不变（回归）：只按新弱点组取样本', () async {
+      final container = _container(_defaultRepo());
+      await container.read(reportProvider.notifier).load();
+      final s = container.read(reportProvider);
+      final group = s.causeGroups.singleWhere(
+        (g) => g.subjectId == 'math' && g.key == '方法不会',
+      );
+      expect(group.questionIds, {'q2'});
+      final stats = s.weakStats(group);
+      // q2 本周：正式答错 1 次 + 专项答对 1 次。
+      expect(stats.attemptCount, 2);
+      expect(stats.wrongCount, 1);
+      expect(stats.formalCount, 1);
+      expect(stats.practiceCount, 1);
+      expect(stats.errorRate, closeTo(0.5, 0.001));
     });
 
     test('读库失败：loadError，旧内容留住；重读成功后恢复', () async {
@@ -339,10 +453,10 @@ void main() {
       s = container.read(reportProvider);
       expect(s.loadError, isFalse);
       expect(s.records.length, 5);
-      expect(s.solvedCount, 1);
+      expect(s.formalCorrectCount, 4);
     });
 
-    test('没有任何记录：nextSentence 为无待解决错因那句', () async {
+    test('没有任何记录：nextSentence 为无正式答错那句', () async {
       final container = _container(
         FakeReportRepo(questions: [], records: [], kps: []),
       );
@@ -350,7 +464,10 @@ void main() {
       final s = container.read(reportProvider);
       expect(s.records, isEmpty);
       expect(s.causeGroups, isEmpty);
-      expect(s.nextSentence, '这段时间没有待解决的错因，先去复习页把到期的复查做完。');
+      expect(
+        s.nextSentence,
+        '这段时间正式复习还没有答错的题，先去复习页把到期的题做完。',
+      );
     });
   });
 }
