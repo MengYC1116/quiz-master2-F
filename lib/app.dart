@@ -83,6 +83,11 @@ class _QuizMasterAppState extends ConsumerState<QuizMasterApp> {
   String _route = '/home';
   String? _subjectArg; // 带学科 ID 进错题本时直接打开对应那一本
   String? _reviewSubjectArg; // 带学科 ID 进复习时预置学科筛选
+  // P3 入口 1/3：带指定题单进复习（错题本“立即专项练习”/薄弱点
+  // “开始专项练习”）；只在挂载时读一次（ReviewNotifier.build 用
+  // ref.read），与 _reviewSubjectArg 同款清理规则。
+  List<String>? _reviewPracticeIds;
+  int? _reviewPracticeCount;
   // B11-9：进设置页时直接展开的组（首页倒计时点进来时为 'exams'，
   // 其余入口为 null，各组默认全折）。
   String? _settingsGroupArg;
@@ -409,6 +414,12 @@ class _QuizMasterAppState extends ConsumerState<QuizMasterApp> {
       _route = route;
       _subjectArg = subjectId;
       if (route != '/review') _reviewSubjectArg = null;
+      // P3：普通导航离开复习页时清掉带题单参数，避免下次进复习页
+      // 时旧题单被当作新开练（见 _reviewPracticeIds 注释）。
+      if (route != '/review') {
+        _reviewPracticeIds = null;
+        _reviewPracticeCount = null;
+      }
       // D-50：深链路参数只由 `_goWrongbookFiltered` 设；普通导航（含左
       // 导航 / 首页进错题本）一律清掉。已挂载的 notifier 不随 override
       // 变化重建（initial 只在挂载时读一次），所以残留值影响的是下一次
@@ -437,11 +448,18 @@ class _QuizMasterAppState extends ConsumerState<QuizMasterApp> {
     unawaited(repo.saveLastRoute('/settings'));
   }
 
-  void _goReview({String? subjectId}) {
+  void _goReview({
+    String? subjectId,
+    List<String>? practiceQuestionIds,
+    int? practiceCount,
+  }) {
     _userNavigated = true;
     setState(() {
       _route = '/review';
       _reviewSubjectArg = subjectId;
+      // P3：不带题单的普通进复习清掉旧题单（见 _reviewPracticeIds 注释）。
+      _reviewPracticeIds = practiceQuestionIds;
+      _reviewPracticeCount = practiceCount;
     });
     unawaited(repo.saveLastRoute('/review'));
   }
@@ -546,12 +564,18 @@ class _QuizMasterAppState extends ConsumerState<QuizMasterApp> {
             searchContext: searchContext,
           ),
           onGoReview: ({String? subjectId}) => _goReview(subjectId: subjectId),
+          // P3 入口 1：错题本“立即专项练习”带题单进复习页（只练不排）。
+          onStartPracticeWithQuestions: (ids, {count}) =>
+              _goReview(practiceQuestionIds: ids, practiceCount: count),
         );
       case '/review':
         return ReviewPage(
           repo: repo,
           onOpenDetail: (q, ids) => _openDetail(q, ids, sourceLabel: '复习'),
           initialSubjectId: _reviewSubjectArg,
+          // P3 入口 1/3：带题单进复习（挂载时读一次，见 _reviewPracticeIds）。
+          initialPracticeQuestionIds: _reviewPracticeIds,
+          initialPracticeCount: _reviewPracticeCount,
           onGoWrongbook: () => _go('/wrongbook'),
         );
       case '/report':
@@ -559,6 +583,9 @@ class _QuizMasterAppState extends ConsumerState<QuizMasterApp> {
           repo: repo,
           onGoReview: () => _goReview(),
           onOpenWrongbookFiltered: _goWrongbookFiltered,
+          // P3 入口 3：薄弱点列表页“开始专项练习”带题单进复习页。
+          onStartPracticeWithQuestions: (ids, {count}) =>
+              _goReview(practiceQuestionIds: ids, practiceCount: count),
         );
       case '/subjects':
         return SubjectsPage(repo: repo);

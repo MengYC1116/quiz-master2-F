@@ -41,6 +41,7 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../data/repository.dart';
+import '../data/review_engine.dart';
 import '../models/models.dart';
 import 'repository_provider.dart';
 
@@ -75,6 +76,61 @@ class WeakGroup {
   int get count => questionIds.length;
 }
 
+/// P3 入口 3：薄弱点一行的样本量统计（报告统计口径，写死在代码里，
+/// 行内同时展示，不只给题数）。
+///
+/// 口径：
+/// - 时间范围 = 当前报告范围（本周/本月/全部），按 attempts 的作答时间
+///   （created_at）截取；题目数不受时间范围影响（是该薄弱点现有的题）；
+/// - 正式复习与专项练习的记录都参与，来源分别计数（formalCount /
+///   practiceCount），行内标来源；
+/// - 样本量同时给作答次数（attemptCount）与涉及题目数（questionCount）；
+/// - 近期错误率 = 答错次数 / 已判分次数（未判分不计入分母），无已判分
+///   记录时为 null（显示 —）；
+/// - 样本少（题数 < 3 或作答次数 < 5）标“数据较少”。
+class WeakSampleStats {
+  const WeakSampleStats({
+    required this.questionCount,
+    required this.attemptCount,
+    required this.wrongCount,
+    required this.errorRate,
+    required this.formalCount,
+    required this.practiceCount,
+    required this.rangeLabel,
+  });
+
+  /// 涉及题目数（该薄弱点现有的题，按 question_id 去重）。
+  final int questionCount;
+
+  /// 作答次数（范围内 attempts 行数，正式 + 专项）。
+  final int attemptCount;
+
+  /// 答错次数（correct == false 的 attempts 行数）。
+  final int wrongCount;
+
+  /// 近期错误率（答错 / 已判分），无已判分记录时为 null。
+  final double? errorRate;
+
+  /// 正式复习作答次数 / 专项练习作答次数（来源分别计数）。
+  final int formalCount;
+  final int practiceCount;
+
+  /// 时间范围文案（本周 / 本月 / 全部）。
+  final String rangeLabel;
+
+  /// 样本少：题数 < 3 或作答次数 < 5。
+  bool get sparse => questionCount < 3 || attemptCount < 5;
+
+  String get label {
+    final rate = errorRate == null
+        ? '—'
+        : '${(errorRate! * 100).round()}%';
+    return '共 $questionCount 道 · 作答 $attemptCount 次 · 答错 $wrongCount 次 · 近期错误率 $rate · $rangeLabel';
+  }
+
+  String get sourceLabel => '正式 $formalCount 次 / 专项 $practiceCount 次';
+}
+
 /// 学习报告业务数据（原 `_ReportPageState` 里的读库字段，原样搬移）+
 // 派生计算（原页内 getters，原样搬移；切范围只重算这些值，不重读库）。
 class ReportState {
@@ -88,6 +144,9 @@ class ReportState {
     this.subjects = const [],
     this.history = const [],
     this.settings = AppSettings.defaults,
+    // P3 入口 3：全部 attempts（样本量统计用）与已在池的题 id。
+    this.attempts = const [],
+    this.fsrsPoolIds = const {},
   });
 
   /// 时间范围：week / month / all（原 `_range`，默认本周）。
@@ -116,6 +175,12 @@ class ReportState {
 
   /// 设置（原 `_settings`；核心数小字里的复查间隔 / 治愈次数用）。
   final AppSettings settings;
+
+  /// P3 入口 3：全部 attempts（正式 + 专项，见 [weakStats]）。
+  final List<AttemptData> attempts;
+
+  /// P3 入口 3：已在 FSRS 复习池里的题 id（列表行内标“已在复习”用）。
+  final Set<String> fsrsPoolIds;
 
   // ---------- 范围 ----------
 
@@ -303,6 +368,48 @@ class ReportState {
         : '先解决${subjectOf(top.first.subjectId).name}的${top.first.key}。';
   }
 
+  /// P3 入口 3：薄弱点一行的样本量统计（见 [WeakSampleStats] 的口径）。
+  WeakSampleStats weakStats(WeakGroup group) {
+    final rangeLabel = switch (range) {
+      'month' => '本月',
+      'week' => '本周',
+      _ => '全部',
+    };
+    final start = rangeStart;
+    var attemptCount = 0;
+    var wrongCount = 0;
+    var gradedCount = 0;
+    var formalCount = 0;
+    var practiceCount = 0;
+    for (final a in attempts) {
+      if (!group.questionIds.contains(a.questionId)) continue;
+      if (start != null &&
+          DateTime.fromMillisecondsSinceEpoch(
+            a.createdAt,
+          ).isBefore(start)) {
+        continue;
+      }
+      attemptCount++;
+      if (a.mode == ReviewMode.due) {
+        formalCount++;
+      } else if (a.mode == ReviewMode.practice) {
+        practiceCount++;
+      }
+      if (a.correct == null) continue;
+      gradedCount++;
+      if (a.correct == 0) wrongCount++;
+    }
+    return WeakSampleStats(
+      questionCount: group.count,
+      attemptCount: attemptCount,
+      wrongCount: wrongCount,
+      errorRate: gradedCount == 0 ? null : wrongCount / gradedCount,
+      formalCount: formalCount,
+      practiceCount: practiceCount,
+      rangeLabel: rangeLabel,
+    );
+  }
+
   ReportState copyWith({
     String? range,
     bool? loading,
@@ -313,6 +420,8 @@ class ReportState {
     List<Subject>? subjects,
     List<({String result, DateTime reviewedAt})>? history,
     AppSettings? settings,
+    List<AttemptData>? attempts,
+    Set<String>? fsrsPoolIds,
   }) {
     return ReportState(
       range: range ?? this.range,
@@ -324,6 +433,8 @@ class ReportState {
       subjects: subjects ?? this.subjects,
       history: history ?? this.history,
       settings: settings ?? this.settings,
+      attempts: attempts ?? this.attempts,
+      fsrsPoolIds: fsrsPoolIds ?? this.fsrsPoolIds,
     );
   }
 }
@@ -365,6 +476,20 @@ class ReportNotifier extends Notifier<ReportState> {
       for (final q in questions) {
         history.addAll(await repo.reviewHistory(q.id));
       }
+      // P3 入口 3：样本量统计用的全部 attempts 与池内标记；读不到
+      // 时按空处理（统计口径里样本量为 0 即“数据较少”），不拖垮报告加载。
+      List<AttemptData> attempts;
+      try {
+        attempts = await repo.loadAllAttempts();
+      } catch (_) {
+        attempts = const [];
+      }
+      Set<String> poolIds;
+      try {
+        poolIds = await repo.fsrsPoolQuestionIds();
+      } catch (_) {
+        poolIds = const {};
+      }
       if (_disposed) return;
       state = ReportState(
         range: state.range,
@@ -376,6 +501,8 @@ class ReportNotifier extends Notifier<ReportState> {
         subjects: subjects,
         settings: settings,
         history: history,
+        attempts: attempts,
+        fsrsPoolIds: poolIds,
       );
     } catch (_) {
       // 加载失败：留住上次成功加载的内容（HTML 错误横幅口径），只出横幅。

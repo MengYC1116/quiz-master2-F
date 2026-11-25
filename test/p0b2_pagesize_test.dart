@@ -10,12 +10,14 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:quiz_master2/data/database.dart';
 import 'package:quiz_master2/data/repository.dart';
 import 'package:quiz_master2/data/review_engine.dart';
+import 'package:quiz_master2/data/review_scheduler.dart';
 import 'package:quiz_master2/models/exam_event.dart';
 import 'package:quiz_master2/models/models.dart';
 import 'package:quiz_master2/modules/review/review_page.dart';
 import 'package:quiz_master2/modules/settings/settings_page.dart';
 import 'package:quiz_master2/modules/wrongbook/wrongbook_page.dart';
 import 'package:quiz_master2/state/repository_provider.dart';
+import 'package:quiz_master2/state/review_notifier.dart';
 import 'package:quiz_master2/theme/app_theme.dart';
 
 /// 15 道数学题：每题一个唯一自定义错因 → 复习列表 15 组；
@@ -104,6 +106,11 @@ class FakeP0B2Repo extends QuestionRepository {
   @override
   Future<List<KnowledgePoint>> knowledgePoints() async => const [];
 
+  // P3 入口 1：错题本 load() 读池内标记（不覆写会走真实库、页面卡
+  // loading、pumpAndSettle 超时）。
+  @override
+  Future<Set<String>> fsrsPoolQuestionIds() async => const {};
+
   @override
   Future<Map<String, (int, int, int)>> subjectCounts({
     bool includeArchived = false,
@@ -159,11 +166,31 @@ Future<void> pumpReviewP0B2(
 }) async {
   await _pump(
     tester,
-    ReviewPage(
+    // P3：复习页 load() 读调度器池内标记——外层覆盖一个确定性内存
+    // 调度器（fuzzing 关），不碰真实数据库（review_page_test.dart
+    // 同款做法）。只包复习页/错题本页，不包 _pump：设置页那测自带
+    // 一个 repositoryProvider override 的 ProviderScope，两套
+    // overrides 在 Scaffold body 同一位置交替出现时，Flutter 会
+    // 复用无 key 的 ProviderScope 元素，Riverpod 的
+    // updateOverrides 校验抛错（“Tried to update the override of
+    // a provider that was not overridden before”）→ pumpAndSettle
+    // 永不收敛。三个 ProviderScope 都挂 UniqueKey()，每次重建。
+    ProviderScope(
       key: UniqueKey(),
-      repo: repo,
-      onOpenDetail: (q, ids, {String? searchContext}) async {},
-      onGoWrongbook: () {},
+      overrides: [
+        reviewSchedulerProvider.overrideWithValue(
+          FsrsReviewScheduler(
+            config: const SchedulerConfig(enableFuzzing: false),
+            store: InMemoryCardStore(),
+          ),
+        ),
+      ],
+      child: ReviewPage(
+        key: UniqueKey(),
+        repo: repo,
+        onOpenDetail: (q, ids, {String? searchContext}) async {},
+        onGoWrongbook: () {},
+      ),
     ),
   );
 }
@@ -174,13 +201,24 @@ Future<void> pumpWrongbookP0B2(
 }) async {
   await _pump(
     tester,
-    WrongbookPage(
+    ProviderScope(
       key: UniqueKey(),
-      repo: repo,
-      initialSubjectId: 'math',
-      onOpenHome: () {},
-      onOpenDetail: (q, ids, {String? searchContext}) async {},
-      onGoReview: ({String? subjectId}) {},
+      overrides: [
+        reviewSchedulerProvider.overrideWithValue(
+          FsrsReviewScheduler(
+            config: const SchedulerConfig(enableFuzzing: false),
+            store: InMemoryCardStore(),
+          ),
+        ),
+      ],
+      child: WrongbookPage(
+        key: UniqueKey(),
+        repo: repo,
+        initialSubjectId: 'math',
+        onOpenHome: () {},
+        onOpenDetail: (q, ids, {String? searchContext}) async {},
+        onGoReview: ({String? subjectId}) {},
+      ),
     ),
   );
   // 二十三批 D-250：只带学科落目录，点「全部题目」进列表
@@ -244,6 +282,10 @@ void main() {
       await _pump(
         tester,
         ProviderScope(
+          // P3：与上面两个调度器 override 的 ProviderScope 同位置
+          // 交替出现，须挂 UniqueKey() 防元素复用时 overrides 校验
+          // 抛错（见 pumpReviewP0B2 注释）。
+          key: UniqueKey(),
           overrides: [repositoryProvider.overrideWithValue(repo)],
           child: SettingsPage(key: UniqueKey()),
         ),

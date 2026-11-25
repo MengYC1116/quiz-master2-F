@@ -317,7 +317,7 @@ void main() {
   // 迁移 v5 → v6
   // -------------------------------------------------------------------------
   group('v5 → v7 migration', () {
-    test('v5 库打开即升 v7：旧题保留，新列默认空，DDL 与全新 v7 库一致', () async {
+    test('v5 库打开即升 v8：旧题保留，新列默认空，DDL 与全新 v8 库一致', () async {
       final tmp = await Directory.systemTemp.createTemp('pkg5-migrate-');
       addTearDown(() async {
         try {
@@ -333,15 +333,15 @@ void main() {
         (await db.customSelect('PRAGMA user_version').get())
             .single
             .data['user_version'],
-        7,
+        8,
       );
-      expect(AppDatabase.schemaVersion, 7);
+      expect(AppDatabase.schemaVersion, 8);
       final settings = (await db.customSelect(
         'SELECT * FROM settings',
       ).get()).map((r) => r.data).toList();
       expect(
         settings.singleWhere((r) => r['key'] == 'schemaVersion')['value'],
-        '7',
+        '8',
       );
       final qs = await AppDatabase.allQuestionsFrom(db);
       expect(qs, hasLength(2));
@@ -391,7 +391,7 @@ void main() {
         (await db2.customSelect('PRAGMA user_version').get())
             .single
             .data['user_version'],
-        7,
+        8,
       );
       final cols = (await db2.customSelect(
         'PRAGMA table_info(questions)',
@@ -403,7 +403,7 @@ void main() {
       );
     });
 
-    test('全新 v7 库：新题默认 option_contents 与解析器版本均为 null', () async {
+    test('全新 v8 库：新题默认 option_contents 与解析器版本均为 null', () async {
       final db = await _openMemoryDb();
       await AppDatabase.upsertQuestionInto(db, _q('q-new'));
       final q = (await AppDatabase.allQuestionsFrom(db)).single;
@@ -440,10 +440,10 @@ void main() {
           as Map<String, dynamic>;
     }
 
-    test('v7 → v7：选项内容与解析器版本原样回来（含 LaTeX 反斜杠）', () async {
+    test('v8 → v8：选项内容与解析器版本原样回来（含 LaTeX 反斜杠）', () async {
       final db = await _openMemoryDb();
       final decoded = await seedAndExport(db);
-      expect(decoded['_meta']['schemaVersion'], 7);
+      expect(decoded['_meta']['schemaVersion'], 8);
       await db.customUpdate('DELETE FROM questions');
       await db.customUpdate('DELETE FROM settings');
       await AppDatabase.importBackupJsonInto(db, decoded);
@@ -458,7 +458,7 @@ void main() {
       expect(q.contentVersion, 2);
     });
 
-    test('v5 → v7：缺 option_contents 键按空值兼容，其余原样', () async {
+    test('v5 → v8：缺 option_contents 键按空值兼容，其余原样', () async {
       final db = await _openMemoryDb();
       final decoded = await seedAndExport(db);
       (decoded['_meta'] as Map<String, dynamic>)['schemaVersion'] = 5;
@@ -477,9 +477,9 @@ void main() {
       expect(q.optionLabels, ['A', 'B', 'C', 'D']);
     });
 
-    test('v8 备份被旧版本恢复时明确报错：schemaVersion > 当前版本拒绝', () {
+    test('v9 备份被旧版本恢复时明确报错：schemaVersion > 当前版本拒绝', () {
       final decoded = <String, dynamic>{
-        '_meta': {'schemaVersion': 8, 'appVersion': '0.1.0+1'},
+        '_meta': {'schemaVersion': 9, 'appVersion': '0.1.0+1'},
         'subjects': <dynamic>[],
         'questions': <dynamic>[],
         'question_boxes': <dynamic>[],

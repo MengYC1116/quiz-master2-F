@@ -38,6 +38,12 @@ bool shouldFallbackAfterOpenFailureImpl(String dbPath) {
 ///   再建 v7 新库；无 v1 迁移；
 /// - 文件是更新的版本（user_version > 7）→ 预检不动它，Drift onUpgrade
 ///   按 from > to 抛“请用新版打开”，不静默删掉新版库；
+/// P5（2026-11-25）：当前版本改为 v8——上面“v7 新库”读作 v8；
+/// v7 库走 Drift onUpgrade 迁到 v8（新表 fsrs_cards / fsrs_events /
+/// fsrs_migration_log，见 _upgrade7To8），再由 onBeforeOpen 的
+/// v7→v8 迁移做历史审计 + attempts 唯一来源重放（见 db_fsrs.dart）；
+/// 更老的版本走 2→8 / 3→8 / … 链式（各步之后追加 _upgrade7To8）；
+/// v1 仍删除（无迁移）；更新的版本（user_version > 8）仍按 from > to 抛错。
 /// - 删除失败 → 抛错、拒绝打开（不许在老库尚在的情况下建新库，
 ///   避免新旧库并存、读写串库），下次启动重试删除。
 /// 只读读 user_version 时不触发 onCreate/onUpgrade，删之前库是
@@ -61,6 +67,12 @@ Future<QuizDatabase> openAtImpl(String dbPath) async {
       // Win11 反馈包 5：老数据回填选项内容（读 ocr_raw 重解析，
       // 不调接口、不覆盖人工改过的选项；见 db_option_contents.dart）。
       await backfillOptionContentsIntoImpl(db);
+      // P5：v7 → v8 迁移（历史审计 + attempts 唯一来源重放，
+      // 见 db_fsrs.dart 的 migrateFsrsV7ToV8IntoImpl）。
+      // 已完成过一次的库直接跳过（幂等）；失败时抛错、开库失败，
+      // 不留半张卡，下次启动重跑。每次开库都跑到这里：新库刚建完
+      // 表时 attempts 为空，审计全零、只写一行日志，是空操作。
+      await migrateFsrsV7ToV8IntoImpl(db);
     },
   );
   // B1-Drift：Drift 是懒打开——不发查询就不建文件、不跑 onCreate /
@@ -321,6 +333,13 @@ Future<void> createTablesImpl(QuizDatabase db) async {
     CREATE UNIQUE INDEX idx_boxes_one_layer1_per_question
       ON question_boxes(question_id) WHERE layer = 1 AND question_id IS NOT NULL''',
   );
+  // P5 schema v8：fsrs_cards / fsrs_events / fsrs_migration_log
+  //（DDL 常量见 db_fsrs.dart；迁移 _upgrade7To8 的字面量须与这里
+  // 一字不差，见 drift/quiz_database.dart 该函数注释）。
+  await db.customStatement(fsrsCardsTableDDL);
+  await db.customStatement(fsrsEventsTableDDL);
+  await db.customStatement(fsrsMigrationLogTableDDL);
+  await db.customStatement(fsrsCardsDueIndexDDL);
 }
 
 /// B2 集成：`_seedCauseRecordsFor` 已删——全仓 grep 零产品调用方
@@ -397,8 +416,8 @@ Future<void> _seed(QuizDatabase db) async {
           ),
         );
   }
-  // §2.1：settings 表写 schemaVersion = '7'（与备份 _meta 同一口径；
+  // §2.1：settings 表写 schemaVersion = '8'（与备份 _meta 同一口径；
   // 与 PRAGMA user_version 是两回事）。新库从空开始，不预置演示
   // 数据（§6 第 1 条）：演示题、演示解决记录、演示 recent_tasks 一律不建。
-  await _upsertSettingInto(db, 'schemaVersion', '7');
+  await _upsertSettingInto(db, 'schemaVersion', '8');
 }

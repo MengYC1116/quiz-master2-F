@@ -126,12 +126,12 @@ void main() {
       AppDatabase.useDatabaseForTest(db);
       final repo = QuestionRepository(AppDatabase.instance);
 
-      // 迁移后 user_version=7，2 道题都在。
+      // 迁移后 user_version=8（P5 schema v8），2 道题都在。
       expect(
         (await db.customSelect('PRAGMA user_version').get())
             .single
             .data['user_version'],
-        7,
+        8,
       );
       expect(await repo.all(), hasLength(2));
       // 写路径：整行写回不再报 no such column。

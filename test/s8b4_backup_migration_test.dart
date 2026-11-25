@@ -17,7 +17,7 @@ import 'package:quiz_master2/data/drift/quiz_database.dart';
 
 void main() {
   group('B4.2 backupTables', () {
-    test('含补齐的 4 张表 + question_boxes + 最近查看 + OCR 任务 + attempts，共 16 张', () {
+    test('含补齐的 4 张表 + question_boxes + 最近查看 + OCR 任务 + attempts + fsrs_*，共 19 张', () {
       expect(
         AppDatabase.backupTables,
         containsAll([
@@ -32,9 +32,13 @@ void main() {
           'ocr_jobs',
           // 十四批 M2：v5 新表。
           'attempts',
+          // P5：v8 新表。
+          'fsrs_cards',
+          'fsrs_events',
+          'fsrs_migration_log',
         ]),
       );
-      expect(AppDatabase.backupTables.length, 16);
+      expect(AppDatabase.backupTables.length, 19);
     });
   });
 

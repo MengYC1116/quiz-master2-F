@@ -15,11 +15,13 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:quiz_master2/data/database.dart';
 import 'package:quiz_master2/data/repository.dart';
 import 'package:quiz_master2/data/review_engine.dart';
+import 'package:quiz_master2/data/review_scheduler.dart';
 import 'package:quiz_master2/models/exam_event.dart';
 import 'package:quiz_master2/models/models.dart';
 import 'package:quiz_master2/modules/review/review_page.dart';
 import 'package:quiz_master2/modules/settings/settings_page.dart';
 import 'package:quiz_master2/state/repository_provider.dart';
+import 'package:quiz_master2/state/review_notifier.dart';
 import 'package:quiz_master2/theme/app_theme.dart';
 import 'package:quiz_master2/widgets/uikit.dart';
 
@@ -150,6 +152,9 @@ class FakeOwnerRepo extends QuestionRepository {
   }) async => null;
 
   @override
+  Future<List<KnowledgePoint>> knowledgePoints() async => const [];
+
+  @override
   Future<void> clearReviewState() async {}
 }
 
@@ -162,14 +167,27 @@ Future<void> pumpReview(
   addTearDown(tester.view.resetPhysicalSize);
   addTearDown(tester.view.resetDevicePixelRatio);
   await tester.pumpWidget(
-    MaterialApp(
-      theme: AppTheme.light(scale: 1.0),
-      home: Scaffold(
-        body: ReviewPage(
-          key: UniqueKey(),
-          repo: repo,
-          onOpenDetail: (q, ids, {String? searchContext}) async {},
-          onGoWrongbook: () {},
+    // P3：复习页 load() 读调度器池内标记——外层覆盖一个确定性内存
+    // 调度器（fuzzing 关），不碰真实数据库（review_page_test.dart
+    // 同款做法）。
+    ProviderScope(
+      overrides: [
+        reviewSchedulerProvider.overrideWithValue(
+          FsrsReviewScheduler(
+            config: const SchedulerConfig(enableFuzzing: false),
+            store: InMemoryCardStore(),
+          ),
+        ),
+      ],
+      child: MaterialApp(
+        theme: AppTheme.light(scale: 1.0),
+        home: Scaffold(
+          body: ReviewPage(
+            key: UniqueKey(),
+            repo: repo,
+            onOpenDetail: (q, ids, {String? searchContext}) async {},
+            onGoWrongbook: () {},
+          ),
         ),
       ),
     ),

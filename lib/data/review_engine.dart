@@ -1,16 +1,24 @@
-// 十四批 M3：刷题 / 复习 / 软件内答题的纯逻辑层。
+// 刷题 / 复习 / 软件内答题的纯逻辑层（P2 简化基线，D2）。
 //
 // 本文件不碰数据库、不碰 UI、不读当前时间以外的任何状态：
-// 判定表（M3-6）、证据关联（M3-6A）、治愈规则 (d)+⑥（M3-7）、
-// 选题（M3-2）、跳过（M3-9）、版本检查（M3-10）、小结汇总（M3-15）
+// 判定表（M3-6）、选题（M3-2）、跳过（M3-9）、版本检查（M3-10）
 // 全部是纯函数，逐条可单测。数据库事务见 db_questions.dart 的
-// submitCauseVerdictIntoImpl / recordAttemptIntoImpl；会话状态机
-// 见 state/review_notifier.dart。
+// recordAttemptIntoImpl；会话状态机见 state/review_notifier.dart。
 //
-// 三条不可妥协的边界（PLAN M3 设计基线）：
-// 1. 题目是会话单位，错因是治疗单位，答题结果是证据，不是治疗命令。
-// 2. 答对不等于掌握——客观正确率是证据，不能替代错因级治疗判断。
-// 3. 专项练习不能污染正式复习；题目级客观结果绝不能直接复制到全部错因上。
+// P2（2026-11-25）：三步流程（看题/作答/核对），无置信度、无错因
+// 自查、无治愈判定、无核验。掌握与否由用户自己判断；软件只做
+// 安排间隔（FSRS，见 review_scheduler.dart）、记录对错事实、
+// 展示薄弱点。已删除：Confidence / CheckConfirm / EvidenceLink /
+// resolveVerification / DueSummary。CureEvaluation / evaluateCure
+// 移入 db_questions.dart，仅供旧 review_history 写入层保留。
+// ReviewVerdict / Verification / unsolvedReset / childSubmissionId
+// 仅供旧 review_history 写入层（db_questions.dart）与历史测试保留，
+// P2 起产品流程不再调用；P5 决定保留（理由见 db_questions.dart 的
+// recordSelfCheckIntoImpl 注释；移除归 P3/P4 队列替换时一并做）。
+//
+// 两条不可妥协的边界（PLAN M3 设计基线）：
+// 1. 题目是会话单位，答题结果是客观对错事实，不是治疗命令。
+// 2. 专项练习不能污染正式复习；正式复习的对错事实只记一次。
 
 import 'dart:convert';
 import 'dart:math';
@@ -39,32 +47,6 @@ class Verification {
   static const String objectiveGrading = '客观判分';
   static const String external = '外部资料核对';
 }
-
-/// 置信度（M3-5，仅选择/判断，提交前必选）。
-class Confidence {
-  static const String sure = '确定';
-  static const String unsure = '不太确定';
-  static const String guessed = '猜的';
-  static const Set<String> values = {sure, unsure, guessed};
-}
-
-/// 主观题核对确认四态（M3-4，P1-6；默认无选中，用 null 表示未选）。
-class CheckConfirm {
-  static const String matches = '已对照，关键答案/步骤符合';
-  static const String wrong = '已对照，有错误或明显遗漏';
-  static const String cannotJudge = '无法判断';
-  static const String notChecked = '尚未核对';
-}
-
-/// 证据关联判断三态（M3-6A；默认无选中，用 null 表示未选）。
-class EvidenceLink {
-  static const String yes = '是';
-  static const String no = '否';
-  static const String unsure = '不确定';
-}
-
-/// 两次治愈成功之间的最小间隔（M3-7 ⑥）：24 小时。
-const int cureMinIntervalMs = 24 * 60 * 60 * 1000;
 
 /// 错因的稳定身份（review_history.cause_id）：优先用 cause_records.id；
 /// 内存里未入库的记录回退为 '$questionId|$cause'。写库与查重必须用
@@ -126,207 +108,8 @@ int? gradeObjective(Question q, String selected) {
   return selected == q.correctOption ? 1 : 0;
 }
 
-// ---------------------------------------------------------------------------
-// 核验判定（M3-6 表 A/B/C + M3-6A + M3-8）
-// ---------------------------------------------------------------------------
-
-/// 一次错因自查的核验判定结果。
-class VerificationOutcome {
-  const VerificationOutcome({
-    required this.status,
-    required this.source,
-    this.attemptId,
-  });
-
-  /// 已核验 / 未核验。
-  final String status;
-
-  /// 软件标准答案 / 客观判分 / 外部资料核对 / 未核验。
-  final String source;
-
-  /// 本次核验依据的 attempt id（客观判分时必填；其他来源为 null）。
-  final String? attemptId;
-
-  bool get isVerified => status == Verification.verified;
-}
-
-/// 判定一次“已解决”自查的核验来源。只在 verdict == 已解决 时调用；
-/// 其他 verdict 一律返回未核验（写库时仍记一行：未解决记未核验行，
-/// 不确定记中性事件行）。
-///
-/// 判定顺序（M3-6）：
-/// 1. 客观判分可用（已确认标签且已填正确答案的单选/判断）→ 证据关联路径：
-///    答对 + 信心=确定 + 关联=是 → 客观判分（attempt_id 记入）；
-///    其余一律未核验（答错、猜对、低信心、关联否/不确定/未选）。
-/// 2. 有软件内标准答案文本（多选/不定项/填空/计算/证明等非客观判分题，
-///    或客观题未达判分条件但答案文本有效）→ 主观核对确认路径：
-///    核对确认选“符合” → 软件标准答案；其余三态 → 未核验。
-/// 3. 无软件内标准答案 → 外部核对路径：勾选“我已对照可靠外部资料核对”
-///    → 外部资料核对；不勾选 → 未核验的自我判断。
-/// 专项练习不走本函数（不写 review_history）。
-VerificationOutcome resolveVerification({
-  required Question question,
-  required String verdict,
-  int? objectiveCorrect,
-  String? confidence,
-  String? evidenceLink,
-  String? checkConfirm,
-  bool externalChecked = false,
-  String? attemptId,
-}) {
-  const unverified = VerificationOutcome(
-    status: Verification.unverified,
-    source: Verification.unverified,
-  );
-  if (verdict != ReviewVerdict.solved) return unverified;
-  if (objectiveGradingAvailable(question)) {
-    // 表 A 客观题：只有答对 + 确定 + 关联=是才有客观证据可用。
-    if (objectiveCorrect == 1 &&
-        confidence == Confidence.sure &&
-        evidenceLink == EvidenceLink.yes &&
-        attemptId != null) {
-      return VerificationOutcome(
-        status: Verification.verified,
-        source: Verification.objectiveGrading,
-        attemptId: attemptId,
-      );
-    }
-    return unverified;
-  }
-  if (question.hasValidStandardAnswer) {
-    // 有软件答案的非客观判分题：核对确认“符合”才具备核验资格。
-    if (checkConfirm == CheckConfirm.matches) {
-      return const VerificationOutcome(
-        status: Verification.verified,
-        source: Verification.softwareAnswer,
-      );
-    }
-    return unverified;
-  }
-  // 表 B 无软件内标准答案：只有勾选外部核对才计入。
-  if (externalChecked) {
-    return const VerificationOutcome(
-      status: Verification.verified,
-      source: Verification.external,
-    );
-  }
-  return unverified;
-}
-
-// ---------------------------------------------------------------------------
-// 治愈规则（M3-7：(d) 同会话重复检查 + ⑥ 24 小时锚点链）
-// ---------------------------------------------------------------------------
-
-/// 一次已核验“已解决”能否计入治愈的判定结果。
-class CureEvaluation {
-  const CureEvaluation({
-    required this.counted,
-    required this.newSolvedCount,
-    required this.newStatus,
-    this.newRecheckDate,
-    this.newLastCountedSuccessAt,
-    this.newLastCountedSessionId,
-  });
-
-  /// 本次是否计入治愈次数。
-  final bool counted;
-
-  /// 计入后的 solvedCount（不计入时保持原值）。
-  final int newSolvedCount;
-
-  /// 计入/复查后的状态。
-  final CauseStatus newStatus;
-
-  /// 治愈或复查通过后的下次复查日（未治愈时为 null）。
-  final DateTime? newRecheckDate;
-
-  /// 计入后要保存的锚点（不计入时为 null，调用方不刷新锚点）。
-  final int? newLastCountedSuccessAt;
-  final String? newLastCountedSessionId;
-}
-
-/// 判定一次已核验“已解决”是否计入治愈（纯函数；调用方须先完成
-/// 同会话重复检查，把 [alreadySolvedInSession] 传进来——事务内按
-/// cause_id + session_id 查 review_history，含第一次未核验的
-/// “已解决”，不能只查已计入成功的事件）。
-///
-/// 规则：
-/// - isRecheck（已治愈错因的复查通过）：不增加初次治愈次数，锚点不动，
-///   状态保持已解决、复查日顺延。
-/// - cureChecks == 1：一次有效成功直接治愈，不等待 24 小时。
-/// - 首次计入（锚点为空）：计数并保存锚点。
-/// - 后续：须同时满足 session 与上次计入会话不同、且距上次计入成功
-///   ≥ 24 小时；计入后更新两个锚点；不足 24 小时不计数、不刷新锚点。
-/// - alreadySolvedInSession（(d)）：本次只记 history，不计数、不刷新锚点。
-CureEvaluation evaluateCure({
-  required CauseRecord record,
-  required String sessionId,
-  required int nowMs,
-  required int cureChecks,
-  required int recheckIntervalDays,
-  bool isRecheck = false,
-  bool alreadySolvedInSession = false,
-}) {
-  final today = DateTime.fromMillisecondsSinceEpoch(nowMs);
-  final todayDate = DateTime(today.year, today.month, today.day);
-  final nextRecheck = todayDate.add(Duration(days: recheckIntervalDays));
-  if (isRecheck) {
-    // 复查通过：不增加初次治愈次数（HTML 口径），只顺延复查日。
-    return CureEvaluation(
-      counted: false,
-      newSolvedCount: record.solvedCount,
-      newStatus: CauseStatus.solved,
-      newRecheckDate: nextRecheck,
-    );
-  }
-  if (alreadySolvedInSession) {
-    // (d)：同一会话内同一错因第二次“已解决”只记 history，不推进治愈。
-    return CureEvaluation(
-      counted: false,
-      newSolvedCount: record.solvedCount,
-      newStatus: record.status,
-    );
-  }
-  bool counts;
-  if (cureChecks <= 1) {
-    counts = true;
-  } else if (record.lastCountedSuccessAt == null ||
-      record.lastCountedSessionId == null) {
-    counts = true;
-  } else {
-    counts =
-        record.lastCountedSessionId != sessionId &&
-        nowMs - record.lastCountedSuccessAt! >= cureMinIntervalMs;
-  }
-  if (!counts) {
-    return CureEvaluation(
-      counted: false,
-      newSolvedCount: record.solvedCount,
-      newStatus: record.status,
-    );
-  }
-  final newCount = record.solvedCount + 1;
-  if (newCount >= cureChecks) {
-    return CureEvaluation(
-      counted: true,
-      newSolvedCount: newCount,
-      newStatus: CauseStatus.solved,
-      newRecheckDate: nextRecheck,
-      newLastCountedSuccessAt: nowMs,
-      newLastCountedSessionId: sessionId,
-    );
-  }
-  return CureEvaluation(
-    counted: true,
-    newSolvedCount: newCount,
-    newStatus: CauseStatus.inProgress,
-    newLastCountedSuccessAt: nowMs,
-    newLastCountedSessionId: sessionId,
-  );
-}
-
-/// “未解决”的重置（M3-7 ⑥.4）：solvedCount 清零，两个锚点清空，
-/// 状态回解决中，复查日清掉。
+/// “未解决”的重置（旧写入层用，P2 起产品流程不再调用）：
+/// solvedCount 清零，两个锚点清空，状态回解决中，复查日清掉。
 CauseRecord unsolvedReset(CauseRecord record, DateTime now) =>
     record.copyWith(
       status: CauseStatus.inProgress,
@@ -531,7 +314,9 @@ Map<String, Map<String, Object?>> decodePerQuestionState(String? raw) {
 
 /// 一次实际作答（attempts 行的内存形态）。只在用户真正作答时创建；
 /// 只跳过、从未作答的题不建 attempt。status 只取 已提交/已完成作答/
-/// 跳过（“未作答”不在枚举内）；correct 为 null 表示无标准答案或不判分。
+/// 跳过（“未作答”不在枚举内）；correct 为 null 表示无标准答案或不判分
+/// （P2：未判分绝不写成 false）。confidence 列保留读旧值，P2 起新
+/// 流程不再采集，写库时一律为 null。
 class AttemptData {
   const AttemptData({
     required this.id,
@@ -596,39 +381,4 @@ class AttemptData {
       createdAt: createdAt,
     );
   }
-}
-
-// ---------------------------------------------------------------------------
-// 小结汇总（M3-15）
-// ---------------------------------------------------------------------------
-
-/// 到期复习小结的数字口径：未判分/无标准答案数量不混入答对、答错统计。
-class DueSummary {
-  const DueSummary({
-    required this.completedQuestions,
-    required this.handledCauses,
-    required this.newlyCured,
-    required this.recheckPassed,
-    required this.recheckFailed,
-    required this.unverifiedSelfCount,
-    required this.ungradedCount,
-    required this.skippedCount,
-    required this.deferredCount,
-    required this.objectiveCorrect,
-    required this.objectiveWrong,
-    this.nextRecheckDate,
-  });
-
-  final int completedQuestions;
-  final int handledCauses;
-  final int newlyCured;
-  final int recheckPassed;
-  final int recheckFailed;
-  final int unverifiedSelfCount;
-  final int ungradedCount;
-  final int skippedCount;
-  final int deferredCount;
-  final int objectiveCorrect;
-  final int objectiveWrong;
-  final DateTime? nextRecheckDate;
 }

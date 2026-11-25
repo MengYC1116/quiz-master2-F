@@ -2491,3 +2491,13 @@ unavailable），kill -9 后新进程可取锁——与实现依据一致。
 - 改动：学科管理页英文名栏删净（字段控制器/焦点、保存方法、UI 行）；notifier 的 `setEnglishName` 唯一调用方就是该栏，删栏后成死代码，随栏一起删（代次注释同步改口：只剩改名清英文名时 +1）；其测试一并删。手动标志的保护作用仍在（预设 seed manual=1、备份恢复带标志），由既有测试覆盖（b27 手动值不被覆盖、改名手动值不动）。不删字段、不动翻译链路：english_name 列与翻译/补翻/改名重翻全部保留，只删 UI 与其他露出面。
 - 测试：subjects_page 的 D-257 栏期望测试删除，改名测试注释同步；b27 的 setEnglishName 测试删除；新增断言——学科管理页无英文名 UI（无「英文名」文字、无英文名 hint 的 TextField）、searchHaystack 不含英文名（有存值英文名的学科，搜英文名不命中、搜中文名命中）。验证口径与二十七批相同：只测相关 + analyze，不跑全量（Meng 21:06 定）。
 - 推送仍暂停（Meng 21:31 叫停），二十八批修完也不自行恢复推送，等他发话。
+
+## D-259 — P2 简化复习基线：三步流程 + FSRS 取代 D-117 治愈模型（2026-11-25，Meng 2026-11-24 定，P2 落地）
+
+- 取代关系：本条 supersede D-117 的治愈模型。D-117 旧条一个字不动，只作历史记录；此后复习流程不再按 D-117 执行。被取代的 D-117 内容：错因自查 verdict（已解决/未解决/不确定）、核验来源（软件标准答案/客观判分/外部资料核对）、治愈计数（(d) 同会话重复检查 + ⑥ 24 小时锚点链）、作答前置信度（确定/不太确定/猜的）、“答对不等于掌握、须核验才推进治愈”的判定口径。
+- 新基线（Meng 2026-11-24 定，D2）：复习与专项练习均 3 步（看题/作答/核对），无置信度、无错因自查、无治愈判定、无软件判定掌握；掌握与否由用户自己判断。软件只做三件事：安排间隔（到期复习用 FSRS-6，对错只映射 Again/Good）、记录对错事实（attempts）、展示薄弱点（小结按知识点排弱点）。
+- 落地（P2，fsrs-review-v2）：`SessionStage` 去掉 `selfCheck`，步骤条 3 步；删 `CureEvaluation`/`evaluateCure`/`resolveVerification`/`Confidence`/`CheckConfirm`/`EvidenceLink`/`DueSummary`；核对提交收拢到 `ReviewNotifier.submitCheck` 一处（写 attempts + 调 `recordAnswer` + 存卡 + 导出下次到期时间，eventId 复用稳定的 `attemptSubmissionId`）；小结只报对错数、用时、按知识点排的弱点、下次时间（FSRS 算出，不再是固定“错题明天/对题 7 天”）。
+- `review_history` 旧字段（`verdict`/`verification_*`）停止写入、不物理删除，保留历史查询能力。产品流程的两个写入点均已断开：`submitCauseVerdictIntoImpl`（唯一产品调用方是旧 `finishQuestion`，已删）与 `recordSelfCheckIntoImpl`（产品流程里早已无调用方）；两个写入入口本身保留（供旧写入层测试），P5 迁移时决定是否移除。
+- 旧会话兼容（运行时，不动迁移）：`review_state` 里停在旧流程的会话按有无 attempts 客观记录决定完成或重做——看题/作答阶段保留原阶段；核对未提交回到核对步不重复写；已写客观记录视为已完成不重计分；`selfCheck` 阶段映射回核对步再按有无客观记录决定；中途退出续接保留。
+- 会话切换：`review_state` 是单行表，正式复习与专项练习不能互相覆盖——页面已有二选一（继续上次/放弃重开），P2 在 `startSession`/`startPracticeSession` 入口再加兜底守卫：已有未完成会话时直接调用不开新会话、不覆盖断点。
+- 未动：列表的错因分组/已解决区仍按 `cause_records` 状态分流（那是列表模型，不是会话治愈判定）；`cause_records.solvedCount`/`recheckDate` 等字段与旧写入层保留，P5 迁移时再定去留；`settings.cureChecks`/`recheckIntervalDays` 设置项保留（旧写入层与历史数据用），新流程不读。

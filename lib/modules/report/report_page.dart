@@ -1,12 +1,15 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../data/p3_review_entries.dart';
 import '../../data/repository.dart';
 import '../../models/models.dart';
 import '../../state/report_provider.dart';
 import '../../state/repository_provider.dart';
+import '../../state/review_notifier.dart';
 import '../../theme/design_tokens.dart';
 import '../../widgets/uikit.dart';
+import 'weak_point_list_page.dart';
 
 /// 学习报告：只答三个问题——弱在哪、有没有效果、接下来练什么。
 /// 无统计墙、无图表，纯数字与文字；打开即实时更新；无导出。
@@ -53,18 +56,26 @@ class ReportPage extends ConsumerStatefulWidget {
     required this.repo,
     required this.onGoReview,
     required this.onOpenWrongbookFiltered,
+    this.onStartPracticeWithQuestions,
   });
 
   final QuestionRepository repo;
   final VoidCallback onGoReview;
 
   /// 点弱点行进错题本：打开对应学科那本，并按该错因 / 知识点筛好。
+  /// P3 入口 3 起弱点行改为先进题目列表页；本回调保留作列表页里的
+  /// “在错题本中查看”次入口。
   final void Function({
     String? subjectId,
     String? cause,
     String? knowledgePointId,
   })
   onOpenWrongbookFiltered;
+
+  /// P3 入口 3：薄弱点列表页“开始专项练习”（题 id + 数量；只练不排）。
+  /// 可空：不传时回落到去复习页（选题页）。
+  final void Function(List<String> questionIds, {int? count})?
+  onStartPracticeWithQuestions;
 
   @override
   ConsumerState<ReportPage> createState() => _ReportPageState();
@@ -217,10 +228,7 @@ class _ReportPageState extends ConsumerState<ReportPage> {
                     expanded: _expandCauses,
                     onToggleExpand: () =>
                         setState(() => _expandCauses = !_expandCauses),
-                    onTap: (g) => widget.onOpenWrongbookFiltered(
-                      subjectId: g.subjectId,
-                      cause: g.key,
-                    ),
+                    onTap: (g) => _openWeakList(context, ref, report, g, false),
                   ),
                 ),
                 SizedBox(width: DesignTokens.reportTwoColGap * scale),
@@ -235,10 +243,7 @@ class _ReportPageState extends ConsumerState<ReportPage> {
                     expanded: _expandKps,
                     onToggleExpand: () =>
                         setState(() => _expandKps = !_expandKps),
-                    onTap: (g) => widget.onOpenWrongbookFiltered(
-                      subjectId: g.subjectId,
-                      knowledgePointId: g.key,
-                    ),
+                    onTap: (g) => _openWeakList(context, ref, report, g, true),
                     isKp: true,
                   ),
                 ),
@@ -258,10 +263,7 @@ class _ReportPageState extends ConsumerState<ReportPage> {
                   expanded: _expandCauses,
                   onToggleExpand: () =>
                       setState(() => _expandCauses = !_expandCauses),
-                  onTap: (g) => widget.onOpenWrongbookFiltered(
-                    subjectId: g.subjectId,
-                    cause: g.key,
-                  ),
+                  onTap: (g) => _openWeakList(context, ref, report, g, false),
                 ),
                 SizedBox(height: DesignTokens.reportSectionMarginTop * scale),
                 _weakList(
@@ -274,10 +276,7 @@ class _ReportPageState extends ConsumerState<ReportPage> {
                   expanded: _expandKps,
                   onToggleExpand: () =>
                       setState(() => _expandKps = !_expandKps),
-                  onTap: (g) => widget.onOpenWrongbookFiltered(
-                    subjectId: g.subjectId,
-                    knowledgePointId: g.key,
-                  ),
+                  onTap: (g) => _openWeakList(context, ref, report, g, true),
                   isKp: true,
                 ),
               ],
@@ -404,6 +403,71 @@ class _ReportPageState extends ConsumerState<ReportPage> {
     );
   }
 
+  /// P3 入口 3：弱点行样本量文案（题目数 / 作答次数 / 答错次数 /
+  /// 近期错误率 / 时间范围；样本少标“数据较少”）。
+  String _weakSampleText(ReportState report, WeakGroup group) {
+    final stats = report.weakStats(group);
+    return '${stats.label}${stats.sparse ? ' · 数据较少' : ''}';
+  }
+
+  /// P3 入口 3：点弱点行 → 薄弱点题目列表页（不再直接进错题本）。
+  void _openWeakList(
+    BuildContext context,
+    WidgetRef ref,
+    ReportState report,
+    WeakGroup group,
+    bool isKp,
+  ) {
+    // 同一题多标签按 question_id 去重，保序。
+    final seen = <String>{};
+    final questions = [
+      for (final q in report.questions)
+        if (group.questionIds.contains(q.id) && seen.add(q.id)) q,
+    ];
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => WeakPointListPage(
+          group: group,
+          report: report,
+          questions: questions,
+          isKp: isKp,
+          onStartPractice: (ids, {count}) {
+            final start = widget.onStartPracticeWithQuestions;
+            if (start != null) {
+              start(ids, count: count);
+            } else {
+              widget.onGoReview();
+            }
+          },
+          onJoinReview: (ids) async {
+            final qs = [
+              for (final q in questions)
+                if (ids.contains(q.id)) q,
+            ];
+            final result = await widget.repo.joinFsrsPool(
+              questions: qs,
+              scheduler: ref.read(reviewSchedulerProvider),
+            );
+            // 刷新池内标记：重读报告（load 会重读 fsrsPoolIds）。
+            await ref.read(reportProvider.notifier).load();
+            return fsrsBatchMessage(
+              FsrsBatchOutcome(
+                added: result.added,
+                skipped: result.skipped,
+                failed: result.failed,
+              ),
+            );
+          },
+          onOpenInWrongbook: () => widget.onOpenWrongbookFiltered(
+            subjectId: group.subjectId,
+            cause: isKp ? null : group.key,
+            knowledgePointId: isKp ? group.key : null,
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _weakList({
     required ReportState report,
     required AppPalette palette,
@@ -457,7 +521,10 @@ class _ReportPageState extends ConsumerState<ReportPage> {
   }
 
   /// 弱点行（HTML `.rpt-row`）：序号圆 + 学科 · 错因/知识点 + 题名 +
-  /// 计数 + ›；点行进错题本。
+  /// 计数 + ›；点行进薄弱点题目列表页（P3 入口 3，D8）。
+  ///
+  /// 行内同时显示样本量（P3）：题目数 / 作答次数 / 答错次数 /
+  /// 近期错误率 / 时间范围，样本少标“数据较少”。
   Widget _weakRow(
     AppPalette palette,
     Brightness brightness,
@@ -548,6 +615,16 @@ class _ReportPageState extends ConsumerState<ReportPage> {
                       const SizedBox(height: 2),
                       Text(
                         detail,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: DesignTokens.reportRowDetailFontSize,
+                          color: palette.muted,
+                        ),
+                      ),
+                      // P3 入口 3：样本量行（口径见 report_provider.WeakSampleStats）。
+                      Text(
+                        _weakSampleText(report, group),
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: TextStyle(

@@ -1,6 +1,9 @@
 import '../data/database.dart';
 import '../data/data_change_events.dart';
+import '../data/p3_review_entries.dart';
+import '../data/p4_new_release.dart';
 import '../data/review_engine.dart';
+import '../data/review_scheduler.dart';
 import '../models/exam_event.dart';
 import '../models/models.dart';
 import '../services/import_service.dart';
@@ -169,6 +172,71 @@ class QuestionRepository {
       }
       return (joined: joined, skipped: skipped, failed: failed);
     });
+  }
+
+  /// P3 入口 1–3 共用：当前已在复习池里的题 id（fsrs_cards 行）。
+  /// 只读；读不到（旧库/无表/Fake 未覆盖）时返回空集，不抛错——
+  /// 调用方把“未知”当成“都不在池里”，行内标记宁缺勿错。
+  Future<Set<String>> fsrsPoolQuestionIds() async {
+    try {
+      return (await _db.fsrsCardQuestionIds()).toSet();
+    } catch (_) {
+      return const {};
+    }
+  }
+
+  /// P3 入口 3 样本量统计用：全部 attempts（正式 + 专项）。
+  /// 读不到时返回空列表，不抛错（统计口径里样本量为 0 即“数据较少”）。
+  Future<List<AttemptData>> loadAllAttempts() async {
+    try {
+      return await _db.allAttempts();
+    } catch (_) {
+      return const [];
+    }
+  }
+
+  /// P3：三个加题入口 + 详情页“加入复习”共用的 FSRS 入池批量方法。
+  ///
+  /// 逐题走同一 [ReviewScheduler.initializeQuestion]：已在池的题
+  /// 直接返回现有卡片，不建第二张（去重，一题一卡）；不在池的建新卡。
+  /// 入池同时调 [setReviewJoined]（q, true）播种错因记录——到期复习
+  /// 的现有队列（buildDueQueue / dueToday）仍以 reviewJoined +
+  /// cause_records 为准，FSRS 卡片与旧队列必须同进同出；播种失败
+  /// （如无错因返回 false）不影响入池计数，卡片已建即算新增。
+  /// 单题 initialize 失败计入 `failed`，不中断整批；输入重复 id 只
+  /// 算一次（按首次出现顺序去重）。
+  /// 返回 (added 新增，skipped 已在池跳过，failed 失败）。
+  /// 取消加入不走这里（见 [cancelReviewBatch]：只翻 review_joined，
+  /// FSRS 卡片保留，历史状态不删，重加时本方法直接返回原卡）。
+  Future<({int added, int skipped, int failed})> joinFsrsPool({
+    required List<Question> questions,
+    required ReviewScheduler scheduler,
+  }) async {
+    final pooled = await scheduler.pooledQuestionIds();
+    final seen = <String>{};
+    var added = 0;
+    var skipped = 0;
+    var failed = 0;
+    for (final q in questions) {
+      if (!seen.add(q.id)) continue;
+      if (pooled.contains(q.id)) {
+        skipped++;
+        continue;
+      }
+      try {
+        await scheduler.initializeQuestion(q.id);
+        pooled.add(q.id);
+        try {
+          await setReviewJoined(q, true);
+        } catch (_) {
+          // 播种错因记录失败不影响入池：卡片已建，题已在池。
+        }
+        added++;
+      } catch (_) {
+        failed++;
+      }
+    }
+    return (added: added, skipped: skipped, failed: failed);
   }
 
   /// 批量取消加入复习（B11-6）：与详情页单个取消同语义——只把
@@ -372,7 +440,14 @@ class QuestionRepository {
 
   /// 十四批 M3：单条错因 verdict 提交（M3-7 治愈规则 + M3-8 核验字段 +
   /// M3-10 幂等）。每错因一次独立事务；调用方按题循环，跨错因部分
-  /// 失败时已写错因保留、只补未写成的（见 review_notifier.finishQuestion）。
+  /// 失败时已写错因保留、只补未写成的。
+  ///
+  /// P2（2026-11-25）：产品流程不再调用本方法——新流程不写
+  /// review_history 的 verdict / verification_* 字段（停止写入，
+  /// 不物理删除，历史查询能力保留）。本方法仅供旧写入层测试
+  /// （b14_m3_verdict_test）保留；P5 决定保留（理由见
+  /// db_questions.dart 的 recordSelfCheckIntoImpl 注释；移除归
+  /// P3/P4 队列替换时一并做）。
   Future<VerdictSubmitResult> submitCauseVerdict({
     required String questionId,
     required CauseRecord record,
@@ -405,6 +480,115 @@ class QuestionRepository {
   Future<String> recordAttempt(AttemptData attempt) =>
       _db.recordAttemptTxn(attempt: attempt);
 
+  /// P5：核对提交事务双写（attempts 行 + fsrs_cards 行 + 事件账本
+  /// 同一事务，见 AppDatabase.submitReviewCheckTxn）。
+  /// [result] 为 null = 专项练习或无法判分：只写 attempts，不推进
+  /// FSRS、不改到期时间。[scheduler] 须是与本库同源的调度器
+  ///（生产是 reviewSchedulerProvider 的 SQLite 调度器）。
+  Future<({String attemptId, DateTime? nextDue})> submitReviewCheck({
+    required AttemptData attempt,
+    required ReviewResult? result,
+    required DateTime reviewedAt,
+    required String eventId,
+    required ReviewScheduler scheduler,
+  }) => _db.submitReviewCheckTxn(
+    attempt: attempt,
+    result: result,
+    reviewedAt: reviewedAt,
+    eventId: eventId,
+    scheduler: scheduler,
+  );
+
+  /// P5：首次呈现记录（第六轮补充第 1 项，见
+  /// AppDatabase.recordFirstPresentedTxn）。返回本次是否写下了
+  ///（同一内容版本已有记录时返回 false，不重计）。
+  Future<bool> recordFirstPresented({
+    required String questionId,
+    required DateTime presentedAtUtc,
+    required String localDate,
+    required int contentVersion,
+  }) => _db.recordFirstPresentedTxn(
+    questionId: questionId,
+    presentedAtUtc: presentedAtUtc,
+    localDate: localDate,
+    contentVersion: contentVersion,
+  );
+
+  /// P4：今日新题释放预览（纯计算，不写库）。
+  ///
+  /// 读调度器的全部卡片 + 本地全部题目（归档过滤走 activePoolIds
+  /// 同款口径）；[dailyNewLimit] 是设置值（默认 10、上限 50，
+  /// planNewRelease 内归一）；[now] 默认当前时间——本地日期按
+  /// [now] 的本地日历日算，时间戳一律 UTC。调用方（复习页 load）
+  /// 用它只做展示；真正释放发生在题目首次显示时（见
+  /// [recordQuestionPresented]），未显示的题不提前耗额度。
+  Future<FsrsReleasePlan> previewNewRelease({
+    required ReviewScheduler scheduler,
+    required int dailyNewLimit,
+    DateTime? now,
+  }) async {
+    final at = now ?? DateTime.now();
+    final cards = await scheduler.loadAllCards();
+    final questions = await all(includeArchived: true);
+    final archivedIds = {
+      for (final q in questions)
+        if (q.isArchived) q.id,
+    };
+    return planNewRelease(
+      cards: cards,
+      archivedIds: archivedIds,
+      dailyNewLimit: dailyNewLimit,
+      todayLocalDate: localDateString(at),
+    );
+  }
+
+  /// P4：FSRS 真正到期的题（getDueQuestions 已隔离未释放新卡，
+  /// 这里只再滤掉归档题——归档题保留卡片，但不进到期队列）。
+  /// 读不到时返回空列表，不抛错（到期标记是锦上添花，不拖垮列表）。
+  Future<List<String>> fsrsDueQuestionIds({
+    required ReviewScheduler scheduler,
+    DateTime? now,
+  }) async {
+    try {
+      final due = await scheduler.getDueQuestions(now ?? DateTime.now());
+      final questions = await all(includeArchived: true);
+      final archivedIds = {
+        for (final q in questions)
+          if (q.isArchived) q.id,
+      };
+      return activePoolIds(
+        poolIds: due.toSet(),
+        archivedIds: archivedIds,
+      ).toList()..sort((a, b) => due.indexOf(a).compareTo(due.indexOf(b)));
+    } catch (_) {
+      return const [];
+    }
+  }
+
+  /// P4：题目首次显示时记首次呈现（第六轮补充第 1 项的调用点）。
+  ///
+  /// 只在到期复习会话里、题目第一次进入“看题”步时调（专项练习不调，
+  /// 不耗新题额度）；同一内容版本已有记录时 recordFirstPresented
+  /// 返回 false（退出恢复、第二天重看都不重计）；内容重置后新版本
+  /// 重新计。题还没卡时 recordFirstPresentedInto 会先建一张新卡。
+  /// 写入失败时返回 false，不抛错——呈现记录失败绝不能拖垮会话。
+  Future<bool> recordQuestionPresented({
+    required Question question,
+    DateTime? now,
+  }) async {
+    try {
+      final at = now ?? DateTime.now();
+      return await recordFirstPresented(
+        questionId: question.id,
+        presentedAtUtc: at.toUtc(),
+        localDate: localDateString(at),
+        contentVersion: question.contentVersion,
+      );
+    } catch (_) {
+      return false;
+    }
+  }
+
   /// 十四批 M3：读一条 attempt / 某会话全部 attempts。
   Future<AttemptData?> loadAttempt({
     required String sessionId,
@@ -415,6 +599,11 @@ class QuestionRepository {
       _db.loadAttemptsForSession(sessionId: sessionId);
 
   /// 十四批 M3（M3-10 断点恢复重建用）：本会话里该错因是否已有 verdict 事件。
+  ///
+  /// P2（2026-11-25）：产品流程不再调用本方法——会话恢复只认
+  /// attempts 行（见 _validateSavedSession）。仅供旧写入层保留，
+  /// P5 决定保留（理由见 db_questions.dart 的 recordSelfCheckIntoImpl
+  /// 注释；移除归 P3/P4 队列替换时一并做）。
   Future<bool> hasSessionVerdict({
     required String causeStableId,
     required String sessionId,

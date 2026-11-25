@@ -60,6 +60,7 @@ import '../services/import_service.dart';
 import '../services/ocr_queue.dart';
 import '../services/page_image_pipeline.dart';
 import 'repository_provider.dart';
+import 'review_notifier.dart';
 
 /// 详情页业务状态的 Provider：页面出现即读库（见 [DetailNotifier.build]）。
 ///
@@ -1484,6 +1485,19 @@ class DetailNotifier extends Notifier<DetailState> {
       if (q.allCauses.isEmpty) return false;
       final ok = await _repo.setReviewJoined(q, true);
       if (!ok) return false;
+      // P3：三个入口 + 详情页“加入复习”共用同一 initializeQuestion()——
+      // 已在池的题直接返回现有卡片，不建第二张。建卡是 best-effort 且
+      // 不 await：真实 SQLite 调度器在 Fake repo 的 widget 测试里可能
+      // 永不完成（fake async 下 Drift 查询不推进），await 会卡住后面
+      // 的 load()、按钮翻不了；try/catch 只能接抛错、接不住挂起。
+      // 生产里卡片照常在后台建；建失败 / 未建时 FSRS 卡片下次入池时再建。
+      unawaited(() async {
+        try {
+          await ref.read(reviewSchedulerProvider).initializeQuestion(q.id);
+        } catch (_) {
+          // 见上：建卡失败不阻断加入复习。
+        }
+      }());
     } else {
       await _repo.setReviewJoined(q, false);
     }

@@ -59,6 +59,11 @@ class DirectFakeRepo extends QuestionRepository {
   Future<List<SavedSearch>> savedSearches() async =>
       List.of(savedSearchList);
 
+  // P3 入口 1：load() 读池内标记（不覆写会走真实库、页面卡 loading、
+  // pumpAndSettle 超时）。
+  @override
+  Future<Set<String>> fsrsPoolQuestionIds() async => const {};
+
   @override
   Future<void> saveSavedSearch(SavedSearch search) async {
     savedSearchList.removeWhere((s) => s.id == search.id);

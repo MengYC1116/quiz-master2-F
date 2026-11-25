@@ -5,10 +5,16 @@
 // AppDatabase.setReviewJoinedInto 同语义的内存模拟），不碰真实数据库。
 // Widget 测试：批量条三个按钮、勾选加入 + 跳过反馈、“全部加入”的
 // 作用域（当前筛选结果，不限当前页）、“开始复习”跳转、批量取消。
+// P3（2026-11-25，D6）：批量条“加入复习”“全部加入复习”改走 FSRS
+// 入池（joinFsrsPool）：无错因的题也建卡（只建卡、不播种错因记录，
+// 不计入失败）；已在池的题跳过并计数；文案为“新增 N 道；M 道已在复习，
+// 跳过”。旧 B11-6 的 hasJoinableCause / joinReviewBatch 判定层保留，
+// 单元测试不动。
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:quiz_master2/data/database.dart';
 import 'package:quiz_master2/data/repository.dart';
+import 'package:quiz_master2/data/review_scheduler.dart';
 import 'package:quiz_master2/models/models.dart';
 import 'package:quiz_master2/widgets/uikit.dart';
 
@@ -302,6 +308,17 @@ void main() {
       expect(find.text('取消加入复习'), findsOneWidget);
     }
 
+    /// P3：给 repo 与 pumpWrongbook 接同一个内存调度器（不碰真实数据库），
+    /// 行内“已在复习”标记与入池结果共用同一池。
+    FsrsReviewScheduler wireScheduler(_B116Repo repo) {
+      final scheduler = FsrsReviewScheduler(
+        config: const SchedulerConfig(enableFuzzing: false),
+        store: InMemoryCardStore(),
+      );
+      repo.scheduler = scheduler;
+      return scheduler;
+    }
+
     testWidgets('未勾选时加入/取消禁用，全部加入可用',
         (tester) async {
       final repo = reviewRepo();
@@ -320,13 +337,15 @@ void main() {
       expect(btn('全部加入复习').onPressed, isNotNull);
     });
 
-    testWidgets('勾选加入：加入 2 道、跳过 1 道，给开始复习入口',
+    testWidgets('勾选加入：3 道都建卡（无错因的题只建卡、不播种），给开始复习入口',
         (tester) async {
       final repo = reviewRepo();
+      final scheduler = wireScheduler(repo);
       var goReviewCalls = 0;
       await pumpWrongbook(
         tester,
         repo: repo,
+        scheduler: scheduler,
         onGoReview: ({String? subjectId}) => goReviewCalls++,
       );
       await openMathListCompact(tester);
@@ -339,9 +358,10 @@ void main() {
       await tester.tap(find.text('加入复习'));
       await tester.pumpAndSettle();
 
-      expect(find.text('已加入复习 2 道；1 道已无未解决错因，跳过'),
-          findsOneWidget);
+      // P3：3 道都建卡（qb 无错因只建卡、不播种，不计入失败/跳过）。
+      expect(find.text('新增 3 道'), findsOneWidget);
       expect(find.text('开始复习'), findsOneWidget);
+      expect(await scheduler.pooledQuestionIds(), {'qa', 'qb', 'qc'});
       Question byId(String id) =>
           repo.questions.firstWhere((q) => q.id == id);
       expect(byId('qa').reviewJoined, isTrue);
@@ -366,10 +386,11 @@ void main() {
       expect(goReviewCalls, 1);
     });
 
-    testWidgets('只勾无错因的题：全部跳过，不给开始复习入口',
+    testWidgets('只勾无错因的题：只建卡、不播种错因记录，仍给开始复习入口',
         (tester) async {
       final repo = reviewRepo();
-      await pumpWrongbook(tester, repo: repo);
+      final scheduler = wireScheduler(repo);
+      await pumpWrongbook(tester, repo: repo, scheduler: scheduler);
       await openMathListCompact(tester);
       await openBatchBar(tester);
       // 复选框顺序：全选、qa 批量、qb 批量、qc 批量……
@@ -382,8 +403,14 @@ void main() {
       await tester.tap(find.text('加入复习'));
       await tester.pumpAndSettle();
 
-      expect(find.text('1 道已无未解决错因，跳过'), findsOneWidget);
-      expect(find.text('开始复习'), findsNothing);
+      // P3：qb 也建卡（added 1），播种失败不影响计数；仍给开始复习入口。
+      expect(find.text('新增 1 道'), findsOneWidget);
+      expect(find.text('开始复习'), findsOneWidget);
+      expect(await scheduler.pooledQuestionIds(), {'qb'});
+      expect(
+          repo.questions.firstWhere((q) => q.id == 'qb').reviewJoined,
+          isFalse);
+      expect(repo.records.where((r) => r.questionId == 'qb').length, 0);
     });
 
     testWidgets('全部加入：作用域是当前筛选结果，不限当前页',
@@ -402,7 +429,7 @@ void main() {
         ],
         counts: const {'math': (0, 0, 0)},
       );
-      await pumpWrongbook(tester, repo: repo);
+      await pumpWrongbook(tester, repo: repo, scheduler: wireScheduler(repo));
       await openMathList(tester);
       // 默认每页 10 道，只显示 10 张卡；不用勾选直接全部加入。
       await tester.tap(find.text('批量操作'));
@@ -410,14 +437,15 @@ void main() {
       await tester.tap(find.text('全部加入复习'));
       await tester.pumpAndSettle();
 
-      expect(find.text('已加入复习 12 道'), findsOneWidget);
+      expect(find.text('新增 12 道'), findsOneWidget);
       expect(repo.questions.every((q) => q.reviewJoined), isTrue);
     });
 
     testWidgets('全部加入 + 错因筛选：只加筛出的错因的题',
         (tester) async {
       final repo = reviewRepo();
-      await pumpWrongbook(tester, repo: repo);
+      final scheduler = wireScheduler(repo);
+      await pumpWrongbook(tester, repo: repo, scheduler: scheduler);
       await openMathListCompact(tester);
       await tester.tap(find.text('筛选 ▾'));
       await tester.pumpAndSettle();
@@ -433,7 +461,8 @@ void main() {
       await tester.tap(find.text('全部加入复习'));
       await tester.pumpAndSettle();
 
-      expect(find.text('已加入复习 1 道'), findsOneWidget);
+      expect(find.text('新增 1 道'), findsOneWidget);
+      expect(await scheduler.pooledQuestionIds(), {'qc'});
       Question byId(String id) =>
           repo.questions.firstWhere((q) => q.id == id);
       expect(byId('qc').reviewJoined, isTrue);

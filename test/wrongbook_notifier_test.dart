@@ -168,6 +168,10 @@ class FakeWrongbookNotifierRepo extends QuestionRepository {
   @override
   Future<List<CauseRecord>> causeRecords() async => List.of(records);
 
+  // P3 入口 1：池内标记（Fake 不碰真实数据库，默认空集）。
+  @override
+  Future<Set<String>> fsrsPoolQuestionIds() async => const {};
+
   @override
   Future<AppSettings> settings() async => settingsValue;
 
