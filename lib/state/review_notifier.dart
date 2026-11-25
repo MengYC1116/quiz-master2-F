@@ -380,7 +380,7 @@ class ResumeInfo {
   final String mode;
 }
 
-/// 复习页日期格式（总结文案与已解决区详情共用）。
+/// 复习页日期格式（总结文案共用）。
 String formatReviewDate(DateTime d) =>
     '${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
 
@@ -388,6 +388,42 @@ String formatReviewMd(DateTime d) => '${d.month}-${d.day}';
 
 /// `copyWith` 里“显式置 null”与“不改”的区分标记。
 const _unset = Object();
+
+/// 复习列表的 FSRS 分组（面 A 口径，D-259：软件不判定掌握）：
+/// ①已逾期 ②今日到期 ③未到期 ④未开始。分组只看 FSRS 卡片状态，
+/// 不看错因记录；本地日界（今天 00:00 / 明天 00:00）划分。
+enum FsrsListBucket { overdue, dueToday, notDue, notStarted }
+
+/// 一题的 FSRS 卡片状态（列表分组用）：首次正式复习时间 +
+/// 下次到期时间（UTC）。无卡的题不在表里，调用方按「未开始」处理。
+class FsrsCardStatus {
+  const FsrsCardStatus({
+    required this.firstReviewedAt,
+    required this.nextDueAt,
+  });
+
+  /// 首次完成正式作答的时间；空 = 未开始正式复习。
+  final DateTime? firstReviewedAt;
+
+  /// 下次到期时间（`card.due`，UTC）。
+  final DateTime nextDueAt;
+}
+
+/// 一题落哪个 FSRS 分组：已开始（`firstReviewedAt` 非空）按
+/// `nextDueAt` 的本地日历日比今天 00:00 / 明天 00:00；
+/// 无卡或未开始一律落「未开始」，不丢题、不出现无组可归的题。
+FsrsListBucket fsrsListBucketFor(FsrsCardStatus? card, {DateTime? now}) {
+  final at = now ?? DateTime.now();
+  final todayDay = DateTime(at.year, at.month, at.day);
+  final tomorrowDay = todayDay.add(const Duration(days: 1));
+  if (card == null || card.firstReviewedAt == null) {
+    return FsrsListBucket.notStarted;
+  }
+  final dueLocal = card.nextDueAt.toLocal();
+  if (dueLocal.isBefore(todayDay)) return FsrsListBucket.overdue;
+  if (dueLocal.isBefore(tomorrowDay)) return FsrsListBucket.dueToday;
+  return FsrsListBucket.notDue;
+}
 
 /// 复习页的全部业务数据 + 列表 / 会话状态。
 class ReviewState {
@@ -409,12 +445,9 @@ class ReviewState {
     this.page = 1,
     this.pageSize = 10,
     this.pageSizeInitialized = false,
-    this.openCuredKey,
-    this.curedPage = 0,
     this.notJoinedExpanded = false,
     this.resume,
     this.resumeExpired = false,
-    this.futureRecheckCount = 0,
     this.inSession = false,
     this.showSummary = false,
     this.sessionId,
@@ -429,7 +462,7 @@ class ReviewState {
     this.practiceCount = 10,
     this.practiceRandom = true,
     this.submitting = false,
-    this.scopeLabel = '全部待解决错因',
+    this.scopeLabel = '全部复习题',
     this.saveError = false,
     this.sumCompleted = 0,
     this.sumHandled = 0,
@@ -452,6 +485,9 @@ class ReviewState {
     this.fsrsWaitingIds = const {},
     this.fsrsPresentedTodayCount = 0,
     this.fsrsPendingBacklogCount = 0,
+    // 面 A：逐题 FSRS 卡片状态（列表分组用：首次正式复习时间 +
+    // 下次到期时间）。无卡的题不在表里，分组时按「未开始」处理。
+    this.fsrsCardStatus = const {},
     // P3 入口 1/3：已有未完成会话时挂起的待开专项练习题单
     //（等用户在恢复条上二选一；放弃旧会话后按此开练）。
     this.pendingPracticeIds = const [],
@@ -507,12 +543,6 @@ class ReviewState {
   final int pageSize;
   final bool pageSizeInitialized;
 
-  /// 已解决区展开的那一组 key（`subjectId|cause`），null 表示全收起。
-  final String? openCuredKey;
-
-  /// 已解决区独立分页（SR-P2-47，与待解决列表同一每页条数），0-based。
-  final int curedPage;
-
   /// 未加入盒默认只列前 10 道（SR-P2-47），点开看全部。
   final bool notJoinedExpanded;
 
@@ -521,10 +551,6 @@ class ReviewState {
 
   /// 快照整体失效（队列全部无效）：已按最新状态重筛并提示，不自动开新会话。
   final bool resumeExpired;
-
-  /// 正在等待未来复查的错因数（空状态用：只统计已纳入复习且未来有
-  /// 复查日期的错因）。
-  final int futureRecheckCount;
 
   // ---- 会话状态（P2 三步流程） ----
 
@@ -591,6 +617,10 @@ class ReviewState {
   final int fsrsPresentedTodayCount;
   final int fsrsPendingBacklogCount;
 
+  /// 面 A：逐题 FSRS 卡片状态（题 id → 首次正式复习时间 + 下次
+  /// 到期时间），列表分组的唯一依据；无卡的题不在表里。
+  final Map<String, FsrsCardStatus> fsrsCardStatus;
+
   /// P3 入口 1/3：挂起的待开专项练习题单（见上）。
   final List<String> pendingPracticeIds;
   final int? pendingPracticeCount;
@@ -635,12 +665,9 @@ class ReviewState {
     int? page,
     int? pageSize,
     bool? pageSizeInitialized,
-    Object? openCuredKey = _unset,
-    int? curedPage,
     bool? notJoinedExpanded,
     Object? resume = _unset,
     bool? resumeExpired,
-    int? futureRecheckCount,
     bool? inSession,
     bool? showSummary,
     Object? sessionId = _unset,
@@ -676,6 +703,7 @@ class ReviewState {
     Set<String>? fsrsWaitingIds,
     int? fsrsPresentedTodayCount,
     int? fsrsPendingBacklogCount,
+    Map<String, FsrsCardStatus>? fsrsCardStatus,
     List<String>? pendingPracticeIds,
     Object? pendingPracticeCount = _unset,
     bool? initialPracticeStarted,
@@ -706,14 +734,9 @@ class ReviewState {
       page: page ?? this.page,
       pageSize: pageSize ?? this.pageSize,
       pageSizeInitialized: pageSizeInitialized ?? this.pageSizeInitialized,
-      openCuredKey: openCuredKey == _unset
-          ? this.openCuredKey
-          : openCuredKey as String?,
-      curedPage: curedPage ?? this.curedPage,
       notJoinedExpanded: notJoinedExpanded ?? this.notJoinedExpanded,
       resume: resume == _unset ? this.resume : resume as ResumeInfo?,
       resumeExpired: resumeExpired ?? this.resumeExpired,
-      futureRecheckCount: futureRecheckCount ?? this.futureRecheckCount,
       inSession: inSession ?? this.inSession,
       showSummary: showSummary ?? this.showSummary,
       sessionId: sessionId == _unset
@@ -765,6 +788,7 @@ class ReviewState {
           fsrsPresentedTodayCount ?? this.fsrsPresentedTodayCount,
       fsrsPendingBacklogCount:
           fsrsPendingBacklogCount ?? this.fsrsPendingBacklogCount,
+      fsrsCardStatus: fsrsCardStatus ?? this.fsrsCardStatus,
       pendingPracticeIds: pendingPracticeIds ?? this.pendingPracticeIds,
       pendingPracticeCount: pendingPracticeCount == _unset
           ? this.pendingPracticeCount
@@ -865,7 +889,6 @@ class ReviewState {
   }
 
   List<CauseGroup> get filtered => filterGroups(groups);
-  List<CauseGroup> get filteredCured => filterGroups(curedGroups);
 
   int get totalPages {
     final n = (filtered.length / pageSize).ceil();
@@ -901,9 +924,14 @@ class ReviewState {
     return set.toList()..sort();
   }
 
-  /// 今日待复习（M3-11 页顶）：X 道题 / Y 个错因（X 为去重后题数）。
-  /// 口径 = 到期复习默认池（buildDueQueue，无筛选、不限量）。
-  (int questions, int causes) get dueTodayCounts {
+  /// “开始复习”是否可用（只决定按钮可用性，不改变会话建队逻辑）：
+  /// FSRS 池非空时看到期 + 今日新题；池空（老数据回落）时看旧错因
+  /// 队列是否非空——池空时会话走 `_buildLegacyDueSessionQuestions`，
+  /// 按钮若只看 FSRS 数会把老数据的复习入口堵死。
+  bool get canStartDueSession {
+    if (fsrsPoolIds.isNotEmpty) {
+      return fsrsDueIds.isNotEmpty || fsrsTodaysNewIds.isNotEmpty;
+    }
     final queue = buildDueQueue(
       records: allCauseRecords,
       joinedQuestionIds: {
@@ -912,44 +940,32 @@ class ReviewState {
       },
       questionsById: {for (final q in allQuestions) q.id: q},
     );
-    var causes = 0;
-    for (final item in queue) {
-      causes += item.causes.length;
-    }
-    return (queue.length, causes);
+    return queue.isNotEmpty;
   }
 
-  /// 元信息行计数（不过滤，HTML `revListHTML` 口径）。
-  /// B9-4（Meng 2026-11-15 ~19:43 裁决：与角标 / 首页统一，按题数）：
-  /// 三数按题互斥拆分，复用 `QuestionRepository.reviewBucketOf`
-  /// 的共享口径——一道题按其全部错因记录只落一个桶。
-  /// 不会双计 / 漏计：`load` 里一条记录只进 `groups` 或
-  /// `curedGroups` 其中一边（isPending 分流），两边按题汇总后
-  /// 才是该题的全部记录；多错因一题只计 1 道。已归档题不进两边，
-  /// 与角标 / 首页口径一致（取消归档后重新计入）。
-  (int pend, int check, int cured) get metaCounts {
-    final byQ = <String, List<CauseRecord>>{};
+  /// 空状态用（不过滤）：未到期与未开始的题数——已开始且下次到期
+  /// 在明天 00:00 之后的题数，与尚未开始正式复习的题数（无卡的
+  /// 已加入题也计入未开始）。与页顶到期数同一 FSRS 口径；
+  /// 一题只计一次（多错因不双计）。
+  (int notDue, int notStarted) get fsrsFutureCounts {
+    final seen = <String>{};
+    var notDue = 0;
+    var notStarted = 0;
     for (final g in [...groups, ...curedGroups]) {
       for (final it in g.items) {
-        (byQ[it.question.id] ??= []).add(it.record);
+        if (!seen.add(it.question.id)) continue;
+        switch (fsrsListBucketFor(fsrsCardStatus[it.question.id])) {
+          case FsrsListBucket.notDue:
+            notDue++;
+          case FsrsListBucket.notStarted:
+            notStarted++;
+          case FsrsListBucket.overdue:
+          case FsrsListBucket.dueToday:
+            break;
+        }
       }
     }
-    var pend = 0;
-    var check = 0;
-    var cured = 0;
-    for (final records in byQ.values) {
-      switch (QuestionRepository.reviewBucketOf(records)) {
-        case ReviewBucket.pending:
-          pend++;
-        case ReviewBucket.recheck:
-          check++;
-        case ReviewBucket.solved:
-          cured++;
-        case ReviewBucket.none:
-          break;
-      }
-    }
-    return (pend, check, cured);
+    return (notDue, notStarted);
   }
 
   /// 新开会话的范围文案：按当前学科 / 错因筛选写（SR-P2-57）。
@@ -961,7 +977,7 @@ class ReviewState {
     }
     if (causeFilter != '全部') return '错因「$causeFilter」';
     if (subject != null) return '$subject这一科';
-    return '全部待解决错因';
+    return '全部复习题';
   }
 
   /// 断点队列的范围文案（SR-P2-57）：按队列里实际的学科 / 错因写。
@@ -978,7 +994,7 @@ class ReviewState {
     }
     if (subjects.length == 1) return '${subjects.single}这一科';
     if (causes.length == 1) return '错因「${causes.single}」';
-    return '全部待解决错因';
+    return '全部复习题';
   }
 
   /// 本轮题数与错因数（会话开场与小结用）。
@@ -1063,7 +1079,6 @@ class ReviewNotifier extends Notifier<ReviewState> {
       final pendingGroups = <String, CauseGroup>{};
       final curedGroups = <String, CauseGroup>{};
       final notJoined = <Question>[];
-      var futureRecheckCount = 0;
       for (final q in questions) {
         // “还没加入复习的题”只列真能加进复习的题（SR-P2-39）：
         // 未整理的题没有加入入口、无错因的题加不进（setReviewJoined
@@ -1105,12 +1120,6 @@ class ReviewNotifier extends Notifier<ReviewState> {
           g.items.add(CauseItem(question: q, record: r));
           if (r.joinedAt.isBefore(g.firstJoined)) {
             g.firstJoined = r.joinedAt;
-          }
-          // 空状态用：已纳入复习且未来有复查日期的错因数。
-          if (r.status == CauseStatus.solved &&
-              r.recheckDate != null &&
-              !r.isRecheckDue) {
-            futureRecheckCount++;
           }
         }
       }
@@ -1165,7 +1174,6 @@ class ReviewNotifier extends Notifier<ReviewState> {
         kpNames: {for (final kp in kps) kp.id: kp.name},
         resume: resume,
         resumeExpired: resume == null && _expiredSessionInThisLoad,
-        futureRecheckCount: futureRecheckCount,
         loading: false,
         loadError: false,
         hasLoaded: true,
@@ -1201,6 +1209,26 @@ class ReviewNotifier extends Notifier<ReviewState> {
         }
       } catch (_) {
         // FSRS 当日清单是锦上添花，读不到不拖垮列表。
+      }
+      // 面 A：逐题 FSRS 卡片状态（列表分组用：首次正式复习时间 +
+      // 下次到期时间）。直接走调度器 loadAllCards()，不在仓库层
+      // 加新方法；读不到按空表，分组回落为全部「未开始」，不拖垮列表。
+      try {
+        final cards =
+            await ref.read(reviewSchedulerProvider).loadAllCards();
+        if (!_disposed) {
+          state = state.copyWith(
+            fsrsCardStatus: {
+              for (final c in cards)
+                c.questionId: FsrsCardStatus(
+                  firstReviewedAt: c.firstReviewedAt,
+                  nextDueAt: c.card.due,
+                ),
+            },
+          );
+        }
+      } catch (_) {
+        // 卡片状态读不到时列表仍能显示（全进「未开始」）。
       }
       // P3 入口 1/3：初始题单只处理一次（load 成功后）。
       if (_initialPracticeIds != null &&
@@ -1409,15 +1437,15 @@ class ReviewNotifier extends Notifier<ReviewState> {
   // ---------- 列表：筛选 / 分页 / 展开（改筛选后回第 1 页） ----------
 
   void setSubjectFilter(String? v) {
-    state = state.copyWith(subjectFilter: v, page: 1, curedPage: 0);
+    state = state.copyWith(subjectFilter: v, page: 1);
   }
 
   void setCauseFilter(String v) {
-    state = state.copyWith(causeFilter: v, page: 1, curedPage: 0);
+    state = state.copyWith(causeFilter: v, page: 1);
   }
 
   void setTypeFilter(String? v) {
-    state = state.copyWith(typeFilter: v, page: 1, curedPage: 0);
+    state = state.copyWith(typeFilter: v, page: 1);
   }
 
   void setPage(int p) {
@@ -1425,17 +1453,7 @@ class ReviewNotifier extends Notifier<ReviewState> {
   }
 
   void setPageSize(int v) {
-    state = state.copyWith(pageSize: v, page: 1, curedPage: 0);
-  }
-
-  void setCuredPage(int p) {
-    state = state.copyWith(curedPage: p);
-  }
-
-  void toggleCured(String key) {
-    state = state.copyWith(
-      openCuredKey: state.openCuredKey == key ? null : key,
-    );
+    state = state.copyWith(pageSize: v, page: 1);
   }
 
   void toggleNotJoinedExpanded() {
@@ -1587,7 +1605,7 @@ class ReviewNotifier extends Notifier<ReviewState> {
     }).toList();
   }
 
-  /// 专项练习建队（M3-2）：范围自选；可含未到期、已掌握、未加入复习题。
+  /// 专项练习建队（M3-2）：范围自选；可含未到期、未开始、未加入复习题。
   List<SessionQuestionState> _buildPracticeSessionQuestions() {
     final recordsByQ = <String, List<CauseRecord>>{};
     for (final r in state.allCauseRecords) {

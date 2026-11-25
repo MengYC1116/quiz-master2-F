@@ -1,19 +1,17 @@
-// B9-4：复习页顶三数按题数计（Meng 2026-11-15 ~19:43 裁决：
-// 与角标 / 首页统一，见 docs/ui-replication/B9-4-REVIEW-HEADER-COUNT.md）。
-//
-// 三数的精确定义（复用 QuestionRepository.reviewBucketOf 的共享口径，
-// 一道题按其全部错因记录只落一个桶）：
-// - 待解决 / 解决中：桶为 pending 的题数（≥1 个错因未解决）；
-// - 复查：桶为 recheck 的题数（全部已解决且 ≥1 条到复查时间）；
-// - 已解决：桶为 solved 的题数（全部已解决且无一条到复查时间）。
-// 多错因一题只计 1 道；同一题不双计（一条记录只进 _groups 或
-// _curedGroups 其中一边，按题汇总后才是该题的全部记录）。
+// B9-4（面 A 改写）：复习页顶两数按 FSRS 口径计（与首页焦点卡、
+// 角标同一口径，见 FSRS 口径迁移方案 §2.0/§2.1）：
+// - 到期：`fsrsDueQuestionIds()` 的题数（已开始且 next_due_at 已到）；
+// - 今日新题：`previewNewRelease().todaysNewIds` 的题数（Y=0 时不显示）。
+// 旧三数（待解决 / 复查 / 已解决）已取消；列表按 FSRS 卡片状态
+// 分组（已逾期 / 今日到期 / 未到期 / 未开始），不再按错因记录分流。
 //
 // 用 FakeRepo 直接泵 ReviewPage（review_page_test.dart 同款做法，
-// 不碰真实数据库）；断言只圈页顶三数，列表本身的分组展示不动。
+// 不碰真实数据库）；断言只圈页顶两数与分组头，列表本身的分组展示
+// 由 review_page_test.dart 覆盖。
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:fsrs/fsrs.dart' as fsrs;
 import 'package:quiz_master2/data/database.dart';
 import 'package:quiz_master2/data/repository.dart';
 import 'package:quiz_master2/data/review_engine.dart';
@@ -22,6 +20,7 @@ import 'package:quiz_master2/models/models.dart';
 import 'package:quiz_master2/modules/review/review_page.dart';
 import 'package:quiz_master2/state/review_notifier.dart';
 import 'package:quiz_master2/theme/app_theme.dart';
+import 'package:quiz_master2/widgets/uikit.dart';
 
 Question _q(
   String id,
@@ -104,7 +103,39 @@ class _FakeRepo extends QuestionRepository {
   Future<void> clearReviewState() async {}
 }
 
-Future<void> _pumpReview(WidgetTester tester, _FakeRepo repo) async {
+/// 面 A：往内存卡库里预置一张已开始的 FSRS 卡（review_page_test.dart
+/// 同款做法）。[dueLocalDayOffset] 是下次到期日的本地日偏移
+/// （0 = 今天，负数 = 已逾期）；到期日取本地 00:00 换算成 UTC 存卡。
+Future<void> _seedStartedCard(
+  InMemoryCardStore store,
+  String questionId,
+  int cardId, {
+  int dueLocalDayOffset = 0,
+}) async {
+  final now = DateTime.now();
+  final todayStart = DateTime(now.year, now.month, now.day);
+  final dueLocal = todayStart.add(Duration(days: dueLocalDayOffset));
+  await store.save(
+    StoredCard(
+      questionId: questionId,
+      cardId: cardId,
+      card: fsrs.Card(
+        cardId: cardId,
+        state: fsrs.State.review,
+        due: dueLocal.toUtc(),
+        lastReview: now.toUtc(),
+      ),
+      configId: 'fsrs-6-v1',
+      firstReviewedAt: now.toUtc(),
+    ),
+  );
+}
+
+Future<void> _pumpReview(
+  WidgetTester tester,
+  _FakeRepo repo, {
+  InMemoryCardStore? cardStore,
+}) async {
   tester.view.physicalSize = const Size(1280, 720);
   tester.view.devicePixelRatio = 1.0;
   addTearDown(tester.view.resetPhysicalSize);
@@ -118,7 +149,7 @@ Future<void> _pumpReview(WidgetTester tester, _FakeRepo repo) async {
         reviewSchedulerProvider.overrideWithValue(
           FsrsReviewScheduler(
             config: const SchedulerConfig(enableFuzzing: false),
-            store: InMemoryCardStore(),
+            store: cardStore ?? InMemoryCardStore(),
           ),
         ),
       ],
@@ -139,7 +170,7 @@ Future<void> _pumpReview(WidgetTester tester, _FakeRepo repo) async {
 }
 
 void main() {
-  testWidgets('2 道题 3 条待解决错因：页顶待解决显示 2 道题，不显示 3',
+  testWidgets('2 道题 3 条待解决错因：无卡时页顶到期 0 道，两题都在未开始组',
       (tester) async {
     final repo = _FakeRepo(
       questions: [
@@ -153,22 +184,33 @@ void main() {
       ],
     );
     await _pumpReview(tester, repo);
-    // 按题数：q1、q2 各计 1，共 2 道题（不是 3 条错因记录）。
-    expect(find.text('待解决 / 解决中 2 道题'), findsOneWidget);
+    // 旧口径按错因记录会算“待解决 2 道题”；新口径只认 FSRS 卡，
+    // 无卡即未开始、不到期，页顶只显示到期 0 道。
+    expect(find.textContaining('到期 0 道'), findsOneWidget);
+    expect(find.text('待解决 / 解决中 2 道题'), findsNothing);
     expect(find.text('待解决 / 解决中 3 条解决记录'), findsNothing);
-    expect(find.text('已解决 0 道'), findsOneWidget);
+    expect(find.text('已解决 0 道'), findsNothing);
     expect(find.text('复查 1 道'), findsNothing);
+    expect(find.text('未开始'), findsOneWidget);
+    expect(find.text('第一题'), findsOneWidget);
+    expect(find.text('第二题'), findsOneWidget);
+    // 池空时会话走旧错因队列（两题待治），开始复习仍可用。
+    expect(
+      tester.widget<QmButton>(find.widgetWithText(QmButton, '开始复习')).onPressed,
+      isNotNull,
+    );
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('复查场景：某题全部错因已解决且 1 条到复查时间，复查计 1、待解决计 0',
+  testWidgets('旧复查场景：某题全部错因已解决且 1 条到复查时间，无卡仍算未开始',
       (tester) async {
     final repo = _FakeRepo(
       questions: [
         _q('q1', '第一题', errorTypes: const ['概念不清', '计算错误']),
       ],
       records: [
-        // 两条都已解决；只有“概念不清”到了复查时间，整题落 recheck 桶。
+        // 两条都已解决；只有“概念不清”到了复查时间，旧口径整题落
+        // recheck 桶；新口径不看错因记录，无卡即未开始。
         _rec('q1', '概念不清',
             status: CauseStatus.solved,
             solvedCount: 2,
@@ -180,25 +222,60 @@ void main() {
       ],
     );
     await _pumpReview(tester, repo);
-    expect(find.text('待解决 / 解决中 0 道题'), findsOneWidget);
-    expect(find.text('复查 1 道'), findsOneWidget);
-    expect(find.text('已解决 0 道'), findsOneWidget);
+    expect(find.textContaining('到期 0 道'), findsOneWidget);
+    expect(find.text('待解决 / 解决中 0 道题'), findsNothing);
+    expect(find.text('复查 1 道'), findsNothing);
+    expect(find.text('已解决 0 道'), findsNothing);
+    expect(find.text('未开始'), findsOneWidget);
+    expect(find.text('第一题'), findsOneWidget);
+    // 池空时会话走旧错因队列（1 条错因到复查时间），开始复习仍可用。
+    expect(
+      tester.widget<QmButton>(find.widgetWithText(QmButton, '开始复习')).onPressed,
+      isNotNull,
+    );
     expect(tester.takeException(), isNull);
   });
 
-  // M3-11：全部已解决且无到期项时走空状态（伙伴 + “今天没有到期
-  // 复习” + 未来复查错因数），不再渲染页顶三数行；B9-4 的按题计数
-  // 口径不变（metaCounts 仍按 reviewBucketOf 按题落桶，由前两测
-  // 断言）。此处断言空状态与已解决区仍按题汇总：两条已解决错因
-  // 分属两个错因组，每组只关联 1 道题（同一题不双计）；展开一组
-  // 后同一题只出现一次。
-  testWidgets('已解决区多错因一题只计 1 道', (tester) async {
+  testWidgets('有卡场景：1 道已逾期 + 1 道今日到期，页顶到期 2 道', (tester) async {
+    final repo = _FakeRepo(
+      questions: [
+        _q('q1', '第一题', errorTypes: const ['概念不清']),
+        _q('q2', '第二题', errorTypes: const ['审题失误']),
+      ],
+      records: [
+        _rec('q1', '概念不清'),
+        _rec('q2', '审题失误'),
+      ],
+    );
+    final store = InMemoryCardStore();
+    await _seedStartedCard(store, 'q1', 1, dueLocalDayOffset: -1);
+    await _seedStartedCard(store, 'q2', 2, dueLocalDayOffset: 0);
+    await _pumpReview(tester, repo, cardStore: store);
+    // 页顶与 FSRS 当日清单盒同一口径：到期 2 道；今日新题 0 道，
+    // 页顶不显示，只在当日清单盒里出现。
+    expect(find.textContaining('到期 2 道'), findsNWidgets(2)); // 页顶 + FSRS 盒
+    expect(find.textContaining('今日新题 0 道'), findsOneWidget); // 仅 FSRS 盒
+    expect(find.text('已逾期'), findsOneWidget);
+    expect(find.text('今日到期'), findsOneWidget);
+    expect(find.textContaining('已逾期 1 天'), findsOneWidget);
+    expect(
+      tester.widget<QmButton>(find.widgetWithText(QmButton, '开始复习')).onPressed,
+      isNotNull,
+    );
+    expect(tester.takeException(), isNull);
+  });
+
+  // M3-11：全部无卡且无到期项时出提示条（伙伴 + “今天没有到期
+  // 复习” + 未到期/未开始题数），列表仍在下面按分组列出；
+  // 已解决区与原查看入口已取消。
+  testWidgets('无卡无到期：提示条 + 未开始列表同在，已解决区不出', (tester) async {
     final repo = _FakeRepo(
       questions: [
         _q('q1', '第一题', errorTypes: const ['概念不清', '计算错误']),
       ],
       records: [
-        // 两条都已解决、复查日都未到，整题落 solved 桶，只计 1 道。
+        // 两条都已解决、复查日都未到，旧口径整题落 solved 桶；
+        // 新口径无卡即未开始。
         _rec('q1', '概念不清',
             status: CauseStatus.solved,
             solvedCount: 2,
@@ -212,17 +289,13 @@ void main() {
     await _pumpReview(tester, repo);
     expect(find.text('今天没有到期复习'), findsOneWidget);
     expect(
-      find.text('正在等待未来复查的错因有 2 个，到了复查日会自动回来。'),
+      find.text('未到期的题有 0 道，未开始的题有 1 道。'),
       findsOneWidget,
     );
-    await tester.tap(find.text('查看已掌握题目'));
-    await tester.pumpAndSettle();
-    // 两条错因各成一组，每组只关联 1 道题（不是 2 道）。
-    expect(find.textContaining('关联 1 道题'), findsNWidgets(2));
+    expect(find.widgetWithText(QmButton, '查看已掌握题目'), findsNothing);
+    expect(find.textContaining('关联 1 道题'), findsNothing);
     expect(find.textContaining('关联 2 道题'), findsNothing);
-    // 展开第一组：同一题只出现一次。
-    await tester.tap(find.text('解决记录').first);
-    await tester.pumpAndSettle();
+    expect(find.text('未开始'), findsOneWidget);
     expect(find.text('第一题'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });

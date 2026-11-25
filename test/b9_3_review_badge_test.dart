@@ -279,7 +279,7 @@ void main() {
 
       // 口径锁定（FSRS，数题不数错因）：
       // - 角标 / 首页焦点卡 / fsrsDueQuestionIds：按题数——q1、q2 各计 1，共 2。
-      // - 复习页顶三数（review_page.dart _metaCounts）同样按题数：
+      // - 复习页顶两数（review_page.dart）同样按题数：
       //   q1 两条 + q2 一条错因记录 = 2 道题（见本用例末尾进复习页
       //   的断言与 test/b9_4_review_header_count_test.dart）。
       final due = await repo.fsrsDueQuestionIds(scheduler: _testScheduler());
@@ -308,16 +308,18 @@ void main() {
         reason: '展开导航后复习角标 2 未显示',
       );
 
-      // B9-4：进复习页，页顶与角标同口径——2 道题，不是 3 条；
-      // 无已解决题，第三数是 0 道。
+      // 面 A：进复习页，页顶与角标同口径——到期 2 道题，不是 3 条错因；
+      // 两题的卡都已到期，同落「已逾期」组。
       await _goNav(tester, '复习');
       await _pumpUntil(
         tester,
-        () => find.text('待解决 / 解决中 2 道题').evaluate().isNotEmpty,
-        reason: '复习页顶未显示“待解决 / 解决中 2 道题”',
+        () => find.textContaining('到期 2 道').evaluate().isNotEmpty,
+        reason: '复习页顶未显示“到期 2 道”',
       );
-      expect(find.text('已解决 0 道'), findsOneWidget);
+      expect(find.text('待解决 / 解决中 2 道题'), findsNothing);
+      expect(find.text('已解决 0 道'), findsNothing);
       expect(find.text('待解决 / 解决中 3 条解决记录'), findsNothing);
+      expect(find.text('已逾期'), findsOneWidget);
       expect(tester.takeException(), isNull);
     });
 

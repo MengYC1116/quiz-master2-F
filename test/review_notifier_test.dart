@@ -345,7 +345,7 @@ Future<void> _walkAndCommit(ReviewNotifier notifier) async {
 
 void main() {
   group('ReviewNotifier load', () {
-    test('load()：分组 3 待治 + 1 已治愈，未加入盒只 1 道，元信息 2/0/1', () async {
+    test('load()：分组 3 待治 + 1 已治愈，未加入盒只 1 道，未开始 3 道', () async {
       final repo = _reviewRepo();
       final container = _container(repo);
       final notifier = container.read(reviewProvider.notifier);
@@ -359,7 +359,9 @@ void main() {
       expect(s.notJoined.map((q) => q.id), ['q4']);
       expect(s.pendingByQ['q1']?.length, 1);
       expect(s.pendingByQ['q2']?.length, 2);
-      expect(s.metaCounts, (2, 0, 1));
+      // 无 FSRS 卡：三道已列入的题全落「未开始」，未到期 0 道。
+      expect(s.fsrsCardStatus, isEmpty);
+      expect(s.fsrsFutureCounts, (0, 3));
       expect(s.resume, isNull);
       expect(s.allCauses, ['概念不清', '计算错误', '方法不会']);
     });
@@ -380,7 +382,7 @@ void main() {
       final s = container.read(reviewProvider);
       expect(s.subjectFilter, 'english');
       expect(s.filtered, isEmpty);
-      expect(s.filteredCured.length, 1);
+      expect(s.filterGroups(s.curedGroups).length, 1);
     });
 
     test('读库失败：loadError，hasLoaded false；retry 成功后恢复', () async {
@@ -428,7 +430,7 @@ void main() {
       expect(s.inSession, isTrue);
       expect(s.sessionQuestions.length, 1);
       expect(s.sessionTotals, (1, 1));
-      expect(s.scopeLabel, '全部待解决错因');
+      expect(s.scopeLabel, '全部复习题');
       // 作答只记内存，不写库。
       notifier.beginAnswer();
       await notifier.completePaperAnswer();

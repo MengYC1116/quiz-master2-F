@@ -1,7 +1,7 @@
 // R8 复习页 widget 测试（十四批 M3 重写）：
-// - 列表：按学习状态分组（已逾期复查 → 今日到期复查 → 未解决错因 →
-//   已掌握未到期），一题一行；页顶今日待复习 + 开始复习 / 专项练习；
-//   学科/题型/错因筛选、分页、已治愈区、未加入盒、空态、恢复条。
+// - 列表：按 FSRS 卡片状态分组（已逾期 → 今日到期 → 未到期 →
+//   未开始），一题一行；页顶到期 / 今日新题 + 开始复习 / 专项练习；
+//   学科/题型/错因筛选、分页、未加入盒、空态、恢复条。
 // - 三步会话（看题 → 作答 → 核对 → 下一题 → 小结），一道题内部的
 //   状态变化；跳过两次留到下次、暂停续接、保存失败横幅。
 // - 软件内答题：单选/判断点选 + 客观判分、判分不可用走纸上作答 +
@@ -14,6 +14,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:fsrs/fsrs.dart' as fsrs;
 import 'package:quiz_master2/data/database.dart';
 import 'package:quiz_master2/data/repository.dart';
 import 'package:quiz_master2/data/review_engine.dart';
@@ -472,6 +473,9 @@ Future<void> pumpReview(
   Brightness brightness = Brightness.light,
   double scale = 1.0,
   String? initialSubjectId,
+  // 面 A：预置 FSRS 卡片的内存库（不传则空库，全部题落「未开始」）；
+  // 卡片由调用方先 save 进去，分组按卡片状态分流。
+  InMemoryCardStore? cardStore,
   Future<void> Function(Question q, List<String> ids)? onOpenDetail,
 }) async {
   tester.view.physicalSize = const Size(1280, 720);
@@ -489,7 +493,7 @@ Future<void> pumpReview(
         reviewSchedulerProvider.overrideWithValue(
           FsrsReviewScheduler(
             config: const SchedulerConfig(enableFuzzing: false),
-            store: InMemoryCardStore(),
+            store: cardStore ?? InMemoryCardStore(),
           ),
         ),
       ],
@@ -585,43 +589,138 @@ Future<void> walkObjectiveToCheck(
   await tapButton(tester, '提交答案');
 }
 
+/// 面 A：往内存卡库里预置一张 FSRS 卡（分组测试用）。
+/// [dueLocalDayOffset] 是下次到期日的本地日偏移（0 = 今天，
+/// 负数 = 已逾期，正数 = 未到期）；[started] 为 false 时
+/// firstReviewedAt 为空（未开始）。到期日取本地 00:00，
+/// 换算成 UTC 存卡（分组按本地日界划分）。
+Future<void> seedFsrsCard(
+  InMemoryCardStore store,
+  String questionId,
+  int cardId, {
+  required bool started,
+  int dueLocalDayOffset = 0,
+}) async {
+  final now = DateTime.now();
+  final todayStart = DateTime(now.year, now.month, now.day);
+  final dueLocal = todayStart.add(Duration(days: dueLocalDayOffset));
+  await store.save(
+    StoredCard(
+      questionId: questionId,
+      cardId: cardId,
+      card: fsrs.Card(
+        cardId: cardId,
+        state: fsrs.State.review,
+        due: dueLocal.toUtc(),
+        lastReview: started ? now.toUtc() : null,
+      ),
+      configId: 'fsrs-6-v1',
+      firstReviewedAt: started ? now.toUtc() : null,
+    ),
+  );
+}
+
 void main() {
   group('列表', () {
-    testWidgets('按学习状态分组、一题一行：题名 + 错因名 + 状态', (tester) async {
+    testWidgets('按 FSRS 卡片状态分组、一题一行：题名 + 错因名 + 状态', (tester) async {
       await pumpReview(tester);
-      expect(find.text('未解决错因'), findsOneWidget);
+      // 无卡：三道已列入的题全落「未开始」，旧分组头一个都不出。
+      expect(find.text('未开始'), findsOneWidget);
+      expect(find.text('已逾期'), findsNothing);
+      expect(find.text('今日到期'), findsNothing);
+      expect(find.text('未到期'), findsNothing);
+      expect(find.text('未解决错因'), findsNothing);
+      expect(find.text('已掌握未到期'), findsNothing);
       expect(find.text('函数极限'), findsOneWidget);
       expect(find.text('导数应用综合'), findsOneWidget);
-      expect(find.text('学术词汇辨析'), findsOneWidget); // 已掌握未到期
-      expect(find.text('已掌握未到期'), findsOneWidget);
-      // 错因名在行副标题里：q1 一处 + q3（已掌握行）一处 + 已治愈行一处。
-      expect(find.textContaining('概念不清'), findsNWidgets(3));
+      expect(find.text('学术词汇辨析'), findsOneWidget);
+      // 行副标题里的状态文案也是「未开始」：3 行 + 1 个分组头
+      //（旧错因队列非空，提示条不出）。
+      expect(find.textContaining('未开始'), findsNWidgets(4));
+      // 错因名在行副标题里：q1 一处 + q3 一处（已解决区已取消）。
+      expect(find.textContaining('概念不清'), findsNWidgets(2));
       expect(find.textContaining('方法不会'), findsOneWidget);
       expect(find.textContaining('计算错误'), findsOneWidget);
-      expect(find.textContaining('关联 1 道题'), findsOneWidget);
-      expect(find.text('已解决'), findsOneWidget); // 已治愈行 pill
+      expect(find.textContaining('关联 1 道题'), findsNothing);
+      expect(find.text('已解决'), findsNothing);
       // 未整理的题不在列表里；未加入的题只在“还没加入复习”盒里。
       expect(find.text('未整理题'), findsNothing);
       expect(find.textContaining('还没加入复习的题'), findsOneWidget);
       expect(find.textContaining('政治「马原」'), findsOneWidget);
     });
 
-    testWidgets('页顶：今日待复习 2 道题 / 3 个错因 + 开始复习 / 专项练习', (tester) async {
+    testWidgets('FSRS 四组齐全：已逾期 / 今日到期 / 未到期 / 未开始各一题', (tester) async {
+      final repo = reviewRepo();
+      repo.questions = [
+        ...repo.questions,
+        rq(
+          'q6',
+          '英语长难句',
+          subjectId: 'english',
+          errorTypes: const ['方法不会'],
+          createdAt: DateTime(2026, 11, 9),
+          reviewJoined: true,
+        ),
+      ];
+      repo.records = [
+        ...repo.records,
+        rec('q6', '方法不会', subjectId: 'english', joinedAt: DateTime(2026, 11, 10)),
+      ];
+      final store = InMemoryCardStore();
+      // q1 已逾期 2 天、q2 今日到期、q3 未到期（7 天后）、q6 无卡（未开始）。
+      await seedFsrsCard(store, 'q1', 1, started: true, dueLocalDayOffset: -2);
+      await seedFsrsCard(store, 'q2', 2, started: true, dueLocalDayOffset: 0);
+      await seedFsrsCard(store, 'q3', 3, started: true, dueLocalDayOffset: 7);
+      await pumpReview(tester, repo: repo, cardStore: store);
+      // 四个分组头各一个，按已逾期 → 今日到期 → 未到期 → 未开始排。
+      expect(find.text('已逾期'), findsOneWidget);
+      expect(find.text('今日到期'), findsOneWidget);
+      expect(find.text('未到期'), findsOneWidget);
+      expect(find.text('未开始'), findsOneWidget);
+      // 行状态文案与分组同源。
+      expect(find.textContaining('已逾期 2 天'), findsOneWidget);
+      expect(find.textContaining('今日到期'), findsNWidgets(3)); // 分组头 + q2 行 + FSRS 盒
+      final due = DateTime.now().add(const Duration(days: 7));
+      expect(find.textContaining('未到期 · ${due.month}月${due.day}日'), findsOneWidget);
+      expect(find.textContaining('未开始'), findsNWidgets(2)); // 分组头 + q6 行
+      // 页顶与当日清单同一口径：到期 2 道（q1 + q2），今日新题 0 道不显示。
+      expect(find.textContaining('到期 2 道'), findsNWidgets(2)); // 页顶 + FSRS 盒
+      expect(find.textContaining('今日新题 0 道'), findsOneWidget); // 仅 FSRS 盒
+      expect(
+        tester.widget<QmButton>(find.widgetWithText(QmButton, '开始复习')).onPressed,
+        isNotNull,
+      );
+      // 顺序：已逾期行在最前，未开始行在最后。
+      final titles = ['函数极限', '导数应用综合', '学术词汇辨析', '英语长难句'];
+      var lastOffset = -1.0;
+      for (final title in titles) {
+        final offset = tester.getTopLeft(find.text(title)).dy;
+        expect(offset, greaterThan(lastOffset));
+        lastOffset = offset;
+      }
+    });
+
+    testWidgets('页顶：到期 0 道 + 开始复习可用（池空走旧队列）/ 专项练习', (tester) async {
       await pumpReview(tester);
-      expect(find.textContaining('今日待复习'), findsOneWidget);
-      expect(find.textContaining('2 道题 / 3 个错因'), findsOneWidget);
+      expect(find.textContaining('到期 0 道'), findsOneWidget);
+      expect(find.textContaining('今日待复习'), findsNothing);
+      expect(find.textContaining('个错因'), findsNothing);
       expect(find.widgetWithText(QmButton, '开始复习'), findsOneWidget);
+      // 池空时会话走旧错因队列（q1、q2 待治），开始复习仍可用。
+      expect(
+        tester.widget<QmButton>(find.widgetWithText(QmButton, '开始复习')).onPressed,
+        isNotNull,
+      );
       expect(find.widgetWithText(QmButton, '专项练习'), findsOneWidget);
     });
 
-    testWidgets('元信息行：待解决/解决中 2 道题 · 已解决 1 道', (tester) async {
+    testWidgets('排序说明行：只留排序文案，旧三数不出', (tester) async {
       await pumpReview(tester);
-      // B9-4（Meng 2026-11-15 ~19:43 裁决：与角标 / 首页统一，按题数）：
       // 种子库待治 3 条错因记录分属 2 道题（q1 1 条、q2 2 条），
-      // 页顶按题计是 2 道题，不是 3 条；q3 已解决（复查日未到）计 1 道。
-      expect(find.text('待解决 / 解决中 2 道题'), findsOneWidget);
-      expect(find.text('已解决 1 道'), findsOneWidget);
-      expect(find.textContaining('列表按加入时间排，先加入的先解决'), findsOneWidget);
+      // 旧口径页顶按题计是 2 道题；新口径不再显示三数。
+      expect(find.text('列表按加入时间排'), findsOneWidget);
+      expect(find.textContaining('待解决 / 解决中'), findsNothing);
+      expect(find.textContaining('已解决'), findsNothing);
     });
 
     testWidgets('B6：已归档的已加入题不在复习列表里，取消归档后回来', (tester) async {
@@ -638,7 +737,7 @@ void main() {
       expect(find.byType(Card), findsNothing);
     });
 
-    testWidgets('学科筛选：只留英语组，数学行消失，已掌握行与已治愈组仍在', (tester) async {
+    testWidgets('学科筛选：只留英语组，数学行消失，未开始行仍在', (tester) async {
       await pumpReview(tester);
       await pickMenuItem<String>(
         tester,
@@ -647,8 +746,8 @@ void main() {
       );
       expect(find.text('函数极限'), findsNothing);
       expect(find.text('导数应用综合'), findsNothing);
-      expect(find.text('学术词汇辨析'), findsOneWidget); // 已掌握未到期行
-      expect(find.textContaining('概念不清'), findsNWidgets(2)); // 已掌握行 + 已治愈行
+      expect(find.text('学术词汇辨析'), findsOneWidget); // 未开始行
+      expect(find.textContaining('概念不清'), findsOneWidget); // 仅未开始行
       expect(find.text('方法不会'), findsNothing);
     });
 
@@ -669,7 +768,7 @@ void main() {
 
     testWidgets('分页：每页 1 条共 3 页，翻页后筛选回第 1 页', (tester) async {
       await pumpReview(tester, repo: reviewRepo(pageSize: 1));
-      // 待治 2 行 + 已掌握 1 行 = 3 行。
+      // 未开始 3 行。
       expect(find.text('共 3 条 · 第 1 / 3 页'), findsOneWidget);
       expect(find.text('导数应用综合'), findsNothing); // 第 2 行在第 2 页
       await tapButton(tester, '下一页');
@@ -748,17 +847,6 @@ void main() {
       }
     });
 
-    testWidgets('已治愈组：点一行展开看解决记录，再点收起', (tester) async {
-      await pumpReview(tester);
-      expect(find.textContaining('解决于'), findsNothing);
-      await tapText(tester, '解决记录');
-      expect(find.textContaining('解决于 2026-11-10'), findsOneWidget);
-      expect(find.textContaining('下次复查'), findsOneWidget);
-      expect(find.textContaining('补救记录：2026-11-10：把词根表抄了一遍'), findsOneWidget);
-      await tapText(tester, '收起');
-      expect(find.textContaining('解决于'), findsNothing);
-    });
-
     testWidgets('空态：没有加入复习的题', (tester) async {
       final repo = reviewRepo();
       repo.questions = [rq('q9', '马原', subjectId: 'politics')];
@@ -768,18 +856,23 @@ void main() {
       expect(find.text('去错题本选题'), findsOneWidget);
     });
 
-    testWidgets('空状态：今天没有到期复习', (tester) async {
-      // 只有已掌握未到期（q3）与未加入题：到期池为空。
+    testWidgets('空状态：今天没有到期复习，提示条 + 未开始列表同在', (tester) async {
+      // 只有无卡的 q3 与未加入题：到期池为空，提示条只作提醒，
+      // q3 仍在下面的「未开始」组里列出。
       final repo = reviewRepo();
       repo.questions = [repo.questions[2], repo.questions[3]];
       repo.records = [repo.records[3]];
       await pumpReview(tester, repo: repo);
       expect(find.textContaining('今天没有到期复习'), findsOneWidget);
-      expect(find.textContaining('正在等待未来复查的错因有 1 个'), findsOneWidget);
+      expect(
+        find.text('未到期的题有 0 道，未开始的题有 1 道。'),
+        findsOneWidget,
+      );
       expect(find.widgetWithText(QmButton, '去专项练习'), findsOneWidget);
-      expect(find.widgetWithText(QmButton, '查看已掌握题目'), findsOneWidget);
-      await tapButton(tester, '查看已掌握题目');
-      expect(find.textContaining('关联 1 道题'), findsOneWidget);
+      expect(find.widgetWithText(QmButton, '查看已掌握题目'), findsNothing);
+      expect(find.widgetWithText(QmButton, '查看复习历史'), findsNothing);
+      expect(find.text('未开始'), findsOneWidget);
+      expect(find.text('学术词汇辨析'), findsOneWidget);
     });
 
     testWidgets('无旧翻卡模型：不出现“下次复习时间”', (tester) async {
@@ -796,7 +889,7 @@ void main() {
         Subject(id: 'chem', name: '化学', color: Subject.math.color, icon: '化'),
       ];
       await pumpReview(tester, repo: repo);
-      expect(find.text('列表按学科排（数学、化学），同一科里先加入的先解决'), findsOneWidget);
+      expect(find.text('列表按学科排（数学、化学）'), findsOneWidget);
       expect(find.textContaining('数学 / 英语 / 政治'), findsNothing);
     });
 
@@ -810,7 +903,7 @@ void main() {
         Subject(id: 'chem', name: '化学', color: Subject.math.color, icon: '化'),
       ];
       await pumpReview(tester, repo: repo);
-      expect(find.text('列表按学科排（数学、英语、政治等），同一科里先加入的先解决'), findsOneWidget);
+      expect(find.text('列表按学科排（数学、英语、政治等）'), findsOneWidget);
     });
   });
 
@@ -1154,7 +1247,7 @@ void main() {
       expect(find.textContaining('无错因题'), findsNothing);
     });
 
-    testWidgets('SR-P2-47 已解决区也分页：5 组每页 2 条共 3 页', (tester) async {
+    testWidgets('SR-P2-47 列表分页：6 行每页 2 条共 3 页（已解决记录的题也在未开始组里）', (tester) async {
       final repo = FakeReviewRepo(
         settings: AppSettings.defaults.copyWith(pageSize: 2),
         questions: [
@@ -1217,16 +1310,13 @@ void main() {
         ],
       );
       await pumpReview(tester, repo: repo);
-      // 待治 1 行 + 已掌握未到期 5 行（q3、c1–c4）共 6 条，每页 2 条共 3 页；
-      // 已治愈 5 组每页 2 条共 3 页，翻页要点第 2 个“下一页”。
+      // 无卡：6 道题全落「未开始」，每页 2 条共 3 页；已解决区已取消，
+      // 不再有「共 5 组」的第二套分页。
       expect(find.text('共 6 条 · 第 1 / 3 页'), findsOneWidget);
-      expect(find.text('共 5 组 · 第 1 / 3 页'), findsOneWidget);
-      final next = find.widgetWithText(QmButton, '下一页').at(1);
-      await tester.ensureVisible(next);
-      await tester.pumpAndSettle();
-      await tester.tap(next);
-      await tester.pumpAndSettle();
-      expect(find.text('共 5 组 · 第 2 / 3 页'), findsOneWidget);
+      expect(find.text('未开始'), findsOneWidget);
+      expect(find.textContaining('共 5 组'), findsNothing);
+      await tapButton(tester, '下一页');
+      expect(find.text('共 6 条 · 第 2 / 3 页'), findsOneWidget);
     });
 
     testWidgets('SR-P2-47 未加入盒：超 10 道默认只列前 10，可展开看全部', (tester) async {
@@ -1285,8 +1375,8 @@ void main() {
       expect(find.textContaining('复习数据读取失败'), findsOneWidget);
       repo.throwOnLoad = false;
       await tapButton(tester, '重新加载');
-      // q1、q3 行副标题 + 已治愈行各一处“概念不清”。
-      expect(find.textContaining('概念不清'), findsNWidgets(3));
+      // q1、q3 行副标题各一处“概念不清”（已解决区已取消，不再有第三处）。
+      expect(find.textContaining('概念不清'), findsNWidgets(2));
     });
 
     testWidgets('SR-P2-49 错因筛选进会话：只治筛选命中的错因', (tester) async {
@@ -1364,7 +1454,7 @@ void main() {
       expect(find.textContaining('函数极限'), findsOneWidget);
     });
 
-    testWidgets('SR-P2-57 断点恢复的范围按保存队列写，不写死“全部待解决错因”', (tester) async {
+    testWidgets('SR-P2-57 断点恢复的范围按保存队列写，不写死“全部复习题”', (tester) async {
       await pumpReview(tester);
       await pickMenuItem<String>(
         tester,
@@ -1379,7 +1469,7 @@ void main() {
       await tapButton(tester, '继续上次会话');
       expect(find.textContaining('第 1 / 2 道题'), findsOneWidget);
       expect(find.textContaining('数学这一科'), findsOneWidget);
-      expect(find.textContaining('全部待解决错因'), findsNothing);
+      expect(find.textContaining('全部复习题'), findsNothing);
     });
   });
 }
