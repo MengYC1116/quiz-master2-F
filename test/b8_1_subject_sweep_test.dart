@@ -18,6 +18,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:quiz_master2/data/database.dart';
+import 'package:quiz_master2/data/report_stats.dart';
 import 'package:quiz_master2/data/repository.dart';
 import 'package:quiz_master2/data/review_engine.dart';
 import 'package:quiz_master2/data/review_scheduler.dart';
@@ -233,12 +234,14 @@ class _SweepReportRepo extends QuestionRepository {
     required this.questions,
     required this.records,
     List<Subject>? subjects,
+    this.attempts = const [],
   }) : subjectsValue = subjects ?? Subject.all,
        super(AppDatabase.instance);
 
   List<Question> questions;
   List<CauseRecord> records;
   List<Subject> subjectsValue;
+  List<AttemptData> attempts;
 
   @override
   Future<List<Subject>> subjects() async => List.of(subjectsValue);
@@ -259,7 +262,7 @@ class _SweepReportRepo extends QuestionRepository {
   // P3 入口 3：报告 load() 读全部 attempts 与池内标记（不覆写会走
   // 真实库、页面卡 loading、pumpAndSettle 超时）。
   @override
-  Future<List<AttemptData>> loadAllAttempts() async => const [];
+  Future<List<AttemptData>> loadAllAttempts() async => List.of(attempts);
 
   @override
   Future<Set<String>> fsrsPoolQuestionIds() async => const {};
@@ -325,6 +328,50 @@ class _SweepReviewRepo extends QuestionRepository {
 
   @override
   Future<void> clearReviewState() async {}
+}
+
+/// 报告分布行夹具（FSRS 口径，方案 §2.3）：一条正式复习作答，今天作答。
+AttemptData _reportAttempt(
+  String questionId, {
+  int? correct,
+  String session = 's1',
+}) => AttemptData(
+  id: 'att-$questionId-$correct-$session',
+  questionId: questionId,
+  sessionId: session,
+  mode: ReviewMode.due,
+  correct: correct,
+  answerVersion: 1,
+  contentVersion: 0,
+  status: '已提交',
+  submissionId: 'sub-$questionId-$correct-$session',
+  createdAt: _today.millisecondsSinceEpoch,
+);
+
+/// 报告默认范围“本周”的起点（与 ReportState.rangeStart 同口径）。
+DateTime get _weekStart {
+  final t = _today;
+  return t.subtract(Duration(days: t.weekday - 1));
+}
+
+/// 新口径分布行期望值：直接由 computeReportStats 算出，不手写数字。
+/// 返回学科名 → 分布行文案。
+Map<String, String> _expectedDistRows({
+  required List<AttemptData> attempts,
+  required List<Question> questions,
+  required List<Subject> subjects,
+}) {
+  final stats = computeReportStats(
+    attempts: attempts,
+    questions: questions,
+    knowledgePoints: const [],
+    subjectIdsInOrder: [for (final s in subjects) s.id],
+    rangeStart: _weekStart,
+  );
+  return {
+    for (final s in subjects)
+      s.name: '${s.name} · 作答 ${stats.answeredBySubject[s.id] ?? 0} 道',
+  };
 }
 
 void main() {
@@ -416,28 +463,42 @@ void main() {
         ),
       );
       // 主体正常渲染（不是空态），分布区标题在、但一行都没有。
+      // 新口径标题是“各科正式作答”，分布行文案是“作答 N 道”。
       expect(find.text('还没有复习记录，先去复习吧'), findsNothing);
-      expect(find.text('错在哪个学科（只按学科看）'), findsOneWidget);
-      // 「X · N 道错题」只在分布行里出现；修好前这里是数学/英语/政治三行。
-      expect(find.textContaining('道错题'), findsNothing);
+      expect(find.text('各科正式作答（只按学科看）'), findsOneWidget);
+      // 「X · 作答 N 道」只在分布行里出现；修好前这里是数学/英语/政治三行。
+      expect(find.textContaining('· 作答'), findsNothing);
       expect(tester.takeException(), isNull);
     });
 
     testWidgets('学科表非空：分布三行仍在（正常路径未破坏）', (tester) async {
+      // 新口径：分布 = 范围内有正式作答的题数（按题去重）。q1 有一条
+      // 正式作答 → 数学 1 道；英/政无作答 → 0 道。期望值由
+      // computeReportStats 直接算出。
+      final questions = [_q('q1', '函数极限', errorTypes: ['概念不清'])];
+      final attempts = [_reportAttempt('q1', correct: 0)];
+      final expected = _expectedDistRows(
+        attempts: attempts,
+        questions: questions,
+        subjects: Subject.all,
+      );
       await _pumpPage(
         tester,
         ReportPage(
           repo: _SweepReportRepo(
-            questions: [_q('q1', '函数极限', errorTypes: ['概念不清'])],
+            questions: questions,
             records: [_rec('q1', '概念不清')],
+            attempts: attempts,
           ),
           onGoReview: () {},
           onOpenWrongbookFiltered: ({subjectId, cause, knowledgePointId}) {},
         ),
       );
-      expect(find.text('数学 · 1 道错题'), findsOneWidget);
-      expect(find.text('英语 · 0 道错题'), findsOneWidget);
-      expect(find.text('政治 · 0 道错题'), findsOneWidget);
+      expect(find.text('各科正式作答（只按学科看）'), findsOneWidget);
+      for (final row in expected.values) {
+        expect(find.text(row), findsOneWidget);
+      }
+      expect(find.textContaining('道错题'), findsNothing);
       expect(tester.takeException(), isNull);
     });
   });
