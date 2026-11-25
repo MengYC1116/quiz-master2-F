@@ -13,7 +13,8 @@
 // 移入 db_questions.dart，仅供旧 review_history 写入层保留。
 // ReviewVerdict / Verification / unsolvedReset / childSubmissionId
 // 仅供旧 review_history 写入层（db_questions.dart）与历史测试保留，
-// P2 起产品流程不再调用，P5 决定是否移除。
+// P2 起产品流程不再调用；P5 决定保留（理由见 db_questions.dart 的
+// recordSelfCheckIntoImpl 注释；移除归 P3/P4 队列替换时一并做）。
 //
 // 两条不可妥协的边界（PLAN M3 设计基线）：
 // 1. 题目是会话单位，答题结果是客观对错事实，不是治疗命令。

@@ -188,6 +188,10 @@ class SchedulerConfig {
 /// （这里是 [card]）、next_due_at（[card].due，须与 JSON 里的 due 一致）、
 /// first_reviewed_at、updated_at 由 P5 落盘时写。
 /// P1 先用 JSON（[toMap]/[fromMap]）跑通，P5 原样落表。
+/// P5 补充：[contentVersion]（卡片所对的题目内容版本）与首次呈现三字段
+/// （[firstPresentedAt]/[firstPresentedLocalDate]/
+/// [firstPresentedContentVersion]，第六轮补充第 1 项）；三者默认空，
+/// P1 的旧构造与旧 JSON 仍能读（缺键按空/0 补）。
 class StoredCard {
   StoredCard({
     required this.questionId,
@@ -195,6 +199,10 @@ class StoredCard {
     required this.card,
     required this.configId,
     required this.firstReviewedAt,
+    this.contentVersion = 0,
+    this.firstPresentedAt,
+    this.firstPresentedLocalDate,
+    this.firstPresentedContentVersion,
   });
 
   /// 题目 ID（TEXT 主键，一题一卡）。
@@ -217,13 +225,58 @@ class StoredCard {
   /// fsrs_cards.first_reviewed_at（可空）。
   final DateTime? firstReviewedAt;
 
-  StoredCard copyWithCard(fsrs.Card newCard, {DateTime? firstReviewedAt}) {
+  /// 卡片所对的题目内容版本（fsrs_cards.content_version）。
+  ///
+  /// 调度器本身不知道题目内容版本，建卡时先记 0；P5 的两个落盘入口
+  /// （核对提交事务、迁移重放）在保存后按作答/题目当时的
+  /// content_version 回填（见 db_fsrs.dart）。内容实质修改时由
+  /// upsert 钩子重置卡片并写新版本（见 resetFsrsCardForContentChangeInto）。
+  final int contentVersion;
+
+  /// 首次呈现题目的 UTC 时间（第六轮补充第 1 项，P4 额度口径用）。
+  ///
+  /// 与 [firstReviewedAt] 不同：看一眼没作答也算呈现；只在首次显示
+  /// 题目时写（调用方 P4 负责在首次显示时调 recordFirstPresented），
+  /// 退出恢复、第二天重看都不重计；内容重置后新版本重新计。
+  final DateTime? firstPresentedAt;
+
+  /// 首次呈现的本地日期（`yyyy-MM-dd`，按呈现时的本地日历日算，
+  /// 由调用方传入；每日额度按本地日期切，时间戳一律存 UTC）。
+  final String? firstPresentedLocalDate;
+
+  /// 首次呈现时题目的内容版本（与 [firstPresentedAt] 同生同灭；
+  /// 内容重置后新版本重新计）。
+  final int? firstPresentedContentVersion;
+
+  StoredCard copyWithCard(
+    fsrs.Card newCard, {
+    DateTime? firstReviewedAt,
+    int? contentVersion,
+    DateTime? firstPresentedAt,
+    String? firstPresentedLocalDate,
+    int? firstPresentedContentVersion,
+    bool clearFirstReviewedAt = false,
+    bool clearFirstPresented = false,
+  }) {
     return StoredCard(
       questionId: questionId,
       cardId: cardId,
       card: newCard,
       configId: configId,
-      firstReviewedAt: firstReviewedAt ?? this.firstReviewedAt,
+      firstReviewedAt: clearFirstReviewedAt
+          ? null
+          : (firstReviewedAt ?? this.firstReviewedAt),
+      contentVersion: contentVersion ?? this.contentVersion,
+      firstPresentedAt: clearFirstPresented
+          ? null
+          : (firstPresentedAt ?? this.firstPresentedAt),
+      firstPresentedLocalDate: clearFirstPresented
+          ? null
+          : (firstPresentedLocalDate ?? this.firstPresentedLocalDate),
+      firstPresentedContentVersion: clearFirstPresented
+          ? null
+          : (firstPresentedContentVersion ??
+                this.firstPresentedContentVersion),
     );
   }
 
@@ -233,6 +286,10 @@ class StoredCard {
         'card': card.toMap(),
         'configId': configId,
         'firstReviewedAt': firstReviewedAt?.toIso8601String(),
+        'contentVersion': contentVersion,
+        'firstPresentedAt': firstPresentedAt?.toIso8601String(),
+        'firstPresentedLocalDate': firstPresentedLocalDate,
+        'firstPresentedContentVersion': firstPresentedContentVersion,
       };
 
   static StoredCard fromMap(Map<String, dynamic> map) {
@@ -246,6 +303,13 @@ class StoredCard {
       firstReviewedAt: map['firstReviewedAt'] != null
           ? DateTime.parse(map['firstReviewedAt'] as String)
           : null,
+      contentVersion: (map['contentVersion'] as num?)?.toInt() ?? 0,
+      firstPresentedAt: map['firstPresentedAt'] != null
+          ? DateTime.parse(map['firstPresentedAt'] as String)
+          : null,
+      firstPresentedLocalDate: map['firstPresentedLocalDate'] as String?,
+      firstPresentedContentVersion:
+          (map['firstPresentedContentVersion'] as num?)?.toInt(),
     );
   }
 }
@@ -487,13 +551,13 @@ class FsrsReviewScheduler implements ReviewScheduler {
       return;
     }
     // 新卡状态 + 清空 firstReviewedAt，但 cardId 保持不变。
+    // P5：首次呈现三字段也清空——新版本重新进待释放状态，首次呈现
+    // 按新版本重计（见实施方案 v2 §7 + 第六轮补充第 1 项）。
     await store.save(
-      StoredCard(
-        questionId: questionId,
-        cardId: stored.cardId,
-        card: fsrs.Card(cardId: stored.cardId, due: DateTime.now().toUtc()),
-        configId: config.configId,
-        firstReviewedAt: null,
+      stored.copyWithCard(
+        fsrs.Card(cardId: stored.cardId, due: DateTime.now().toUtc()),
+        clearFirstReviewedAt: true,
+        clearFirstPresented: true,
       ),
     );
   }

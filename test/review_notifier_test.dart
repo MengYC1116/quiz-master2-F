@@ -149,6 +149,32 @@ class FakeReviewNotifierRepo extends QuestionRepository {
     return attempt.id;
   }
 
+  // P5：submitCheck 改走 repo.submitReviewCheck（事务双写）；Fake
+  // 不碰真实数据库，这里用旧的两步行为复刻（写 attempts + 调调度器），
+  // 事务语义由 P5 测试对真实库验证。throwOnCheck 时 recordAttempt
+  // 先抛错，submitCheck 仍走 saveError 分支。
+  @override
+  Future<({String attemptId, DateTime? nextDue})> submitReviewCheck({
+    required AttemptData attempt,
+    required ReviewResult? result,
+    required DateTime reviewedAt,
+    required String eventId,
+    required ReviewScheduler scheduler,
+  }) async {
+    final attemptId = await recordAttempt(attempt);
+    DateTime? nextDue;
+    if (result != null) {
+      await scheduler.recordAnswer(
+        attempt.questionId,
+        result,
+        reviewedAt,
+        eventId,
+      );
+      nextDue = await scheduler.nextDueAt(attempt.questionId);
+    }
+    return (attemptId: attemptId, nextDue: nextDue);
+  }
+
   @override
   Future<AttemptData?> loadAttempt({
     required String sessionId,

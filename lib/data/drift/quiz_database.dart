@@ -77,7 +77,7 @@ class QuizDatabase extends _$QuizDatabase {
   final Future<void> Function(QuizDatabase db)? onBeforeOpen;
 
   @override
-  int get schemaVersion => 7;
+  int get schemaVersion => 8;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -91,35 +91,51 @@ class QuizDatabase extends _$QuizDatabase {
     // 打开）请用新版打开。
     // 二十七批 D-257：v6 → v7——subjects 加 english_name +
     // english_name_manual 两列，预设三科回填英文名，数据全保留。
+    // P5：v7 → v8——新建 fsrs_cards / fsrs_events /
+    // fsrs_migration_log 三表 + next_due_at 索引（DDL 字面量须与
+    // db_schema.dart 的 createTablesImpl 一字不差，见 _upgrade7To8
+    // 注释）；历史审计 + attempts 重放不在 onUpgrade 里做——它要跑
+    // FSRS Dart 计算，走 openAt 的 onBeforeOpen（见 db_schema.dart），
+    // onUpgrade 只建表。链式终点改为 v8：2→8 / 3→8 / 4→8 / 5→8 /
+    // 6→8 / 7→8。
     onUpgrade: (m, from, to) async {
-      if (from == 2 && to == 7) {
+      if (from == 2 && to == 8) {
         await _upgrade2To3(m);
         await _upgrade3To4(m);
         await _upgrade4To5(m);
         await _upgrade5To6(m);
         await _upgrade6To7(m);
+        await _upgrade7To8(m);
         return;
       }
-      if (from == 3 && to == 7) {
+      if (from == 3 && to == 8) {
         await _upgrade3To4(m);
         await _upgrade4To5(m);
         await _upgrade5To6(m);
         await _upgrade6To7(m);
+        await _upgrade7To8(m);
         return;
       }
-      if (from == 4 && to == 7) {
+      if (from == 4 && to == 8) {
         await _upgrade4To5(m);
         await _upgrade5To6(m);
         await _upgrade6To7(m);
+        await _upgrade7To8(m);
         return;
       }
-      if (from == 5 && to == 7) {
+      if (from == 5 && to == 8) {
         await _upgrade5To6(m);
         await _upgrade6To7(m);
+        await _upgrade7To8(m);
         return;
       }
-      if (from == 6 && to == 7) {
+      if (from == 6 && to == 8) {
         await _upgrade6To7(m);
+        await _upgrade7To8(m);
+        return;
+      }
+      if (from == 7 && to == 8) {
+        await _upgrade7To8(m);
         return;
       }
       if (from > to) {
@@ -514,6 +530,51 @@ Future<void> _upgrade6To7(Migrator m) async {
   final db = m.database as QuizDatabase;
   await db.into(db.settings).insert(
     SettingsCompanion.insert(key: 'schemaVersion', value: '7'),
+    mode: InsertMode.insertOrReplace,
+  );
+}
+
+/// P5 的 v7 → v8 迁移步：新建 fsrs_cards / fsrs_events /
+/// fsrs_migration_log 三表 + fsrs_cards.next_due_at 索引，数据全保留
+///（旧表旧数据一律不动；历史审计 + attempts 重放在 onBeforeOpen 里做，
+/// 不在本步做——本步只建表，见 migration getter 注释）。
+/// 迁移 DDL 必须与 createTablesImpl 的手写字面量一字不差（十二批
+/// D-91 的教训：迁移后库与全新 v8 库 sqlite_master 逐字一致——
+/// CREATE TABLE 与索引用同一份字面量，不走 m.createTable）。
+/// 重复迁移不重复建表：Drift 只在 from==7 时跑本步，user_version
+/// 已是 8 的库不再进 onUpgrade；迁移中途失败时 SQLite/Drift 回滚
+/// 本步（onUpgrade 在事务内跑），不留半迁移状态。
+Future<void> _upgrade7To8(Migrator m) async {
+  await m.database.customStatement('''
+    CREATE TABLE fsrs_cards(
+      question_id TEXT PRIMARY KEY, card_id INTEGER NOT NULL UNIQUE,
+      algorithm_version TEXT NOT NULL DEFAULT 'FSRS-6',
+      scheduler_config_id TEXT NOT NULL,
+      card_state_json TEXT NOT NULL, next_due_at INTEGER NOT NULL,
+      first_reviewed_at INTEGER, content_version INTEGER NOT NULL DEFAULT 0,
+      updated_at INTEGER NOT NULL,
+      first_presented_at INTEGER, first_presented_local_date TEXT,
+      first_presented_content_version INTEGER)''');
+  await m.database.customStatement('''
+    CREATE TABLE fsrs_events(
+      event_id TEXT PRIMARY KEY, question_id TEXT NOT NULL DEFAULT '',
+      kind TEXT NOT NULL, processed_at INTEGER NOT NULL)''');
+  await m.database.customStatement('''
+    CREATE TABLE fsrs_migration_log(
+      id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL,
+      source TEXT NOT NULL, run_at INTEGER NOT NULL,
+      status TEXT NOT NULL, audit_json TEXT NOT NULL,
+      replayed_count INTEGER NOT NULL DEFAULT 0,
+      skipped_count INTEGER NOT NULL DEFAULT 0)''');
+  await m.database.customStatement(
+    'CREATE INDEX idx_fsrs_cards_due ON fsrs_cards(next_due_at)',
+  );
+  // settings 里的 schemaVersion 写回 8，与 user_version 一致
+  // （真实 v7 库的 settings 本来就有这行；手造夹具库若缺这行，
+  // insertOrReplace 会补一行）。
+  final db = m.database as QuizDatabase;
+  await db.into(db.settings).insert(
+    SettingsCompanion.insert(key: 'schemaVersion', value: '8'),
     mode: InsertMode.insertOrReplace,
   );
 }

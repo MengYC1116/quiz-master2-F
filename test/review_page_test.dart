@@ -12,12 +12,15 @@
 // 用 FakeRepo 覆盖 repository 调用（不碰真实数据库）；核对提交走
 // 真实 ReviewNotifier + 默认内存调度器（P1）。
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:quiz_master2/data/database.dart';
 import 'package:quiz_master2/data/repository.dart';
 import 'package:quiz_master2/data/review_engine.dart';
+import 'package:quiz_master2/data/review_scheduler.dart';
 import 'package:quiz_master2/models/models.dart';
 import 'package:quiz_master2/modules/review/review_page.dart';
+import 'package:quiz_master2/state/review_notifier.dart';
 import 'package:quiz_master2/theme/app_theme.dart';
 import 'package:quiz_master2/widgets/uikit.dart';
 import 'package:quiz_master2/widgets/widgets.dart';
@@ -168,6 +171,32 @@ class FakeReviewRepo extends QuestionRepository {
     if (throwOnCheck) throw StateError('save failed');
     attempts['${attempt.sessionId}|${attempt.questionId}'] = attempt;
     return attempt.id;
+  }
+
+  /// P5：本 fake 不接真实 SQLite 事务——复刻核对提交的语义：
+  /// 先 recordAttempt（保存失败时抛错，见“保存失败”测试），
+  /// 再走传入的调度器推进 FSRS、取下次时间（“下次时间按 FSRS 算”
+  /// 测试靠它）；专项练习 / 未判分时 result 为 null，不推进。
+  @override
+  Future<({String attemptId, DateTime? nextDue})> submitReviewCheck({
+    required AttemptData attempt,
+    required ReviewResult? result,
+    required DateTime reviewedAt,
+    required String eventId,
+    required ReviewScheduler scheduler,
+  }) async {
+    final id = await recordAttempt(attempt);
+    DateTime? nextDue;
+    if (result != null) {
+      await scheduler.recordAnswer(
+        attempt.questionId,
+        result,
+        reviewedAt,
+        eventId,
+      );
+      nextDue = await scheduler.nextDueAt(attempt.questionId);
+    }
+    return (attemptId: id, nextDue: nextDue);
   }
 
   @override
@@ -450,8 +479,21 @@ Future<void> pumpReview(
   addTearDown(tester.view.resetPhysicalSize);
   addTearDown(tester.view.resetDevicePixelRatio);
   final opened = <Question>[];
+  // P5：默认调度器已换成 SqliteCardStore（绑单例库），页面测试不接
+  // 真实库——外层覆盖一个确定性内存调度器（fuzzing 关）；ReviewPage
+  // 内层的 ProviderScope 只覆盖 repository/initial，调度器覆盖会
+  // 从外层继承下来。
   await tester.pumpWidget(
-    MaterialApp(
+    ProviderScope(
+      overrides: [
+        reviewSchedulerProvider.overrideWithValue(
+          FsrsReviewScheduler(
+            config: const SchedulerConfig(enableFuzzing: false),
+            store: InMemoryCardStore(),
+          ),
+        ),
+      ],
+      child: MaterialApp(
       theme: AppTheme.light(scale: scale),
       darkTheme: AppTheme.dark(scale: scale),
       themeMode: brightness == Brightness.dark
@@ -477,6 +519,7 @@ Future<void> pumpReview(
           );
         },
       ),
+    ),
     ),
   );
   await tester.pumpAndSettle();

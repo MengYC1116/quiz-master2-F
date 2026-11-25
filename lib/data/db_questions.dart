@@ -104,7 +104,13 @@ Future<void> syncCauseRecordsIntoImpl(QuizDatabase db, Question q) async {
 /// P2（2026-11-25）审计：本函数在产品流程里已无调用方（只剩旧测试
 /// 直接调 AppDatabase.recordSelfCheckInto）；它是 review_history
 /// 的第二个写入点，P2 起与 submitCauseVerdictIntoImpl 一样停止写入，
-/// 只保留历史查询能力，P5 决定是否移除。
+/// 只保留历史查询能力。
+/// P5 决定（2026-11-25）：保留，不移除。原因：cause_records 的
+/// solvedCount / recheckDate 仍是复习列表分组、到期队列、详情页与
+/// 报告的线上状态，settings 的 cureChecks / recheckIntervalDays
+/// 仍是其参数；只删写入层会让旧状态永远卡住且无人能写，而迁移审计
+/// 要靠这套语义解读旧历史。移除归 P3/P4 队列替换时一并做（那时
+/// cause_records 的治愈状态才真正退役）。
 Future<CauseRecord> recordSelfCheckIntoImpl(
   QuizDatabase db, {
   required CauseRecord updated,
@@ -243,8 +249,9 @@ class VerdictSubmitResult {
 /// 两次治愈成功之间的最小间隔（M3-7 ⑥）：24 小时。
 ///
 /// P2：治愈判定已从产品流程删除，本常量与下面的 [CureEvaluation] /
-/// [evaluateCure] 仅供旧写入层 [submitCauseVerdictIntoImpl] 保留
-/// （P2 起产品流程不再写 verdict，P5 决定是否移除整个写入层）。
+/// [evaluateCure] 仅供旧写入层 [submitCauseVerdictIntoImpl] 保留。
+/// P5 决定（2026-11-25）：保留，不移除——理由见 [recordSelfCheckIntoImpl]
+/// 的 P5 决定（旧治愈状态仍是线上状态，移除归 P3/P4 队列替换时一并做）。
 const int cureMinIntervalMs = 24 * 60 * 60 * 1000;
 
 /// 一次已核验“已解决”能否计入治愈的判定结果（旧写入层用，P2 已废止）。
@@ -606,12 +613,28 @@ Future<VerdictSubmitResult> submitCauseVerdictIntoImpl(
 /// 无 → 新建一行。返回 attempt id。
 /// 跳过后重遇、恢复重放都走同一条记录，不产生多条“看起来像独立作答”
 /// 的记录。
+/// P5：抽出事务内版本 [_recordAttemptInTxn]——核对提交事务
+/// （_submitReviewCheckInto）直接调它，不另开事务（Drift 嵌套事务
+/// 是 savepoint，但这里不需要嵌套）；本函数保持原行为（自己包事务）。
 Future<String> recordAttemptIntoImpl(
   QuizDatabase db, {
   required AttemptData attempt,
 }) async {
   late String id;
   await db.transaction(() async {
+    id = await _recordAttemptInTxn(db, attempt);
+  });
+  return id;
+}
+
+/// attempt 写入的事务内版本（调用方已包事务时直接调本函数；
+/// 单独调时走 [recordAttemptIntoImpl]，它包事务）。
+Future<String> _recordAttemptInTxn(
+  QuizDatabase db,
+  AttemptData attempt,
+) async {
+  late String id;
+  {
     final existing =
         await (db.select(db.attempts)..where(
               (t) =>
@@ -666,7 +689,7 @@ Future<String> recordAttemptIntoImpl(
             ),
           );
     }
-  });
+  }
   return id;
 }
 
@@ -905,11 +928,18 @@ Future<void> _upsertQuestionIntoTxn(
     countOrganizedToday = old != null && old.isOrganized != 1;
   }
   var effective = q;
+  // P5：内容实质变化的两个信号（供下面的 FSRS 重置钩子用）：
+  // visibleChanged = 题干/选项文字/题型变（抬 content_version）；
+  // answerSubstantiveChanged = 标准答案变（answer / correct_option /
+  // option_labels，抬 answer_version）。只改解析文字（explanation）
+  // 或纯排版/分类标签时两者都为 false，不重置。
+  var visibleChanged = false;
+  var answerSubstantiveChanged = false;
   if (old != null) {
     // 十四批 M3（P1-A）：改标签保存先过集中规则（确认清零、旧答案失效/
     // 待重新核对），再算版本；后续比较一律用调整后的 effective。
     effective = _applyOptionLabelChangeRules(old, effective);
-    final visibleChanged =
+    visibleChanged =
         old.ocrStem != effective.ocrStem ||
         old.ocrSplitStatus != effective.ocrSplitStatus ||
         old.ocrFigures != effective.ocrFigures ||
@@ -931,6 +961,10 @@ Future<void> _upsertQuestionIntoTxn(
         !_optionLabelsEqual(old.optionLabels, effective.optionLabels) ||
         old.answerPendingRecheck !=
             (effective.answerPendingRecheck ? 1 : 0);
+    answerSubstantiveChanged =
+        old.answer != effective.answer ||
+        old.correctOption != effective.correctOption ||
+        !_optionLabelsEqual(old.optionLabels, effective.optionLabels);
     if (visibleChanged || answerChanged) {
       // 内容变了：模型版本已抬高时以模型为准（不双计）；未抬高时 +1。
       effective = effective.copyWith(
@@ -970,6 +1004,18 @@ Future<void> _upsertQuestionIntoTxn(
           _questionCompanion(effective),
           mode: InsertMode.insertOrReplace,
         );
+  }
+  // P5：内容实质修改 → FSRS 卡片重置（实施方案 v2 §7，见
+  // resetFsrsCardForContentChangeInto）：题干/选项/标准答案/题型变
+  // 才重置；只改解析文字、纯排版或分类标签不重置。旧作答事实保留，
+  // 不参与新版本重放；card_id 不变。新行（old == null）没有卡可重置。
+  // 与题写同一事务：题保存失败时重置不生效，重置失败时题也不保存。
+  if (old != null && (visibleChanged || answerSubstantiveChanged)) {
+    await resetFsrsCardForContentChangeInto(
+      db,
+      q.id,
+      effective.contentVersion,
+    );
   }
   // B9-1：题变为已整理时，同句柄把指向它的收集任务置 done。
   // 这是全部整理路径的汇合点（整理确认、批量整理都走 repo.save →

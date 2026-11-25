@@ -1,7 +1,7 @@
-// 十四批 M5 修复轮 2（B 路）：D-91 证据——迁移后的 v7 库与全新 v7 库
+// 十四批 M5 修复轮 2（B 路）：D-91 证据——迁移后的 v8 库与全新 v8 库
 // sqlite_master 逐字一致（实际跑出来的比对结果）。
-// 方法：用 v4 夹具 DDL 建 v4 库 → AppDatabase.openAt 走 Drift 迁移到 v7；
-// 另建全新 v7 库；两库各取 sqlite_master（type/name/tbl_name/sql，
+// 方法：用 v4 夹具 DDL 建 v4 库 → AppDatabase.openAt 走 Drift 迁移到 v8；
+// 另建全新 v8 库；两库各取 sqlite_master（type/name/tbl_name/sql，
 // 按 type, name 排序）逐行比对。比对输出写进本测试的临时目录
 // fix2-d91-sqlite-master-diff.txt（含两库完整 sqlite_master 清单、
 // user_version、表/索引计数与 diff 结果）。
@@ -103,7 +103,7 @@ String _unifiedDiff(List<String> a, List<String> b) {
 }
 
 void main() {
-  test('D-91：v4 迁移到 v7 后的库与全新 v7 库 sqlite_master 逐字一致（实际比对）', () async {
+  test('D-91：v4 迁移到 v8 后的库与全新 v8 库 sqlite_master 逐字一致（实际比对）', () async {
     final tmp = await Directory.systemTemp.createTemp('b14-fix2-d91-');
     addTearDown(() async {
       try {
@@ -174,7 +174,7 @@ void main() {
     final buf = StringBuffer();
     buf.writeln('D-91 sqlite_master 对比证据（十四批 M5 修复轮 2，B 路）');
     buf.writeln('方法：v4 夹具库（15 表 + 6 索引，user_version=4）经 '
-        'AppDatabase.openAt 走 Drift 迁移到 v7；另建全新 v7 库；两库各取 '
+        'AppDatabase.openAt 走 Drift 迁移到 v8；另建全新 v8 库；两库各取 '
         'sqlite_master（SELECT type, name, tbl_name, sql ORDER BY type, name）'
         '逐行比对。源码 DDL 见 lib/data/db_schema.dart createTablesImpl；'
         '迁移 DDL 见 lib/data/drift/quiz_database.dart _upgrade4To5 与 _upgrade5To6。');
@@ -207,7 +207,7 @@ void main() {
     buf.writeln('== 空白归一化后 diff（对照；空即零差异） ==');
     buf.writeln(normDiff.isEmpty ? '（零差异）' : normDiff);
     buf.writeln('');
-    buf.writeln('== 完整建表 DDL（全新 v7 库 sqlite_master 的 sql 原文，'
+    buf.writeln('== 完整建表 DDL（全新 v8 库 sqlite_master 的 sql 原文，'
         '即 lib/data/db_schema.dart createTablesImpl 实际执行的建表语句） ==');
     for (final row in freshRows) {
       final parts = row.split('|');
@@ -232,8 +232,8 @@ void main() {
     final outPath = p.join(tmp.path, 'fix2-d91-sqlite-master-diff.txt');
     await File(outPath).writeAsString(buf.toString());
 
-    expect(migratedVersion, 7);
-    expect(freshVersion, 7);
+    expect(migratedVersion, 8);
+    expect(freshVersion, 8);
     // D-91 的“逐字一致”按本项目既有口径（b14_m1_migration_test）指
     // 空白归一化后逐字一致；原文层差异已在证据文件里逐行解释为仅
     // 空白不同（此处断言每个原文差异的归一化形式都相同）。

@@ -32,11 +32,14 @@ String _norm(String s) => s.replaceAll(RegExp(r'\s+'), ' ').trim();
 //（17 表 + 8 索引）。
 // 二十七批 D-257：v7（subjects 末尾加 english_name + english_name_manual
 // 两列），仍 25 条。
+// P5：v8（fsrs_cards / fsrs_events / fsrs_migration_log 三表 +
+// idx_fsrs_cards_due 索引），29 条（20 表 + 9 索引）。
 const _expected = [
   'CREATE UNIQUE INDEX idx_boxes_one_layer1_per_question ON question_boxes(question_id) WHERE layer = 1 AND question_id IS NOT NULL',
   'CREATE INDEX idx_boxes_parent ON question_boxes(parent_box_id)',
   'CREATE INDEX idx_boxes_question ON question_boxes(question_id)',
   'CREATE INDEX idx_boxes_task_page ON question_boxes(collect_task_id, page)',
+  'CREATE INDEX idx_fsrs_cards_due ON fsrs_cards(next_due_at)',
   'CREATE INDEX idx_ocr_jobs_pending ON ocr_jobs(status, available_at)',
   'CREATE INDEX idx_ocr_jobs_question ON ocr_jobs(question_id)',
   'CREATE INDEX idx_questions_question_type ON questions(question_type)',
@@ -46,6 +49,9 @@ const _expected = [
   "CREATE TABLE collect_tasks( id TEXT PRIMARY KEY, name TEXT NOT NULL, file_name TEXT NOT NULL, subject_id TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'queued', progress INTEGER NOT NULL DEFAULT 0, page_count INTEGER NOT NULL DEFAULT 1, page INTEGER NOT NULL DEFAULT 1, error TEXT, question_id TEXT, created_at INTEGER NOT NULL DEFAULT 0, source_path TEXT NOT NULL DEFAULT '', page_rotations TEXT NOT NULL DEFAULT '{}', source_hash TEXT)",
   'CREATE TABLE exams(id TEXT PRIMARY KEY, name TEXT NOT NULL, date INTEGER)',
   'CREATE TABLE folders( id TEXT PRIMARY KEY, name TEXT NOT NULL, subject_id TEXT NOT NULL, parent_id TEXT, sort_order INTEGER NOT NULL DEFAULT 0)',
+  "CREATE TABLE fsrs_cards( question_id TEXT PRIMARY KEY, card_id INTEGER NOT NULL UNIQUE, algorithm_version TEXT NOT NULL DEFAULT 'FSRS-6', scheduler_config_id TEXT NOT NULL, card_state_json TEXT NOT NULL, next_due_at INTEGER NOT NULL, first_reviewed_at INTEGER, content_version INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL, first_presented_at INTEGER, first_presented_local_date TEXT, first_presented_content_version INTEGER)",
+  "CREATE TABLE fsrs_events( event_id TEXT PRIMARY KEY, question_id TEXT NOT NULL DEFAULT '', kind TEXT NOT NULL, processed_at INTEGER NOT NULL)",
+  "CREATE TABLE fsrs_migration_log( id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL, source TEXT NOT NULL, run_at INTEGER NOT NULL, status TEXT NOT NULL, audit_json TEXT NOT NULL, replayed_count INTEGER NOT NULL DEFAULT 0, skipped_count INTEGER NOT NULL DEFAULT 0)",
   'CREATE TABLE knowledge_points( id TEXT PRIMARY KEY, subject_id TEXT NOT NULL, chapter TEXT NOT NULL, name TEXT NOT NULL)',
   "CREATE TABLE question_boxes( id TEXT PRIMARY KEY, collect_task_id TEXT, question_id TEXT, parent_box_id TEXT, page INTEGER NOT NULL DEFAULT 1 CHECK (page >= 1), layer INTEGER NOT NULL CHECK (layer IN (1, 2)), type TEXT NOT NULL CHECK (type IN ('question', 'stem', 'option', 'figure')), x REAL NOT NULL CHECK (x >= 0 AND x <= 1), y REAL NOT NULL CHECK (y >= 0 AND y <= 1), w REAL NOT NULL CHECK (w >= 0 AND w <= 1), h REAL NOT NULL CHECK (h >= 0 AND h <= 1), confidence REAL CHECK (confidence IS NULL OR (confidence >= 0 AND confidence <= 1)), origin TEXT NOT NULL DEFAULT 'manual' CHECK (origin IN ('yolo', 'manual')), updated_at INTEGER NOT NULL)",
   "CREATE TABLE questions( id TEXT PRIMARY KEY, title TEXT NOT NULL, subject_id TEXT NOT NULL, folder_ids TEXT NOT NULL DEFAULT '', exam_id TEXT, knowledge_ids TEXT NOT NULL DEFAULT '', error_types TEXT NOT NULL DEFAULT '', custom_error_types TEXT NOT NULL DEFAULT '', tags TEXT NOT NULL DEFAULT '', answer TEXT, explanation TEXT, notes TEXT, review_count INTEGER NOT NULL DEFAULT 0, is_organized INTEGER NOT NULL DEFAULT 0, is_demo INTEGER NOT NULL DEFAULT 0, is_favorite INTEGER NOT NULL DEFAULT 0, is_archived INTEGER NOT NULL DEFAULT 0, review_joined INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL, slice_kind TEXT NOT NULL DEFAULT 'material', slice_text TEXT NOT NULL DEFAULT '', source_path TEXT, source_kind TEXT, source_page INTEGER, page_image_path TEXT, slice_path TEXT, slice_width INTEGER, slice_height INTEGER, ocr_raw TEXT, ocr_stem TEXT, ocr_split_status TEXT NOT NULL DEFAULT '未切分', ocr_manual_edited INTEGER NOT NULL DEFAULT 0, content_version INTEGER NOT NULL DEFAULT 0, question_type TEXT, question_type_source TEXT NOT NULL DEFAULT 'unclassified', question_background_tags TEXT NOT NULL DEFAULT '', question_background_tags_source TEXT NOT NULL DEFAULT 'unclassified', ocr_figures TEXT NOT NULL DEFAULT '[]', correct_option TEXT, option_labels TEXT, option_labels_confirmed INTEGER NOT NULL DEFAULT 0, answer_version INTEGER NOT NULL DEFAULT 1, answer_pending_recheck INTEGER NOT NULL DEFAULT 0, option_contents TEXT, option_contents_parser_version INTEGER)",
@@ -62,7 +68,7 @@ const _expected = [
 
 void main() {
   group('B Stage 1：新代码建库 schema 与 v2 基线零差异', () {
-    test('openAt 新建空库：user_version=7，25 条 DDL 逐字一致', () async {
+    test('openAt 新建空库：user_version=8，29 条 DDL 逐字一致', () async {
       final tmp = await Directory.systemTemp.createTemp('b1-schema-');
       addTearDown(() async {
         try {
@@ -83,7 +89,7 @@ void main() {
           probe
               .select('PRAGMA user_version')
               .single['user_version'],
-          7,
+          8,
         );
         final actual =
             probe

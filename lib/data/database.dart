@@ -4,6 +4,7 @@ import 'dart:math' as math;
 
 import 'package:drift/drift.dart';
 import 'package:flutter/material.dart';
+import 'package:fsrs/fsrs.dart' as fsrs;
 import 'package:image/image.dart' as img;
 import 'package:path/path.dart' as p;
 import 'package:sqlite3/sqlite3.dart' as sqlite3;
@@ -21,6 +22,7 @@ import 'file_lifecycle_guard.dart';
 import 'journal_ffi.dart';
 import 'restore_journal.dart';
 import 'review_engine.dart';
+import 'review_scheduler.dart';
 // B4：database.dart 拆分——AppDatabase 类与对外接口保留在此文件，
 // 实现按职责拆到以下 part 文件（同一库，共享库私有成员；纯重构，
 // 不改行为、不改签名、不改调用方与测试）。
@@ -38,6 +40,7 @@ part 'db_recently_viewed.dart';
 part 'db_ocr_jobs.dart';
 part 'db_saved_searches.dart';
 part 'db_backup.dart';
+part 'db_fsrs.dart';
 
 /// §2.2：老库处理失败（文件无法确认版本 / 删除失败）：调用方拒绝
 /// 打开、不建新库、不滑入 fallback 目录（否则新旧库并存）。
@@ -134,7 +137,10 @@ class AppDatabase {
   /// 不再删除）。
   /// 二十七批 D-257：v7（subjects 加 english_name +
   /// english_name_manual 两列；v6 库走 Drift 迁移到 v7）。
-  static const int schemaVersion = 7;
+  /// P5（2026-11-25）：v8（新表 fsrs_cards / fsrs_events /
+  /// fsrs_migration_log；v7 库走 Drift 迁移到 v8，再由开库回填做
+  /// 历史审计 + attempts 唯一来源重放，见 db_fsrs.dart）。
+  static const int schemaVersion = 8;
 
   /// §2.3：备份里的应用版本号（与 pubspec.yaml 的 version 一致）。
   static const String appVersion = '0.1.0+1';
@@ -145,7 +151,37 @@ class AppDatabase {
   /// 仍在清单里（恢复时清表、但不插备份里的行——备份不含未完成会话，
   /// 见 importBackupJsonIntoImpl；导出时 review_state 写 `[]`）。
   /// `_meta` 不是表，不在这里；导出时另加，恢复时跳过。
+  /// P5（2026-11-25）：v8 库共 19 张表——新表 fsrs_cards /
+  /// fsrs_events / fsrs_migration_log 全表纳入备份和恢复（FSRS 状态
+  /// 与事件账本随备份走；恢复后迁移日志行原样回来，不重跑迁移——
+  /// fsrs_migration_log 里有 completed 行时迁移直接跳过）。
   static const List<String> backupTables = [
+    'subjects',
+    'questions',
+    'question_boxes',
+    'folders',
+    'tags',
+    'exams',
+    'knowledge_points',
+    'cause_records',
+    'collect_tasks',
+    'review_state',
+    'review_history',
+    'recent_tasks',
+    'recently_viewed_questions',
+    'ocr_jobs',
+    'settings',
+    'attempts',
+    'fsrs_cards',
+    'fsrs_events',
+    'fsrs_migration_log',
+  ];
+
+  /// Win11 反馈包 5：v5 备份的表清单（v5 也是 16 张表，与 v6 同名；
+  /// questions 行没有 option_contents / option_contents_parser_version
+  /// 两列）。v5 备份恢复时按这份清单校验，两列缺失走 NULL 默认值，
+  /// 不拒绝（见 validateBackupDataImpl 与 _backupInsertRowTyped）。
+  static const List<String> backupTablesV5 = [
     'subjects',
     'questions',
     'question_boxes',
@@ -164,11 +200,11 @@ class AppDatabase {
     'attempts',
   ];
 
-  /// Win11 反馈包 5：v5 备份的表清单（v5 也是 16 张表，与 v6 同名；
-  /// questions 行没有 option_contents / option_contents_parser_version
-  /// 两列）。v5 备份恢复时按这份清单校验，两列缺失走 NULL 默认值，
-  /// 不拒绝（见 validateBackupDataImpl 与 _backupInsertRowTyped）。
-  static const List<String> backupTablesV5 = [
+  /// P5：v6 与 v7 备份的表清单（v6/v7 也是 16 张表，与 v5 同名；
+  /// fsrs_* 三表只在 v8 出现）。v6/v7 备份恢复时按这份清单校验，
+  /// 新表缺键视为 empty（importBackupJsonIntoImpl 里 rows is! List
+  /// 即跳过），不拒绝；恢复后开库回填再跑 v7→v8 迁移重放。
+  static const List<String> backupTablesV6 = [
     'subjects',
     'questions',
     'question_boxes',
@@ -555,7 +591,10 @@ class AppDatabase {
   // P2（2026-11-25）：submitCauseVerdictInto / hasSessionVerdictInto
   // 的产品调用方已随 finishQuestion 删除；新流程不写 review_history
   // 的 verdict / verification_* 字段（停止写入，不物理删除）。
-  // 两个入口仅供旧写入层测试保留，P5 迁移时决定是否移除。
+  // 两个入口仅供旧写入层测试保留。
+  // P5 决定（2026-11-25）：保留，不移除——理由见 db_questions.dart
+  // 的 recordSelfCheckIntoImpl 注释（旧治愈状态仍是线上状态，移除
+  // 归 P3/P4 队列替换时一并做）。
   static Future<VerdictSubmitResult> submitCauseVerdictInto(
     QuizDatabase db, {
     required String questionId,

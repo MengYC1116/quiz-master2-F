@@ -37,6 +37,7 @@ import 'dart:async';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../data/database.dart';
 import '../data/repository.dart';
 import '../data/review_engine.dart';
 import '../data/review_scheduler.dart';
@@ -80,15 +81,15 @@ final reviewInitialProvider = Provider<ReviewInitial>(
   (ref) => const ReviewInitial(),
 );
 
-/// FSRS 调度器 Provider（P2）：默认内存 CardStore（P1）。
+/// FSRS 调度器 Provider（P5）：默认 SQLite CardStore（fsrs_cards 表）。
 ///
-/// P5 接入 SQLite 后把这里的 store 换成 SQLite 实现（fsrs_cards 表），
-/// 调度器与业务代码都不改。测试用 override 注入确定性调度器
-/// （fuzzing 关）与独立的 InMemoryCardStore。
+/// P5 接入 SQLite：store 换成 [SqliteCardStore]（绑单例库，生产配置
+/// fuzzing 开）；调度器与业务代码都不改。测试用 override 注入确定性
+/// 调度器（fuzzing 关）与独立的 InMemoryCardStore。
 final reviewSchedulerProvider = Provider<ReviewScheduler>(
   (ref) => FsrsReviewScheduler(
     config: const SchedulerConfig(),
-    store: InMemoryCardStore(),
+    store: SqliteCardStore(),
   ),
 );
 
@@ -1691,12 +1692,13 @@ class ReviewNotifier extends Notifier<ReviewState> {
   /// （重复点击 / 崩溃恢复重放）靠 checkSubmitted 短路：不重写、
   /// 不重计分，直接进下一题。
   ///
-  /// P5 接入 SQLite 后此处包事务，失败整笔回滚：①②③④须在同一
-  /// SQLite 事务内完成——attempts 行、fsrs_cards 行、事件账本
-  /// （eventId 已处理标记）同生同灭；任一步失败时整笔回滚，
-  /// 调用方重试仍用同一 eventId。当前内存 CardStore 下
-  /// recordAnswer 已在本方法内；attempts 写库失败时直接抛错，
-  /// 不调 FSRS、不记小结。
+  /// P5 事务双写（GPT P0-4）：①②③④在同一 SQLite 事务内完成
+  /// （[QuestionRepository.submitReviewCheck]）：attempts 行、
+  /// fsrs_cards 行、事件账本（eventId 已处理标记）同生同灭；
+  /// 任一步失败整笔回滚，调用方重试仍用同一 eventId。P2 报告的窗口
+  /// （recordAttempt 成功后、recordAnswer 成功前崩溃，重试重复推进）
+  /// 由此消除：崩溃时事务没提交，attempts 与卡片都没有新状态，
+  /// 重试是第一次提交，不是第二次推进。
   Future<bool> submitCheck() async {
     if (!state.hasCurrentQuestion ||
         state.sessionId == null ||
@@ -1719,7 +1721,8 @@ class ReviewNotifier extends Notifier<ReviewState> {
     state = state.copyWith(submitting: true, saveError: false);
     try {
       final repo = _repo;
-      // ① 写 attempts 正式记录（一次会话每题一条；重试时更新同一行）。
+      // P5：attempts + FSRS + 事件账本同一事务提交（见 submitReviewCheck）。
+      // 专项练习或无法判分时 result 为 null：只写 attempts，不推进 FSRS。
       final attempt = AttemptData(
         id: newReviewUuid('att'),
         questionId: q.id,
@@ -1735,19 +1738,17 @@ class ReviewNotifier extends Notifier<ReviewState> {
         submissionId: sq.attemptSubmissionId,
         createdAt: now.millisecondsSinceEpoch,
       );
-      final attemptId = await repo.recordAttempt(attempt);
-      // ②③④ 仅到期复习且可判分：调 FSRS；下次到期时间由卡的 due 导出。
-      DateTime? nextDue;
-      if (!isPractice && sq.correct != null) {
-        final scheduler = ref.read(reviewSchedulerProvider);
-        await scheduler.recordAnswer(
-          q.id,
-          sq.correct == 1 ? ReviewResult.good : ReviewResult.again,
-          now,
-          sq.attemptSubmissionId,
-        );
-        nextDue = await scheduler.nextDueAt(q.id);
-      }
+      final submitted = await repo.submitReviewCheck(
+        attempt: attempt,
+        result: !isPractice && sq.correct != null
+            ? (sq.correct == 1 ? ReviewResult.good : ReviewResult.again)
+            : null,
+        reviewedAt: now,
+        eventId: sq.attemptSubmissionId,
+        scheduler: ref.read(reviewSchedulerProvider),
+      );
+      final attemptId = submitted.attemptId;
+      final nextDue = submitted.nextDue;
       if (_disposed) return false;
       // 小结计数只在这里计一次（重复提交走上面的短路）。
       final weakKp = Map<String, int>.from(state.sumWeakKp);

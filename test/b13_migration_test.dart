@@ -1,11 +1,11 @@
 // 十三批 M2：v3 → v5 迁移 + ocr_jobs 表 + 备份互通验收；Win11 反馈包 5
 // 后链式终点为 v6（questions 加 option_contents 两列）；二十七批 D-257
-// 后链式终点为 v7（subjects 加 english_name 两列）。
+// 后链式终点为 v8（P5：fsrs_* 三表 + due 索引；subjects 加 english_name 两列是 v7）。
 // v5 = v3 的 14 张表 + ocr_jobs 新表 + attempts 新表；questions 加 5 个
 // OCR 列 + 9 个 M1 列（题型/背景标签/图块/答案版本等）。v3 库走 Drift
 // onUpgrade 迁移，数据全保留；v2 库走 2→3 再 3→4 再 4→5 再 5→6 再 6→7
-// 链式（见 b12_schema_v3_migration_test 的链式测试）；v2/v3/v4/v5/v6/v7
-// 备份都能恢复进 v7，>7 与 <2 拒绝。
+// 链式（见 b12_schema_v3_migration_test 的链式测试）；v2/v3/v4/v5/v6/v7/v8
+// 备份都能恢复进 v8，>8 与 <2 拒绝。
 // 全部用临时目录 / 内存库，不碰真实用户库。
 import 'dart:convert';
 import 'dart:io';
@@ -165,8 +165,8 @@ Future<List<Map<String, Object?>>> _rawRows(
     .toList();
 
 void main() {
-  group('十三批 M2：v3 → v7 迁移', () {
-    test('v3 库打开即迁移到 v7：数据全保留，新列默认值正确', () async {
+  group('十三批 M2：v3 → v8 迁移', () {
+    test('v3 库打开即迁移到 v8：数据全保留，新列默认值正确', () async {
       final tmp = await Directory.systemTemp.createTemp('b13-migrate-');
       addTearDown(() async {
         try {
@@ -182,7 +182,7 @@ void main() {
         (await db.customSelect('PRAGMA user_version').get())
             .single
             .data['user_version'],
-        7,
+        8,
       );
       // 旧数据还在。
       final qs = await AppDatabase.allQuestionsFrom(db);
@@ -215,11 +215,11 @@ void main() {
       expect(qs.single.answerVersion, 1);
       // ocr_jobs 表存在且为空。
       expect(await _rawRows(db, 'ocr_jobs'), isEmpty);
-      // settings.schemaVersion 写回 7。
+      // settings.schemaVersion 写回 8。
       final settings = await _rawRows(db, 'settings');
       expect(
         settings.singleWhere((r) => r['key'] == 'schemaVersion')['value'],
-        '7',
+        '8',
       );
       // 二十七批 D-257：v7 的 subjects 两列就位；预设数学回填英文名。
       final subjects = await _rawRows(db, 'subjects');
@@ -228,7 +228,7 @@ void main() {
       expect(subjects.single['english_name_manual'], 1);
     });
 
-    test('迁移后 DDL 与全新 v7 库逐字一致', () async {
+    test('迁移后 DDL 与全新 v8 库逐字一致', () async {
       final tmp = await Directory.systemTemp.createTemp('b13-migrate-ddl-');
       addTearDown(() async {
         try {
@@ -246,7 +246,7 @@ void main() {
       expect(await _allDdl(migratedPath), await _allDdl(freshPath));
     });
 
-    test('全新 v7 库含 ocr_jobs 两个索引', () async {
+    test('全新 v8 库含 ocr_jobs 两个索引', () async {
       final tmp = await Directory.systemTemp.createTemp('b13-fresh-idx-');
       addTearDown(() async {
         try {
@@ -271,20 +271,20 @@ void main() {
       );
     });
 
-    test('十三批 P1-1：全新 v7 与迁移后 v7 的 ocr_jobs 都有 lease_token 列', () async {
+    test('十三批 P1-1：全新 v8 与迁移后 v8 的 ocr_jobs 都有 lease_token 列', () async {
       final tmp = await Directory.systemTemp.createTemp('b13-lease-ddl-');
       addTearDown(() async {
         try {
           await tmp.delete(recursive: true);
         } catch (_) {}
       });
-      // 全新 v7。
+      // 全新 v8。
       final freshPath = p.join(tmp.path, 'fresh.db');
       final fresh = await AppDatabase.openAt(freshPath);
       await fresh.close();
       expect(await _allDdl(freshPath), contains(contains('lease_token TEXT')));
-      // v3 迁移到 v7：同一列也在（两份 DDL 字面量逐字一致，
-      // “迁移后 DDL 与全新 v7 库逐字一致”一并锁定）。
+      // v3 迁移到 v8：同一列也在（两份 DDL 字面量逐字一致，
+      // “迁移后 DDL 与全新 v8 库逐字一致”一并锁定）。
       final migratedPath = await _v3DbFile(tmp);
       final migrated = await AppDatabase.openAt(migratedPath);
       await migrated.close();
@@ -376,7 +376,7 @@ void main() {
       final settings = await _rawRows(db, 'settings');
       expect(
         settings.singleWhere((r) => r['key'] == 'schemaVersion')['value'],
-        '7',
+        '8',
       );
     });
 
@@ -441,13 +441,19 @@ void main() {
       expect(await _rawRows(db, 'recently_viewed_questions'), isEmpty);
     });
 
-    test('sv7 恢复成功（当前版本），sv1 仍拒绝恢复，原库一动不动', () async {
+    test('sv8 恢复成功（当前版本），sv7 仍可恢复，sv1 仍拒绝恢复，原库一动不动', () async {
       final db = await _openMemoryDb();
       final decoded = await _seedAndExport(db);
-      // 二十七批 D-257：当前版本已是 v7，sv7 备份恢复本应成功（不再是“更新的版本”）。
+      // P5：当前版本已是 v8，sv8 备份恢复本应成功（不再是“更新的版本”）。
       final current = jsonDecode(jsonEncode(decoded)) as Map<String, dynamic>;
-      (current['_meta'] as Map<String, dynamic>)['schemaVersion'] = 7;
+      (current['_meta'] as Map<String, dynamic>)['schemaVersion'] = 8;
       await AppDatabase.importBackupJsonInto(db, current);
+      expect(await AppDatabase.allQuestionsFrom(db), hasLength(1));
+      expect(await _rawRows(db, 'ocr_jobs'), hasLength(2));
+      // sv7 备份仍可恢复（缺 fsrs_* 键按空表兼容，恢复后下次开库跑迁移）。
+      final old = jsonDecode(jsonEncode(decoded)) as Map<String, dynamic>;
+      (old['_meta'] as Map<String, dynamic>)['schemaVersion'] = 7;
+      await AppDatabase.importBackupJsonInto(db, old);
       expect(await AppDatabase.allQuestionsFrom(db), hasLength(1));
       expect(await _rawRows(db, 'ocr_jobs'), hasLength(2));
       // sv1（<2）仍拒绝恢复，原库一动不动。

@@ -1,6 +1,7 @@
 import '../data/database.dart';
 import '../data/data_change_events.dart';
 import '../data/review_engine.dart';
+import '../data/review_scheduler.dart';
 import '../models/exam_event.dart';
 import '../models/models.dart';
 import '../services/import_service.dart';
@@ -377,7 +378,9 @@ class QuestionRepository {
   /// P2（2026-11-25）：产品流程不再调用本方法——新流程不写
   /// review_history 的 verdict / verification_* 字段（停止写入，
   /// 不物理删除，历史查询能力保留）。本方法仅供旧写入层测试
-  /// （b14_m3_verdict_test）保留，P5 迁移时决定是否移除。
+  /// （b14_m3_verdict_test）保留；P5 决定保留（理由见
+  /// db_questions.dart 的 recordSelfCheckIntoImpl 注释；移除归
+  /// P3/P4 队列替换时一并做）。
   Future<VerdictSubmitResult> submitCauseVerdict({
     required String questionId,
     required CauseRecord record,
@@ -410,6 +413,40 @@ class QuestionRepository {
   Future<String> recordAttempt(AttemptData attempt) =>
       _db.recordAttemptTxn(attempt: attempt);
 
+  /// P5：核对提交事务双写（attempts 行 + fsrs_cards 行 + 事件账本
+  /// 同一事务，见 AppDatabase.submitReviewCheckTxn）。
+  /// [result] 为 null = 专项练习或无法判分：只写 attempts，不推进
+  /// FSRS、不改到期时间。[scheduler] 须是与本库同源的调度器
+  ///（生产是 reviewSchedulerProvider 的 SQLite 调度器）。
+  Future<({String attemptId, DateTime? nextDue})> submitReviewCheck({
+    required AttemptData attempt,
+    required ReviewResult? result,
+    required DateTime reviewedAt,
+    required String eventId,
+    required ReviewScheduler scheduler,
+  }) => _db.submitReviewCheckTxn(
+    attempt: attempt,
+    result: result,
+    reviewedAt: reviewedAt,
+    eventId: eventId,
+    scheduler: scheduler,
+  );
+
+  /// P5：首次呈现记录（第六轮补充第 1 项，见
+  /// AppDatabase.recordFirstPresentedTxn）。返回本次是否写下了
+  ///（同一内容版本已有记录时返回 false，不重计）。
+  Future<bool> recordFirstPresented({
+    required String questionId,
+    required DateTime presentedAtUtc,
+    required String localDate,
+    required int contentVersion,
+  }) => _db.recordFirstPresentedTxn(
+    questionId: questionId,
+    presentedAtUtc: presentedAtUtc,
+    localDate: localDate,
+    contentVersion: contentVersion,
+  );
+
   /// 十四批 M3：读一条 attempt / 某会话全部 attempts。
   Future<AttemptData?> loadAttempt({
     required String sessionId,
@@ -423,7 +460,8 @@ class QuestionRepository {
   ///
   /// P2（2026-11-25）：产品流程不再调用本方法——会话恢复只认
   /// attempts 行（见 _validateSavedSession）。仅供旧写入层保留，
-  /// P5 迁移时决定是否移除。
+  /// P5 决定保留（理由见 db_questions.dart 的 recordSelfCheckIntoImpl
+  /// 注释；移除归 P3/P4 队列替换时一并做）。
   Future<bool> hasSessionVerdict({
     required String causeStableId,
     required String sessionId,

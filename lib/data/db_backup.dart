@@ -97,11 +97,15 @@ void validateBackupDataImpl(Map<String, dynamic> data) {
   // Win11 反馈包 5：v5 备份仍可恢复（迁移进 v6）：questions 行缺
   // option_contents / option_contents_parser_version 两列走 NULL
   // 默认值；v5 的表清单也是 16 张（backupTablesV5）。
+  // P5：v6/v7 备份仍可恢复：v6/v7 的表清单也是 16 张
+  // （backupTablesV6，与 v5 同名）；fsrs_* 三表只在 v8 出现，旧备份
+  // 缺键视为 empty（import 时 rows is! List 即跳过），不拒绝。
   final requiredTables = switch (sv) {
     2 => AppDatabase.backupTablesV2,
     3 => AppDatabase.backupTablesV3,
     4 => AppDatabase.backupTablesV4,
     5 => AppDatabase.backupTablesV5,
+    6 || 7 => AppDatabase.backupTablesV6,
     _ => AppDatabase.backupTables,
   };
   for (final t in requiredTables) {
@@ -182,6 +186,13 @@ const Map<String, Map<String, Type>> _requiredBackupColumns = {
   // session_id / mode / status / created_at 是 NOT NULL 列，
   // 插库时 _rs/_ri 会拦缺失/类型错，值域见 _validateBackupRowDomains）。
   'attempts': {'id': String, 'question_id': String},
+  // P5：fsrs_cards（主键 question_id；card_state_json 是 JSON 列，
+  // 形状见 _validateBackupRowJsonColumns；algorithm_version 值域见
+  // _validateBackupRowDomains）。fsrs_events（主键 event_id）。
+  // fsrs_migration_log（自增 id；无必填 TEXT 列，只验主键与 JSON 列）。
+  'fsrs_cards': {'question_id': String},
+  'fsrs_events': {'event_id': String},
+  'fsrs_migration_log': {},
   'settings': {'key': String, 'value': String},
 };
 
@@ -191,6 +202,8 @@ const _integerIdBackupTables = {
   'review_history',
   'review_state',
   'recent_tasks',
+  // P5：fsrs_migration_log（自增 id，缺失时入库自动编号）。
+  'fsrs_migration_log',
 };
 
 /// 各表备份行的真实主键列（校验口径以真实主键为准）。
@@ -200,9 +213,12 @@ const _integerIdBackupTables = {
 /// id 列——有浏览历史的备份一恢复就报“缺少主键 id”（备份本身没坏）。
 /// 十三批 M2：ocr_jobs 的主键就是 id（默认口径已对），settings 的主键
 /// 是 key，recently_viewed_questions 的主键是 question_id；其余表默认 id。
+/// P5：fsrs_cards 的主键是 question_id，fsrs_events 的主键是 event_id。
 const _backupPkColumn = {
   'settings': 'key',
   'recently_viewed_questions': 'question_id',
+  'fsrs_cards': 'question_id',
+  'fsrs_events': 'event_id',
 };
 
 void _validateBackupRow(String table, Map row) {
@@ -268,7 +284,8 @@ void _validateBackupRowJsonColumns(String table, Map row) {
     'cause_records': ['remedy_history'],
     'attempts': ['cause_ids'],
   };
-  final id = row['id'] ?? row['key'] ?? '?';
+  final id =
+      row['id'] ?? row['key'] ?? row['question_id'] ?? row['event_id'] ?? '?';
   void reject(String col, String expected, Object? value) {
     throw BackupRestoreException(
       '这份备份文件已损坏：$table 表 $id 行的 $col 不是合法的 JSON'
@@ -313,6 +330,38 @@ void _validateBackupRowJsonColumns(String table, Map row) {
     final value = row['option_contents_parser_version'];
     if (value != null && (value is! int || value < 0)) {
       reject('option_contents_parser_version', '≥0 的整数版本号', value);
+    }
+  }
+  // P5：fsrs_cards.card_state_json 必须是合法的 JSON 对象（FSRS
+  // 完整状态）；fsrs_migration_log.audit_json 必须是合法的 JSON。
+  // 键缺失放行（旧备份没有这两表）；键在但为 null / 非字符串 /
+  // 非法 JSON 一律拒绝。
+  if (table == 'fsrs_cards' && row.containsKey('card_state_json')) {
+    final value = row['card_state_json'];
+    var ok = value is String;
+    if (ok) {
+      try {
+        ok = jsonDecode(value) is Map;
+      } catch (_) {
+        ok = false;
+      }
+    }
+    if (!ok) {
+      reject('card_state_json', 'JSON 对象', value);
+    }
+  }
+  if (table == 'fsrs_migration_log' && row.containsKey('audit_json')) {
+    final value = row['audit_json'];
+    var ok = value is String;
+    if (ok) {
+      try {
+        jsonDecode(value);
+      } catch (_) {
+        ok = false;
+      }
+    }
+    if (!ok) {
+      reject('audit_json', '合法的 JSON', value);
     }
   }
   // review_state.queue：含 q/c 字符串的对象数组。
@@ -367,7 +416,29 @@ void _validateBackupRowJsonColumns(String table, Map row) {
 ///   覆盖（非字符串值拒绝），这里不重复造轮子。
 /// 键缺失放行（走 DDL 默认值）；键在但值为 null 或域外值 → 拒绝整个恢复。
 void _validateBackupRowDomains(String table, Map row) {
-  final id = row['id'] ?? row['key'] ?? '?';
+  final id =
+      row['id'] ?? row['key'] ?? row['question_id'] ?? row['event_id'] ?? '?';
+  // P5：fsrs_cards.algorithm_version 只允许 'FSRS-6'（本次锁定）；
+  // fsrs_migration_log.status 只允许 'completed'（失败的运行不留行，
+  // 见 migrateFsrsV7ToV8IntoImpl）。键缺失放行（走插库的必填检查）。
+  if (table == 'fsrs_cards' && row.containsKey('algorithm_version')) {
+    final value = row['algorithm_version'];
+    if (value is! String || value != 'FSRS-6') {
+      throw BackupRestoreException(
+        '这份备份文件已损坏：fsrs_cards 表 $id 行的 algorithm_version 不是合法的'
+        '算法版本（应为 FSRS-6）：$value',
+      );
+    }
+  }
+  if (table == 'fsrs_migration_log' && row.containsKey('status')) {
+    final value = row['status'];
+    if (value is! String || value != 'completed') {
+      throw BackupRestoreException(
+        '这份备份文件已损坏：fsrs_migration_log 表 $id 行的 status 不是合法的'
+        '迁移状态（应为 completed）：$value',
+      );
+    }
+  }
   if (table == 'cause_records' && row.containsKey('status')) {
     final value = row['status'];
     if (value is! String ||
@@ -819,6 +890,39 @@ Future<void> _backupInsertRowTyped(
       'submission_id',
       'created_at',
     },
+    // P5：fsrs_* 三表全表原样恢复（card_state_json / audit_json 是
+    // 原始 JSON 字符串列，插库时原样写回，不经 decode；恢复后迁移
+    // 日志里有 completed 行，迁移不重跑）。
+    'fsrs_cards': {
+      'question_id',
+      'card_id',
+      'algorithm_version',
+      'scheduler_config_id',
+      'card_state_json',
+      'next_due_at',
+      'first_reviewed_at',
+      'content_version',
+      'updated_at',
+      'first_presented_at',
+      'first_presented_local_date',
+      'first_presented_content_version',
+    },
+    'fsrs_events': {
+      'event_id',
+      'question_id',
+      'kind',
+      'processed_at',
+    },
+    'fsrs_migration_log': {
+      'id',
+      'run_id',
+      'source',
+      'run_at',
+      'status',
+      'audit_json',
+      'replayed_count',
+      'skipped_count',
+    },
     'settings': {'key', 'value'},
   };
   final allowed = knownColumns[table];
@@ -1195,6 +1299,92 @@ Future<void> _backupInsertRowTyped(
             ),
             mode: InsertMode.insertOrReplace,
           );
+    case 'fsrs_cards':
+    case 'fsrs_events':
+    case 'fsrs_migration_log':
+      // P5：fsrs_* 三表没有 Drift 表定义，走原始 SQL 原样插回
+      //（INSERT OR REPLACE；JSON 字符串列不经 decode）。
+      // _rs/_riN 在此 switch 的其它 case 里是同一口径的取值助手。
+      await _backupInsertFsrsRow(db, table, row);
+    default:
+      throw BackupRestoreException('这份备份数据有问题：未知表 $table');
+  }
+}
+
+/// P5：fsrs_* 三表备份行的原始 SQL 插回（无 Drift 表定义）。
+/// 列白名单已由 [_backupInsertRowTyped] 的 knownColumns 拦过，
+/// 这里只按表拼 INSERT OR REPLACE（id 自增的 migration_log 行
+/// 有 id 时原样写回，无 id 时走自增）。
+Future<void> _backupInsertFsrsRow(
+  QuizDatabase db,
+  String table,
+  Map<String, Object?> row,
+) async {
+  switch (table) {
+    case 'fsrs_cards':
+      await db.customInsert(
+        'INSERT OR REPLACE INTO fsrs_cards(question_id, card_id, '
+        'algorithm_version, scheduler_config_id, card_state_json, '
+        'next_due_at, first_reviewed_at, content_version, updated_at, '
+        'first_presented_at, first_presented_local_date, '
+        'first_presented_content_version) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        variables: [
+          Variable.withString(_rs(row, 'question_id')),
+          Variable.withInt(_ri(row, 'card_id')),
+          Variable.withString(_rs(row, 'algorithm_version')),
+          Variable.withString(_rs(row, 'scheduler_config_id')),
+          Variable.withString(_rs(row, 'card_state_json')),
+          Variable.withInt(_ri(row, 'next_due_at')),
+          Variable(_riN(row, 'first_reviewed_at')),
+          Variable.withInt(_ri(row, 'content_version')),
+          Variable.withInt(_ri(row, 'updated_at')),
+          Variable(_riN(row, 'first_presented_at')),
+          Variable(_rsN(row, 'first_presented_local_date')),
+          Variable(_riN(row, 'first_presented_content_version')),
+        ],
+      );
+    case 'fsrs_events':
+      await db.customInsert(
+        'INSERT OR REPLACE INTO fsrs_events(event_id, question_id, kind, processed_at) '
+        'VALUES (?, ?, ?, ?)',
+        variables: [
+          Variable.withString(_rs(row, 'event_id')),
+          Variable.withString(_rs(row, 'question_id')),
+          Variable.withString(_rs(row, 'kind')),
+          Variable.withInt(_ri(row, 'processed_at')),
+        ],
+      );
+    case 'fsrs_migration_log':
+      if (row.containsKey('id') && row['id'] != null) {
+        await db.customInsert(
+          'INSERT OR REPLACE INTO fsrs_migration_log(id, run_id, source, run_at, status, audit_json, replayed_count, skipped_count) '
+          'VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+          variables: [
+            Variable.withInt(_ri(row, 'id')),
+            Variable.withString(_rs(row, 'run_id')),
+            Variable.withString(_rs(row, 'source')),
+            Variable.withInt(_ri(row, 'run_at')),
+            Variable.withString(_rs(row, 'status')),
+            Variable.withString(_rs(row, 'audit_json')),
+            Variable.withInt(_ri(row, 'replayed_count')),
+            Variable.withInt(_ri(row, 'skipped_count')),
+          ],
+        );
+      } else {
+        await db.customInsert(
+          'INSERT INTO fsrs_migration_log(run_id, source, run_at, status, audit_json, replayed_count, skipped_count) '
+          'VALUES (?, ?, ?, ?, ?, ?, ?)',
+          variables: [
+            Variable.withString(_rs(row, 'run_id')),
+            Variable.withString(_rs(row, 'source')),
+            Variable.withInt(_ri(row, 'run_at')),
+            Variable.withString(_rs(row, 'status')),
+            Variable.withString(_rs(row, 'audit_json')),
+            Variable.withInt(_ri(row, 'replayed_count')),
+            Variable.withInt(_ri(row, 'skipped_count')),
+          ],
+        );
+      }
     default:
       throw BackupRestoreException('这份备份数据有问题：未知表 $table');
   }
@@ -1234,6 +1424,11 @@ Future<void> _clearBackupTable(QuizDatabase db, String table) async {
       await db.delete(db.ocrJobs).go();
     case 'attempts':
       await db.delete(db.attempts).go();
+    case 'fsrs_cards':
+    case 'fsrs_events':
+    case 'fsrs_migration_log':
+      // P5：fsrs_* 三表没有 Drift 表定义，走原始 SQL 清表。
+      await db.customStatement('DELETE FROM $table');
     case 'settings':
       await db.delete(db.settings).go();
     default:
