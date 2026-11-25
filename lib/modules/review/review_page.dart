@@ -1610,12 +1610,6 @@ class _SessionMeta extends ConsumerWidget {
               onPressed: () =>
                   ref.read(reviewProvider.notifier).pauseSession(),
             ),
-            QmButton(
-              label: '跳过',
-              size: QmButtonSize.small,
-              variant: QmButtonVariant.secondary,
-              onPressed: () => ref.read(reviewProvider.notifier).skipCurrent(),
-            ),
           ],
         ),
         if (overLimit) ...[
