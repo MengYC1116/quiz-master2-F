@@ -9,7 +9,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:quiz_master2/data/database.dart';
+import 'package:quiz_master2/data/p4_new_release.dart';
 import 'package:quiz_master2/data/repository.dart';
+import 'package:quiz_master2/data/review_scheduler.dart';
 import 'package:quiz_master2/models/exam_event.dart';
 import 'package:quiz_master2/models/models.dart';
 import 'package:quiz_master2/modules/home/home_page.dart';
@@ -60,6 +62,38 @@ class B2FakeRepo extends QuestionRepository {
 
   @override
   Future<List<Subject>> subjects() async => subjectsList;
+
+  /// 2026-11-25 口径迁移 §2.1：homeProvider.load() 在 Future.wait 里读
+  /// fsrsDueCountsBySubject（到期数口径）与 settings（今日新题要每日
+  /// 上限），随后调 previewNewRelease()。不覆写会走真调度器 + 真库、
+  /// 首页卡 loading、pumpAndSettle 超时（同款 home_page_test.dart /
+  /// b12_history_home_test.dart、b8_1 补丁 79edabd）。到期数沿用本
+  /// Fake 原有的 rev map（含新学科 id 的键），断言的格数字不变。
+  @override
+  Future<Map<String, int>> fsrsDueCountsBySubject({
+    required ReviewScheduler scheduler,
+    DateTime? now,
+  }) async => Map.of(rev);
+
+  @override
+  Future<FsrsReleasePlan> previewNewRelease({
+    required ReviewScheduler scheduler,
+    required int dailyNewLimit,
+    DateTime? now,
+  }) async => FsrsReleasePlan(
+    todaysNewIds: const [],
+    newlyReleasableIds: const [],
+    carryoverIds: const [],
+    presentedTodayIds: const [],
+    waitingIds: const [],
+    presentedTodayCount: 0,
+    pendingBacklogCount: 0,
+    dailyLimit: dailyNewLimit,
+    releaseAllowance: 0,
+  );
+
+  @override
+  Future<AppSettings> settings() async => AppSettings.defaults;
 
   @override
   Future<Map<String, int>> homeRevCounts() async => rev;
@@ -164,7 +198,10 @@ void main() {
       expect(find.text('政治'), findsOneWidget);
       expect(find.text('化学'), findsOneWidget);
       // 化学格的数字走新学科 id 的计数键，不是 0。
-      expect(find.text('要复习 1 道 · 待整理 1 道'), findsOneWidget);
+      // 2026-11-25 口径迁移 §2.1：学科行文案旧“要复习 N 道”改新
+      // “到期 N 道”（产品代码 17458c7 已迁；旧断言被 pumpAndSettle
+      // 超时掩盖，首页加载恢复后才暴露）。
+      expect(find.text('到期 1 道 · 待整理 1 道'), findsOneWidget);
       expect(tester.takeException(), isNull);
     });
 
@@ -174,7 +211,7 @@ void main() {
       for (final name in ['数学', '英语', '政治', '化学', '历史', '地理']) {
         expect(find.text(name), findsOneWidget);
       }
-      expect(find.text('要复习 3 道 · 待整理 0 道'), findsOneWidget);
+      expect(find.text('到期 3 道 · 待整理 0 道'), findsOneWidget);
       expect(tester.takeException(), isNull);
     });
 

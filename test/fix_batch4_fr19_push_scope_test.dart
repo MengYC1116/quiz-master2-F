@@ -12,8 +12,10 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:quiz_master2/data/database.dart';
+import 'package:quiz_master2/data/p4_new_release.dart';
 import 'package:quiz_master2/data/repository.dart';
 import 'package:quiz_master2/data/review_engine.dart';
+import 'package:quiz_master2/data/review_scheduler.dart';
 import 'package:quiz_master2/models/exam_event.dart';
 import 'package:quiz_master2/models/models.dart';
 import 'package:quiz_master2/state/collect_notifier.dart';
@@ -43,6 +45,34 @@ class Fr19FakeRepo extends QuestionRepository {
 
   @override
   Future<List<Subject>> subjects() async => [_fakeSubject];
+
+  /// 2026-11-25 口径迁移 §2.1：homeProvider.load() 在 Future.wait 里读
+  /// fsrsDueCountsBySubject，随后调 previewNewRelease() 取今日新题数。
+  /// 不覆写会走真调度器 + 真库、load() 永不完成、首页 subjects 为空、
+  /// 找不到「假学科」（同款 home_page_test.dart /
+  /// b12_history_home_test.dart、b8_1 补丁 79edabd）。
+  @override
+  Future<Map<String, int>> fsrsDueCountsBySubject({
+    required ReviewScheduler scheduler,
+    DateTime? now,
+  }) async => const {};
+
+  @override
+  Future<FsrsReleasePlan> previewNewRelease({
+    required ReviewScheduler scheduler,
+    required int dailyNewLimit,
+    DateTime? now,
+  }) async => FsrsReleasePlan(
+    todaysNewIds: const [],
+    newlyReleasableIds: const [],
+    carryoverIds: const [],
+    presentedTodayIds: const [],
+    waitingIds: const [],
+    presentedTodayCount: 0,
+    pendingBacklogCount: 0,
+    dailyLimit: dailyNewLimit,
+    releaseAllowance: 0,
+  );
 
   @override
   Future<List<Question>> all({bool includeArchived = false}) async =>
