@@ -16,6 +16,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:quiz_master2/data/database.dart';
 import 'package:quiz_master2/data/repository.dart';
+import 'package:quiz_master2/data/review_engine.dart';
 import 'package:quiz_master2/models/models.dart';
 import 'package:quiz_master2/modules/report/report_page.dart';
 import 'package:quiz_master2/modules/wrongbook/wrongbook_page.dart';
@@ -96,6 +97,14 @@ class _StaleRepo extends QuestionRepository {
   // 会走真实库、页面卡 loading、pumpAndSettle 超时，见 D-225）。
   @override
   Future<List<SavedSearch>> savedSearches() async => const [];
+
+  // P3：报告 load() 读全部 attempts、错题本 load() 读池内标记
+  //（同款 D-225：不覆写会走真实库、页面卡 loading）。
+  @override
+  Future<List<AttemptData>> loadAllAttempts() async => const [];
+
+  @override
+  Future<Set<String>> fsrsPoolQuestionIds() async => const {};
 }
 
 Future<void> _pumpReport(WidgetTester tester, _StaleRepo repo) async {

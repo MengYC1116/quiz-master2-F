@@ -8,16 +8,19 @@
 // 页内状态按预期变化。
 // 用 FakeRepo 覆盖 repository 调用（不碰真实数据库，不改口径）。
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:quiz_master2/data/database.dart';
 import 'package:quiz_master2/data/repository.dart';
 import 'package:quiz_master2/data/review_engine.dart';
+import 'package:quiz_master2/data/review_scheduler.dart';
 import 'package:quiz_master2/models/models.dart';
 import 'package:quiz_master2/modules/collect/collect_page.dart';
 import 'package:quiz_master2/modules/organize/organize_page.dart';
 import 'package:quiz_master2/modules/review/review_page.dart';
 import 'package:quiz_master2/modules/wrongbook/wrongbook_page.dart';
 import 'package:quiz_master2/services/yolo_onnx_service.dart';
+import 'package:quiz_master2/state/review_notifier.dart';
 import 'package:quiz_master2/theme/app_theme.dart';
 
 Future<void> _pumpScaffold(
@@ -30,17 +33,30 @@ Future<void> _pumpScaffold(
   addTearDown(tester.view.resetPhysicalSize);
   addTearDown(tester.view.resetDevicePixelRatio);
   await tester.pumpWidget(
-    MaterialApp(
-      theme: AppTheme.light(scale: scale),
-      darkTheme: AppTheme.dark(scale: scale),
-      home: Builder(
-        builder: (context) {
-          final data = MediaQuery.of(context);
-          return MediaQuery(
-            data: data.copyWith(textScaler: TextScaler.linear(scale)),
-            child: Scaffold(body: body),
-          );
-        },
+    // P3：复习页 load() 读调度器池内标记——外层覆盖一个确定性内存
+    // 调度器（fuzzing 关），不碰真实数据库（review_page_test.dart
+    // 同款做法）。
+    ProviderScope(
+      overrides: [
+        reviewSchedulerProvider.overrideWithValue(
+          FsrsReviewScheduler(
+            config: const SchedulerConfig(enableFuzzing: false),
+            store: InMemoryCardStore(),
+          ),
+        ),
+      ],
+      child: MaterialApp(
+        theme: AppTheme.light(scale: scale),
+        darkTheme: AppTheme.dark(scale: scale),
+        home: Builder(
+          builder: (context) {
+            final data = MediaQuery.of(context);
+            return MediaQuery(
+              data: data.copyWith(textScaler: TextScaler.linear(scale)),
+              child: Scaffold(body: body),
+            );
+          },
+        ),
       ),
     ),
   );
@@ -129,6 +145,9 @@ class _B11ReviewRepo extends QuestionRepository {
     required String sessionId,
     required String questionId,
   }) async => null;
+
+  @override
+  Future<List<KnowledgePoint>> knowledgePoints() async => const [];
 
   @override
   Future<void> clearReviewState() async {}
@@ -309,6 +328,11 @@ class _B11WrongbookRepo extends QuestionRepository {
 
   @override
   Future<AppSettings> settings() async => const AppSettings();
+
+  // P3 入口 1：load() 读池内标记（不覆写会走真实库、页面卡 loading、
+  // pumpAndSettle 超时）。
+  @override
+  Future<Set<String>> fsrsPoolQuestionIds() async => const {};
 }
 
 // --------------------------------------------------------------- 收集页 --

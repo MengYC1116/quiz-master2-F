@@ -111,6 +111,9 @@ Future<void> syncCauseRecordsIntoImpl(QuizDatabase db, Question q) async {
 /// 仍是其参数；只删写入层会让旧状态永远卡住且无人能写，而迁移审计
 /// 要靠这套语义解读旧历史。移除归 P3/P4 队列替换时一并做（那时
 /// cause_records 的治愈状态才真正退役）。
+/// P3 评估（2026-11-25）：已复核——P3 改的是加题入口（新入池走
+/// FSRS，旧到期队列 buildDueQueue / dueToday 仍以 cause_records
+/// 治愈状态为准），不能安全移除；留给 P4 队列替换时一并做。
 Future<CauseRecord> recordSelfCheckIntoImpl(
   QuizDatabase db, {
   required CauseRecord updated,
@@ -1310,6 +1313,19 @@ Future<void> _deleteQuestionTxn(QuizDatabase db, String id) async {
   await (db.delete(
     db.causeRecords,
   )..where((t) => t.questionId.equals(id))).go();
+  // P3 系统级边界：永久删除按既有级联删除契约——题删了，它的 FSRS
+  // 卡片（fsrs_cards 行）一起删，否则到期队列里会剩一个查无此题的
+  // id；事件账本（fsrs_events）是幂等审计记录，保留不动（新提交用
+  // 新 eventId，不会与旧事件撞）。fsrs_cards 是原始 SQL 表（无
+  // drift 生成表类），用 customUpdate 删；v7 夹具库无此表时忽略错误。
+  try {
+    await db.customUpdate(
+      'DELETE FROM fsrs_cards WHERE question_id = ?',
+      variables: [Variable.withString(id)],
+    );
+  } catch (_) {
+    // 无 fsrs_cards 表的旧库夹具：没有卡片可删，忽略。
+  }
   await (db.update(db.collectTasks)..where((t) => t.questionId.equals(id)))
       .write(const CollectTasksCompanion(questionId: Value(null)));
   await _removeFromReviewQueueTxn(db, id);
@@ -1556,6 +1572,17 @@ extension AppDatabaseQuestions on AppDatabase {
   }) async {
     final d = await db;
     return AppDatabase.loadAttemptsForSessionInto(d, sessionId: sessionId);
+  }
+
+  /// P3 入口 3 样本量统计用：全部 attempts（正式 + 专项，不分会话）。
+  /// 只读；按 created_at 升序，便于按时间范围截取。
+  Future<List<AttemptData>> allAttempts() async {
+    final d = await db;
+    final rows = await (d.select(d.attempts)..orderBy([
+          (t) => OrderingTerm(expression: t.createdAt),
+        ]))
+        .get();
+    return rows.map(_attemptFromDb).toList();
   }
 
   /// 十四批 M3（M3-10 断点恢复重建用）：本会话里该错因是否已有 verdict 事件。

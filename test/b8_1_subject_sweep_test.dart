@@ -15,15 +15,18 @@
 //   渲染、不崩、空状态里一个预设名都没有”，差分断言在报告 / 复习。
 // 用 FakeRepo，不碰真实数据库；无文件 IO。
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:quiz_master2/data/database.dart';
 import 'package:quiz_master2/data/repository.dart';
 import 'package:quiz_master2/data/review_engine.dart';
+import 'package:quiz_master2/data/review_scheduler.dart';
 import 'package:quiz_master2/models/models.dart';
 import 'package:quiz_master2/modules/detail/question_detail_page.dart';
 import 'package:quiz_master2/modules/organize/organize_page.dart';
 import 'package:quiz_master2/modules/report/report_page.dart';
 import 'package:quiz_master2/modules/review/review_page.dart';
+import 'package:quiz_master2/state/review_notifier.dart';
 import 'package:quiz_master2/theme/app_theme.dart';
 
 DateTime get _today {
@@ -72,13 +75,26 @@ Future<void> _pumpPage(WidgetTester tester, Widget page) async {
   addTearDown(tester.view.resetPhysicalSize);
   addTearDown(tester.view.resetDevicePixelRatio);
   await tester.pumpWidget(
-    MaterialApp(
-      theme: AppTheme.light(scale: 1.0),
-      darkTheme: AppTheme.dark(scale: 1.0),
-      // 每次 pump 用新 Key：同一 testWidgets 内两次 pump 时旧 State
-      // 会被复用（_load 只在 initState 跑），须强制重建
-      //（detail_page_test 的 pumpDetail 同款做法）。
-      home: Scaffold(body: KeyedSubtree(key: UniqueKey(), child: page)),
+    // P3：复习页 load() 读调度器池内标记、详情页“加入复习”调
+    // initializeQuestion——外层覆盖一个确定性内存调度器（fuzzing 关），
+    // 不碰真实数据库（review_page_test.dart 同款做法）。
+    ProviderScope(
+      overrides: [
+        reviewSchedulerProvider.overrideWithValue(
+          FsrsReviewScheduler(
+            config: const SchedulerConfig(enableFuzzing: false),
+            store: InMemoryCardStore(),
+          ),
+        ),
+      ],
+      child: MaterialApp(
+        theme: AppTheme.light(scale: 1.0),
+        darkTheme: AppTheme.dark(scale: 1.0),
+        // 每次 pump 用新 Key：同一 testWidgets 内两次 pump 时旧 State
+        // 会被复用（_load 只在 initState 跑），须强制重建
+        //（detail_page_test 的 pumpDetail 同款做法）。
+        home: Scaffold(body: KeyedSubtree(key: UniqueKey(), child: page)),
+      ),
     ),
   );
   await tester.pumpAndSettle();
@@ -240,6 +256,14 @@ class _SweepReportRepo extends QuestionRepository {
   @override
   Future<AppSettings> settings() async => AppSettings.defaults;
 
+  // P3 入口 3：报告 load() 读全部 attempts 与池内标记（不覆写会走
+  // 真实库、页面卡 loading、pumpAndSettle 超时）。
+  @override
+  Future<List<AttemptData>> loadAllAttempts() async => const [];
+
+  @override
+  Future<Set<String>> fsrsPoolQuestionIds() async => const {};
+
   @override
   Future<List<({String result, DateTime reviewedAt})>> reviewHistory(
     String questionId,
@@ -295,6 +319,9 @@ class _SweepReviewRepo extends QuestionRepository {
     required String sessionId,
     required String questionId,
   }) async => null;
+
+  @override
+  Future<List<KnowledgePoint>> knowledgePoints() async => const [];
 
   @override
   Future<void> clearReviewState() async {}

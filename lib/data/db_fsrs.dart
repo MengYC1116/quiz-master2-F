@@ -513,6 +513,20 @@ extension AppDatabaseFsrs on AppDatabase {
     );
   }
 
+  /// P3 入口 1–3 共用：当前已在复习池里的题 id（fsrs_cards 行）。
+  /// 只读；v7 夹具库无 fsrs_cards 表时返回空列表，不抛错。
+  Future<List<String>> fsrsCardQuestionIds() async {
+    final d = await db;
+    try {
+      final rows = await d
+          .customSelect('SELECT question_id FROM fsrs_cards')
+          .get();
+      return rows.map((r) => r.data['question_id'] as String).toList();
+    } catch (_) {
+      return const [];
+    }
+  }
+
   /// v7 → v8 迁移（审计 + 重放，见 [migrateFsrsV7ToV8IntoImpl]）。
   static Future<Map<String, Object?>> migrateFsrsV7ToV8(QuizDatabase db) =>
       migrateFsrsV7ToV8IntoImpl(db);

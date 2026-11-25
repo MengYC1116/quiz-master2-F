@@ -67,6 +67,7 @@ class WrongbookPage extends StatefulWidget {
     this.onGoOrganize,
     required this.onOpenDetail,
     required this.onGoReview,
+    this.onStartPracticeWithQuestions,
     this.exportControllerFactory,
     this.pendingSearch,
     this.onPendingSearchApplied,
@@ -97,6 +98,11 @@ class WrongbookPage extends StatefulWidget {
   })
   onOpenDetail;
   final void Function({String? subjectId}) onGoReview;
+
+  /// P3 入口 1/3：带一批题 id 去复习页开专项练习（只练不排，不建
+  /// FSRS 卡）。可空：不传时“立即专项练习”回落到去复习页（选题页）。
+  final void Function(List<String> questionIds, {int? count})?
+  onStartPracticeWithQuestions;
 
   /// 十六批 B（D-190）：导出流程控制器的测试注入口（widget 测试传
   /// 桩控制器，避免碰真实数据库；生产传 null，走下面的真实构建）。
@@ -137,6 +143,7 @@ class _WrongbookPageState extends State<WrongbookPage> {
         onGoOrganize: widget.onGoOrganize,
         onOpenDetail: widget.onOpenDetail,
         onGoReview: widget.onGoReview,
+        onStartPracticeWithQuestions: widget.onStartPracticeWithQuestions,
         exportControllerFactory: widget.exportControllerFactory,
         pendingSearch: widget.pendingSearch,
         onPendingSearchApplied: widget.onPendingSearchApplied,
@@ -153,6 +160,7 @@ class _WrongbookView extends ConsumerStatefulWidget {
     this.onGoOrganize,
     required this.onOpenDetail,
     required this.onGoReview,
+    this.onStartPracticeWithQuestions,
     this.exportControllerFactory,
     this.pendingSearch,
     this.onPendingSearchApplied,
@@ -169,6 +177,8 @@ class _WrongbookView extends ConsumerStatefulWidget {
   })
   onOpenDetail;
   final void Function({String? subjectId}) onGoReview;
+  final void Function(List<String> questionIds, {int? count})?
+  onStartPracticeWithQuestions;
   final ExportFlowController Function()? exportControllerFactory;
   final ({Map<String, dynamic> conditions, String label})? pendingSearch;
   final VoidCallback? onPendingSearchApplied;
@@ -220,10 +230,17 @@ class _WrongbookViewState extends ConsumerState<_WrongbookView> {
 
   /// 进入导出模式：与批量模式互斥——进导出模式时退出批量模式
   ///（批量勾选一并清空，与“退出批量”同款语义）；导出已选保留。
+  /// P3：加题选择（reviewSelected）与批量选择同进同出，一并清空。
   void _enterExportMode() {
     if (_sr.batchMode) {
       _n.update(
-        (st) => st.copyWith(batchMode: false, selected: const <String>{}),
+        (st) => st.copyWith(
+          batchMode: false,
+          selected: const <String>{},
+          reviewSelected: const <String>{},
+          reviewSelectAllFiltered: false,
+          reviewFilterKey: null,
+        ),
       );
     }
     setState(() {
@@ -254,6 +271,10 @@ class _WrongbookViewState extends ConsumerState<_WrongbookView> {
       (st) => st.copyWith(
         batchMode: !st.batchMode,
         selected: const <String>{},
+        // P3：加题选择与批量选择同进同出，进/出批量都清空。
+        reviewSelected: const <String>{},
+        reviewSelectAllFiltered: false,
+        reviewFilterKey: null,
       ),
     );
     if (entering) {
@@ -814,9 +835,10 @@ class _WrongbookViewState extends ConsumerState<_WrongbookView> {
     if (mounted) _snack(msg);
   }
 
-  /// 批量加入复习（B11-6，勾选版）：只加未解决的错因。
-  Future<void> _batchJoinReviewSelected() async {
-    final r = await _n.batchJoinReviewSelected();
+  /// P3 入口 1“加入复习”：批量入池（FSRS 卡片 + 错因记录播种），
+  /// 已在池的自动跳过，结果报“新增 N 道，M 道已跳过”。
+  Future<void> _batchJoinReviewFsrs() async {
+    final r = await _n.joinReviewFsrs();
     if (mounted) {
       _snack(
         r.message,
@@ -826,16 +848,30 @@ class _WrongbookViewState extends ConsumerState<_WrongbookView> {
     }
   }
 
-  /// 全部加入（B11-6）：作用域 = 当前筛选出的全部题，不是全库，
+  /// P3 入口 1“全部加入复习”：作用域 = 当前筛选出的全部题，不是全库，
   /// 也不限当前页；不用先勾选。
-  Future<void> _batchJoinReviewAll(List<Question> all) async {
-    final r = await _n.batchJoinReviewAll(all);
+  Future<void> _batchJoinReviewFsrsAll() async {
+    final r = await _n.joinReviewFsrsAll();
     if (mounted) {
       _snack(
         r.message,
         actionLabel: r.showReviewAction ? '开始复习' : null,
         onAction: r.showReviewAction ? () => widget.onGoReview() : null,
       );
+    }
+  }
+
+  /// P3 入口 1“立即专项练习”：只练不排，不建 FSRS 卡；带题 id 去
+  /// 复习页开专项练习（已有未完成正式复习会话时由复习页按单行表
+  /// review_state 判定：暂停保留或提示先处理，不丢断点）。
+  void _startPracticeFromReview() {
+    final ids = _n.practiceIdsFromReviewSelection();
+    if (ids.isEmpty) return;
+    final start = widget.onStartPracticeWithQuestions;
+    if (start != null) {
+      start(ids);
+    } else {
+      widget.onGoReview();
     }
   }
 

@@ -28,10 +28,12 @@ import 'dart:convert';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../data/data_change_events.dart';
+import '../data/p3_review_entries.dart';
 import '../data/repository.dart';
 import '../models/models.dart';
 import '../services/pdf_export/export_route.dart';
 import 'repository_provider.dart';
+import 'review_notifier.dart';
 import 'subject_sort.dart';
 
 /// 错题本页的状态 Provider（ARCH-PLAN-A 第 2 阶段）。
@@ -154,6 +156,14 @@ class WrongbookState {
     this.selected = const {},
     // 十六批 B（D-190）：导出勾选集合，与批量操作的 selected 分开。
     this.exportSelected = const {},
+    // P3 入口 1（D6）：加入复习的独立选择状态，与导出（exportSelected）
+    // 与通用批量（selected）三套互斥——进导出/批量模式时另两套清空
+    //（见 wrongbook_page.dart 的 _toggleBatchMode / _enterExportMode）。
+    this.reviewSelected = const {},
+    this.reviewSelectAllFiltered = false,
+    this.reviewFilterKey,
+    // P3 入口 1：已在 FSRS 复习池里的题 id（load() 时读库；未知时为空集）。
+    this.fsrsPoolIds = const {},
     this.batchFolderId,
     this.inBookArchived = false,
     // 十九批 A3：存下来的查找（saved_searches 表）与本会话的最近搜过
@@ -234,6 +244,23 @@ class WrongbookState {
   /// 分开——批量删除 / 移文件夹等不得动它。
   final Set<String> exportSelected;
 
+  /// P3 入口 1：加入复习的勾选（独立于 [selected] 与 [exportSelected]）。
+  final Set<String> reviewSelected;
+
+  /// P3 入口 1：全选口径——true = “全选全部筛选结果”（选择范围是
+  /// 当前筛选的全部题，不限当前页；点确认时按当时筛选重算，不用
+  /// [reviewSelected] 里的快照）；false = 只勾选 [reviewSelected]
+  /// 里的题（“勾选当前页”把当页 id 加进来）。
+  final bool reviewSelectAllFiltered;
+
+  /// P3 入口 1：点“全选全部筛选结果”时的筛选条件键（见
+  /// [conditionsKey]）。筛选变了（键对不上）就清空旧选择，不隐式
+  /// 扩大范围。
+  final String? reviewFilterKey;
+
+  /// P3 入口 1：已在 FSRS 复习池里的题 id（行内标“已在复习”用）。
+  final Set<String> fsrsPoolIds;
+
   final String? batchFolderId;
   final bool inBookArchived;
 
@@ -295,6 +322,10 @@ class WrongbookState {
     bool? batchMode,
     Set<String>? selected,
     Set<String>? exportSelected,
+    Set<String>? reviewSelected,
+    bool? reviewSelectAllFiltered,
+    Object? reviewFilterKey = _unset,
+    Set<String>? fsrsPoolIds,
     Object? batchFolderId = _unset,
     bool? inBookArchived,
     List<SavedSearch>? savedSearches,
@@ -365,6 +396,13 @@ class WrongbookState {
       batchMode: batchMode ?? this.batchMode,
       selected: selected ?? this.selected,
       exportSelected: exportSelected ?? this.exportSelected,
+      reviewSelected: reviewSelected ?? this.reviewSelected,
+      reviewSelectAllFiltered:
+          reviewSelectAllFiltered ?? this.reviewSelectAllFiltered,
+      reviewFilterKey: reviewFilterKey == _unset
+          ? this.reviewFilterKey
+          : reviewFilterKey as String?,
+      fsrsPoolIds: fsrsPoolIds ?? this.fsrsPoolIds,
       batchFolderId: batchFolderId == _unset
           ? this.batchFolderId
           : batchFolderId as String?,
@@ -786,6 +824,40 @@ class WrongbookState {
     return null;
   }
 
+  /// P3 入口 1：这道题是否已在 FSRS 复习池里（行内标“已在复习”用）。
+  bool isInReviewPool(Question q) => fsrsPoolIds.contains(q.id);
+
+  /// P3 入口 1：当前加题选择实际覆盖的题 id（按“全选全部筛选结果”
+  /// 时的实时筛选重算；显式勾选时只留仍在库里的题）。
+  /// 全选口径下筛选变了（键对不上）返回空集——调用方须先经
+  /// [reviewSelectionStale] 判断并清空，不隐式扩大范围。
+  List<String> reviewEffectiveIds() {
+    if (reviewSelectAllFiltered) {
+      if (reviewFilterKey != null &&
+          reviewFilterKey != conditionsKey(currentConditions())) {
+        return const [];
+      }
+      return filteredAll().map((q) => q.id).toList();
+    }
+    final existing = questions.map((q) => q.id).toSet();
+    return reviewSelected.where(existing.contains).toList();
+  }
+
+  /// P3 入口 1：全选口径是否已过期（筛选变了，旧选择不能再用）。
+  bool get reviewSelectionStale =>
+      reviewSelectAllFiltered &&
+      reviewFilterKey != null &&
+      reviewFilterKey != conditionsKey(currentConditions());
+
+  /// P3 入口 1：批量条上的已选文案——“已选 N 道”或
+  /// “已选 N 道（全部筛选结果）”。
+  String reviewSelectionLabel() {
+    final n = reviewEffectiveIds().length;
+    return reviewSelectAllFiltered
+        ? '已选 $n 道（全部筛选结果）'
+        : '已选 $n 道';
+  }
+
   // ---------- 学科首字母（SR-P2-37 / SR2-32，原页面同款） ----------
   // FR-08：实现在 `subject_sort.dart`，与整理页共用一份（拼音表 +
   // 首字母 + 拼音串 + 比较）；此处只按学科 id 取名后委托。
@@ -964,6 +1036,9 @@ WrongbookState stateWithConditions(
     filterKpIds: {...(c['kpIds'] as List<String>?) ?? const <String>[]},
     page: 0,
     selected: const <String>{},
+    reviewSelected: const <String>{},
+    reviewSelectAllFiltered: false,
+    reviewFilterKey: null,
     inBookArchived: false,
   );
 }
@@ -1073,6 +1148,18 @@ class WrongbookNotifier extends Notifier<WrongbookState> {
         (byQ[r.questionId] ??= []).add(r);
       }
       if (_disposed) return;
+      // P3 入口 1：读已在 FSRS 池里的题 id（行内“已在复习”标记用）。
+      // 读不到（旧库 / Fake 未覆盖）时按空集处理，不拖垮列表加载。
+      Set<String> poolIds;
+      try {
+        poolIds = await repo.fsrsPoolQuestionIds();
+      } catch (_) {
+        poolIds = const {};
+      }
+      final existingIds = questions.map((q) => q.id).toSet();
+      final prunedReview = state.reviewSelectAllFiltered
+          ? state.reviewSelected
+          : state.reviewSelected.intersection(existingIds);
       // SR2-34：错误类型筛选的当前值可能在详情页删题后失效——选项 =
       // 固定错因 + 现存题的全部错因；唯一带某自定义错因的题被删后，
       // 旧值不在选项里，直接喂给 DropdownButton 会断言。无效时回落
@@ -1105,6 +1192,8 @@ class WrongbookNotifier extends Notifier<WrongbookState> {
         exportSelected: state.exportSelected.intersection(
           questions.map((q) => q.id).toSet(),
         ),
+        reviewSelected: prunedReview,
+        fsrsPoolIds: poolIds,
         pageSize: state.pageSizeInitialized
             ? state.pageSize
             : settings.pageSize,
@@ -1160,6 +1249,10 @@ class WrongbookNotifier extends Notifier<WrongbookState> {
       filterKpIds: const {},
       page: 0,
       selected: const {},
+      // P3 入口 1：清筛选 = 清加题选择（范围变了不隐式保留旧范围）。
+      reviewSelected: const {},
+      reviewSelectAllFiltered: false,
+      reviewFilterKey: null,
     );
   }
 
@@ -1228,10 +1321,33 @@ class WrongbookNotifier extends Notifier<WrongbookState> {
   void applyFilterChange() {
     final ids = state.filteredAll().map((q) => q.id).toSet();
     state = state.copyWith(selected: state.selected.intersection(ids), page: 0);
+    _pruneReviewSelection();
+  }
+
+  /// P3 入口 1：筛选/搜索变化后收敛加题选择——显式勾选只留仍在
+  /// 当前筛选结果里的题；“全选全部筛选结果”口径下筛选键变了就
+  /// 清空旧选择（不隐式扩大范围），键没变则保留。
+  void _pruneReviewSelection() {
+    if (state.reviewSelectAllFiltered) {
+      if (state.reviewSelectionStale) {
+        state = state.copyWith(
+          reviewSelected: const {},
+          reviewSelectAllFiltered: false,
+          reviewFilterKey: null,
+        );
+      }
+      return;
+    }
+    if (state.reviewSelected.isEmpty) return;
+    final ids = state.filteredAll().map((q) => q.id).toSet();
+    state = state.copyWith(
+      reviewSelected: state.reviewSelected.intersection(ids),
+    );
   }
 
   void setSearch(String v) {
     state = state.copyWith(search: v, page: 0);
+    _pruneReviewSelection();
   }
 
   void setFolderSearch(String v) {
@@ -1405,13 +1521,27 @@ class WrongbookNotifier extends Notifier<WrongbookState> {
   // ---------- 选择与批量模式 ----------
 
   /// 批量全选 / 全不选（复选框与「全选当前结果」文案共用）。
+  /// P3 入口 1：行内勾选是通用批量选择与加题选择的共同入口——
+  /// 两套选择在此同步（勾选即“当前选择范围”，两处按钮都作用于它），
+  /// 与导出选择（exportSelected）始终分开、互斥。
+  /// “全选全部筛选结果”口径（[selectReviewAllFiltered]）是加题
+  /// 专用的，不动通用批量选择；显式点选任一复选框即退回显式口径。
   void toggleSelectAll(List<Question> all) {
     final selInList = all.where((q) => state.selected.contains(q.id)).length;
     if (all.isNotEmpty && selInList == all.length) {
-      state = state.copyWith(selected: const {});
-    } else {
       state = state.copyWith(
-        selected: {...state.selected, ...all.map((q) => q.id)},
+        selected: const {},
+        reviewSelected: const {},
+        reviewSelectAllFiltered: false,
+        reviewFilterKey: null,
+      );
+    } else {
+      final ids = {...state.selected, ...all.map((q) => q.id)};
+      state = state.copyWith(
+        selected: ids,
+        reviewSelected: {...state.reviewSelected, ...all.map((q) => q.id)},
+        reviewSelectAllFiltered: false,
+        reviewFilterKey: null,
       );
     }
   }
@@ -1423,7 +1553,137 @@ class WrongbookNotifier extends Notifier<WrongbookState> {
     } else {
       next.remove(id);
     }
-    state = state.copyWith(selected: next);
+    // P3 入口 1：与通用批量选择同步（见 [toggleSelectAll]）。
+    final reviewNext = {...state.reviewSelected};
+    if (selected) {
+      reviewNext.add(id);
+    } else {
+      reviewNext.remove(id);
+    }
+    state = state.copyWith(
+      selected: next,
+      reviewSelected: reviewNext,
+      reviewSelectAllFiltered: false,
+      reviewFilterKey: null,
+    );
+  }
+
+  // ---------- P3 入口 1：加入复习的独立选择与批量动作 ----------
+
+  /// 行首 Checkbox 切换（加题选择，与批量 selected / 导出互斥，
+  /// 不动另两套）。显式勾选时“全选全部筛选结果”口径自动退回
+  /// 显式口径（两者不能同时成立）。
+  void toggleReviewSelected(String id, bool selected) {
+    final next = {...state.reviewSelected};
+    if (selected) {
+      next.add(id);
+    } else {
+      next.remove(id);
+    }
+    state = state.copyWith(
+      reviewSelected: next,
+      reviewSelectAllFiltered: false,
+      reviewFilterKey: null,
+    );
+  }
+
+  /// “勾选当前页”：把当页题 id 加进显式勾选（已勾的不重复计）。
+  void selectReviewPage(List<Question> pageItems) {
+    state = state.copyWith(
+      reviewSelected: {...state.reviewSelected, ...pageItems.map((q) => q.id)},
+      reviewSelectAllFiltered: false,
+      reviewFilterKey: null,
+    );
+  }
+
+  /// “全选全部筛选结果”：选择范围 = 当前筛选的全部题（不限当前页），
+  /// 数量按当时筛选实时算；确认时重验（见 [joinReviewFsrs]）。
+  /// 记下当时的筛选键，筛选变了即过期清空（见 [_pruneReviewSelection]）。
+  void selectReviewAllFiltered() {
+    state = state.copyWith(
+      reviewSelected: const {},
+      reviewSelectAllFiltered: true,
+      reviewFilterKey: conditionsKey(state.currentConditions()),
+    );
+  }
+
+  /// 清空加题选择（“清除选择”/退出批量时调）。
+  void clearReviewSelection() {
+    state = state.copyWith(
+      reviewSelected: const {},
+      reviewSelectAllFiltered: false,
+      reviewFilterKey: null,
+    );
+  }
+
+  /// 当前加题选择解析出的题（全选口径过期时返回空列表 + stale=true，
+  /// 调用方须请用户重新确认，不直接用旧快照）。
+  ({List<Question> questions, int missing, bool stale})
+  resolveReviewSelection() {
+    if (state.reviewSelectionStale) {
+      return (questions: const [], missing: 0, stale: true);
+    }
+    final qs = <Question>[];
+    var missing = 0;
+    for (final id in state.reviewEffectiveIds()) {
+      final q = state.questionById(id);
+      if (q == null) {
+        missing++;
+      } else {
+        qs.add(q);
+      }
+    }
+    return (questions: qs, missing: missing, stale: false);
+  }
+
+  /// P3 入口 1“加入复习”：对当前选择范围批量入池（共用
+  /// [QuestionRepository.joinFsrsPool]，已在池的自动跳过、不建第二张卡）。
+  /// 返回文案 + 是否给“开始复习”入口；做完清空加题选择并重读池内标记。
+  Future<({String message, bool showReviewAction})> joinReviewFsrs() async {
+    final resolved = resolveReviewSelection();
+    if (resolved.stale) {
+      clearReviewSelection();
+      return (
+        message: '筛选条件变了，之前的全选已清空，请重新选择',
+        showReviewAction: false,
+      );
+    }
+    final repo = _repo;
+    final scheduler = ref.read(reviewSchedulerProvider);
+    final result = await repo.joinFsrsPool(
+      questions: resolved.questions,
+      scheduler: scheduler,
+    );
+    clearReviewSelection();
+    await load();
+    final outcome = FsrsBatchOutcome(
+      added: result.added,
+      skipped: result.skipped,
+      failed: result.failed,
+      missing: resolved.missing,
+    );
+    return (
+      message: fsrsBatchMessage(outcome),
+      showReviewAction: result.added > 0,
+    );
+  }
+
+  /// P3 入口 1“全部加入复习”：作用域 = 当前筛选出的全部题（与
+  /// 旧“全部加入复习”同口径，不限当前页、不用先勾选），先记为
+  /// “全选全部筛选结果”口径再入池（确认时重验当时筛选）。
+  Future<({String message, bool showReviewAction})>
+  joinReviewFsrsAll() async {
+    selectReviewAllFiltered();
+    return joinReviewFsrs();
+  }
+
+  /// P3 入口 1“立即专项练习”：返回当前选择范围的题 id（只练不排，
+  /// 不调 initializeQuestion、不建 FSRS 卡）。空选择时返回空列表，
+  /// 页面不跳转；会话是否被已有未完成正式复习会话挡住，由复习页
+  /// 的 startPracticeWithIds 按单行表 review_state 判定。
+  List<String> practiceIdsFromReviewSelection() {
+    if (state.reviewSelectionStale) return const [];
+    return state.reviewEffectiveIds();
   }
 
   // ---------- 导出勾选（十六批 B，D-190） ----------

@@ -6,6 +6,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:quiz_master2/data/database.dart';
 import 'package:quiz_master2/data/repository.dart';
+import 'package:quiz_master2/data/review_engine.dart';
 import 'package:quiz_master2/models/models.dart';
 import 'package:quiz_master2/state/report_provider.dart';
 import 'package:quiz_master2/state/repository_provider.dart';
@@ -93,6 +94,13 @@ class FakeReportRepo extends QuestionRepository {
     if (throwOnLoad) throw StateError('db down');
     return List.of(records);
   }
+
+  // P3 入口 3：样本量统计用的 attempts 与池内标记（Fake 不碰真实数据库）。
+  @override
+  Future<List<AttemptData>> loadAllAttempts() async => const [];
+
+  @override
+  Future<Set<String>> fsrsPoolQuestionIds() async => const {};
 
   @override
   Future<List<KnowledgePoint>> knowledgePoints() async => List.of(kps);

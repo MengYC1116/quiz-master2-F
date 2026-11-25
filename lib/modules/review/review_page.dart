@@ -40,12 +40,18 @@ class ReviewPage extends StatefulWidget {
     required this.repo,
     required this.onOpenDetail,
     this.initialSubjectId,
+    this.initialPracticeQuestionIds,
+    this.initialPracticeCount,
     required this.onGoWrongbook,
   });
 
   final QuestionRepository repo;
   final Future<void> Function(Question q, List<String> orderIds) onOpenDetail;
   final String? initialSubjectId;
+
+  /// P3 入口 1/3：带一批题 id 进来直接开专项练习（见 [ReviewInitial]）。
+  final List<String>? initialPracticeQuestionIds;
+  final int? initialPracticeCount;
   final VoidCallback onGoWrongbook;
 
   @override
@@ -65,7 +71,11 @@ class _ReviewPageState extends State<ReviewPage> {
       overrides: [
         repositoryProvider.overrideWithValue(widget.repo),
         reviewInitialProvider.overrideWithValue(
-          ReviewInitial(subjectId: widget.initialSubjectId),
+          ReviewInitial(
+            subjectId: widget.initialSubjectId,
+            practiceQuestionIds: widget.initialPracticeQuestionIds,
+            practiceCount: widget.initialPracticeCount,
+          ),
         ),
       ],
       child: _ReviewView(
@@ -2202,11 +2212,35 @@ class _StepDone extends ConsumerWidget {
 // ---------- 总结 ----------
 
 /// 本轮复习总结（M3-15；只订阅总结要的数）。
-class _SummaryView extends ConsumerWidget {
+///
+/// P3 入口 2：专项练习小结末尾加“本次答错的题”收题块（见
+/// [_SummaryCollectSection]）。中途退出（暂停/返回列表）不产生小结、
+/// 不自动收题；已核对过的前几道练习事实已在 submitCheck 里写进
+/// attempts，不自动改正式复习日期；恢复完成后再出完整小结。
+class _SummaryView extends ConsumerStatefulWidget {
   const _SummaryView();
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<_SummaryView> createState() => _SummaryViewState();
+}
+
+class _SummaryViewState extends ConsumerState<_SummaryView> {
+  @override
+  void initState() {
+    super.initState();
+    // 小结首次展示时定一次默认勾选（答错默认全勾、已在池的不勾、
+    // 未判分默认不勾）；同一轮重复进小结不重置（按 sessionId 隔离）。
+    // initState 里直接改 provider 会在 build 阶段抛错（Riverpod 禁止
+    // build 期改 provider），所以推迟到首帧后。
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) {
+        ref.read(reviewProvider.notifier).initSummaryCollect();
+      }
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
     final st = ref.watch(reviewProvider);
     final scale = qmScaleOf(context);
     final isPractice = st.sessionMode == ReviewMode.practice;
@@ -2272,6 +2306,10 @@ class _SummaryView extends ConsumerWidget {
                       value: '答错 ${entry.value} 道',
                     ),
                 ],
+                if (isPractice) ...[
+                  SizedBox(height: 12 * scale),
+                  const _SummaryCollectSection(),
+                ],
                 SizedBox(height: 12 * scale),
                 Wrap(
                   spacing: 8 * scale,
@@ -2296,6 +2334,155 @@ class _SummaryView extends ConsumerWidget {
           ),
         ],
       ),
+    );
+  }
+}
+
+/// P3 入口 2：专项练习小结末尾的“本次答错的题”收题块。
+///
+/// - 系统确认答错的题默认全勾、可取消；未判分的题另列一行、可勾；
+/// - 已在复习的题标“已在复习”并默认不勾（不可勾）；
+/// - 一点“加入复习”批量进池：只建新卡，不把本次专项练习的错当作
+///   正式 FSRS 历史事件；同一轮重复进小结不重复建卡（已在池的跳过）。
+class _SummaryCollectSection extends ConsumerWidget {
+  const _SummaryCollectSection();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final st = ref.watch(reviewProvider);
+    final notifier = ref.read(reviewProvider.notifier);
+    final scale = qmScaleOf(context);
+    final palette = DesignTokens.of(Theme.of(context).brightness);
+    final wrongIds = st.sumWrongQuestionIds;
+    final ungradedIds = st.sumUngradedQuestionIds;
+    final hasAny = wrongIds.isNotEmpty || ungradedIds.isNotEmpty;
+    final canCollect = st.sumCollectSelected.isNotEmpty;
+    Widget row(String questionId, {required bool isWrong}) {
+      final q = st.questionOf(questionId);
+      final title = q?.title ?? questionId;
+      final inPool = st.fsrsPoolIds.contains(questionId);
+      final applied = st.sumCollectApplied.contains(questionId);
+      final checked = st.sumCollectSelected.contains(questionId);
+      return Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Checkbox(
+            key: ValueKey('summary-collect-$questionId'),
+            value: checked,
+            // 已在池的题默认不勾、不可勾；已加入的不用再勾。
+            onChanged: (inPool || applied)
+                ? null
+                : (v) => notifier.toggleSummaryCollect(questionId, v == true),
+          ),
+          Expanded(
+            child: Padding(
+              padding: EdgeInsets.only(top: 12 * scale),
+              child: Text(
+                title,
+                style: TextStyle(
+                  fontSize: DesignTokens.bodySmallFontSize,
+                  color: palette.ink,
+                ),
+              ),
+            ),
+          ),
+          if (inPool)
+            Padding(
+              padding: EdgeInsets.only(top: 12 * scale),
+              child: const Text(
+                '已在复习',
+                style: TextStyle(
+                  fontSize: 12,
+                  color: Color(0xFF0B7A55),
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            )
+          else if (applied)
+            Padding(
+              padding: EdgeInsets.only(top: 12 * scale),
+              child: const Text(
+                '已加入',
+                style: TextStyle(
+                  fontSize: 12,
+                  color: Color(0xFF0B7A55),
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            )
+          else if (!isWrong)
+            Padding(
+              padding: EdgeInsets.only(top: 12 * scale),
+              child: Text(
+                '未判分',
+                style: TextStyle(
+                  fontSize: 12,
+                  color: palette.muted,
+                ),
+              ),
+            ),
+        ],
+      );
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text(
+          '本次答错的题',
+          style: TextStyle(fontWeight: FontWeight.w700),
+        ),
+        SizedBox(height: 4 * scale),
+        if (!hasAny)
+          Text(
+            '本次没有答错或未判分的题。',
+            style: TextStyle(
+              fontSize: DesignTokens.bodySmallFontSize,
+              color: palette.muted,
+            ),
+          )
+        else ...[
+          for (final id in wrongIds) row(id, isWrong: true),
+          if (ungradedIds.isNotEmpty) ...[
+            SizedBox(height: 8 * scale),
+            Text(
+              '未判分的题（可勾选加入）',
+              style: TextStyle(
+                fontSize: DesignTokens.bodySmallFontSize,
+                fontWeight: FontWeight.w700,
+                color: palette.muted,
+              ),
+            ),
+            for (final id in ungradedIds) row(id, isWrong: false),
+          ],
+          SizedBox(height: 8 * scale),
+          Text(
+            '只建新卡，不把本次练习的错当作正式复习记录；下次正式复习才产生第一次 Again/Good。',
+            style: TextStyle(
+              fontSize: DesignTokens.captionFontSize,
+              color: palette.muted,
+            ),
+          ),
+          SizedBox(height: 8 * scale),
+          QmButton(
+            label: '加入复习',
+            onPressed: canCollect
+                ? () => notifier.collectSummaryWrong()
+                : null,
+          ),
+          if (st.sumCollectMessage != null) ...[
+            SizedBox(height: 6 * scale),
+            Text(
+              st.sumCollectMessage!,
+              key: const Key('summary-collect-message'),
+              style: TextStyle(
+                fontSize: DesignTokens.bodySmallFontSize,
+                color: palette.ink,
+              ),
+            ),
+          ],
+        ],
+      ],
     );
   }
 }

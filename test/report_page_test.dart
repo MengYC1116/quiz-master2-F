@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:quiz_master2/data/database.dart';
 import 'package:quiz_master2/data/repository.dart';
+import 'package:quiz_master2/data/review_engine.dart';
 import 'package:quiz_master2/models/models.dart';
 import 'package:quiz_master2/modules/report/report_page.dart';
 import 'package:quiz_master2/theme/app_theme.dart';
@@ -93,6 +94,13 @@ class FakeReportRepo extends QuestionRepository {
     if (throwOnLoad) throw StateError('db down');
     return List.of(records);
   }
+
+  // P3 入口 3：样本量统计用的 attempts 与池内标记（Fake 不碰真实数据库）。
+  @override
+  Future<List<AttemptData>> loadAllAttempts() async => const [];
+
+  @override
+  Future<Set<String>> fsrsPoolQuestionIds() async => const {};
 
   @override
   Future<List<KnowledgePoint>> knowledgePoints() async => List.of(kps);
@@ -456,7 +464,7 @@ void main() {
       expect(find.text('1 道题'), findsNWidgets(5));
     });
 
-    testWidgets('点原因行进错题本：带学科 + 错因', (tester) async {
+    testWidgets('点原因行进薄弱点列表页：先看题目，再决定练多少', (tester) async {
       await pumpReport(tester);
       final row = find.textContaining('审题失误').first;
       final inkwell = find.ancestor(of: row, matching: find.byType(InkWell));
@@ -464,18 +472,33 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(inkwell);
       await tester.pumpAndSettle();
+      // P3 入口 3：点行先进题目列表页，不再直接跳错题本。
+      expect(_lastCalls, isEmpty);
+      expect(find.byKey(const Key('weak-list-title')), findsOneWidget);
+      expect(find.text('开始专项练习'), findsOneWidget);
+      expect(find.text('加入复习'), findsOneWidget);
+      // 列表页里的“在错题本中查看”仍走旧深链路（带学科 + 错因）。
+      await tester.tap(find.text('在错题本中查看'));
+      await tester.pumpAndSettle();
       expect(_lastCalls, hasLength(1));
       expect(_lastCalls.single.subjectId, 'english');
       expect(_lastCalls.single.cause, '审题失误');
     });
 
-    testWidgets('点知识点行进错题本：带学科 + 知识点', (tester) async {
+    testWidgets('点知识点行进薄弱点列表页：先看题目，再决定练多少', (tester) async {
       await pumpReport(tester);
       final row = find.textContaining('矛盾观');
       final inkwell = find.ancestor(of: row, matching: find.byType(InkWell));
       await tester.ensureVisible(inkwell);
       await tester.pumpAndSettle();
       await tester.tap(inkwell);
+      await tester.pumpAndSettle();
+      // P3 入口 3：点行先进题目列表页，不再直接跳错题本。
+      expect(_lastCalls, isEmpty);
+      expect(find.byKey(const Key('weak-list-title')), findsOneWidget);
+      expect(find.text('开始专项练习'), findsOneWidget);
+      // 列表页里的“在错题本中查看”仍走旧深链路（带学科 + 知识点）。
+      await tester.tap(find.text('在错题本中查看'));
       await tester.pumpAndSettle();
       expect(_lastCalls, hasLength(1));
       expect(_lastCalls.single.subjectId, 'politics');

@@ -34,10 +34,12 @@
 // 角标走 `badgeCountsProvider`（第 4 阶段：订阅 `DataChangeBus`，
 // 见 `badge_counts_provider.dart`）。
 import 'dart:async';
+import 'dart:math';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../data/database.dart';
+import '../data/p3_review_entries.dart';
 import '../data/repository.dart';
 import '../data/review_engine.dart';
 import '../data/review_scheduler.dart';
@@ -63,17 +65,45 @@ final reviewProvider =
 /// 不带 → 全部。页面外壳经 `ProviderScope` 注入；Notifier 的
 /// `build()` 里读它，不在 `initState` 里改 Provider（Riverpod
 /// 禁止在 build / initState 等生命周期里同步改 Provider）。
+/// P3 入口 1/3：[practiceQuestionIds] 非空时，页面加载完成后直接用
+/// 这批题开专项练习（只练不排；已有未完成会话时先挂起，等用户在恢复条
+/// 上二选一）；[practiceCount] <= 0 或空表示全部。
 class ReviewInitial {
-  const ReviewInitial({this.subjectId});
+  const ReviewInitial({
+    this.subjectId,
+    this.practiceQuestionIds,
+    this.practiceCount,
+  });
 
   final String? subjectId;
+  final List<String>? practiceQuestionIds;
+  final int? practiceCount;
 
   @override
-  bool operator ==(Object other) =>
-      other is ReviewInitial && other.subjectId == subjectId;
+  bool operator ==(Object other) {
+    if (other is! ReviewInitial) return false;
+    if (other.subjectId != subjectId ||
+        other.practiceCount != practiceCount) {
+      return false;
+    }
+    final a = practiceQuestionIds;
+    final b = other.practiceQuestionIds;
+    if (a == null || b == null) return a == b;
+    if (a.length != b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if (a[i] != b[i]) return false;
+    }
+    return true;
+  }
 
   @override
-  int get hashCode => subjectId.hashCode;
+  int get hashCode => Object.hash(
+    subjectId,
+    practiceQuestionIds == null
+        ? null
+        : Object.hashAll(practiceQuestionIds!),
+    practiceCount,
+  );
 }
 
 /// 初始落点 Provider：默认空（全部学科）；页面外壳按构造参数 override。
@@ -413,6 +443,19 @@ class ReviewState {
     this.sessionStartedAt,
     this.kpNames = const {},
     this.rejoinNotice,
+    // P3 入口 1–3：已在 FSRS 池里的题 id（小结收题默认勾选判定用）。
+    this.fsrsPoolIds = const {},
+    // P3 入口 1/3：已有未完成会话时挂起的待开专项练习题单
+    //（等用户在恢复条上二选一；放弃旧会话后按此开练）。
+    this.pendingPracticeIds = const [],
+    this.pendingPracticeCount,
+    // P3：ReviewInitial 带进来的题单是否已处理过（只处理一次）。
+    this.initialPracticeStarted = false,
+    // P3 入口 2：小结收题的选择状态（按 sessionId 隔离，一轮一清）。
+    this.sumCollectSelected = const {},
+    this.sumCollectApplied = const {},
+    this.sumCollectSessionId,
+    this.sumCollectMessage,
   });
 
   final AppSettings settings;
@@ -526,6 +569,35 @@ class ReviewState {
   /// 专项练习“已重新加入复习”的反馈文案（用后即清）。
   final String? rejoinNotice;
 
+  /// P3：已在 FSRS 复习池里的题 id。
+  final Set<String> fsrsPoolIds;
+
+  /// P3 入口 1/3：挂起的待开专项练习题单（见上）。
+  final List<String> pendingPracticeIds;
+  final int? pendingPracticeCount;
+
+  /// P3：ReviewInitial 题单已处理过。
+  final bool initialPracticeStarted;
+
+  /// P3 入口 2：小结收题——当前勾选、本轮已加入、本轮小结的 sessionId、
+  /// 最近一次收题结果文案。
+  final Set<String> sumCollectSelected;
+  final Set<String> sumCollectApplied;
+  final String? sumCollectSessionId;
+  final String? sumCollectMessage;
+
+  /// P3 入口 2：本轮小结里答错的题 id（系统确认答错，correct == 0）。
+  List<String> get sumWrongQuestionIds => [
+    for (final sq in sessionQuestions)
+      if (sq.correct == 0) sq.questionId,
+  ];
+
+  /// P3 入口 2：本轮小结里未判分的题 id（correct == null）。
+  List<String> get sumUngradedQuestionIds => [
+    for (final sq in sessionQuestions)
+      if (sq.correct == null) sq.questionId,
+  ];
+
   ReviewState copyWith({
     AppSettings? settings,
     List<Subject>? subjects,
@@ -579,6 +651,14 @@ class ReviewState {
     Object? sessionStartedAt = _unset,
     Map<String, String>? kpNames,
     Object? rejoinNotice = _unset,
+    Set<String>? fsrsPoolIds,
+    List<String>? pendingPracticeIds,
+    Object? pendingPracticeCount = _unset,
+    bool? initialPracticeStarted,
+    Set<String>? sumCollectSelected,
+    Set<String>? sumCollectApplied,
+    Object? sumCollectSessionId = _unset,
+    Object? sumCollectMessage = _unset,
   }) {
     return ReviewState(
       settings: settings ?? this.settings,
@@ -653,6 +733,21 @@ class ReviewState {
       rejoinNotice: rejoinNotice == _unset
           ? this.rejoinNotice
           : rejoinNotice as String?,
+      fsrsPoolIds: fsrsPoolIds ?? this.fsrsPoolIds,
+      pendingPracticeIds: pendingPracticeIds ?? this.pendingPracticeIds,
+      pendingPracticeCount: pendingPracticeCount == _unset
+          ? this.pendingPracticeCount
+          : pendingPracticeCount as int?,
+      initialPracticeStarted:
+          initialPracticeStarted ?? this.initialPracticeStarted,
+      sumCollectSelected: sumCollectSelected ?? this.sumCollectSelected,
+      sumCollectApplied: sumCollectApplied ?? this.sumCollectApplied,
+      sumCollectSessionId: sumCollectSessionId == _unset
+          ? this.sumCollectSessionId
+          : sumCollectSessionId as String?,
+      sumCollectMessage: sumCollectMessage == _unset
+          ? this.sumCollectMessage
+          : sumCollectMessage as String?,
     );
   }
 
@@ -875,10 +970,28 @@ class ReviewState {
 /// `ref.read(repositoryProvider)` 拿——测试注入见
 /// `docs/ui-replication/A-READING-GUIDE.md`（`ProviderContainer.test`
 /// + `repositoryProvider.overrideWithValue`）。
+/// P3 入口 1/3：用一批指定题开专项练习的结果。
+enum PracticeStartOutcome {
+  /// 已开练。
+  started,
+
+  /// 已有未完成会话（正式复习或专项练习）：新练习已挂起
+  ///（[ReviewState.pendingPracticeIds]），等用户在恢复条上二选一；
+  /// 旧会话不断点、不覆盖。
+  blockedByResume,
+
+  /// 题单解析后无可练的题（全被删/归档/未整理）。
+  empty,
+}
+
 class ReviewNotifier extends Notifier<ReviewState> {
   QuestionRepository get _repo => ref.read(repositoryProvider);
 
   bool _disposed = false;
+
+  /// P3：build() 里读到的初始题单（load() 完成后只处理一次）。
+  List<String>? _initialPracticeIds;
+  int? _initialPracticeCount;
 
   @override
   ReviewState build() {
@@ -889,6 +1002,8 @@ class ReviewNotifier extends Notifier<ReviewState> {
     // 初始落点（原 `initState` 的一部分）：带学科进来 → 该学科筛选。
     // `load()` 只写数据字段，不动筛选字段，所以先读后读不影响最终状态。
     final initial = ref.read(reviewInitialProvider);
+    _initialPracticeIds = initial.practiceQuestionIds;
+    _initialPracticeCount = initial.practiceCount;
     return ReviewState(subjectFilter: initial.subjectId);
   }
 
@@ -1024,6 +1139,25 @@ class ReviewNotifier extends Notifier<ReviewState> {
         loadError: false,
         hasLoaded: true,
       );
+      // P3：读已在池里的题 id（小结收题默认勾选判定用）；读不到按空集，
+      // 不拖垮列表加载。
+      try {
+        final poolIds = await ref
+            .read(reviewSchedulerProvider)
+            .pooledQuestionIds();
+        if (!_disposed) state = state.copyWith(fsrsPoolIds: poolIds);
+      } catch (_) {
+        // 池内标记是锦上添花，读不到不拖垮列表。
+      }
+      // P3 入口 1/3：初始题单只处理一次（load 成功后）。
+      if (_initialPracticeIds != null &&
+          !state.initialPracticeStarted &&
+          !_disposed) {
+        final ids = _initialPracticeIds!;
+        final count = _initialPracticeCount;
+        state = state.copyWith(initialPracticeStarted: true);
+        await startPracticeWithIds(ids, count: count);
+      }
     } catch (_) {
       // 读库失败：不一直转圈（SR-P2-48），出错误横幅 + 重试入口。
       if (_disposed) return;
@@ -1405,6 +1539,11 @@ class ReviewNotifier extends Notifier<ReviewState> {
       sumNextDueDate: null,
       sumElapsedSeconds: 0,
       sessionStartedAt: DateTime.now(),
+      // P3 入口 2：新一轮开始，小结收题状态清掉（按 sessionId 隔离）。
+      sumCollectSelected: const {},
+      sumCollectApplied: const {},
+      sumCollectSessionId: null,
+      sumCollectMessage: null,
       inSession: true,
       showSummary: false,
       showPracticePicker: false,
@@ -1424,6 +1563,43 @@ class ReviewNotifier extends Notifier<ReviewState> {
         startIndex: r.sessionIndex,
         scopeLabel: state.scopeLabelForSession(r.sessionQuestions),
       );
+      // P3 入口 2：恢复后小结须完整——_enterSession 把小结计数清零，
+      // 已核对过的题（checkSubmitted，correct/stage 已随断点持久化）
+      // 要按原值重建计数，否则恢复后做完只剩后半段的数，小结不完整。
+      final done = r.sessionQuestions
+          .where((sq) => sq.checkSubmitted)
+          .toList();
+      final weakKp = <String, int>{};
+      for (final sq in done) {
+        if (sq.correct != 0) continue;
+        final q = state.questionOf(sq.questionId);
+        for (final kp in q?.knowledgePointIds ?? const <String>[]) {
+          weakKp[kp] = (weakKp[kp] ?? 0) + 1;
+        }
+      }
+      DateTime? earliestNextDue;
+      if (r.mode == ReviewMode.due) {
+        final scheduler = ref.read(reviewSchedulerProvider);
+        for (final sq in done) {
+          if (sq.correct == null) continue;
+          final due = await scheduler.nextDueAt(sq.questionId);
+          if (due != null &&
+              (earliestNextDue == null || due.isBefore(earliestNextDue))) {
+            earliestNextDue = due;
+          }
+        }
+      }
+      state = state.copyWith(
+        sumCompleted: done.length,
+        sumHandled: r.mode == ReviewMode.practice
+            ? 0
+            : done.fold<int>(0, (n, sq) => n + sq.causes.length),
+        sumObjCorrect: done.where((sq) => sq.correct == 1).length,
+        sumObjWrong: done.where((sq) => sq.correct == 0).length,
+        sumUngraded: done.where((sq) => sq.correct == null).length,
+        sumWeakKp: weakKp,
+        sumNextDueDate: earliestNextDue,
+      );
       return;
     }
     if (state.resume != null) {
@@ -1436,6 +1612,11 @@ class ReviewNotifier extends Notifier<ReviewState> {
       onlySubjectId: fromGroup?.subjectId,
     );
     if (questions.isEmpty) return;
+    // P3：用户明确新开到期复习，挂起的待开专项练习题单作废。
+    state = state.copyWith(
+      pendingPracticeIds: const [],
+      pendingPracticeCount: null,
+    );
     var startIndex = 0;
     if (fromGroup != null) {
       for (var i = 0; i < questions.length; i++) {
@@ -1481,10 +1662,22 @@ class ReviewNotifier extends Notifier<ReviewState> {
   /// 与无断点时点“专项练习”同款：先开选题页（让用户选范围/数量/
   /// 顺序），不直接按默认范围开会话——此前版本直接调
   // startPracticeSession()，跳过了选题页（M3 自验新测试抓到）。
+  /// P3：若有挂起的待开题单（入口 1/3 带题进来时被旧会话挡住），
+  /// 放弃旧会话后直接按挂起的题单开练，不再回选题页。
   Future<void> abandonResumeAndStartPractice() async {
     await _repo.clearReviewState();
     if (_disposed) return;
-    state = state.copyWith(resume: null);
+    final pending = state.pendingPracticeIds;
+    final pendingCount = state.pendingPracticeCount;
+    state = state.copyWith(
+      resume: null,
+      pendingPracticeIds: const [],
+      pendingPracticeCount: null,
+    );
+    if (pending.isNotEmpty) {
+      await startPracticeWithIds(pending, count: pendingCount);
+      return;
+    }
     openPracticePicker();
   }
 
@@ -1540,6 +1733,11 @@ class ReviewNotifier extends Notifier<ReviewState> {
       // 防从错题本批量开专项练习时丢掉正式复习的断点。
       return;
     }
+    // P3：用户在选题页明确新开练习，挂起的待开题单作废。
+    state = state.copyWith(
+      pendingPracticeIds: const [],
+      pendingPracticeCount: null,
+    );
     final questions = _buildPracticeSessionQuestions();
     if (questions.isEmpty) {
       state = state.copyWith(practiceEmpty: true);
@@ -1554,6 +1752,175 @@ class ReviewNotifier extends Notifier<ReviewState> {
       scopeLabel: '专项练习',
     );
     await _persistCurrentSession();
+  }
+
+  /// P3 入口 1/3：用一批指定题 id 开专项练习（只练不排，不碰 FSRS）。
+  ///
+  /// - 去重 + 只留已整理未归档的题；数量 [count] <= 0 或空表示全部，
+  ///   否则按 [pickPracticeQuestions] 随机抽取（同一知识点尽量不连续集中）；
+  /// - 已有未完成会话（[ReviewState.resume] 非空，或正处会话中）时
+  ///   不覆盖单行表 review_state：把题单挂起（pendingPracticeIds），
+  ///   返回 [PracticeStartOutcome.blockedByResume]，旧会话断点保留，
+  ///   用户在恢复条上选“放弃上次会话”后按挂起的题单开练；
+  /// - 无可练的题时返回 [PracticeStartOutcome.empty]，不开空白会话。
+  Future<PracticeStartOutcome> startPracticeWithIds(
+    List<String> questionIds, {
+    int? count,
+    Random? random,
+  }) async {
+    final seen = <String>{};
+    final candidates = <Question>[];
+    for (final id in questionIds) {
+      if (!seen.add(id)) continue;
+      final q = state.questionOf(id);
+      if (q == null || !q.isOrganized || q.isArchived) continue;
+      candidates.add(q);
+    }
+    if (candidates.isEmpty) return PracticeStartOutcome.empty;
+    if (state.resume != null || state.inSession) {
+      state = state.copyWith(
+        pendingPracticeIds: candidates.map((q) => q.id).toList(),
+        pendingPracticeCount: count,
+      );
+      return PracticeStartOutcome.blockedByResume;
+    }
+    final picked = pickPracticeQuestions(
+      candidates: candidates,
+      count: count ?? 0,
+      random: random,
+    );
+    if (picked.isEmpty) return PracticeStartOutcome.empty;
+    final questions = _sessionQuestionsForIds(
+      picked.map((q) => q.id).toList(),
+    );
+    if (questions.isEmpty) return PracticeStartOutcome.empty;
+    final sessionId = newReviewUuid('sess');
+    _enterSession(
+      questions: questions,
+      sessionId: sessionId,
+      mode: ReviewMode.practice,
+      startIndex: 0,
+      scopeLabel: '专项练习（${questions.length} 道）',
+    );
+    await _persistCurrentSession();
+    return PracticeStartOutcome.started;
+  }
+
+  /// 指定题单建队：错因取该题待治记录（无记录时取题面错因），
+  /// 顺序按调用方给定的题单（抽题/去重由 [pickPracticeQuestions] 定）。
+  List<SessionQuestionState> _sessionQuestionsForIds(List<String> ids) {
+    final recordsByQ = <String, List<CauseRecord>>{};
+    for (final r in state.allCauseRecords) {
+      (recordsByQ[r.questionId] ??= []).add(r);
+    }
+    final out = <SessionQuestionState>[];
+    for (final id in ids) {
+      final q = state.questionOf(id);
+      if (q == null) continue;
+      final causes = recordsByQ[id]?.map((r) => r.cause).toList();
+      out.add(
+        SessionQuestionState(
+          questionId: id,
+          causes: (causes == null || causes.isEmpty)
+              ? q.allCauses
+              : causes,
+          nonRoundCauses: const [],
+          answerVersionAtStart: q.answerVersion,
+          contentVersionAtStart: q.contentVersion,
+          questionSubmissionId: newReviewUuid('qs'),
+          attemptSubmissionId: newReviewUuid('attsub'),
+        ),
+      );
+    }
+    return out;
+  }
+
+  // ---------- P3 入口 2：练习小结收错题 ----------
+
+  /// 小结收题默认勾选（本轮小结首次展示时调一次，按 sessionId 隔离）：
+  /// 系统确认答错的题默认全勾（已在池的除外，默认不勾）；未判分的题
+  /// 另列、可勾，默认不勾。已在池的题在界面上标“已在复习”。
+  void initSummaryCollect() {
+    if (state.sessionId == null ||
+        state.sumCollectSessionId == state.sessionId) {
+      return;
+    }
+    final wrong = state.sumWrongQuestionIds
+        .where((id) => !state.fsrsPoolIds.contains(id))
+        .toSet();
+    state = state.copyWith(
+      sumCollectSessionId: state.sessionId,
+      sumCollectSelected: wrong,
+      sumCollectApplied: const {},
+      sumCollectMessage: null,
+    );
+  }
+
+  /// 小结收题里勾选 / 取消勾选一道题（已在池的题界面上禁用，不进这里）。
+  void toggleSummaryCollect(String questionId, bool selected) {
+    final next = {...state.sumCollectSelected};
+    if (selected) {
+      next.add(questionId);
+    } else {
+      next.remove(questionId);
+    }
+    state = state.copyWith(sumCollectSelected: next);
+  }
+
+  /// 小结收题“加入复习”：只对当前勾选的题批量入池（共用
+  /// [QuestionRepository.joinFsrsPool]，只建新卡，不把本次专项练习的
+  /// 错当作正式 FSRS 历史事件——下次正式复习才产生第一次 Again/Good）。
+  /// 同一轮重复进小结不重复建卡：已在池的题本次跳过（计数里报跳过数）。
+  /// 返回结果文案；做完刷新池内标记。
+  Future<String> collectSummaryWrong() async {
+    final ids = state.sumCollectSelected
+        .where(
+          (id) =>
+              state.sumWrongQuestionIds.contains(id) ||
+              state.sumUngradedQuestionIds.contains(id),
+        )
+        .toList();
+    final qs = <Question>[];
+    var missing = 0;
+    for (final id in ids) {
+      final q = state.questionOf(id);
+      if (q == null) {
+        missing++;
+      } else {
+        qs.add(q);
+      }
+    }
+    final repo = _repo;
+    final scheduler = ref.read(reviewSchedulerProvider);
+    final result = await repo.joinFsrsPool(
+      questions: qs,
+      scheduler: scheduler,
+    );
+    Set<String> poolIds = state.fsrsPoolIds;
+    try {
+      poolIds = await scheduler.pooledQuestionIds();
+    } catch (_) {
+      // 读不到就沿用旧标记，不影响已写入的卡片。
+    }
+    if (!_disposed) {
+      state = state.copyWith(
+        fsrsPoolIds: poolIds,
+        sumCollectApplied: {
+          ...state.sumCollectApplied,
+          ...ids.where(poolIds.contains),
+        },
+      );
+    }
+    final message = fsrsBatchMessage(
+      FsrsBatchOutcome(
+        added: result.added,
+        skipped: result.skipped,
+        failed: result.failed,
+        missing: missing,
+      ),
+    );
+    if (!_disposed) state = state.copyWith(sumCollectMessage: message);
+    return message;
   }
 
   // ---------- 会话：暂停 / 返回 ----------

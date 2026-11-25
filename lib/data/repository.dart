@@ -172,6 +172,71 @@ class QuestionRepository {
     });
   }
 
+  /// P3 入口 1–3 共用：当前已在复习池里的题 id（fsrs_cards 行）。
+  /// 只读；读不到（旧库/无表/Fake 未覆盖）时返回空集，不抛错——
+  /// 调用方把“未知”当成“都不在池里”，行内标记宁缺勿错。
+  Future<Set<String>> fsrsPoolQuestionIds() async {
+    try {
+      return (await _db.fsrsCardQuestionIds()).toSet();
+    } catch (_) {
+      return const {};
+    }
+  }
+
+  /// P3 入口 3 样本量统计用：全部 attempts（正式 + 专项）。
+  /// 读不到时返回空列表，不抛错（统计口径里样本量为 0 即“数据较少”）。
+  Future<List<AttemptData>> loadAllAttempts() async {
+    try {
+      return await _db.allAttempts();
+    } catch (_) {
+      return const [];
+    }
+  }
+
+  /// P3：三个加题入口 + 详情页“加入复习”共用的 FSRS 入池批量方法。
+  ///
+  /// 逐题走同一 [ReviewScheduler.initializeQuestion]：已在池的题
+  /// 直接返回现有卡片，不建第二张（去重，一题一卡）；不在池的建新卡。
+  /// 入池同时调 [setReviewJoined]（q, true）播种错因记录——到期复习
+  /// 的现有队列（buildDueQueue / dueToday）仍以 reviewJoined +
+  /// cause_records 为准，FSRS 卡片与旧队列必须同进同出；播种失败
+  /// （如无错因返回 false）不影响入池计数，卡片已建即算新增。
+  /// 单题 initialize 失败计入 `failed`，不中断整批；输入重复 id 只
+  /// 算一次（按首次出现顺序去重）。
+  /// 返回 (added 新增，skipped 已在池跳过，failed 失败）。
+  /// 取消加入不走这里（见 [cancelReviewBatch]：只翻 review_joined，
+  /// FSRS 卡片保留，历史状态不删，重加时本方法直接返回原卡）。
+  Future<({int added, int skipped, int failed})> joinFsrsPool({
+    required List<Question> questions,
+    required ReviewScheduler scheduler,
+  }) async {
+    final pooled = await scheduler.pooledQuestionIds();
+    final seen = <String>{};
+    var added = 0;
+    var skipped = 0;
+    var failed = 0;
+    for (final q in questions) {
+      if (!seen.add(q.id)) continue;
+      if (pooled.contains(q.id)) {
+        skipped++;
+        continue;
+      }
+      try {
+        await scheduler.initializeQuestion(q.id);
+        pooled.add(q.id);
+        try {
+          await setReviewJoined(q, true);
+        } catch (_) {
+          // 播种错因记录失败不影响入池：卡片已建，题已在池。
+        }
+        added++;
+      } catch (_) {
+        failed++;
+      }
+    }
+    return (added: added, skipped: skipped, failed: failed);
+  }
+
   /// 批量取消加入复习（B11-6）：与详情页单个取消同语义——只把
   /// review_joined 置回 false，错因记录保留，重加入可恢复
   /// （[setReviewJoined] 取消时不删记录）。本来就没加入的题计入

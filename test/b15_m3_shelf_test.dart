@@ -62,6 +62,11 @@ class ShelfFakeRepo extends QuestionRepository {
   // 会走真实库、页面卡 loading、pumpAndSettle 超时，见 D-225）。
   @override
   Future<List<SavedSearch>> savedSearches() async => const [];
+
+  // P3 入口 1：load() 读池内标记（同款 D-225：不覆写会走真实库、
+  // 页面卡 loading、pumpAndSettle 超时）。
+  @override
+  Future<Set<String>> fsrsPoolQuestionIds() async => const {};
 }
 
 Future<void> pumpShelf(WidgetTester tester, ShelfFakeRepo repo) async {

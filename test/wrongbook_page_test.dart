@@ -3,11 +3,14 @@
 // 批量模式、分页、亮 / 深 × 三档缩放无溢出、页内无边距、不用图标字体。
 // 用 FakeRepo 覆盖 repository 调用（不碰真实数据库，不改口径）。
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:quiz_master2/data/database.dart';
 import 'package:quiz_master2/data/repository.dart';
+import 'package:quiz_master2/data/review_scheduler.dart';
 import 'package:quiz_master2/models/models.dart';
 import 'package:quiz_master2/modules/wrongbook/wrongbook_page.dart';
+import 'package:quiz_master2/state/review_notifier.dart';
 import 'package:quiz_master2/theme/app_theme.dart';
 import 'package:quiz_master2/widgets/widgets.dart';
 
@@ -89,6 +92,15 @@ class FakeWrongbookRepo extends QuestionRepository {
   final List<String> deletedFolderIds = [];
   final List<String> toggledFavoriteIds = [];
   final List<(String, bool)> archivedChanges = [];
+
+  /// P3 入口 1：池内标记读同一个调度器实例（与 pumpWrongbook 的
+  /// scheduler 参数同一实例时，行内“已在复习”标记与入池结果一致；
+  /// 不设时按空集，不碰真实数据库）。
+  ReviewScheduler? scheduler;
+
+  @override
+  Future<Set<String>> fsrsPoolQuestionIds() async =>
+      scheduler == null ? const {} : scheduler!.pooledQuestionIds();
 
   /// SR-P2-36：防线测试用——设置后 saveFolder 抛该错误。
   Object? saveFolderError;
@@ -445,6 +457,9 @@ Future<void> pumpWrongbook(
   void Function({String? subjectId})? onGoReview,
   VoidCallback? onGoCollect,
   VoidCallback? onGoOrganize,
+  // P3 入口 1：不传时沿用默认调度器（真库，入池路径不用它）；
+  // 传了则整个页面树用这个调度器（内存卡片，不碰真实数据库）。
+  ReviewScheduler? scheduler,
 }) async {
   tester.view.physicalSize = const Size(1280, 720);
   tester.view.devicePixelRatio = 1.0;
@@ -456,36 +471,44 @@ Future<void> pumpWrongbook(
   // 落点回到默认书架（B8-8 的 900 宽断言要的就是书架，
   // key 换新会把页面弹回书架、丢了正在测的视图）。
   final pageWidgetKey = pageKey ?? UniqueKey();
-  await tester.pumpWidget(
-    MaterialApp(
-      theme: AppTheme.light(scale: scale),
-      darkTheme: AppTheme.dark(scale: scale),
-      themeMode: brightness == Brightness.dark
-          ? ThemeMode.dark
-          : ThemeMode.light,
-      home: Builder(
-        builder: (context) {
-          final data = MediaQuery.of(context);
-          return MediaQuery(
-            data: data.copyWith(textScaler: TextScaler.linear(scale)),
-            child: Scaffold(
-              body: WrongbookPage(
-                key: pageWidgetKey,
-                repo: repo ?? threeSubjectRepo(),
-                initialSubjectId: initialSubjectId,
-                filterCause: filterCause,
-                filterKnowledgePointId: filterKnowledgePointId,
-                onOpenHome: () {},
-                onGoCollect: onGoCollect,
-                onGoOrganize: onGoOrganize,
-                onOpenDetail: onOpenDetail ?? (_, __, {String? searchContext}) async {},
-                onGoReview: onGoReview ?? ({String? subjectId}) {},
-              ),
+  final app = MaterialApp(
+    theme: AppTheme.light(scale: scale),
+    darkTheme: AppTheme.dark(scale: scale),
+    themeMode: brightness == Brightness.dark
+        ? ThemeMode.dark
+        : ThemeMode.light,
+    home: Builder(
+      builder: (context) {
+        final data = MediaQuery.of(context);
+        return MediaQuery(
+          data: data.copyWith(textScaler: TextScaler.linear(scale)),
+          child: Scaffold(
+            body: WrongbookPage(
+              key: pageWidgetKey,
+              repo: repo ?? threeSubjectRepo(),
+              initialSubjectId: initialSubjectId,
+              filterCause: filterCause,
+              filterKnowledgePointId: filterKnowledgePointId,
+              onOpenHome: () {},
+              onGoCollect: onGoCollect,
+              onGoOrganize: onGoOrganize,
+              onOpenDetail: onOpenDetail ?? (_, __, {String? searchContext}) async {},
+              onGoReview: onGoReview ?? ({String? subjectId}) {},
             ),
-          );
-        },
-      ),
+          ),
+        );
+      },
     ),
+  );
+  await tester.pumpWidget(
+    scheduler == null
+        ? app
+        : ProviderScope(
+            overrides: [
+              reviewSchedulerProvider.overrideWithValue(scheduler),
+            ],
+            child: app,
+          ),
   );
   await tester.pumpAndSettle();
 }

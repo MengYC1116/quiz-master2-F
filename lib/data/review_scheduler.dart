@@ -448,6 +448,13 @@ abstract class ReviewScheduler {
   /// 个展示。未开始正式复习的卡（firstReviewedAt 为空）不算——
   /// 它的 due 是 FSRS 新卡默认值，不是真正的下次复习时间。
   Future<DateTime?> nextDueAt(String questionId);
+
+  /// P3 入口 1–3 共用：当前已在复习池里的全部题 id（有 fsrs_cards
+  /// 行即在池，与是否开始正式复习无关）。
+  ///
+  /// 只读查询，不建卡、不改状态；供“已在复习”行内标记与批量跳过
+  /// 计数用。P1/P2/P5 的接口语义不变，只是新增一个只读方法。
+  Future<Set<String>> pooledQuestionIds();
 }
 
 /// [ReviewScheduler] 的 FSRS-6 实现，封装层唯一认识 FSRS 包的地方。
@@ -567,6 +574,12 @@ class FsrsReviewScheduler implements ReviewScheduler {
     final stored = await store.load(questionId);
     if (stored == null || stored.firstReviewedAt == null) return null;
     return stored.card.due;
+  }
+
+  @override
+  Future<Set<String>> pooledQuestionIds() async {
+    final all = await store.loadAll();
+    return {for (final c in all) c.questionId};
   }
 
   Future<StoredCard> _initializeAndLoad(String questionId) async {

@@ -107,6 +107,11 @@ class B17FakeRepo extends QuestionRepository {
 
   @override
   Future<AppSettings> settings() async => const AppSettings();
+
+  // P3 入口 1：load() 读池内标记（不覆写会走真实库、页面卡 loading、
+  // pumpAndSettle 超时）。
+  @override
+  Future<Set<String>> fsrsPoolQuestionIds() async => const {};
 }
 
 /// 桩控制器：盘点全部可印、无跳过；生成与交付全部成功。

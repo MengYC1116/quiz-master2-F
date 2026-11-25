@@ -375,6 +375,20 @@ extension _WrongbookListBuild on _WrongbookViewState {
                 ),
                 SizedBox(width: 8 * scale),
                 _statusPill(q),
+                // P3 入口 1：已在 FSRS 复习池的题行内标“已在复习”
+                //（不计入新增数，点加入时自动跳过）。
+                if (_s.isInReviewPool(q)) ...[
+                  SizedBox(width: 6 * scale),
+                  Text(
+                    '已在复习',
+                    key: ValueKey('in-review-${q.id}'),
+                    style: const TextStyle(
+                      fontSize: 12,
+                      color: Color(0xFF0B7A55),
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ],
                 if (_overdueDays(q) > 0) ...[
                   SizedBox(width: 6 * scale),
                   Text(
@@ -1766,10 +1780,10 @@ extension _WrongbookListBuild on _WrongbookViewState {
               ),
             ],
           ),
-          Text(
-            '已选 ${_s.selected.length} 道',
-            style: const TextStyle(fontWeight: FontWeight.w800),
-          ),
+          // P3 入口 1：批量条只留一个已选文案——加题选择与通用批量选择
+          // 同步（见 Notifier 的 toggleSelected），通用那行
+          // '已选 N 道' 与 reviewSelectionLabel() 恒相同，留一个；
+          // 全选口径时后者多一句“（全部筛选结果）”。
           // 跨学科列表（错因/知识点筛选进来）没有归属学科，批量移
           // 文件夹的目标下拉是空的（SR-P2-41）：进批量模式就说明，
           // 别等用户点了才发现移不了。
@@ -1830,22 +1844,51 @@ extension _WrongbookListBuild on _WrongbookViewState {
             size: QmButtonSize.small,
             onPressed: hasSelection ? _batchArchive : null,
           ),
-          // B11-6：批量加入 / 取消加入复习。加入复习只加未解决的错因，
-          // 已治愈的不重复加入（判定在 repository.joinReviewBatch）；
-          // “全部加入复习”作用域 = 当前筛选出的全部题（all 是
-          // _s.filteredAll() 的结果，与“全选当前结果”同口径），不是
-          // 全库、也不限当前页，不用先勾选。
+          // P3 入口 1（D6）：批量加入 FSRS 复习池 / 立即专项练习。
+          // 行内勾选（通用批量选择）与加题选择同步（见 Notifier 的
+          // toggleSelected）；“勾选当前页”只加当页进加题选择，
+          // “全选全部筛选结果”把范围记成当前筛选的全部题（不限当前页，
+          // 确认时重验筛选）；两个按钮都作用于当前选择范围；
+          // “立即专项练习”不建 FSRS 卡；已在池的题点加入时自动跳过，
+          // 结果报“新增 N 道，M 道已跳过”。
+          Text(
+            _s.reviewSelectionLabel(),
+            key: const Key('review-selection-label'),
+            style: const TextStyle(fontWeight: FontWeight.w800),
+          ),
+          QmButton(
+            label: '勾选当前页',
+            variant: QmButtonVariant.plain,
+            size: QmButtonSize.small,
+            onPressed: () => _n.selectReviewPage(_reviewPageItems(all)),
+          ),
+          QmButton(
+            label: '全选全部筛选结果',
+            variant: QmButtonVariant.plain,
+            size: QmButtonSize.small,
+            onPressed: all.isNotEmpty ? _n.selectReviewAllFiltered : null,
+          ),
           QmButton(
             label: '加入复习',
             variant: QmButtonVariant.plain,
             size: QmButtonSize.small,
-            onPressed: hasSelection ? _batchJoinReviewSelected : null,
+            onPressed: _s.reviewEffectiveIds().isNotEmpty
+                ? _batchJoinReviewFsrs
+                : null,
           ),
           QmButton(
             label: '全部加入复习',
             variant: QmButtonVariant.plain,
             size: QmButtonSize.small,
-            onPressed: all.isNotEmpty ? () => _batchJoinReviewAll(all) : null,
+            onPressed: all.isNotEmpty ? _batchJoinReviewFsrsAll : null,
+          ),
+          QmButton(
+            label: '立即专项练习',
+            variant: QmButtonVariant.plain,
+            size: QmButtonSize.small,
+            onPressed: _s.reviewEffectiveIds().isNotEmpty
+                ? _startPracticeFromReview
+                : null,
           ),
           QmButton(
             label: '取消加入复习',
@@ -1864,8 +1907,14 @@ extension _WrongbookListBuild on _WrongbookViewState {
             variant: QmButtonVariant.plain,
             size: QmButtonSize.small,
             onPressed: hasSelection
-                ? () =>
-                      _n.update((st) => st.copyWith(selected: const <String>{}))
+                ? () => _n.update(
+                      (st) => st.copyWith(
+                        selected: const <String>{},
+                        reviewSelected: const <String>{},
+                        reviewSelectAllFiltered: false,
+                        reviewFilterKey: null,
+                      ),
+                    )
                 : null,
           ),
           QmButton(
@@ -1873,12 +1922,26 @@ extension _WrongbookListBuild on _WrongbookViewState {
             variant: QmButtonVariant.plain,
             size: QmButtonSize.small,
             onPressed: () => _n.update(
-              (st) => st.copyWith(batchMode: false, selected: const <String>{}),
+              (st) => st.copyWith(
+                batchMode: false,
+                selected: const <String>{},
+                reviewSelected: const <String>{},
+                reviewSelectAllFiltered: false,
+                reviewFilterKey: null,
+              ),
             ),
           ),
         ],
       ),
     );
+  }
+
+  /// P3 入口 1“勾选当前页”用的当页题（与 _buildList 的分页同口径）。
+  List<Question> _reviewPageItems(List<Question> all) {
+    final totalPages = (all.length / _s.pageSize).ceil().clamp(1, 9999);
+    final page = _s.page.clamp(0, totalPages - 1);
+    final start = page * _s.pageSize;
+    return all.skip(start).take(_s.pageSize).toList();
   }
 
   Widget _buildArchivedRows(List<Question> items, List<String> orderIds) {
