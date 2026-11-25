@@ -35,6 +35,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../data/database.dart';
 import '../../data/data_change_events.dart';
 import '../../data/repository.dart';
+import '../../data/review_scheduler.dart';
 import '../../models/models.dart';
 import '../../modules/ocr/ocr_stem_section.dart';
 import '../../modules/ocr/option_labels_editor.dart';
@@ -47,6 +48,7 @@ import '../../services/stem_splitter.dart';
 import '../../services/yolo_onnx_service.dart';
 import '../../state/detail_notifier.dart';
 import '../../state/repository_provider.dart';
+import '../../state/review_notifier.dart';
 import '../../theme/design_tokens.dart';
 import '../../widgets/entrance_animation.dart';
 import '../../widgets/question_share_card.dart';
@@ -109,6 +111,7 @@ class QuestionDetailPage extends StatefulWidget {
     this.exportService,
     this.onGoReview,
     this.onOpenWrongbookFiltered,
+    this.scheduler,
   });
 
   final QuestionRepository repo;
@@ -144,7 +147,14 @@ class QuestionDetailPage extends StatefulWidget {
   ///（app.dart 接 _goWrongbookFiltered；见 [OpenWrongbookFiltered]）。
   final OpenWrongbookFiltered? onOpenWrongbookFiltered;
 
-  @override
+  /// FSRS 口径迁移（面 B）：FSRS 调度器注入（与 B11-8 的 exportService
+  /// 同款可选注入）。生产不传，走 [reviewSchedulerProvider] 的默认
+  /// SQLite 调度器；只供 widget 测试注入内存确定性调度器——
+  /// DetailNotifier 的 FSRS 状态是 best-effort 异步读，不注入时真实
+  /// Drift 在 fake async 下永不完成，「复习状态」行只会晚出/不出，
+  /// 不卡页面。
+  final ReviewScheduler? scheduler;
+
   @override
   State<QuestionDetailPage> createState() => _QuestionDetailPageState();
 }
@@ -173,6 +183,8 @@ class _QuestionDetailPageState extends State<QuestionDetailPage> {
             orderIds: widget.orderIds,
           ),
         ),
+        if (widget.scheduler != null)
+          reviewSchedulerProvider.overrideWithValue(widget.scheduler!),
       ],
       child: _DetailView(
         sourceLabel: widget.sourceLabel,
@@ -2984,8 +2996,6 @@ class _DetailViewState extends ConsumerState<_DetailView> {
     // 未整理题没有加入/取消按钮（基线口径：已整理或已归档才有）；
     // 已归档的题也有按钮（归档期间不出现在复习列表里，恢复后按加入状态回来）。
     final canJoin = q.isOrganized || q.isArchived;
-    final nOk = _st.history.where((h) => h.result == 'solved').length;
-    final nBad = _st.history.length - nOk;
     final causeRows = <Widget>[];
     if (q.allCauses.isEmpty) {
       causeRows.add(
@@ -3002,13 +3012,11 @@ class _DetailViewState extends ConsumerState<_DetailView> {
       for (final cause in q.allCauses) {
         final record = _st.records.where((r) => r.cause == cause).firstOrNull;
         final status = _causePillStatus(record);
-        final recheck =
-            record != null &&
-                record.status == CauseStatus.solved &&
-                record.recheckDate != null &&
-                !record.isRecheckDue
-            ? ' · 下次复查 ${_fmtDate(record.recheckDate!)}'
-            : '';
+        // FSRS 口径迁移（面 B）：每行只留错因名 + 错因 pill（错因自身
+        // 的历史记录状态，保留，见 _causePillStatus）；旧口径的
+        // 「· 下次复查 <日期>」（record.recheckDate）与「解决次数 N」
+        // （record.solvedCount，已冻结）已删——题目级复习状态见下方
+        // 「复习状态」行。
         causeRows.add(
           Padding(
             padding: EdgeInsets.only(bottom: 4 * scale),
@@ -3025,22 +3033,6 @@ class _DetailViewState extends ConsumerState<_DetailView> {
                   ),
                 ),
                 QmStatusPill.cause(status),
-                if (recheck.isNotEmpty)
-                  Text(
-                    recheck,
-                    style: TextStyle(
-                      fontSize: DesignTokens.detailFieldValueFontSize,
-                      color: palette.muted,
-                    ),
-                  ),
-                if (record != null)
-                  Text(
-                    '解决次数 ${record.solvedCount}',
-                    style: TextStyle(
-                      fontSize: DesignTokens.bodySmallFontSize,
-                      color: palette.muted,
-                    ),
-                  ),
               ],
             ),
           ),
@@ -3062,11 +3054,29 @@ class _DetailViewState extends ConsumerState<_DetailView> {
         }
       }
     }
-    // 十九批 D1：复习记录 panel 按板子 kv 排（整体状态／错因状态／
-    // 解决次数／复查时间／解决记录）＋底部加入／取消加入复习蓝按钮。
+    // FSRS 口径迁移（面 B）：复习记录 panel 按板子 kv 排（复习状态／
+    // 整体状态／错因状态／解决记录）＋底部加入／取消加入复习蓝按钮。
+    // 「复习状态」是题目级 FSRS 状态（下次到期 + 正式复习对错），
+    // 只写一处、不按错因重复；读不到时（reviewStatus 为 null）该行
+    // 不显示。旧口径的「解决次数」（自查「已解决」计数）与「复查时间」
+    // （治愈后 +N 天）两行已删：前者由「正式复习答对/答错（次）」替代，
+    // 后者由「下次到期」替代。「解决记录」是 review_history 纯历史
+    // 展示，保留。
+    final reviewStatus = _st.reviewStatus;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
+        if (reviewStatus != null)
+          _kvRow(
+            '复习状态',
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                _kvText(reviewDueLabel(reviewStatus)),
+                _kvText(reviewFormalLabel(reviewStatus)),
+              ],
+            ),
+          ),
         _kvRow('整体状态', QmStatusPill.cause(_overallStatus(q))),
         _kvRow(
           '错因状态',
@@ -3074,16 +3084,6 @@ class _DetailViewState extends ConsumerState<_DetailView> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: causeRows,
           ),
-        ),
-        _kvRow(
-          '解决次数',
-          _kvText(
-            '共自查 ${_st.history.length} 次 · 自查「已解决」$nOk 次 · 「未解决 / 不确定」$nBad 次（自查「已解决」达到设置次数才算已解决）',
-          ),
-        ),
-        _kvRow(
-          '复查时间',
-          _kvText('治愈后 +${_st.recheckIntervalDays} 天（按设置）'),
         ),
         _kvRow(
           '解决记录',

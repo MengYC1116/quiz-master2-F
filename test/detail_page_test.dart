@@ -14,6 +14,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:quiz_master2/data/database.dart';
 import 'package:quiz_master2/data/repository.dart';
+import 'package:quiz_master2/data/review_engine.dart';
+import 'package:quiz_master2/data/review_scheduler.dart';
 import 'package:quiz_master2/models/models.dart';
 import 'package:quiz_master2/modules/detail/question_detail_page.dart';
 import 'package:quiz_master2/services/glm_ocr_client.dart';
@@ -101,6 +103,10 @@ class FakeDetailRepo extends QuestionRepository {
     List<Subject>? subjectsValue,
     // FR-09：复查间隔桩（默认 7 天）；`load()` 读它拼“满 N 天”文案。
     AppSettings? settingsValue,
+    // FSRS 口径迁移（面 B）：`load()` 经 _refreshReviewStatus 读
+    // 全部 attempts 与池 id；不覆写会落到基类读真实库（D-88 同款）。
+    List<AttemptData> attemptsValue = const [],
+    Set<String> poolIdsValue = const {},
   }) : questions = List.of(questions),
        folderList = List.of(folderList),
        examList = List.of(examList),
@@ -110,6 +116,8 @@ class FakeDetailRepo extends QuestionRepository {
        history = List.of(history),
        subjectsValue = subjectsValue ?? Subject.all,
        settingsValue = settingsValue ?? AppSettings.defaults,
+       attemptsValue = List.of(attemptsValue),
+       poolIdsValue = Set.of(poolIdsValue),
        super(AppDatabase.instance);
 
   List<Question> questions;
@@ -123,6 +131,17 @@ class FakeDetailRepo extends QuestionRepository {
 
   /// FR-09：复查间隔桩（默认 7 天）。
   AppSettings settingsValue;
+
+  /// FSRS 口径迁移（面 B）：全部 attempts 与池 id 桩。
+  List<AttemptData> attemptsValue;
+  Set<String> poolIdsValue;
+
+  @override
+  Future<List<AttemptData>> loadAllAttempts() async =>
+      List.of(attemptsValue);
+
+  @override
+  Future<Set<String>> fsrsPoolQuestionIds() async => Set.of(poolIdsValue);
 
   @override
   Future<AppSettings> settings() async => settingsValue;
@@ -387,6 +406,34 @@ FakeDetailRepo detailRepo() {
   );
 }
 
+/// FSRS 口径迁移（面 B）：确定性调度器（fuzzing 关），经
+/// QuestionDetailPage.scheduler 注入；不注入时 DetailNotifier 的
+/// FSRS 状态走默认 SQLite 调度器，真实库在 fake async 下永不完成，
+/// 「复习状态」行不出（不卡页面，但新口径断言做不了）。
+FsrsReviewScheduler _testScheduler() => FsrsReviewScheduler(
+  config: const SchedulerConfig(enableFuzzing: false),
+  store: InMemoryCardStore(),
+);
+
+/// 一条作答夹具：默认正式复习（mode = 到期复习）。
+AttemptData _attempt(
+  String questionId, {
+  String mode = ReviewMode.due,
+  int? correct,
+  String session = 's1',
+}) => AttemptData(
+  id: 'att-$questionId-$mode-$correct-$session',
+  questionId: questionId,
+  sessionId: session,
+  mode: mode,
+  correct: correct,
+  answerVersion: 1,
+  contentVersion: 0,
+  status: '已提交',
+  submissionId: 'sub-$questionId-$mode-$correct-$session',
+  createdAt: DateTime.now().millisecondsSinceEpoch,
+);
+
 Future<void> pumpDetail(
   WidgetTester tester, {
   FakeDetailRepo? repo,
@@ -398,6 +445,9 @@ Future<void> pumpDetail(
   double scale = 1.0,
   // 二十三批 2 号方案窄屏测试用：默认 1280×720 宽屏。
   Size viewport = const Size(1280, 720),
+  // FSRS 口径迁移（面 B）：预置卡片的调度器（未开始/已开始场景用）；
+  // 不传时用空内存调度器（不在池里，「复习状态」行显示未加入复习）。
+  ReviewScheduler? scheduler,
 }) async {
   tester.view.physicalSize = viewport;
   tester.view.devicePixelRatio = 1.0;
@@ -426,6 +476,7 @@ Future<void> pumpDetail(
                 orderIds: orderIds,
                 sourceLabel: sourceLabel,
                 imageFailed: imageFailed,
+                scheduler: scheduler ?? _testScheduler(),
               ),
             ),
           );
@@ -631,7 +682,7 @@ void main() {
   });
 
   group('复习记录', () {
-    testWidgets('已加入题：取消加入 + 错因状态 + 解决次数 + 全部记录', (tester) async {
+    testWidgets('已加入题：取消加入 + 错因状态 + 复习状态 + 全部记录', (tester) async {
       await pumpDetail(tester);
       expect(find.text('取消加入复习'), findsOneWidget);
       expect(find.text('已加入复习 · 还有 1 个错因未解决'), findsOneWidget);
@@ -639,11 +690,63 @@ void main() {
       expect(find.text('错因状态'), findsOneWidget);
       expect(find.text('概念不清'), findsNWidgets(2)); // 信息错因行 + 复习错因行
       expect(find.text('解决中'), findsNWidgets(3)); // 标题 pill + 整体状态 pill + 错因 pill
-      expect(find.text('解决次数 1'), findsOneWidget);
-      expect(find.textContaining('共自查 2 次 · 自查「已解决」1 次'), findsOneWidget);
+      // FSRS 口径迁移（面 B）：每行旧口径「解决次数 N」与 kv 行
+      // 「解决次数」（自查计数）已删，改为题目级「复习状态」行；
+      // 默认夹具不在 FSRS 池里、无正式复习记录。
+      expect(find.text('解决次数 1'), findsNothing);
+      expect(find.textContaining('共自查 2 次'), findsNothing);
+      expect(find.text('复习状态'), findsOneWidget);
+      expect(find.text('未加入复习'), findsOneWidget);
+      expect(find.text('暂无正式复习记录'), findsOneWidget);
       expect(find.text('解决记录'), findsOneWidget);
       expect(find.textContaining('已解决'), findsWidgets);
       expect(find.textContaining('未解决'), findsWidgets);
+    });
+
+    testWidgets('FSRS：在池未开始 → 复习状态行显示未开始', (tester) async {
+      final repo = detailRepo()..poolIdsValue = {'q1'};
+      final scheduler = _testScheduler();
+      await scheduler.initializeQuestion('q1');
+      await pumpDetail(tester, repo: repo, scheduler: scheduler);
+      expect(find.text('复习状态'), findsOneWidget);
+      expect(find.text('未开始'), findsOneWidget);
+      expect(find.text('暂无正式复习记录'), findsOneWidget);
+    });
+
+    testWidgets('FSRS：已开始 → 复习状态行显示下次到期 M月M日', (tester) async {
+      final repo = detailRepo()..poolIdsValue = {'q1'};
+      final scheduler = _testScheduler();
+      await scheduler.initializeQuestion('q1');
+      await scheduler.recordAnswer(
+        'q1',
+        ReviewResult.good,
+        DateTime.now(),
+        'evt-q1-good',
+      );
+      final due = await scheduler.nextDueAt('q1');
+      await pumpDetail(tester, repo: repo, scheduler: scheduler);
+      expect(find.text('复习状态'), findsOneWidget);
+      expect(find.text('下次到期 ${due!.month}月${due.day}日'), findsOneWidget);
+    });
+
+    testWidgets('FSRS：正式对错按次计，专项与未判分不计', (tester) async {
+      final repo = detailRepo()
+        ..attemptsValue = [
+          _attempt('q1', correct: 1, session: 's1'),
+          _attempt('q1', correct: 1, session: 's2'),
+          _attempt('q1', correct: 0, session: 's3'),
+          _attempt(
+            'q1',
+            mode: ReviewMode.practice,
+            correct: 1,
+            session: 's4',
+          ),
+          _attempt('q1', session: 's5'),
+          _attempt('q2', correct: 1, session: 's6'),
+        ];
+      await pumpDetail(tester, repo: repo);
+      expect(find.text('复习状态'), findsOneWidget);
+      expect(find.text('正式复习答对 2 次 · 答错 1 次'), findsOneWidget);
     });
 
     testWidgets('FR-09：复查间隔 3 天时文案写“满 3 天自动回来复查”', (tester) async {
