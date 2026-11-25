@@ -4,7 +4,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:quiz_master2/data/database.dart';
+import 'package:quiz_master2/data/p4_new_release.dart';
 import 'package:quiz_master2/data/repository.dart';
+import 'package:quiz_master2/data/review_scheduler.dart';
 import 'package:quiz_master2/models/exam_event.dart';
 import 'package:quiz_master2/models/models.dart';
 import 'package:quiz_master2/modules/home/home_page.dart';
@@ -16,6 +18,11 @@ class FakeRepo extends QuestionRepository {
 
   Map<String, int> rev = {'math': 2, 'english': 1, 'politics': 0};
   Map<String, int> pending = {'math': 1, 'english': 2, 'politics': 0};
+  List<String> todayNewIds = ['q-n1'];
+  // 旧口径桩（首页本身已不再读 dueToday / causeRecords）：
+  // test/b5_p1_1_subject_counts_test.dart 仍 import 本 FakeRepo 并填
+  // due / records（旧口径对照用），删了它编译不过；b5 的焦点卡旧文案
+  // 断言本身已随口径迁移失效，见面 1 汇报，勿在此处“修”b5。
   List<Question> due = [
     Question(
       id: 'q-m1',
@@ -77,30 +84,55 @@ class FakeRepo extends QuestionRepository {
   /// 不碰真实数据库。
   List<Subject> subjectsList = Subject.all;
 
-  /// SR-P2-48：错误态测试用——设置后 homeRevCounts() 抛错，模拟读库失败。
+  /// SR-P2-48：错误态测试用——设置后 fsrsDueCountsBySubject() 抛错，
+  /// 模拟读库失败。
   bool throwOnLoad = false;
 
   @override
   Future<List<Subject>> subjects() async => subjectsList;
 
   @override
-  Future<Map<String, int>> homeRevCounts() async {
+  Future<Map<String, int>> fsrsDueCountsBySubject({
+    required ReviewScheduler scheduler,
+    DateTime? now,
+  }) async {
     if (throwOnLoad) throw StateError('boom');
-    return rev;
+    return Map.of(rev);
   }
+
+  @override
+  Future<FsrsReleasePlan> previewNewRelease({
+    required ReviewScheduler scheduler,
+    required int dailyNewLimit,
+    DateTime? now,
+  }) async => FsrsReleasePlan(
+    todaysNewIds: List.of(todayNewIds),
+    newlyReleasableIds: const [],
+    carryoverIds: const [],
+    presentedTodayIds: const [],
+    waitingIds: const [],
+    presentedTodayCount: 0,
+    pendingBacklogCount: 0,
+    dailyLimit: dailyNewLimit,
+    releaseAllowance: 0,
+  );
+
+  @override
+  Future<AppSettings> settings() async => AppSettings.defaults;
 
   @override
   Future<Map<String, int>> pendingOrganizeBySubject() async => pending;
 
   @override
+  Future<List<Question>> dueToday({bool includeArchived = false}) async =>
+      List.of(due);
+
+  @override
+  Future<List<CauseRecord>> causeRecords() async => List.of(records);
+
+  @override
   Future<({String kind, String subjectId, String title})?> recentTask() async =>
       recent;
-
-  @override
-  Future<List<Question>> dueToday({bool includeArchived = false}) async => due;
-
-  @override
-  Future<List<CauseRecord>> causeRecords() async => records;
 
   /// B11-9：考试事件列表（默认空，首页不显示倒计时条）。
   List<ExamEvent> examEventsList = const [];
@@ -179,8 +211,8 @@ void main() {
       await pumpHome(tester);
       expect(find.text('今天也要加油呀'), findsOneWidget);
       expect(find.text('上次停在：整理工作台 · 数学「函数极限」'), findsOneWidget);
-      expect(find.text('3 道要复习'), findsOneWidget);
-      expect(find.text('待解决 2 道 · 复查 1 道'), findsOneWidget);
+      expect(find.text('3 道到期'), findsOneWidget);
+      expect(find.text('到期 3 道 · 今日新题 1 道'), findsOneWidget);
       expect(find.text('继续上次：整理工作台 · 数学「函数极限」'), findsOneWidget);
       expect(find.text('上次停在待整理队列的这道题'), findsOneWidget);
       expect(find.text('继续上次'), findsOneWidget);
@@ -202,7 +234,7 @@ void main() {
         onGoReview: () => review++,
         onGoOrganize: () => organize++,
       );
-      await tester.tap(find.text('3 道要复习'));
+      await tester.tap(find.text('3 道到期'));
       await tester.pumpAndSettle();
       expect(review, 1);
       expect(organize, 0);
@@ -234,9 +266,9 @@ void main() {
       );
       expect(find.text('快速收集与各学科待复习概览'), findsOneWidget);
       expect(find.text('快速收集'), findsOneWidget);
-      expect(find.text('要复习 2 道 · 待整理 1 道'), findsOneWidget);
-      expect(find.text('要复习 1 道 · 待整理 2 道'), findsOneWidget);
-      expect(find.text('要复习 0 道 · 待整理 0 道'), findsOneWidget);
+      expect(find.text('到期 2 道 · 待整理 1 道'), findsOneWidget);
+      expect(find.text('到期 1 道 · 待整理 2 道'), findsOneWidget);
+      expect(find.text('到期 0 道 · 待整理 0 道'), findsOneWidget);
       await tester.tap(find.text('去收集中心'));
       await tester.pumpAndSettle();
       expect(collect, 1);
@@ -248,36 +280,45 @@ void main() {
       expect(review, 1);
     });
 
-    testWidgets('无复查时明细只写待解决', (tester) async {
+    testWidgets('无今日新题时小字只写到期', (tester) async {
       final repo = FakeRepo()
-        ..due = [FakeRepo().due.first]
-        ..records = [FakeRepo().records.first]
+        ..todayNewIds = []
         ..rev = {'math': 1, 'english': 0, 'politics': 0};
       await pumpHome(tester, repo: repo);
-      expect(find.text('1 道要复习'), findsOneWidget);
-      expect(find.text('待解决 1 道'), findsOneWidget);
-      expect(find.textContaining('复查'), findsNothing);
+      expect(find.text('1 道到期'), findsOneWidget);
+      expect(find.text('到期 1 道'), findsOneWidget);
+      expect(find.textContaining('今日新题'), findsNothing);
+    });
+
+    testWidgets('只有今日新题、到期为 0：出正常卡，不走空状态', (tester) async {
+      final repo = FakeRepo()
+        ..todayNewIds = ['q-n1', 'q-n2']
+        ..rev = {'math': 0, 'english': 0, 'politics': 0};
+      await pumpHome(tester, repo: repo);
+      expect(find.text('0 道到期'), findsOneWidget);
+      expect(find.text('到期 0 道 · 今日新题 2 道'), findsOneWidget);
+      expect(find.text('今天没有到期的题，明天再来吧'), findsNothing);
+      expect(find.byKey(const Key('home-focus-card')), findsOneWidget);
     });
   });
 
   group('首页空状态与无最近任务', () {
-    testWidgets('无要复习：中性卡片 + 空状态文案，不可点去复习', (tester) async {
+    testWidgets('无到期也无今日新题：中性卡片 + 空状态文案，不可点去复习', (tester) async {
       var review = 0;
       final repo = FakeRepo()
-        ..due = []
-        ..records = []
+        ..todayNewIds = []
         ..rev = {'math': 0, 'english': 0, 'politics': 0}
         ..recent = null;
       await pumpHome(tester, repo: repo, onGoReview: () => review++);
-      expect(find.text('今天没有要复习的，明天再来吧'), findsOneWidget);
+      expect(find.text('今天没有到期的题，明天再来吧'), findsOneWidget);
       expect(
-        find.text('要复习 0 道 · 没有待解决的错因，也没有到复查时间的题'),
+        find.text('到期 0 道 · 今日新题 0 道'),
         findsOneWidget,
       );
       expect(find.text('今天休息一下'), findsOneWidget);
       expect(find.byKey(const Key('home-focus-card')), findsNothing);
       expect(find.text('上次停在：还没有记录'), findsOneWidget);
-      await tester.tap(find.text('今天没有要复习的，明天再来吧'));
+      await tester.tap(find.text('今天没有到期的题，明天再来吧'));
       await tester.pumpAndSettle();
       expect(review, 0);
     });
@@ -366,8 +407,7 @@ void main() {
 
     testWidgets('空状态 × 三档缩放无溢出', (tester) async {
       final repo = FakeRepo()
-        ..due = []
-        ..records = []
+        ..todayNewIds = []
         ..rev = {'math': 0, 'english': 0, 'politics': 0}
         ..recent = null;
       for (final scale in [1.0, 1.15, 1.3]) {
@@ -396,14 +436,14 @@ void main() {
       await pumpHome(tester, repo: repo);
       expect(find.textContaining('首页数据读取失败'), findsOneWidget);
       expect(find.text('重试'), findsOneWidget);
-      expect(find.text('3 道要复习'), findsNothing);
+      expect(find.text('3 道到期'), findsNothing);
       await tester.tap(find.text('重试'));
       await tester.pumpAndSettle();
       expect(find.textContaining('首页数据读取失败'), findsOneWidget);
       repo.throwOnLoad = false;
       await tester.tap(find.text('重试'));
       await tester.pumpAndSettle();
-      expect(find.text('3 道要复习'), findsOneWidget);
+      expect(find.text('3 道到期'), findsOneWidget);
     });
   });
 }

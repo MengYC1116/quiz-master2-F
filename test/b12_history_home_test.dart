@@ -6,7 +6,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:quiz_master2/data/database.dart';
+import 'package:quiz_master2/data/p4_new_release.dart';
 import 'package:quiz_master2/data/repository.dart';
+import 'package:quiz_master2/data/review_scheduler.dart';
 import 'package:quiz_master2/models/exam_event.dart';
 import 'package:quiz_master2/models/models.dart';
 import 'package:quiz_master2/modules/home/home_page.dart';
@@ -19,7 +21,30 @@ class _HistoryFakeRepo extends QuestionRepository {
   List<({Question question, DateTime viewedAt})> historyList = const [];
 
   @override
-  Future<Map<String, int>> homeRevCounts() async => const {};
+  Future<Map<String, int>> fsrsDueCountsBySubject({
+    required ReviewScheduler scheduler,
+    DateTime? now,
+  }) async => const {};
+
+  @override
+  Future<FsrsReleasePlan> previewNewRelease({
+    required ReviewScheduler scheduler,
+    required int dailyNewLimit,
+    DateTime? now,
+  }) async => FsrsReleasePlan(
+    todaysNewIds: const [],
+    newlyReleasableIds: const [],
+    carryoverIds: const [],
+    presentedTodayIds: const [],
+    waitingIds: const [],
+    presentedTodayCount: 0,
+    pendingBacklogCount: 0,
+    dailyLimit: dailyNewLimit,
+    releaseAllowance: 0,
+  );
+
+  @override
+  Future<AppSettings> settings() async => AppSettings.defaults;
 
   @override
   Future<Map<String, int>> pendingOrganizeBySubject() async => const {};
@@ -27,13 +52,6 @@ class _HistoryFakeRepo extends QuestionRepository {
   @override
   Future<({String kind, String subjectId, String title})?> recentTask() async =>
       null;
-
-  @override
-  Future<List<Question>> dueToday({bool includeArchived = false}) async =>
-      const [];
-
-  @override
-  Future<List<CauseRecord>> causeRecords() async => const [];
 
   @override
   Future<List<Subject>> subjects() async => Subject.all;

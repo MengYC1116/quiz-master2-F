@@ -39,6 +39,7 @@ import 'dart:math';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../data/database.dart';
+import '../data/data_change_events.dart';
 import '../data/p3_review_entries.dart';
 import '../data/repository.dart';
 import '../data/review_engine.dart';
@@ -2260,15 +2261,30 @@ class ReviewNotifier extends Notifier<ReviewState> {
         submissionId: sq.attemptSubmissionId,
         createdAt: now.millisecondsSinceEpoch,
       );
+      final pushFsrs = !isPractice && sq.correct != null;
       final submitted = await repo.submitReviewCheck(
         attempt: attempt,
-        result: !isPractice && sq.correct != null
+        result: pushFsrs
             ? (sq.correct == 1 ? ReviewResult.good : ReviewResult.again)
             : null,
         reviewedAt: now,
         eventId: sq.attemptSubmissionId,
         scheduler: ref.read(reviewSchedulerProvider),
       );
+      // §1.6（2026-11-25 口径迁移）：核对提交成功后补发 badges 事件，
+      // 角标（FSRS 到期数）随卡片 next_due_at 后移即时重算。
+      // 事件放这里而不是 repository.submitReviewCheck 内：幂等短路
+      // 在 db_fsrs 的事务里，repository 层无法区分“新写”与“重复提交
+      // 直接返回”（ReviewScheduler 接口没有 hasProcessedEvent，
+      // fsrs_events 的查询不在 repository 层）；而这里重复提交已在
+      // 上面的 checkSubmitted 短路返回、到不了此处，且此处只在写库
+      // 成功（await 未抛错）后发，两条件同时满足。专项练习 / 未判分
+      // 不推进 FSRS、到期数不变，不发事件。
+      if (pushFsrs) {
+        DataChangeBus.instance.emit(
+          const DataChangeEvent(kinds: {DataChangeKind.badges}),
+        );
+      }
       final attemptId = submitted.attemptId;
       final nextDue = submitted.nextDue;
       if (_disposed) return false;

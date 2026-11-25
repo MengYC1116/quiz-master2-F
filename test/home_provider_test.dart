@@ -4,70 +4,23 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:quiz_master2/data/database.dart';
+import 'package:quiz_master2/data/p4_new_release.dart';
 import 'package:quiz_master2/data/repository.dart';
+import 'package:quiz_master2/data/review_scheduler.dart';
 import 'package:quiz_master2/models/exam_event.dart';
 import 'package:quiz_master2/models/models.dart';
 import 'package:quiz_master2/state/home_provider.dart';
 import 'package:quiz_master2/state/repository_provider.dart';
 
-/// 与 home_page_test.dart 的 FakeRepo 同口径（rev/pending/due/records/
-/// recent/subjects/考试事件均可配），只覆盖读方法，不碰真实数据库。
+/// 与 home_page_test.dart 的 FakeRepo 同口径（FSRS 到期分科数 /
+/// 今日新题 / 待整理 / 最近任务 / 学科 / 考试事件均可配），只覆盖
+/// 读方法，不碰真实数据库。
 class FakeHomeRepo extends QuestionRepository {
   FakeHomeRepo() : super(AppDatabase.instance);
 
   Map<String, int> rev = {'math': 2, 'english': 1, 'politics': 0};
   Map<String, int> pending = {'math': 1, 'english': 2, 'politics': 0};
-  List<Question> due = [
-    Question(
-      id: 'q-m1',
-      title: '函数极限',
-      subjectId: 'math',
-      isOrganized: true,
-      reviewJoined: true,
-      createdAt: DateTime(2026, 11, 10),
-    ),
-    Question(
-      id: 'q-m2',
-      title: '定积分',
-      subjectId: 'math',
-      isOrganized: true,
-      reviewJoined: true,
-      createdAt: DateTime(2026, 11, 10),
-    ),
-    Question(
-      id: 'q-e1',
-      title: '阅读理解',
-      subjectId: 'english',
-      isOrganized: true,
-      reviewJoined: true,
-      createdAt: DateTime(2026, 11, 10),
-    ),
-  ];
-  List<CauseRecord> records = [
-    CauseRecord(
-      questionId: 'q-m1',
-      cause: '概念不清',
-      subjectId: 'math',
-      status: CauseStatus.pending,
-      joinedAt: DateTime(2026, 11, 10),
-    ),
-    CauseRecord(
-      questionId: 'q-m2',
-      cause: '概念不清',
-      subjectId: 'math',
-      status: CauseStatus.solved,
-      solvedCount: 2,
-      recheckDate: DateTime.now().subtract(const Duration(days: 1)),
-      joinedAt: DateTime(2026, 11, 10),
-    ),
-    CauseRecord(
-      questionId: 'q-e1',
-      cause: '审题失误',
-      subjectId: 'english',
-      status: CauseStatus.pending,
-      joinedAt: DateTime(2026, 11, 10),
-    ),
-  ];
+  List<String> todayNewIds = ['q-n1', 'q-n2'];
   ({String kind, String subjectId, String title})? recent = (
     kind: '整理',
     subjectId: 'math',
@@ -81,10 +34,33 @@ class FakeHomeRepo extends QuestionRepository {
   Future<List<Subject>> subjects() async => subjectsList;
 
   @override
-  Future<Map<String, int>> homeRevCounts() async {
+  Future<Map<String, int>> fsrsDueCountsBySubject({
+    required ReviewScheduler scheduler,
+    DateTime? now,
+  }) async {
     if (throwOnLoad) throw StateError('boom');
-    return rev;
+    return Map.of(rev);
   }
+
+  @override
+  Future<FsrsReleasePlan> previewNewRelease({
+    required ReviewScheduler scheduler,
+    required int dailyNewLimit,
+    DateTime? now,
+  }) async => FsrsReleasePlan(
+    todaysNewIds: List.of(todayNewIds),
+    newlyReleasableIds: const [],
+    carryoverIds: const [],
+    presentedTodayIds: const [],
+    waitingIds: const [],
+    presentedTodayCount: 0,
+    pendingBacklogCount: 0,
+    dailyLimit: dailyNewLimit,
+    releaseAllowance: 0,
+  );
+
+  @override
+  Future<AppSettings> settings() async => AppSettings.defaults;
 
   @override
   Future<Map<String, int>> pendingOrganizeBySubject() async => pending;
@@ -92,12 +68,6 @@ class FakeHomeRepo extends QuestionRepository {
   @override
   Future<({String kind, String subjectId, String title})?> recentTask() async =>
       recent;
-
-  @override
-  Future<List<Question>> dueToday({bool includeArchived = false}) async => due;
-
-  @override
-  Future<List<CauseRecord>> causeRecords() async => records;
 
   @override
   Future<List<ExamEvent>> examEvents() async => examEventsList;
@@ -119,7 +89,7 @@ ProviderContainer _container(FakeHomeRepo repo) {
 
 void main() {
   group('HomeNotifier', () {
-    test('load()：总数 3 = 待解决 2 + 复查 1，学科格与最近任务齐全', () async {
+    test('load()：到期 3 道（数学 2 + 英语 1）· 今日新题 2 道，学科格与最近任务齐全', () async {
       final container = _container(FakeHomeRepo());
       final notifier = container.read(homeProvider.notifier);
       await notifier.load();
@@ -128,8 +98,8 @@ void main() {
       expect(s.loadError, isFalse);
       expect(s.hasLoaded, isTrue);
       expect(s.totalDue, 3);
-      expect(s.duePending, 2);
-      expect(s.dueRecheck, 1);
+      expect(s.dueCount, 3);
+      expect(s.todayNewCount, 2);
       expect(s.revCounts, {'math': 2, 'english': 1, 'politics': 0});
       expect(s.pendingCounts, {'math': 1, 'english': 2, 'politics': 0});
       expect(s.subjects.length, 3);
@@ -170,19 +140,30 @@ void main() {
       expect(container.read(homeProvider).nearestExam?.id, 'e-near');
     });
 
-    test('无要复习：总数 0，焦点卡走空状态口径', () async {
+    test('无到期也无今日新题：总数 0，焦点卡走空状态口径', () async {
       final repo = FakeHomeRepo()
-        ..due = []
-        ..records = []
+        ..todayNewIds = []
         ..rev = {'math': 0, 'english': 0, 'politics': 0}
         ..recent = null;
       final container = _container(repo);
       await container.read(homeProvider.notifier).load();
       final s = container.read(homeProvider);
       expect(s.totalDue, 0);
-      expect(s.duePending, 0);
-      expect(s.dueRecheck, 0);
+      expect(s.dueCount, 0);
+      expect(s.todayNewCount, 0);
       expect(s.recent, isNull);
+      expect(s.hasLoaded, isTrue);
+    });
+
+    test('只有今日新题、到期为 0：总数 0 但今日新题 2 道，不走空状态口径', () async {
+      final repo = FakeHomeRepo()
+        ..rev = {'math': 0, 'english': 0, 'politics': 0};
+      final container = _container(repo);
+      await container.read(homeProvider.notifier).load();
+      final s = container.read(homeProvider);
+      expect(s.totalDue, 0);
+      expect(s.dueCount, 0);
+      expect(s.todayNewCount, 2);
       expect(s.hasLoaded, isTrue);
     });
 

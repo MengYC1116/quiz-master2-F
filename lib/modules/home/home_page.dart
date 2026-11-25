@@ -6,24 +6,22 @@
 // - 问候语 24px/800（`DesignTokens.pageTitleFontSize`，不是 34px 的
 //   `.ahead h1`）+ 副标题“上次停在：…”；问候语取设置里的 greeting，
 //   默认“今天也要加油呀”，设置存储不动。
-// - 焦点大卡片：整卡可点去复习；卡内“要复习 N 道”（46px/800）+
-//   “待解决 X 道 · 复查 Y 道”；下半部“继续上次”条（小伙伴 +
+// - 焦点大卡片：整卡可点去复习；卡内“到期 N 道”（46px/800）+
+//   “到期 X 道 · 今日新题 Y 道”；下半部“继续上次”条（小伙伴 +
 //   文字 +「继续上次」主按钮，按钮点按不触发整卡去复习）。
-// - 下方格子：快速收集 + 每个学科各一格，每格“要复习 N 道 · 待整理 M 道”
+// - 下方格子：快速收集 + 每个学科各一格，每格“到期 N 道 · 待整理 M 道”
 //   +「错题本」「去复习」按钮；学科按库里的 subjects 表全部显示
 //   （B2，入库顺序），超过一行按列数分行。
-// - 空状态：无要复习时卡片变中性样式，文案“今天没有要复习的，明天再来吧”。
+// - 空状态：到期与今日新题都为 0 时卡片变中性样式，文案“今天没有到期的题，明天再来吧”。
 // - 错误态：顶部红色横幅（手动备份失败，见 [showBackupError]）。
 // - B11-9 考试倒计时：焦点卡上方一条倒计时（最近一场考试），临近
 //   7 天内标红，点按进设置页的考试管理；无考试时不显示、不占位。
 //
-// 业务口径（repository 现有口径，本页不改 repository）：
-// - 要复习数与导航速览同一口径（`homeRevCounts` / `dueToday`：手动加入
-//   复习且已整理且至少一个错因未解决或已到复查时间，数题不数错因）；
-//   待解决 / 复查拆分按 HTML `homeRevCounts`：有未解决错因的题计
-//   待解决，只有复查到期的题计复查；拆分走仓库共享分类
-//   `QuestionRepository.reviewBucketOf`，与错题本封面三数同一口径
-//   （SR-P1-1），本页不再各自定义。
+// 业务口径（FSRS 口径，2026-11-25 口径迁移 §2.1，本页不改 repository）：
+// - 到期数与导航速览同一口径（`fsrsDueCountsBySubject` /
+//   `fsrsDueQuestionIds`：池里已开始正式复习且 `next_due_at <= now`
+//   的题；未开始的新卡不算到期，算今日新题 / 待开始）；
+// - 今日新题数复用 `previewNewRelease().todaysNewIds`；
 // - 继续上次 = `recentTask()` 的最近一条活动记录（2026-11-14 起
 //   取消优先级，按最后活动；无记录时默认去复习）；快速收集只做文件导入入口，
 //   不加手动录入。
@@ -52,11 +50,10 @@ import '../../theme/app_theme.dart';
 import '../../widgets/entrance_animation.dart';
 import '../../widgets/uikit.dart';
 
-/// 首页：问候 + 焦点大卡片（要复习的数量）+ 继续上次 + 快速收集 +
-/// 各学科要复习 / 待整理概览，学科按库里的 subjects 表显示（入库顺序）。
+/// 首页：问候 + 焦点大卡片（到期的数量）+ 继续上次 + 快速收集 +
+/// 各学科到期 / 待整理概览，学科按库里的 subjects 表显示（入库顺序）。
 ///
-/// ARCH-PLAN-A 第 2 阶段 A 路：业务数据（继续上次、每学科待复习/待复查/
-/// 已解决数、最近考试倒计时）收进 [homeProvider]（`lib/state/
+/// ARCH-PLAN-A 第 2 阶段 A 路：业务数据（继续上次、每学科到期数、最近考试倒计时）收进 [homeProvider]（`lib/state/
 /// home_provider.dart`）；本页只留 widget 与纯界面临时状态（两条横幅
 /// 的“已关闭”标志）。`repo` 构造参数保留——`app.dart` 仍按老样子传，
 /// 本页在 build 里用一层 `ProviderScope` 把它以
@@ -226,18 +223,19 @@ class _HomePageState extends ConsumerState<HomePage> {
             ),
             SizedBox(height: DesignTokens.focusCardMarginBottom * scale),
           ],
-          // 焦点大卡片 layout C。
+          // 焦点大卡片 layout C：到期与今日新题都为 0 时才走空状态；
+          // 只有今日新题时也出正常卡（大数字 0 道到期 + 今日新题数）。
           if (home.loading)
             _FocusCardLoading(scale: scale)
-          else if (home.totalDue == 0)
+          else if (home.totalDue == 0 && home.todayNewCount == 0)
             _FocusCardEmpty(scale: scale, palette: palette)
           else
             _FocusCard(
               scale: scale,
               palette: palette,
               totalDue: home.totalDue,
-              duePending: home.duePending,
-              dueRecheck: home.dueRecheck,
+              dueCount: home.dueCount,
+              todayNewCount: home.todayNewCount,
               recent: home.recent,
               subjects: home.subjects,
               onTapCard: widget.onGoReview,
@@ -417,7 +415,7 @@ class _FocusCardEmpty extends StatelessWidget {
           _BuddyWithSay(say: '今天休息一下', size: 54 * scale),
           SizedBox(height: 8 * scale),
           Text(
-            '今天没有要复习的，明天再来吧',
+            '今天没有到期的题，明天再来吧',
             textAlign: TextAlign.center,
             style: TextStyle(
               fontSize: DesignTokens.noDueNumberFontSize,
@@ -428,7 +426,7 @@ class _FocusCardEmpty extends StatelessWidget {
           ),
           SizedBox(height: 2 * scale),
           Text(
-            '要复习 0 道 · 没有待解决的错因，也没有到复查时间的题',
+            '到期 0 道 · 今日新题 0 道',
             textAlign: TextAlign.center,
             style: TextStyle(
               fontSize: DesignTokens.focusDetailFontSize,
@@ -449,8 +447,8 @@ class _FocusCard extends StatelessWidget {
     required this.scale,
     required this.palette,
     required this.totalDue,
-    required this.duePending,
-    required this.dueRecheck,
+    required this.dueCount,
+    required this.todayNewCount,
     required this.recent,
     required this.subjects,
     required this.onTapCard,
@@ -461,8 +459,8 @@ class _FocusCard extends StatelessWidget {
   final double scale;
   final AppPalette palette;
   final int totalDue;
-  final int duePending;
-  final int dueRecheck;
+  final int dueCount;
+  final int todayNewCount;
   final ({String kind, String subjectId, String title})? recent;
   // 库里的全部学科（P0B1 扫尾：焦点卡“继续上次”里的学科名以前
   // 直接 Subject.byId，新学科显示成“数学”）。
@@ -511,7 +509,7 @@ class _FocusCard extends StatelessWidget {
             ),
             SizedBox(height: 4 * scale),
             Text(
-              '$totalDue 道要复习',
+              '$totalDue 道到期',
               style: TextStyle(
                 fontSize: DesignTokens.focusNumberFontSize,
                 fontWeight: DesignTokens.focusNumberFontWeight,
@@ -521,9 +519,9 @@ class _FocusCard extends StatelessWidget {
             ),
             SizedBox(height: 2 * scale),
             Text(
-              dueRecheck > 0
-                  ? '待解决 $duePending 道 · 复查 $dueRecheck 道'
-                  : '待解决 $duePending 道',
+              todayNewCount > 0
+                  ? '到期 $dueCount 道 · 今日新题 $todayNewCount 道'
+                  : '到期 $dueCount 道',
               style: TextStyle(
                 fontSize: DesignTokens.focusDetailFontSize,
                 color: palette.ink2,
@@ -800,7 +798,7 @@ class _BottomGrid extends StatelessWidget {
           background: DesignTokens.subjectSoft(
               s.id, Theme.of(context).brightness, s.color),
           description:
-              '要复习 ${revCounts[s.id] ?? 0} 道 · 待整理 ${pendingCounts[s.id] ?? 0} 道',
+              '到期 ${revCounts[s.id] ?? 0} 道 · 待整理 ${pendingCounts[s.id] ?? 0} 道',
           actions: [
             QmButton(
               label: '错题本',

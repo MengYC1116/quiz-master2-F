@@ -28,10 +28,13 @@ import 'package:quiz_master2/app.dart';
 import 'package:quiz_master2/data/data_change_events.dart';
 import 'package:quiz_master2/data/database.dart';
 import 'package:quiz_master2/data/repository.dart';
+import 'package:quiz_master2/data/review_scheduler.dart';
 import 'package:quiz_master2/models/models.dart';
 import 'package:quiz_master2/state/badge_counts_provider.dart';
+import 'package:quiz_master2/state/home_provider.dart';
 import 'package:quiz_master2/state/organize_notifier.dart';
 import 'package:quiz_master2/state/repository_provider.dart';
+import 'package:quiz_master2/state/review_notifier.dart';
 
 // ---------- 共享 ----------
 
@@ -61,6 +64,9 @@ Question _unorganized(String id) => Question(
 );
 
 /// 已整理、已加入复习的题（复习角标的原料）。
+/// FSRS 口径（2026-11-25 口径迁移 §2.2）：只加入复习不够，角标只认
+/// FSRS 到期卡；[_seedDue] 在 setReviewJoined 之外再建一张 3 天前
+/// 答对的卡（Good 首间隔 2 天，已到期）。
 Question _joinedQuestion(String id, {required List<String> errorTypes}) =>
     Question(
       id: id,
@@ -72,6 +78,26 @@ Question _joinedQuestion(String id, {required List<String> errorTypes}) =>
       isOrganized: true,
     );
 
+/// 确定性调度器（fuzzing 关）+ SQLite store，绑当前测试库
+///（AppDatabase.instance；用前须先 _seedMemoryRepo）。
+FsrsReviewScheduler _testScheduler() => FsrsReviewScheduler(
+  config: const SchedulerConfig(enableFuzzing: false),
+  store: SqliteCardStore(),
+);
+
+/// 给 [id] 建一张已到期的 FSRS 卡：建卡 + 3 天前答对一次
+///（Good 首间隔 2 天，到期日在昨天）。
+Future<void> _seedDueCard(String id) async {
+  final scheduler = _testScheduler();
+  await scheduler.initializeQuestion(id);
+  await scheduler.recordAnswer(
+    id,
+    ReviewResult.good,
+    DateTime.now().subtract(const Duration(days: 3)),
+    'evt-seed-$id',
+  );
+}
+
 Future<void> _seedDue(
   QuestionRepository repo,
   String id, {
@@ -80,6 +106,7 @@ Future<void> _seedDue(
   final q = _joinedQuestion(id, errorTypes: errorTypes);
   await repo.save(q);
   expect(await repo.setReviewJoined(q, true), isTrue);
+  await _seedDueCard(id);
 }
 
 /// 广播流是异步投递：等一轮事件循环再断言。
@@ -354,7 +381,7 @@ void main() {
       return container;
     }
 
-    test('首查读到当前计数：1 道待复习 → reviewBadge=1', () async {
+    test('首查读到当前计数：1 道到期 → reviewBadge=1', () async {
       final repo = await _seedMemoryRepo();
       await _seedDue(repo, 'q1');
       final container = await containerWith(repo);
@@ -367,6 +394,109 @@ void main() {
       expect(counts.organizeBadge, 0);
       expect(counts.collectBadge, 0);
       expect(counts.subjects, hasLength(3));
+    });
+
+    test('三处一致：角标 = 首页焦点卡 = 复习页到期队列长度（FSRS 同一集合）', () async {
+      final repo = await _seedMemoryRepo();
+      await _seedDue(repo, 'q1');
+      await _seedDue(repo, 'q2');
+      final container = ProviderContainer.test(
+        overrides: [
+          repositoryProvider.overrideWithValue(repo),
+          reviewSchedulerProvider.overrideWithValue(_testScheduler()),
+        ],
+      );
+      addTearDown(container.dispose);
+      container.listen(badgeCountsProvider, (_, __) {});
+      container.listen(homeProvider, (_, __) {});
+      container.listen(reviewProvider, (_, __) {});
+      await _waitFor(
+        () =>
+            container.read(badgeCountsProvider).value?.reviewBadge == 2,
+        reason: '角标首查完成',
+      );
+      await container.read(homeProvider.notifier).load();
+      await container.read(reviewProvider.notifier).load();
+      expect(container.read(badgeCountsProvider).value?.reviewBadge, 2);
+      expect(container.read(homeProvider).totalDue, 2);
+      expect(container.read(homeProvider).dueCount, 2);
+      expect(
+        container.read(reviewProvider).fsrsDueIds,
+        {'q1', 'q2'},
+      );
+      expect(
+        await repo.fsrsDueTotal(scheduler: _testScheduler()),
+        2,
+      );
+    });
+
+    test('核对提交后发 badges 事件：角标 1→0，不切导航（§1.6 缺口）', () async {
+      final repo = await _seedMemoryRepo();
+      // 单选题（可走三步核对提交），已加入复习 + FSRS 卡已到期。
+      final q = Question(
+        id: 'q1',
+        title: '数学 · 第q1题',
+        subjectId: 'math',
+        createdAt: DateTime(2026, 11, 14),
+        sliceText: '题干占位文字',
+        errorTypes: const ['概念不清'],
+        isOrganized: true,
+        questionType: 'choice_single',
+        optionLabels: const ['A', 'B', 'C', 'D'],
+        correctOption: 'B',
+      );
+      await repo.save(q);
+      expect(await repo.setReviewJoined(q, true), isTrue);
+      await _seedDueCard('q1');
+      final scheduler = _testScheduler();
+      final container = ProviderContainer.test(
+        overrides: [
+          repositoryProvider.overrideWithValue(repo),
+          reviewSchedulerProvider.overrideWithValue(scheduler),
+        ],
+      );
+      addTearDown(container.dispose);
+      container.listen(badgeCountsProvider, (_, __) {});
+      container.listen(homeProvider, (_, __) {});
+      container.listen(reviewProvider, (_, __) {});
+      await _waitFor(
+        () => container.read(badgeCountsProvider).value?.reviewBadge == 1,
+        reason: '角标首查完成',
+      );
+      await container.read(homeProvider.notifier).load();
+      await container.read(reviewProvider.notifier).load();
+      expect(container.read(homeProvider).totalDue, 1);
+      expect(container.read(reviewProvider).fsrsDueIds, {'q1'});
+
+      // 只记提交后发出的事件：核对提交前清掉在途事件。
+      final events = <DataChangeEvent>[];
+      final sub = DataChangeBus.instance.stream.listen(events.add);
+      addTearDown(sub.cancel);
+      await _flushEvents();
+      events.clear();
+
+      final notifier = container.read(reviewProvider.notifier);
+      await notifier.startSession();
+      notifier.beginAnswer();
+      notifier.selectOption('B');
+      await notifier.submitObjectiveAnswer();
+      expect(await notifier.submitCheck(), isTrue);
+      await _flushEvents();
+      // 提交成功发了 badges 事件（review_notifier.submitCheck 内），
+      // 角标随卡片 next_due_at 后移即时重算，不切导航也变 0。
+      expect(
+        events.any((e) => e.kinds.contains(DataChangeKind.badges)),
+        isTrue,
+        reason: '核对提交后应补发 badges 事件',
+      );
+      await _waitFor(
+        () => container.read(badgeCountsProvider).value?.reviewBadge == 0,
+        reason: '核对提交后角标应变 0',
+      );
+      // 首页回页重读后焦点卡同样变 0（首页 autoDispose，回页重读）。
+      await container.read(homeProvider.notifier).load();
+      expect(container.read(homeProvider).totalDue, 0);
+      expect(await repo.fsrsDueQuestionIds(scheduler: scheduler), isEmpty);
     });
 
     test('含 badges 的事件触发重读：再加入一道 → reviewBadge=2', () async {
@@ -543,9 +673,9 @@ void main() {
       expect(tester.takeException(), isNull);
     });
 
-    testWidgets('S4-4 加入复习：复习角标 0→1', (tester) async {
+    testWidgets('S4-4 FSRS 到期题出现：复习角标 0→1', (tester) async {
       final repo = await _seedWidgetRepo(
-                seed: (repo) async {
+        seed: (repo) async {
           final q = _joinedQuestion('q1', errorTypes: ['概念不清']);
           await repo.save(q);
         },
@@ -558,17 +688,21 @@ void main() {
       );
       final q = (await repo.questionById('q1'))!;
       await repo.setReviewJoined(q, true);
+      // 只加入复习不够：FSRS 卡未开始不算到期，角标仍为空；
+      // 建一张已到期的卡、再由一次写库发 badges 事件触发重算后才出现 1。
+      await _seedDueCard('q1');
+      await repo.save((await repo.questionById('q1'))!);
       await _pumpUntil(
         tester,
         () => _navBadgeIs(tester, '复习', '1'),
-        reason: '加入复习后复习角标出现 1',
+        reason: 'FSRS 到期题出现后复习角标出现 1',
       );
       expect(tester.takeException(), isNull);
     });
 
-    testWidgets('S4-5 取消加入复习：复习角标 1→0', (tester) async {
+    testWidgets('S4-5 取消加入复习：FSRS 卡片保留，复习角标不变', (tester) async {
       final repo = await _seedWidgetRepo(
-                seed: (repo) => _seedDue(repo, 'q1'),
+        seed: (repo) => _seedDue(repo, 'q1'),
       );
       await _pumpApp(tester);
       await _pumpUntil(
@@ -578,17 +712,19 @@ void main() {
       );
       final q = (await repo.questionById('q1'))!;
       await repo.setReviewJoined(q, false);
-      await _pumpUntil(
-        tester,
-        () => !_navBadgeIs(tester, '复习', '1'),
-        reason: '取消加入后复习角标消失',
+      // 旧口径下取消加入即减；新口径只认 FSRS 到期卡，取消加入不删卡，
+      // 角标仍为 1。等一轮事件重算后再断言，避免旧值未刷新造成假通过。
+      await tester.runAsync(
+        () => Future.delayed(const Duration(milliseconds: 300)),
       );
+      await tester.pump();
+      expect(_navBadgeIs(tester, '复习', '1'), isTrue);
       expect(tester.takeException(), isNull);
     });
 
-    testWidgets('S4-6 自查治愈：复习角标 1→0', (tester) async {
+    testWidgets('S4-6 自查治愈：旧口径已断，复习角标不变', (tester) async {
       final repo = await _seedWidgetRepo(
-                seed: (repo) => _seedDue(repo, 'q1'),
+        seed: (repo) => _seedDue(repo, 'q1'),
       );
       await _pumpApp(tester);
       await _pumpUntil(
@@ -599,11 +735,12 @@ void main() {
       final recs = await repo.causeRecordsFor('q1');
       expect(recs, hasLength(1));
       await _cureCause(repo, recs.first);
-      await _pumpUntil(
-        tester,
-        () => !_navBadgeIs(tester, '复习', '1'),
-        reason: '治愈后复习角标消失',
+      // 旧口径下治愈即减；新口径只认 FSRS 到期卡，错因治愈不再影响角标。
+      await tester.runAsync(
+        () => Future.delayed(const Duration(milliseconds: 300)),
       );
+      await tester.pump();
+      expect(_navBadgeIs(tester, '复习', '1'), isTrue);
       expect(tester.takeException(), isNull);
     });
 
@@ -633,6 +770,8 @@ void main() {
           final q = _joinedQuestion('q1', errorTypes: ['概念不清']);
           await repo.save(q);
           await repo.setReviewJoined(q, true);
+          // FSRS 卡已到期，但题已归档 → 角标不计；恢复归档后才计入。
+          await _seedDueCard('q1');
           // 归档须用库里刚读回的题：q 仍是 setReviewJoined 之前
           // 的旧对象（reviewJoined=false），直接归档它会把已加入
           // 的标记写回 false（全行 upsert 语义）。

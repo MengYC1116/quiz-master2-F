@@ -1,17 +1,20 @@
 // B9-3：左导航“复习”角标。
 //
-// 口径（与首页焦点卡一致，数题不数错因）：角标 = `homeRevCounts`
-// 各科之和 = `dueToday().length`（手动加入复习、已整理、错因桶
-// 落在 pending 或 recheck 的题数）。多错因一题只计 1。
-// B9-4（Meng 2026-11-15 ~19:43 裁决：统一按题数）：复习页顶
+// 口径（FSRS，2026-11-25 口径迁移 §2.2，与首页焦点卡一致，数题不数
+// 错因）：角标 = `fsrsDueCountsBySubject` 各科之和 =
+// `fsrsDueQuestionIds().length`（池里已开始正式复习且 next_due_at
+// <= now 的题）。只加入复习不够：FSRS 卡未开始不算到期；多错因一题
+// 只计 1。B9-4（Meng 2026-11-15 ~19:43 裁决：统一按题数）：复习页顶
 // 三数也按题数计（见 test/b9_4_review_header_count_test.dart），
 // 与角标 / 首页同一口径；B9-3 当时锁死的“页顶按条数计”已作废。
+// 复习页顶分组本身仍是旧错因口径（§5 第 10 项定：不进本批），本文件
+// 末尾进复习页的断言仍按旧分组写，只锁角标与首页的 FSRS 新口径。
 //
 // 两层用例：
 // - A 组：纯展示组件 `AppNavBar`（参数驱动，不读库）：N 显示、
 //   0 隐藏、accent 档、折叠态显示、选中态 token。
 // - B 组：真实内存库 + 整应用 `QuizMasterApp` 真实交互：按题数计、
-//   治愈后角标即减一（不进复习页、只切导航）、取消加入即减、
+//   核对提交后角标即减一（不进复习页、只切导航）、归档即减、
 //   折叠态同样显示。
 //
 // 整应用 `pumpAndSettle` 永不静止（见 `s8b3_startup_test.dart`
@@ -25,8 +28,11 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:quiz_master2/app.dart';
+import 'package:quiz_master2/data/data_change_events.dart';
 import 'package:quiz_master2/data/database.dart';
 import 'package:quiz_master2/data/repository.dart';
+import 'package:quiz_master2/data/review_engine.dart';
+import 'package:quiz_master2/data/review_scheduler.dart';
 import 'package:quiz_master2/models/models.dart';
 import 'package:quiz_master2/theme/app_theme.dart';
 import 'package:quiz_master2/widgets/app_shell.dart';
@@ -140,6 +146,25 @@ Question _joinedQuestion(String id, {required List<String> errorTypes}) =>
       isOrganized: true,
     );
 
+/// 确定性调度器（fuzzing 关）+ SQLite store，绑当前测试库。
+FsrsReviewScheduler _testScheduler() => FsrsReviewScheduler(
+  config: const SchedulerConfig(enableFuzzing: false),
+  store: SqliteCardStore(),
+);
+
+/// 给 [id] 建一张已到期的 FSRS 卡：建卡 + 3 天前答对一次
+///（Good 首间隔 2 天，到期日在昨天）。
+Future<void> _seedDueCard(String id) async {
+  final scheduler = _testScheduler();
+  await scheduler.initializeQuestion(id);
+  await scheduler.recordAnswer(
+    id,
+    ReviewResult.good,
+    DateTime.now().subtract(const Duration(days: 3)),
+    'evt-b93-$id',
+  );
+}
+
 Future<void> _seedTwoDue(QuestionRepository repo) async {
   final q1 = _joinedQuestion('q1', errorTypes: ['概念不清', '计算错误']);
   final q2 = _joinedQuestion('q2', errorTypes: ['审题失误']);
@@ -148,21 +173,44 @@ Future<void> _seedTwoDue(QuestionRepository repo) async {
   // 加入复习：每错因建一条待解决记录（q1 两条、q2 一条）。
   expect(await repo.setReviewJoined(q1, true), isTrue);
   expect(await repo.setReviewJoined(q2, true), isTrue);
+  // FSRS 口径：两题各建一张已到期的卡，角标才计 2。
+  await _seedDueCard('q1');
+  await _seedDueCard('q2');
 }
 
-/// 把一条错因记录自查“已解决”到治愈（默认 cureChecks=2，需两次；
-/// 复查日顺延到今天 +7 天，不到复查时间，桶落 solved）。
-/// Drift 同步调用，直接 await（见文件头）。
-Future<CauseRecord> _cureCause(
+/// 核对提交一次（答对，Good）：卡片 next_due_at 移到未来，不再到期。
+/// 直接调仓库方法（不走 review_notifier）：产品里提交成功后的 badges
+/// 事件由 review_notifier.submitCheck 补发（见 stage4 的 notifier
+/// 测试）；此处提交后由测试显式发一次同款事件，只验证角标收到事件后
+/// 按 FSRS 新数重算。
+Future<void> _submitGood(
   QuestionRepository repo,
-  CauseRecord rec,
+  String questionId,
 ) async {
-  var cur = rec;
-  for (var i = 0; i < 2; i++) {
-    cur = await repo.recordSelfCheck(cur, 'solved');
-  }
-  expect(cur.status, CauseStatus.solved);
-  return cur;
+  final now = DateTime.now();
+  await repo.submitReviewCheck(
+    attempt: AttemptData(
+      id: 'att-b93-$questionId',
+      questionId: questionId,
+      sessionId: 'sess-b93',
+      mode: '到期复习',
+      selected: const ['B'],
+      correct: 1,
+      answerVersion: 1,
+      contentVersion: 1,
+      status: '已提交',
+      causeIds: const ['概念不清'],
+      submissionId: 'attsub-b93-$questionId',
+      createdAt: now.millisecondsSinceEpoch,
+    ),
+    result: ReviewResult.good,
+    reviewedAt: now,
+    eventId: 'attsub-b93-$questionId',
+    scheduler: _testScheduler(),
+  );
+  DataChangeBus.instance.emit(
+    const DataChangeEvent(kinds: {DataChangeKind.badges}),
+  );
 }
 
 /// 某题的全部错因记录（Drift 同步调用，直接 await）。
@@ -229,13 +277,17 @@ void main() {
         reason: '启动后复习角标未显示 2',
       );
 
-      // 口径锁定（B9-4 已统一按题数）：
-      // - 角标 / 首页焦点卡 / dueToday：按题数——q1、q2 各计 1，共 2。
+      // 口径锁定（FSRS，数题不数错因）：
+      // - 角标 / 首页焦点卡 / fsrsDueQuestionIds：按题数——q1、q2 各计 1，共 2。
       // - 复习页顶三数（review_page.dart _metaCounts）同样按题数：
       //   q1 两条 + q2 一条错因记录 = 2 道题（见本用例末尾进复习页
       //   的断言与 test/b9_4_review_header_count_test.dart）。
-      final due = await repo.dueToday();
-      expect(due.map((q) => q.id), unorderedEquals(['q1', 'q2']));
+      final due = await repo.fsrsDueQuestionIds(scheduler: _testScheduler());
+      expect(due, unorderedEquals(['q1', 'q2']));
+      expect(
+        await repo.fsrsDueTotal(scheduler: _testScheduler()),
+        2,
+      );
       final q1Records = await _recordsFor(repo, 'q1');
       expect(q1Records.length, 2);
       expect(q1Records.where((r) => r.status != CauseStatus.solved).length, 2);
@@ -269,7 +321,7 @@ void main() {
       expect(tester.takeException(), isNull);
     });
 
-    testWidgets('治愈一条后角标即减一：不进复习页、只切导航，角标已更新', (tester) async {
+    testWidgets('核对提交一道后角标即减一：不进复习页、只切导航，角标已更新', (tester) async {
       final repo = await seedB();
       await pumpApp(tester);
       await _pumpUntil(
@@ -278,27 +330,21 @@ void main() {
         reason: '启动后复习角标未显示 2',
       );
 
-      // 治愈 q1 的两个错因（每条两次“已解决”自查）：q1 整题治愈，
-      // 桶落 solved，不再计入要复习；q2 仍待解决，角标应变 1。
-      // 自查走仓库方法（与复习页会话内同一 recordSelfCheck 入口），
-      // 不打开复习页——角标靠 recordSelfCheck 的变更事件
-      // + badgeCountsProvider 订阅刷新。
-      for (final rec in await _recordsFor(repo, 'q1')) {
-        await _cureCause(repo, rec);
-      }
+      // 核对提交 q1（答对，Good）：卡片 next_due_at 移到未来，不再到期；
+      // q2 仍到期，角标应变 1。旧口径的“治愈一条错因即减”已断：
+      // 错因自查不再影响 FSRS 角标（见 stage4 S4-6）。
+      await _submitGood(repo, 'q1');
       // 只切导航（首页 → 收集中心 → 首页），不进复习页。
       await _goNav(tester, '收集中心');
       await _goNav(tester, '首页');
       await _pumpUntil(
         tester,
         () => _navText('1').evaluate().isNotEmpty,
-        reason: '治愈 q1 后复习角标未变为 1',
+        reason: '核对提交 q1 后复习角标未变为 1',
       );
 
-      // 再治愈 q2 唯一的错因：无待复习题，角标隐藏（0 不渲染）。
-      for (final rec in await _recordsFor(repo, 'q2')) {
-        await _cureCause(repo, rec);
-      }
+      // 再核对提交 q2：无到期题，角标隐藏（0 不渲染）。
+      await _submitGood(repo, 'q2');
       await _goNav(tester, '收集中心');
       await _goNav(tester, '首页');
       await _pumpUntil(
@@ -306,14 +352,14 @@ void main() {
         () =>
             _navText('1').evaluate().isEmpty &&
             _navText('2').evaluate().isEmpty,
-        reason: '全部治愈后复习角标未隐藏',
+        reason: '全部核对提交后复习角标未隐藏',
       );
-      final due = await repo.dueToday();
+      final due = await repo.fsrsDueQuestionIds(scheduler: _testScheduler());
       expect(due, isEmpty);
       expect(tester.takeException(), isNull);
     });
 
-    testWidgets('取消加入复习后角标即减（不进复习页）', (tester) async {
+    testWidgets('归档一道题后角标即减（不进复习页）', (tester) async {
       final repo = await seedB();
       await pumpApp(tester);
       await _pumpUntil(
@@ -322,18 +368,17 @@ void main() {
         reason: '启动后复习角标未显示 2',
       );
 
-      // 取消 q1 的加入复习（记录保留，桶不再计入要复习）。
+      // 归档 q1（已到期卡保留，但归档题不进到期队列）。
+      // 旧口径的“取消加入即减”已断：取消加入不删 FSRS 卡，角标不变
+      //（见 stage4 S4-5）；归档仍是角标减一的入口。
       final q1 = await repo.questionById('q1');
-      expect(
-        await repo.setReviewJoined(q1!, false),
-        isTrue,
-      );
+      await repo.archive(q1!);
       await _goNav(tester, '收集中心');
       await _goNav(tester, '首页');
       await _pumpUntil(
         tester,
         () => _navText('1').evaluate().isNotEmpty,
-        reason: '取消 q1 加入复习后角标未变为 1',
+        reason: '归档 q1 后复习角标未变为 1',
       );
       expect(tester.takeException(), isNull);
     });
