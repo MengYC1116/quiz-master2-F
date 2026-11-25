@@ -13,6 +13,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:quiz_master2/data/database.dart';
 import 'package:quiz_master2/data/repository.dart';
+import 'package:quiz_master2/data/review_engine.dart';
 import 'package:quiz_master2/models/exam_event.dart';
 import 'package:quiz_master2/models/models.dart';
 import 'package:quiz_master2/state/collect_notifier.dart';
@@ -91,6 +92,16 @@ class Fr19FakeRepo extends QuestionRepository {
   Future<List<({String result, DateTime reviewedAt})>> reviewHistory(
     String qid,
   ) async => [];
+
+  /// P3 入口 3：报告页读全部 attempts 与池内题 id（WeakSampleStats /
+  /// 行内“已在复习”标记）。不覆写会落到基类读真实 Drift 库，fake async
+  /// 里永不完成、load() 卡住（见 D-88）；其他 Fake 同款覆写
+  ///（report_page_test / report_provider_test）。
+  @override
+  Future<List<AttemptData>> loadAllAttempts() async => const [];
+
+  @override
+  Future<Set<String>> fsrsPoolQuestionIds() async => const {};
 
   /// 十二批功能 4（D-91）：最近查看列表（默认空；home 用例会走
   /// HomeNotifier.load，不覆盖会落到真实库、fake async 里永不完成，
