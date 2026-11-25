@@ -1038,6 +1038,7 @@ class AppSettings {
     // status-asc / status-desc（与错题本列表下拉六项一致；旧值 'subject'
     // 读库 / 写入时由 normalizeWrongbookSort 归一为 subj-asc）
     this.startupPage = 'home', // home / last
+    this.dailyNewQuestions = 10, // P4：每日新增新题默认 10 道，上限 50
   });
 
   final String themeMode;
@@ -1055,6 +1056,11 @@ class AppSettings {
   final int pageSize;
   final String wrongbookSort;
   final String startupPage;
+
+  /// P4（D5）：每日新增新题默认释放数（每天首次呈现的新题上限，
+  /// 默认 10、最高 50；待完成新题满 10 道暂停释放，见 p4_new_release.dart）。
+  /// 读库 / 写入时归一到 1..50（clampDailyNewLimit）。
+  final int dailyNewQuestions;
 
   static const defaults = AppSettings();
 
@@ -1093,6 +1099,7 @@ class AppSettings {
         'pageSize': '$pageSize',
         'wrongbookSort': wrongbookSort,
         'startupPage': startupPage,
+        'dailyNewQuestions': '$dailyNewQuestions',
       };
 
   static AppSettings fromMap(Map<String, String> m) {
@@ -1115,6 +1122,10 @@ class AppSettings {
       pageSize: parseInt('pageSize', 10),
       wrongbookSort: normalizeWrongbookSort(m['wrongbookSort'] ?? 'new'),
       startupPage: m['startupPage'] ?? 'home',
+      // P4：旧库无此键时默认 10；越界值夹到 1..50（与
+      // p4_new_release.dart 的 clampDailyNewLimit 同口径，models 层
+      // 不反向 import 数据层，这里内联夹取）。
+      dailyNewQuestions: parseInt('dailyNewQuestions', 10).clamp(1, 50),
     );
   }
 
@@ -1134,6 +1145,7 @@ class AppSettings {
     int? pageSize,
     String? wrongbookSort,
     String? startupPage,
+    int? dailyNewQuestions,
   }) =>
       AppSettings(
         themeMode: themeMode ?? this.themeMode,
@@ -1153,6 +1165,9 @@ class AppSettings {
             ? this.wrongbookSort
             : normalizeWrongbookSort(wrongbookSort),
         startupPage: startupPage ?? this.startupPage,
+        dailyNewQuestions: dailyNewQuestions == null
+            ? this.dailyNewQuestions
+            : dailyNewQuestions.clamp(1, 50),
       );
 
   /// 字体缩放倍率（D4）：标准 1.00 / 大 1.15 / 特大 1.30，标题、按钮、

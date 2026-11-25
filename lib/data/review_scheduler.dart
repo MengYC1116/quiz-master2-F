@@ -455,6 +455,14 @@ abstract class ReviewScheduler {
   /// 只读查询，不建卡、不改状态；供“已在复习”行内标记与批量跳过
   /// 计数用。P1/P2/P5 的接口语义不变，只是新增一个只读方法。
   Future<Set<String>> pooledQuestionIds();
+
+  /// P4 新题释放：池里全部卡片（含首次呈现三字段），按 cardId 升序。
+  ///
+  /// 只读查询，不建卡、不改状态；释放计划（见 p4_new_release.dart）
+  /// 要读每张卡的 firstReviewedAt / firstPresented* 字段，
+  /// pooledQuestionIds 只有 id、不够用。内存 store 与 SQLite store
+  /// 都已有 loadAll，本方法只是把它挂到接口上。
+  Future<List<StoredCard>> loadAllCards();
 }
 
 /// [ReviewScheduler] 的 FSRS-6 实现，封装层唯一认识 FSRS 包的地方。
@@ -581,6 +589,9 @@ class FsrsReviewScheduler implements ReviewScheduler {
     final all = await store.loadAll();
     return {for (final c in all) c.questionId};
   }
+
+  @override
+  Future<List<StoredCard>> loadAllCards() => store.loadAll();
 
   Future<StoredCard> _initializeAndLoad(String questionId) async {
     await initializeQuestion(questionId);

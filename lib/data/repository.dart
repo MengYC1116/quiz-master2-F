@@ -1,5 +1,7 @@
 import '../data/database.dart';
 import '../data/data_change_events.dart';
+import '../data/p3_review_entries.dart';
+import '../data/p4_new_release.dart';
 import '../data/review_engine.dart';
 import '../data/review_scheduler.dart';
 import '../models/exam_event.dart';
@@ -511,6 +513,81 @@ class QuestionRepository {
     localDate: localDate,
     contentVersion: contentVersion,
   );
+
+  /// P4：今日新题释放预览（纯计算，不写库）。
+  ///
+  /// 读调度器的全部卡片 + 本地全部题目（归档过滤走 activePoolIds
+  /// 同款口径）；[dailyNewLimit] 是设置值（默认 10、上限 50，
+  /// planNewRelease 内归一）；[now] 默认当前时间——本地日期按
+  /// [now] 的本地日历日算，时间戳一律 UTC。调用方（复习页 load）
+  /// 用它只做展示；真正释放发生在题目首次显示时（见
+  /// [recordQuestionPresented]），未显示的题不提前耗额度。
+  Future<FsrsReleasePlan> previewNewRelease({
+    required ReviewScheduler scheduler,
+    required int dailyNewLimit,
+    DateTime? now,
+  }) async {
+    final at = now ?? DateTime.now();
+    final cards = await scheduler.loadAllCards();
+    final questions = await all(includeArchived: true);
+    final archivedIds = {
+      for (final q in questions)
+        if (q.isArchived) q.id,
+    };
+    return planNewRelease(
+      cards: cards,
+      archivedIds: archivedIds,
+      dailyNewLimit: dailyNewLimit,
+      todayLocalDate: localDateString(at),
+    );
+  }
+
+  /// P4：FSRS 真正到期的题（getDueQuestions 已隔离未释放新卡，
+  /// 这里只再滤掉归档题——归档题保留卡片，但不进到期队列）。
+  /// 读不到时返回空列表，不抛错（到期标记是锦上添花，不拖垮列表）。
+  Future<List<String>> fsrsDueQuestionIds({
+    required ReviewScheduler scheduler,
+    DateTime? now,
+  }) async {
+    try {
+      final due = await scheduler.getDueQuestions(now ?? DateTime.now());
+      final questions = await all(includeArchived: true);
+      final archivedIds = {
+        for (final q in questions)
+          if (q.isArchived) q.id,
+      };
+      return activePoolIds(
+        poolIds: due.toSet(),
+        archivedIds: archivedIds,
+      ).toList()..sort((a, b) => due.indexOf(a).compareTo(due.indexOf(b)));
+    } catch (_) {
+      return const [];
+    }
+  }
+
+  /// P4：题目首次显示时记首次呈现（第六轮补充第 1 项的调用点）。
+  ///
+  /// 只在到期复习会话里、题目第一次进入“看题”步时调（专项练习不调，
+  /// 不耗新题额度）；同一内容版本已有记录时 recordFirstPresented
+  /// 返回 false（退出恢复、第二天重看都不重计）；内容重置后新版本
+  /// 重新计。题还没卡时 recordFirstPresentedInto 会先建一张新卡。
+  /// 写入失败时返回 false，不抛错——呈现记录失败绝不能拖垮会话。
+  Future<bool> recordQuestionPresented({
+    required Question question,
+    DateTime? now,
+  }) async {
+    try {
+      final at = now ?? DateTime.now();
+      return await recordFirstPresented(
+        questionId: question.id,
+        presentedAtUtc: at.toUtc(),
+        localDate: localDateString(at),
+        contentVersion: question.contentVersion,
+      );
+    } catch (_) {
+      return false;
+    }
+  }
 
   /// 十四批 M3：读一条 attempt / 某会话全部 attempts。
   Future<AttemptData?> loadAttempt({

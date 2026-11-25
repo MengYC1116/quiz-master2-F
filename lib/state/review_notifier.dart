@@ -445,6 +445,12 @@ class ReviewState {
     this.rejoinNotice,
     // P3 入口 1–3：已在 FSRS 池里的题 id（小结收题默认勾选判定用）。
     this.fsrsPoolIds = const {},
+    // P4：FSRS 当日清单预览（到期 / 今日新题 / 待开始）与计数。
+    this.fsrsDueIds = const {},
+    this.fsrsTodaysNewIds = const {},
+    this.fsrsWaitingIds = const {},
+    this.fsrsPresentedTodayCount = 0,
+    this.fsrsPendingBacklogCount = 0,
     // P3 入口 1/3：已有未完成会话时挂起的待开专项练习题单
     //（等用户在恢复条上二选一；放弃旧会话后按此开练）。
     this.pendingPracticeIds = const [],
@@ -572,6 +578,18 @@ class ReviewState {
   /// P3：已在 FSRS 复习池里的题 id。
   final Set<String> fsrsPoolIds;
 
+  /// P4：FSRS 当日清单（load() 时算的预览，不写库）——真正到期、
+  /// 今日新题（已释放）、待开始（未释放、排队中）。列表区分显示与
+  /// 到期会话建队都用它；会话里题目首次显示时才记首次呈现
+  ///（见 _noteCurrentPresented），预览本身不耗额度。
+  final Set<String> fsrsDueIds;
+  final Set<String> fsrsTodaysNewIds;
+  final Set<String> fsrsWaitingIds;
+
+  /// P4：今日已呈现的新题数 / 待完成新题数（积压）。
+  final int fsrsPresentedTodayCount;
+  final int fsrsPendingBacklogCount;
+
   /// P3 入口 1/3：挂起的待开专项练习题单（见上）。
   final List<String> pendingPracticeIds;
   final int? pendingPracticeCount;
@@ -652,6 +670,11 @@ class ReviewState {
     Map<String, String>? kpNames,
     Object? rejoinNotice = _unset,
     Set<String>? fsrsPoolIds,
+    Set<String>? fsrsDueIds,
+    Set<String>? fsrsTodaysNewIds,
+    Set<String>? fsrsWaitingIds,
+    int? fsrsPresentedTodayCount,
+    int? fsrsPendingBacklogCount,
     List<String>? pendingPracticeIds,
     Object? pendingPracticeCount = _unset,
     bool? initialPracticeStarted,
@@ -734,6 +757,13 @@ class ReviewState {
           ? this.rejoinNotice
           : rejoinNotice as String?,
       fsrsPoolIds: fsrsPoolIds ?? this.fsrsPoolIds,
+      fsrsDueIds: fsrsDueIds ?? this.fsrsDueIds,
+      fsrsTodaysNewIds: fsrsTodaysNewIds ?? this.fsrsTodaysNewIds,
+      fsrsWaitingIds: fsrsWaitingIds ?? this.fsrsWaitingIds,
+      fsrsPresentedTodayCount:
+          fsrsPresentedTodayCount ?? this.fsrsPresentedTodayCount,
+      fsrsPendingBacklogCount:
+          fsrsPendingBacklogCount ?? this.fsrsPendingBacklogCount,
       pendingPracticeIds: pendingPracticeIds ?? this.pendingPracticeIds,
       pendingPracticeCount: pendingPracticeCount == _unset
           ? this.pendingPracticeCount
@@ -1149,6 +1179,28 @@ class ReviewNotifier extends Notifier<ReviewState> {
       } catch (_) {
         // 池内标记是锦上添花，读不到不拖垮列表。
       }
+      // P4：FSRS 当日清单预览（到期 / 今日新题 / 待开始），只做展示、
+      // 不写库——释放发生在会话里题目首次显示时（_noteCurrentPresented）。
+      // 读不到按空集，不拖垮列表加载。
+      try {
+        final scheduler = ref.read(reviewSchedulerProvider);
+        final plan = await repo.previewNewRelease(
+          scheduler: scheduler,
+          dailyNewLimit: state.settings.dailyNewQuestions,
+        );
+        final dueIds = await repo.fsrsDueQuestionIds(scheduler: scheduler);
+        if (!_disposed) {
+          state = state.copyWith(
+            fsrsDueIds: dueIds.toSet(),
+            fsrsTodaysNewIds: plan.todaysNewIds.toSet(),
+            fsrsWaitingIds: plan.waitingIds.toSet(),
+            fsrsPresentedTodayCount: plan.presentedTodayCount,
+            fsrsPendingBacklogCount: plan.pendingBacklogCount,
+          );
+        }
+      } catch (_) {
+        // FSRS 当日清单是锦上添花，读不到不拖垮列表。
+      }
       // P3 入口 1/3：初始题单只处理一次（load 成功后）。
       if (_initialPracticeIds != null &&
           !state.initialPracticeStarted &&
@@ -1395,9 +1447,108 @@ class ReviewNotifier extends Notifier<ReviewState> {
 
   // ---------- 会话：建队 ----------
 
-  /// 到期复习建队（M3-2）：先筛错因、再按题去重；排序逾期/到期优先；
-  /// 数量按设置项“每会话错因数”截断（同一题的本轮错因完整处理）。
-  List<SessionQuestionState> _buildDueSessionQuestions({
+  /// 到期复习建队（P4：FSRS 队列替换旧错因队列）。
+  ///
+  /// 池里有 FSRS 卡时：到期题（getDueQuestions，已隔离未释放新卡）
+  /// 在前、今日新题（释放计划：昨日遗留续接优先 + 今日已呈现 +
+  /// 今天新释放，按每日上限与积压上限 10 截断）在后；每题的本轮
+  /// 错因仍按旧规则取（未解决 + 到期复查的已解决错因，见
+  /// _buildLegacyDueSessionQuestions 的注释），会话流程、核对提交、
+  /// 断点恢复都不变；数量仍按设置项“每会话错因数”截断（同一题的
+  /// 本轮错因完整处理）。一次加 60 道时，当天会话里新题最多只有
+  /// 默认 10 道，剩下的是“待开始”，不进会话。
+  ///
+  /// 池里一张卡都没有（FSRS 之前的老数据、从未走过 P3 入口）时，
+  /// 回落旧错因队列（_buildLegacyDueSessionQuestions），老题不断练；
+  /// 池非空时不再回落——否则筛选后 FSRS 建队为空会把排队的“待开始”
+  /// 题绕过释放上限放进会话。
+  Future<List<SessionQuestionState>> _buildDueSessionQuestions({
+    String? onlyCause,
+    String? onlySubjectId,
+  }) async {
+    if (state.fsrsPoolIds.isEmpty) {
+      return _buildLegacyDueSessionQuestions(
+        onlyCause: onlyCause,
+        onlySubjectId: onlySubjectId,
+      );
+    }
+    try {
+      final repo = _repo;
+      final scheduler = ref.read(reviewSchedulerProvider);
+      final dueIds = await repo.fsrsDueQuestionIds(scheduler: scheduler);
+      final plan = await repo.previewNewRelease(
+        scheduler: scheduler,
+        dailyNewLimit: state.settings.dailyNewQuestions,
+      );
+      final orderedIds = <String>{...dueIds, ...plan.todaysNewIds}.toList();
+      final questionsById = {for (final q in state.allQuestions) q.id: q};
+      final subjectFilter = onlySubjectId ?? state.subjectFilter;
+      final typeFilter = state.typeFilter;
+      final causeFilter = onlyCause ?? (state.causeFilter == '全部'
+          ? null
+          : state.causeFilter);
+      final limit = state.settings.causesPerSession;
+      final result = <SessionQuestionState>[];
+      var used = 0;
+      for (final questionId in orderedIds) {
+        final q = questionsById[questionId];
+        if (q == null ||
+            q.isArchived ||
+            !q.reviewJoined ||
+            !q.isOrganized) {
+          continue;
+        }
+        if (subjectFilter != null && q.subjectId != subjectFilter) continue;
+        if (typeFilter != null && q.questionType != typeFilter) continue;
+        // 本轮错因：未解决的 + 到了复查时间的已解决错因（与旧队列同规则）。
+        final causes = state.allCauseRecords
+            .where((r) => r.questionId == questionId)
+            .where(
+              (r) => r.status != CauseStatus.solved || r.isRecheckDue,
+            )
+            .map((r) => r.cause)
+            .toList();
+        // 按题内错因顺序排（与 load() 的 pending 排序同口径）。
+        final order = q.allCauses;
+        causes.sort(
+          (a, b) => order.indexOf(a).compareTo(order.indexOf(b)),
+        );
+        if (causes.isEmpty) continue;
+        if (causeFilter != null && !causes.contains(causeFilter)) continue;
+        if (limit > 0 && used >= limit) break;
+        used += causes.length;
+        final nonRound = state.allCauseRecords
+            .where((r) => r.questionId == questionId)
+            .map((r) => r.cause)
+            .where((c) => !causes.contains(c))
+            .toList();
+        result.add(
+          SessionQuestionState(
+            questionId: questionId,
+            causes: causes,
+            nonRoundCauses: nonRound,
+            answerVersionAtStart: q.answerVersion,
+            contentVersionAtStart: q.contentVersion,
+            questionSubmissionId: newReviewUuid('qs'),
+            attemptSubmissionId: newReviewUuid('attsub'),
+          ),
+        );
+      }
+      return result;
+    } catch (_) {
+      // FSRS 建队失败时不断练：回落旧错因队列（读库失败也不炸会话）。
+      return _buildLegacyDueSessionQuestions(
+        onlyCause: onlyCause,
+        onlySubjectId: onlySubjectId,
+      );
+    }
+  }
+
+  /// 到期复习建队（M3-2，旧错因队列）：先筛错因、再按题去重；排序逾期/
+  /// 到期优先；数量按设置项“每会话错因数”截断（同一题的本轮错因完整处理）。
+  /// P4 起只在两种情况用：池里一张 FSRS 卡都没有（老数据回落），
+  /// 或 FSRS 建队抛错（兜底不断练）。
+  List<SessionQuestionState> _buildLegacyDueSessionQuestions({
     String? onlyCause,
     String? onlySubjectId,
   }) {
@@ -1600,6 +1751,8 @@ class ReviewNotifier extends Notifier<ReviewState> {
         sumWeakKp: weakKp,
         sumNextDueDate: earliestNextDue,
       );
+      // P4：恢复后当前题重新显示，今日新题按同版本幂等记一次呈现。
+      unawaited(_noteCurrentPresented());
       return;
     }
     if (state.resume != null) {
@@ -1607,7 +1760,7 @@ class ReviewNotifier extends Notifier<ReviewState> {
       // 覆盖（页面 _startDue 已先二选一；这里是兜底，防直接调用丢断点）。
       return;
     }
-    final questions = _buildDueSessionQuestions(
+    final questions = await _buildDueSessionQuestions(
       onlyCause: fromGroup?.cause,
       onlySubjectId: fromGroup?.subjectId,
     );
@@ -1639,6 +1792,8 @@ class ReviewNotifier extends Notifier<ReviewState> {
           ? state.scopeLabelForSession(questions)
           : state.scopeLabelForFilters(),
     );
+    // P4：首题进入“看题”步，今日新题记一次首次呈现（未显示的题不记）。
+    unawaited(_noteCurrentPresented());
     await _persistCurrentSession();
   }
 
@@ -2227,6 +2382,24 @@ class ReviewNotifier extends Notifier<ReviewState> {
     await load();
   }
 
+  /// P4：到期复习里当前题首次显示时记首次呈现（只记今日新题里的题；
+  /// 已到期复习过的题不在今日新题里，不重记；专项练习不记）。
+  /// recordFirstPresented 同版本幂等（退出恢复、第二天重看不重计），
+  /// 失败只返回 false、不抛错——呈现记录失败绝不能拖垮会话。
+  /// 调用点：到期会话进入首题 / 恢复后重显 / 前进到下一题 / 跳过后
+  /// 换题；只在“看题”步真正显示时才有意义，核对提交不经过这里。
+  Future<void> _noteCurrentPresented() async {
+    if (_disposed) return;
+    if (state.sessionMode != ReviewMode.due) return;
+    final q = state.currentQuestion;
+    if (q == null || !state.fsrsTodaysNewIds.contains(q.id)) return;
+    try {
+      await _repo.recordQuestionPresented(question: q);
+    } catch (_) {
+      // 呈现记录是额度账本，不是会话本身：失败不拖垮会话。
+    }
+  }
+
   Future<void> _advanceQuestion() async {
     final next = state.sessionIndex + 1;
     if (next >= state.sessionQuestions.length) {
@@ -2234,6 +2407,8 @@ class ReviewNotifier extends Notifier<ReviewState> {
       return;
     }
     state = state.copyWith(sessionIndex: next);
+    // P4：下一题进入“看题”步，今日新题记一次首次呈现。
+    unawaited(_noteCurrentPresented());
     await _restoreAttemptStatusForCurrent();
     await _persistCurrentSession();
   }
@@ -2298,6 +2473,8 @@ class ReviewNotifier extends Notifier<ReviewState> {
       if (state.sessionIndex >= questions.length) {
         await _finishSession();
       } else {
+        // P4：跳过后换题，新题进入“看题”步，今日新题记一次呈现。
+        unawaited(_noteCurrentPresented());
         await _restoreAttemptStatusForCurrent();
         await _persistCurrentSession();
       }
@@ -2311,6 +2488,8 @@ class ReviewNotifier extends Notifier<ReviewState> {
       sessionQuestions: questions,
       sumSkipped: state.sumSkipped + 1,
     );
+    // P4：跳过后换题，新题进入“看题”步，今日新题记一次呈现。
+    unawaited(_noteCurrentPresented());
     await _restoreAttemptStatusForCurrent();
     await _persistCurrentSession();
   }

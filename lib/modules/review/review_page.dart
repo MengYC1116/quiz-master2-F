@@ -23,6 +23,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../data/p4_new_release.dart';
 import '../../data/repository.dart';
 import '../../data/review_engine.dart';
 import '../../models/models.dart';
@@ -352,6 +353,13 @@ class _ListViewState extends ConsumerState<_ListView> {
           // 暂停会话优先显示（M3-11 空状态优先级：有未完成会话时先处理
           // 会话，再谈空状态）。
           if (st.resume != null) _buildResumeBar(context, st),
+          // P4：FSRS 当日清单——到期题与新题区分显示，未释放的标
+          // “待开始”，不混入到期题（池里有卡时才显示；老数据无卡时
+          // 不出这块，列表仍按旧分组显示）。
+          if (st.fsrsPoolIds.isNotEmpty) ...[
+            _buildFsrsBox(context, st),
+            SizedBox(height: 14 * scale),
+          ],
           // 页顶：今日待复习 + 开始复习（主）+ 专项练习（次）。
           _DetailBox(
             child: Column(
@@ -572,6 +580,57 @@ class _ListViewState extends ConsumerState<_ListView> {
             ),
           ],
         ),
+      ),
+    );
+  }
+
+  /// P4：FSRS 当日清单盒（到期 / 今日新题 / 待开始区分显示）。
+  ///
+  /// 数字来自 load() 时的预览（不写库）：到期是真正到期的 FSRS 卡，
+  /// 今日新题是已释放可练的新题（含昨日遗留续接），待开始是未释放、
+  /// 排队中的新题。括号里一行写清当日规则：每天最多呈现几道新题
+  /// （设置里的每日新增）、待完成新题满 10 道暂停释放。
+  Widget _buildFsrsBox(BuildContext context, ReviewState st) {
+    final scale = qmScaleOf(context);
+    final palette = DesignTokens.of(Theme.of(context).brightness);
+    return _DetailBox(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text.rich(
+            TextSpan(
+              style: const TextStyle(fontSize: 14),
+              children: [
+                const TextSpan(text: '今日到期 '),
+                TextSpan(
+                  text: '${st.fsrsDueIds.length}',
+                  style: const TextStyle(fontWeight: FontWeight.w700),
+                ),
+                const TextSpan(text: ' 道 · 今日新题 '),
+                TextSpan(
+                  text: '${st.fsrsTodaysNewIds.length}',
+                  style: const TextStyle(fontWeight: FontWeight.w700),
+                ),
+                const TextSpan(text: ' 道 · 待开始 '),
+                TextSpan(
+                  text: '${st.fsrsWaitingIds.length}',
+                  style: const TextStyle(fontWeight: FontWeight.w700),
+                ),
+                const TextSpan(text: ' 道'),
+              ],
+            ),
+          ),
+          SizedBox(height: 6 * scale),
+          Text(
+            '新题每天最多呈现 ${st.settings.dailyNewQuestions} 道（设置里可改）；'
+            '已释放未完成的先续接，待完成新题满 10 道暂停释放；'
+            '待开始的题今天不进复习队列。',
+            style: TextStyle(
+              fontSize: DesignTokens.bodySmallFontSize,
+              color: palette.muted,
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -859,6 +918,15 @@ class _ListViewState extends ConsumerState<_ListView> {
     final q = row.question;
     final subject = st.subjectOf(q.subjectId);
     final orderIds = st.allQuestions.map((e) => e.id).toList();
+    // P4：行内 FSRS 状态标——到期 / 今日新题 / 待开始三者取其一，
+    // 不在池里（或已掌握未到期）不标；未释放的题明确标“待开始”，
+    // 不混入到期题。
+    final fsrsLabel = fsrsListLabel(
+      questionId: q.id,
+      dueIds: st.fsrsDueIds,
+      todaysNewIds: st.fsrsTodaysNewIds,
+      waitingIds: st.fsrsWaitingIds,
+    );
     return InkWell(
       onTap: () => widget.onOpenDetail(q, orderIds),
       child: Container(
@@ -904,6 +972,14 @@ class _ListViewState extends ConsumerState<_ListView> {
                       color: palette.muted,
                     ),
                   ),
+                  if (fsrsLabel != null)
+                    Text(
+                      'FSRS：$fsrsLabel',
+                      style: TextStyle(
+                        fontSize: DesignTokens.captionFontSize,
+                        color: palette.muted,
+                      ),
+                    ),
                 ],
               ),
             ),

@@ -1114,6 +1114,22 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
             onChanged: (v) => _apply(_s.copyWith(reviewSort: v)),
           ),
         ),
+        // P4：放组末——新行在既有行之后，不顶掉既有行的位置
+        //（测试窗口内“复习列表默认排序”仍在可点区域）。
+        _row(
+          '每日新增新题',
+          '每天最多首次呈现几道新题（默认 10，最多 50）；已释放未完成的先续接，待完成新题满 10 道暂停释放。',
+          _segmented<int>(
+            value: _s.dailyNewQuestions,
+            options: const [
+              QmSegmentOption(value: 5, label: '5 道'),
+              QmSegmentOption(value: 10, label: '10 道'),
+              QmSegmentOption(value: 20, label: '20 道'),
+              QmSegmentOption(value: 50, label: '50 道'),
+            ],
+            onChanged: (v) => _apply(_s.copyWith(dailyNewQuestions: v)),
+          ),
+        ),
       ],
     );
   }
