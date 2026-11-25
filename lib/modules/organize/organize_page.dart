@@ -1992,7 +1992,7 @@ class _OrganizeViewState extends ConsumerState<_OrganizeView> {
               SizedBox(width: 10 * scale),
               Expanded(
                 child: Text(
-                  '整理到一半切到别的题，这里填的全都自动保存、不会丢，切回来接着填 · 确认整理后这道题进错题本，在题目详情里点「加入复习」才会进复习列表，按错因四步复习这道题复习这道题复习这道题复习这道题复习这道题',
+                  '整理到一半切到别的题，这里填的全都自动保存、不会丢，切回来接着填 · 确认整理后这道题进错题本，在题目详情里点「加入复习」才会进复习列表，按三步（看题、作答、核对）复习这道题',
                   style: TextStyle(
                     fontSize: 12.5,
                     color: palette.muted,
@@ -2054,7 +2054,7 @@ class _OrganizeViewState extends ConsumerState<_OrganizeView> {
           ),
           SizedBox(height: 8 * scale),
           Text(
-            '点完自动跳下一道待整理题，这道题归档到错题本；在题目详情里点「加入复习」后，按错因四步复习这道题',
+            '点完自动跳下一道待整理题，这道题归档到错题本；在题目详情里点「加入复习」后，按三步（看题、作答、核对）复习这道题',
             textAlign: TextAlign.center,
             style: TextStyle(
               fontSize: 12.5,

@@ -366,6 +366,22 @@ void main() {
       expect(find.text('还剩 2 道'), findsOneWidget);
     });
 
+    testWidgets('FSRS 口径迁移面 D：两处提示文案是三步（看题、作答、核对），不出现“四步”', (
+      tester,
+    ) async {
+      await pumpOrganize(tester);
+      expect(
+        find.text('整理到一半切到别的题，这里填的全都自动保存、不会丢，切回来接着填 · 确认整理后这道题进错题本，在题目详情里点「加入复习」才会进复习列表，按三步（看题、作答、核对）复习这道题'),
+        findsOneWidget,
+      );
+      expect(
+        find.text('点完自动跳下一道待整理题，这道题归档到错题本；在题目详情里点「加入复习」后，按三步（看题、作答、核对）复习这道题'),
+        findsOneWidget,
+      );
+      expect(find.textContaining('四步'), findsNothing);
+      expect(find.textContaining('复习这道题复习这道题'), findsNothing);
+    });
+
     testWidgets('B7：确认整理后最近任务 kind 记中文“整理”', (tester) async {
       final repo = threeQuestionRepo();
       await pumpOrganize(tester, repo: repo);
