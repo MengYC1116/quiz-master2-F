@@ -9,6 +9,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:quiz_master2/data/database.dart';
+import 'package:quiz_master2/data/p4_new_release.dart';
 import 'package:quiz_master2/data/repository.dart';
 import 'package:quiz_master2/data/review_scheduler.dart';
 import 'package:quiz_master2/models/exam_event.dart';
@@ -85,6 +86,27 @@ class _B8FakeRepo extends QuestionRepository {
     required ReviewScheduler scheduler,
     DateTime? now,
   }) async => const {};
+
+  // 2026-11-25 口径迁移 §2.1：homeProvider.load() 在 Future.wait 之后
+  // 再调 previewNewRelease() 取今日新题数（同款 home_page_test.dart /
+  // b12_history_home_test.dart：不覆写会走真调度器 + 真库、页面卡
+  // loading、pumpAndSettle 超时——本文件 2 个首页测试即因此失败）。
+  @override
+  Future<FsrsReleasePlan> previewNewRelease({
+    required ReviewScheduler scheduler,
+    required int dailyNewLimit,
+    DateTime? now,
+  }) async => FsrsReleasePlan(
+    todaysNewIds: const [],
+    newlyReleasableIds: const [],
+    carryoverIds: const [],
+    presentedTodayIds: const [],
+    waitingIds: const [],
+    presentedTodayCount: 0,
+    pendingBacklogCount: 0,
+    dailyLimit: dailyNewLimit,
+    releaseAllowance: 0,
+  );
 
   @override
   Future<List<CauseRecord>> causeRecords() async => const [];
