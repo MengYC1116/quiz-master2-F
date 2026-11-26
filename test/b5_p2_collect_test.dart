@@ -243,8 +243,8 @@ void main() {
   tearDownAll(() async {
     // 二十五批：先清图片缓存（编辑器页图/切片经 Image.file 显示后 mmap
     // 占着文件）+ 防御性关掉可能真开过的库连接，再删目录；否则
-    // Windows 上删目录报 errno 32。resetForTest 也把
-    // testDataDirectory 置 null。
+    // Windows 上删目录报 errno 32。resetForTest 把 testDataDirectory
+    // 重指全新临时目录（D-260，不再置 null）。
     imageCache.clear();
     await AppDatabase.resetForTest();
     await _testTmp.delete(recursive: true);
@@ -840,7 +840,7 @@ void main() {
       // 切片写盘走 testDataDirectory；页图放进临时数据目录。
       // 注意：testWidgets 体是 FakeAsync 区，异步文件 IO 的完成事件
       // 等不到——文件准备必须用同步 IO（setUpAll 里才可用异步 IO）。
-      addTearDown(() => AppDatabase.testDataDirectory = null);
+      addTearDown(() => AppDatabase.resetForTest());
       AppDatabase.testDataDirectory = _testTmp.path;
       final pageDir = Directory('${_testTmp.path}/imports/rework-task');
       pageDir.createSync(recursive: true);
@@ -936,7 +936,7 @@ void main() {
       // SR2-22：为真时第 2 页不给草稿框——确认后第 2 页留在保留任务里。
       bool leavePage2Unboxed = false,
     }) async {
-      addTearDown(() => AppDatabase.testDataDirectory = null);
+      addTearDown(() => AppDatabase.resetForTest());
       AppDatabase.testDataDirectory = _testTmp.path;
       final pagesDir = Directory('${_testTmp.path}/imports/t-pdf2/pages');
       // 同上：testWidgets 体内文件准备用同步 IO（异步 IO 会挂起）。
@@ -1348,9 +1348,10 @@ class _DetailFakeRepo extends QuestionRepository {
 
   // FR-45（二十批 P3 后续分诊）：DetailNotifier.load() 内 unawaited
   // _refreshRelated 调 repo.all() + repo.causeRecords()；未覆写时走真实
-  // QuestionRepository → 单例 db getter → SR-P2-3 / SR-P2-22 测试的
-  // addTearDown 已把 testDataDirectory 置 null 的窗口里会打开真实演示库
-  // 跑 v2→v6 迁移（同款触发链见 P3 b13 36 号测试；本文件整文件跑干净只
+  // QuestionRepository → 单例 db getter → 旧 resetForTest 置 null 的窗口
+  // 里会打开真实演示库跑 v2→v6 迁移（同款触发链见 P3 b13 36 号测试；D-260
+  // 起 reset 改为重指全新临时目录，该窗口已堵上，桩仍保留作纵深防护。
+  // 本文件整文件跑干净只
   // 因详情泵在 testWidgets（FakeAsync stalls 真实 Drift 打开）且
   // SR-P2-36 详情测试是最后一个测试，见 batch20-work/p3-followup/STATUS.md）。
   // 与 b13_stem_correction 的 _FakeDetailRepo 同款：直接读内存列表，

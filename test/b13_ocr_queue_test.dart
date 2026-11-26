@@ -122,9 +122,11 @@ void main() {
     fakeNow = DateTime(2026, 11, 18, 12, 0, 0);
     db = await AppDatabase.openForTest();
     AppDatabase.useDatabaseForTest(db);
-    // FR-45 后续（slices 污染）：同 b13_p1_1——tearDown 的 resetForTest()
-    // 置 null 后，从第 2 个测试起 dataDirectoryPath() 读到真实目录，
-    // 切片写进真实 slices/。setUp 先给 testDataDirectory 指全新临时目录。
+    // FR-45 后续（slices 污染）：同 b13_p1_1——D-260 前 tearDown 的
+    // resetForTest() 置 null，从第 2 个测试起 dataDirectoryPath() 读到
+    // 真实目录，切片写进真实 slices/；D-260 起 reset 改为重指全新临时
+    // 目录，该窗口已堵上。setUp 仍先给 testDataDirectory 指全新临时目录，
+    // 以便按已知路径读写切片。
     final tmpDataDir = await Directory.systemTemp.createTemp('qm2-ocrq-');
     AppDatabase.testDataDirectory = tmpDataDir.path;
     // flutter_test_config 已把 testDataDirectory 指到全新临时目录；

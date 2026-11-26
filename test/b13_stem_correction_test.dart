@@ -948,9 +948,10 @@ class _FakeDetailRepo extends QuestionRepository {
 
   // FR-45：_refreshRelated（十九批 D1，DetailNotifier.load 内 unawaited）
   // 调 repo.all() + repo.causeRecords()；未覆写时走真实 QuestionRepository
-  // → 单例 db getter → testDataDirectory 已被 resetForTest 置 null 的窗口
-  // 里会打开真实演示库并跑 v2→v8 迁移（本文件 36 号测试“saveEdit 保留 OCR
-  // 字段”触发，见 batch20-work/p3-fr45/STATUS.md）。与 _FakeOrganizeRepo
+  // → 单例 db getter → 旧 resetForTest 置 null 的窗口里会打开真实演示库
+  // 并跑 v2→v8 迁移（本文件 36 号测试“saveEdit 保留 OCR 字段”触发，见
+  // batch20-work/p3-fr45/STATUS.md；D-260 起 reset 改为重指全新临时目录，
+  // 该窗口已堵上，桩仍保留作纵深防护）。与 _FakeOrganizeRepo
   // 的 all() 同款：直接读内存列表，不碰单例。
   @override
   Future<List<Question>> all({bool includeArchived = false}) async =>
@@ -1323,9 +1324,10 @@ void _guardAndNotifierTests() {
     setUp(() async {
       db = await AppDatabase.openForTest();
       AppDatabase.useDatabaseForTest(db);
-      // FR-45 后续（slices 污染）：tearDown 的 resetForTest() 置 null 后，
-      // 从第 2 个测试起 dataDirectoryPath() 读到真实目录，切片写进真实
-      // slices/（P3 批量 2 实测本组 +2）。setUp 先给 testDataDirectory
+      // FR-45 后续（slices 污染）：D-260 前 tearDown 的 resetForTest()
+      // 置 null，从第 2 个测试起 dataDirectoryPath() 读到真实目录，切片
+      // 写进真实 slices/（P3 批量 2 实测本组 +2）；D-260 起 reset 改为
+      // 重指全新临时目录，该窗口已堵上。setUp 仍先给 testDataDirectory
       // 指全新临时目录，再读路径。
       final tmpDataDir = await Directory.systemTemp.createTemp(
         'qm2-stem1310-',

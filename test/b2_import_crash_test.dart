@@ -119,7 +119,7 @@ void main() {
       // 可清理：删任务行（删行在前、删目录在后，见协议第 4 条）。
       AppDatabase.testDataDirectory = tmp.path;
       addTearDown(() async {
-        AppDatabase.testDataDirectory = null;
+        await AppDatabase.resetForTest();
       });
       await AppDatabase.deleteCollectTaskFrom(db, 'task-crash-2');
       expect(await AppDatabase.allCollectTasksFrom(db), isEmpty);
@@ -174,7 +174,7 @@ void main() {
       });
       AppDatabase.testDataDirectory = tmp.path;
       addTearDown(() async {
-        AppDatabase.testDataDirectory = null;
+        await AppDatabase.resetForTest();
       });
       final db = await AppDatabase.openForTest();
       addTearDown(() async {

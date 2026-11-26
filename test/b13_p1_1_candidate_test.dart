@@ -170,10 +170,11 @@ void main() {
     fakeNow = DateTime(2026, 11, 18, 12, 0, 0);
     db = await AppDatabase.openForTest();
     AppDatabase.useDatabaseForTest(db);
-    // FR-45 后续（slices 污染）：tearDown 的 resetForTest() 把
-    // testDataDirectory 置 null；从第 2 个测试起 dataDirectoryPath()
+    // FR-45 后续（slices 污染）：D-260 前 tearDown 的 resetForTest()
+    // 把 testDataDirectory 置 null；从第 2 个测试起 dataDirectoryPath()
     // 读到真实目录，切片写进真实 slices/（P3 批量 2 实测 acc-del 进真实
-    // .trash）。setUp 先给 testDataDirectory 指全新临时目录，再读路径。
+    // .trash）；D-260 起 reset 改为重指全新临时目录，该窗口已堵上。
+    // setUp 仍先给 testDataDirectory 指全新临时目录，再读路径。
     final tmpDataDir = await Directory.systemTemp.createTemp('qm2-p11-');
     AppDatabase.testDataDirectory = tmpDataDir.path;
     dataDir = Directory(AppDatabase.dataDirectoryPath());

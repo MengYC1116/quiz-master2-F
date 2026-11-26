@@ -271,7 +271,7 @@ void main() {
     test('成功：三道全删，错因记录与切片文件一并清理', () async {
       final tmp = await Directory.systemTemp.createTemp('fr37-ok-');
       addTearDown(() async {
-        AppDatabase.testDataDirectory = null;
+        await AppDatabase.resetForTest();
         await tmp.delete(recursive: true);
       });
       AppDatabase.testDataDirectory = tmp.path;

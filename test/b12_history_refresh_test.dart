@@ -310,9 +310,10 @@ class _RefreshFakeRepo extends QuestionRepository {
   // FR-45（二十批 P3 后续分诊）：DetailNotifier.load() 内 unawaited
   // _refreshRelated 调 repo.all() + repo.causeRecords()；未覆写时走真实
   // QuestionRepository → 单例 db getter → 本文件数据层 tearDown 的
-  // resetForTest 已把 testDataDirectory 置 null 的窗口里会打开真实演示库
-  // 跑 v2→v8 迁移（探针 zz_probe_b12_test 复现：md5 9c5640… → 0a7e7dd0…，
-  // 见 batch20-work/p3-followup/STATUS.md）。本文件整文件跑干净只因
+  // 旧 resetForTest 置 null 的窗口里会打开真实演示库跑 v2→v8 迁移（探针
+  // zz_probe_b12_test 复现：md5 9c5640… → 0a7e7dd0…，见
+  // batch20-work/p3-followup/STATUS.md；D-260 起 reset 改为重指全新临时
+  // 目录，该窗口已堵上，桩仍保留作纵深防护）。本文件整文件跑干净只因
   // load() 在 testWidgets（FakeAsync  stalls 真实 Drift 打开）且是最后
   // 一个测试；改 plain load 或在后面加测试即会咬人。causeRecords() 本
   // 文件已有桩；all() 补内存版。右栏无变化：本文件两题无共享错因 /
