@@ -1344,8 +1344,8 @@ void main() {
       // 状态 pill：q1/q2 待解决，q3 解决中 · ✓1/2（cureChecks=2）。
       expect(find.text('待解决'), findsNWidgets(2));
       expect(find.text('解决中 · ✓1/2'), findsOneWidget);
-      expect(find.text('★'), findsOneWidget); // q1 已收藏画星，q2/q3 不画
-      expect(find.text('☆'), findsNothing);
+      expect(find.text('★'), findsOneWidget); // q1 已收藏画 ★
+      expect(find.text('☆'), findsNWidgets(2)); // q2/q3 未收藏画 ☆
       // meta 行是 RichText：q1 的标签易错、q3 的错因计算错误各只一处。
       expect(
         find.textContaining('标签 易错', findRichText: true),
@@ -1504,8 +1504,8 @@ void main() {
       ); // q1 的试卷
       expect(find.text('待解决'), findsNWidgets(2)); // q1、q2
       expect(find.text('解决中 · ✓1/2'), findsOneWidget); // q3
-      expect(find.text('★'), findsOneWidget); // q1 已收藏画星
-      expect(find.text('☆'), findsNothing);
+      expect(find.text('★'), findsOneWidget); // q1 已收藏画 ★
+      expect(find.text('☆'), findsNWidgets(2)); // q2/q3 未收藏画 ☆
     });
 
     testWidgets('归档行缩略图：亮色纸面 #FFFFFF、深色纸面 #D8DCE2，与大卡片一致', (tester) async {
@@ -1541,8 +1541,8 @@ void main() {
       final repo = threeSubjectRepo();
       await pumpWrongbook(tester, repo: repo);
       await openMathListCompact(tester);
-      expect(find.text('★'), findsOneWidget); // q1 已收藏画星
-      expect(find.text('☆'), findsNothing);
+      expect(find.text('★'), findsOneWidget); // q1 已收藏画 ★
+      expect(find.text('☆'), findsNWidgets(2)); // q2/q3 未收藏画 ☆
       await tester.tap(find.text('筛选 ▾'));
       await tester.pumpAndSettle();
       await tester.tap(find.text('仅收藏'));

@@ -1297,8 +1297,16 @@ class ReviewNotifier extends Notifier<ReviewState> {
       // 仍在题自己身上（q.allCauses，如未加入复习的专项练习题）
       // 就保留，两边都没有才删；到期复习里已治愈且未到复查日的
       // 错因已不在范围，移除（只在记录存在时适用）。
+      // 无错因占位符（kNoCauseQueueMarker）：本题在会话里就没有错因，
+      // 不查记录、不进错因数，按 causes 为空保留；只有占位符没有
+      // 真错因时也不算“错因被删光”，本题不剔除。
+      var hasNoCauseMarker = false;
       final causes = <String>[];
       for (final cause in byQ[qid]!) {
+        if (cause == kNoCauseQueueMarker) {
+          hasNoCauseMarker = true;
+          continue;
+        }
         final r = recordByCause[cause];
         if (r == null) {
           if (q.allCauses.contains(cause)) {
@@ -1316,7 +1324,7 @@ class ReviewNotifier extends Notifier<ReviewState> {
         }
         causes.add(cause);
       }
-      if (causes.isEmpty) {
+      if (causes.isEmpty && !hasNoCauseMarker) {
         removedAny = true;
         continue;
       }
@@ -1654,7 +1662,23 @@ class ReviewNotifier extends Notifier<ReviewState> {
     var position = 0;
     var flat = 0;
     for (var i = 0; i < questions.length; i++) {
-      for (final cause in questions[i].causes) {
+      // 无错因的题（整理时错因可选）：causes 为空时按题×错因展平
+      // 一个项都不剩，存下的 queue 为空，恢复校验按“无断点”丢掉——
+      // 写一个占位项让这道题在队列里占一位，校验时认出占位符
+      // 就按 causes 为空恢复（见 kNoCauseQueueMarker）。
+      final causes = questions[i].causes;
+      if (causes.isEmpty) {
+        if (i == index) position = flat;
+        queue.add(
+          ReviewQueueItem(
+            questionId: questions[i].questionId,
+            cause: kNoCauseQueueMarker,
+          ),
+        );
+        flat++;
+        continue;
+      }
+      for (final cause in causes) {
         if (i == index) position = flat;
         queue.add(
           ReviewQueueItem(questionId: questions[i].questionId, cause: cause),

@@ -373,13 +373,16 @@ extension _WrongbookListBuild on _WrongbookViewState {
                     ),
                   ),
                 ),
-                // 收藏标志（2026-11-26，用户要求列表可区分收藏）：
-                // 已收藏的题在题干后、状态 pill 前画 ★，与详情页
-                // 同星形同色（paperStarOn）；只展示，不拦截点行进详情。
-                if (q.isFavorite) ...[
-                  SizedBox(width: 6 * scale),
-                  Text(
-                    '★',
+                // 收藏星星（2026-11-26 跟进，用户要求一直显示、可点切换）：
+                // 已收藏 ★ 实心、未收藏 ☆ 空心，同色（paperStarOn）、
+                // 同字号；点星星切换收藏/取消收藏（与详情页同一持久化
+                // 方法 WrongbookNotifier.toggleFavorite），点完当场变；
+                // 星星有自己的点击区域，点星星不进详情。
+                SizedBox(width: 6 * scale),
+                GestureDetector(
+                  onTap: () => _n.toggleFavorite(q),
+                  child: Text(
+                    q.isFavorite ? '★' : '☆',
                     key: ValueKey('favorite-star-${q.id}'),
                     style: TextStyle(
                       fontSize: DesignTokens.detailStarFontSize,
@@ -387,7 +390,7 @@ extension _WrongbookListBuild on _WrongbookViewState {
                       height: 1,
                     ),
                   ),
-                ],
+                ),
                 SizedBox(width: 8 * scale),
                 _statusPill(q),
                 // P3 入口 1：已在 FSRS 复习池的题行内标“已在复习”

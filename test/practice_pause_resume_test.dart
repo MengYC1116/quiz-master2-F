@@ -214,6 +214,134 @@ void main() {
     });
   });
 
+  group('专项练习暂停恢复（无错因的题）', () {
+    late QuizDatabase db;
+    late QuestionRepository repo;
+
+    setUp(() async {
+      db = await AppDatabase.openForTest();
+      AppDatabase.useDatabaseForTest(db);
+      repo = QuestionRepository(AppDatabase.instance);
+      addTearDown(() async {
+        try {
+          await db.close();
+        } catch (_) {}
+        AppDatabase.resetForTest();
+      });
+    });
+
+    /// 新容器 + 确定性调度器（fuzzing 关）读当前库状态。
+    (ProviderContainer, ReviewNotifier) loadNotifier() {
+      final container = ProviderContainer.test(
+        overrides: [
+          repositoryProvider.overrideWithValue(repo),
+          reviewSchedulerProvider.overrideWithValue(
+            FsrsReviewScheduler(
+              config: const SchedulerConfig(enableFuzzing: false),
+              store: InMemoryCardStore(),
+            ),
+          ),
+        ],
+      );
+      addTearDown(container.dispose);
+      // autoDispose 保活（D-36）：像页面 ref.watch 那样持一个监听。
+      container.listen(reviewProvider, (_, __) {});
+      return (container, container.read(reviewProvider.notifier));
+    }
+
+    test('无错因的题暂停后仍有恢复条、继续回到断点', () async {
+      await AppDatabase.upsertQuestionInto(
+        db,
+        _pq('q1', errorTypes: const []),
+      );
+      await AppDatabase.upsertQuestionInto(
+        db,
+        _pq('q2', errorTypes: const []),
+      );
+      final (container, notifier) = loadNotifier();
+      await notifier.load();
+      await notifier.startPracticeSession();
+      var s = container.read(reviewProvider);
+      expect(s.inSession, isTrue);
+      expect(s.sessionQuestions.length, 2);
+      expect(
+        s.sessionQuestions.map((sq) => sq.causes).toList(),
+        [<String>[], <String>[]],
+      );
+      // 走完第 1 道，到第 2 道再暂停（顺序随机，按实际队首队尾取）。
+      final firstId = s.sessionQuestions[0].questionId;
+      final secondId = s.sessionQuestions[1].questionId;
+      await _walkAndCommit(notifier);
+      s = container.read(reviewProvider);
+      expect(s.sessionIndex, 1);
+      expect(s.currentSessionQuestion.questionId, secondId);
+      await notifier.pauseSession();
+      s = container.read(reviewProvider);
+      expect(s.inSession, isFalse);
+      expect(await repo.reviewState(), isNotNull);
+      expect(s.resume, isNotNull);
+      expect(s.resume!.sessionIndex, 1);
+      expect(
+        s.resume!.sessionQuestions.map((sq) => sq.questionId).toList(),
+        [firstId, secondId],
+      );
+      // 模拟重启：新容器重读，断点仍在；继续回到第 2 道。
+      final (container2, notifier2) = loadNotifier();
+      await notifier2.load();
+      var s2 = container2.read(reviewProvider);
+      expect(s2.resume, isNotNull);
+      expect(s2.resume!.sessionIndex, 1);
+      await notifier2.startSession(resume: true);
+      s2 = container2.read(reviewProvider);
+      expect(s2.inSession, isTrue);
+      expect(s2.sessionIndex, 1);
+      expect(s2.currentSessionQuestion.questionId, secondId);
+    });
+    test('混合会话：有错因的题与无错因的题混练，断点位置不错位', () async {
+      await AppDatabase.upsertQuestionInto(
+        db,
+        _pq('q1', errorTypes: const ['计算错误']),
+      );
+      await AppDatabase.upsertQuestionInto(
+        db,
+        _pq('q2', errorTypes: const []),
+      );
+      final (container, notifier) = loadNotifier();
+      await notifier.load();
+      await notifier.startPracticeSession();
+      var s = container.read(reviewProvider);
+      expect(s.inSession, isTrue);
+      expect(s.sessionQuestions.length, 2);
+      // 一道有错因、一道无错因（顺序随机，只断言集合）。
+      expect(
+        s.sessionQuestions.map((sq) => sq.causes).toSet(),
+        {
+          ['计算错误'],
+          <String>[],
+        },
+      );
+      final secondId = s.sessionQuestions[1].questionId;
+      await _walkAndCommit(notifier);
+      s = container.read(reviewProvider);
+      expect(s.sessionIndex, 1);
+      await notifier.pauseSession();
+      s = container.read(reviewProvider);
+      expect(s.resume, isNotNull);
+      expect(s.resume!.sessionIndex, 1);
+      // 新容器重读，断点仍在第 2 道；继续回到断点。
+      final (container2, notifier2) = loadNotifier();
+      await notifier2.load();
+      var s2 = container2.read(reviewProvider);
+      expect(s2.resume, isNotNull);
+      expect(s2.resume!.sessionIndex, 1);
+      await notifier2.startSession(resume: true);
+      s2 = container2.read(reviewProvider);
+      expect(s2.inSession, isTrue);
+      expect(s2.sessionIndex, 1);
+      expect(s2.currentSessionQuestion.questionId, secondId);
+    });
+  });
+
   group('专项练习暂停恢复（页面）', () {
     testWidgets('暂停后出恢复条：继续回到中断的题', (tester) async {
       final repo = FakeReviewRepo(
@@ -227,6 +355,31 @@ void main() {
       await tapButton(tester, '专项练习');
       await tapButton(tester, '开始练习');
       expect(find.textContaining('本轮共 2 道题、2 个错因'), findsOneWidget);
+      // 走完第 1 道，到第 2 道再暂停。
+      await tapButton(tester, '开始作答');
+      await tapButton(tester, '我已完成作答');
+      await tapButton(tester, '下一题');
+      expect(find.textContaining('第 2 / 2 道题'), findsOneWidget);
+      await tapButton(tester, '暂停');
+      expect(find.textContaining('继续上次会话'), findsNWidgets(2)); // 恢复条文案 + 按钮
+      expect(find.text('放弃重开'), findsOneWidget);
+      await tapButton(tester, '继续上次会话');
+      expect(find.textContaining('第 2 / 2 道题'), findsOneWidget);
+      expect(find.text('① 看题'), findsOneWidget);
+    });
+
+    testWidgets('无错因的题暂停后出恢复条', (tester) async {
+      final repo = FakeReviewRepo(
+        questions: [
+          rq('q1', '函数极限', errorTypes: const []),
+          rq('q2', '导数应用综合', errorTypes: const []),
+        ],
+        records: const [],
+      );
+      await pumpReview(tester, repo: repo);
+      await tapButton(tester, '专项练习');
+      await tapButton(tester, '开始练习');
+      expect(find.textContaining('本轮共 2 道题、0 个错因'), findsOneWidget);
       // 走完第 1 道，到第 2 道再暂停。
       await tapButton(tester, '开始作答');
       await tapButton(tester, '我已完成作答');
