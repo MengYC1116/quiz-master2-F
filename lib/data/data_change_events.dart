@@ -9,11 +9,14 @@ import 'dart:async';
 // 事件本身不做数据搬运。发布是“写后”不是“写前”：写入成功、事务提交
 // 后才 emit；写入抛异常或事务回滚时不 emit。
 //
-// FR-31（W2-14）：订阅方共两个——`badgeCountsProvider` 只消费
+// FR-31（W2-14）：订阅方共三个——`badgeCountsProvider` 只消费
 // `DataChangeKind.badges`（`lib/state/badge_counts_provider.dart:92`），
 // `homeProvider` 只消费 `DataChangeKind.recentlyViewed`
-//（`lib/state/home_provider.dart`，D-94：详情返回首页时重读历史）。
-// 其余四种 kind（questions / subjects / reviewRecords / settings）
+//（`lib/state/home_provider.dart`，D-94：详情返回首页时重读历史），
+// `DetailNotifier` 只消费 `DataChangeKind.reviewRecords`
+//（`lib/state/detail_notifier.dart`，收尾第 2 路：复习记录变了，
+// 详情页不重进即重读本题复习状态 + 错因记录 / 解决记录）。
+// 其余三种 kind（questions / subjects / settings）
 // 目前没有任何订阅方，是为将来订阅方预留的元数据——各页现靠
 // autoDispose“回页重建重读”刷新，不依赖总线。将来给某一 kind 加
 // 订阅方时，把该页的刷新时序纳入回归（见 W2-01 角标竞态的教训：
