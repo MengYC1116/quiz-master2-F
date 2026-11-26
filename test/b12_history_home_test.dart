@@ -1,7 +1,9 @@
 // 十二批功能 4（D-91）：首页历史——首页 widget 测试 + 时间格式单测。
-// 覆盖：有记录时显示“最近查看”区（标题、学科名、最后查看时间）、
+// 覆盖：有记录时显示“最近查看”区（题干/标题、学科名、最后查看时间）、
 // 点行进详情（onOpenDetail 回调，orderIds 为列表顺序）、
 // 空时整区隐藏；时间格式：今天 / 昨天 / 同年 / 跨年。
+// 2026-11-26：主行显示题干（与错题本列表行同一取法 rowDisplayTitle），
+// 无题干回退原标题。
 // 用 FakeRepo 覆盖 repository 调用（不碰真实数据库，不改口径）。
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -156,6 +158,42 @@ void main() {
       await _pumpHistoryHome(tester, repo: repo);
       expect(find.text('最近查看'), findsNothing);
       expect(find.byKey(const Key('home-history-q-m1')), findsNothing);
+    });
+
+    testWidgets('有题干时主行显示题干，不显示文件标题', (tester) async {
+      final now = DateTime.now();
+      final repo = _HistoryFakeRepo()
+        ..historyList = [
+          (
+            question: Question(
+              id: 'q-s1',
+              title: 'gs_p089.png · 第1页 · 第1题',
+              subjectId: 'math',
+              createdAt: DateTime(2026, 11, 10),
+              ocrStem: '测试题干文字',
+            ),
+            viewedAt: DateTime(now.year, now.month, now.day, 9, 30),
+          ),
+        ];
+      await _pumpHistoryHome(tester, repo: repo);
+      expect(find.text('最近查看'), findsOneWidget);
+      expect(find.text('测试题干文字'), findsOneWidget);
+      expect(find.text('gs_p089.png · 第1页 · 第1题'), findsNothing);
+      expect(find.text('数学 · 今天 09:30'), findsOneWidget);
+    });
+
+    testWidgets('无题干时主行回退显示原标题', (tester) async {
+      final now = DateTime.now();
+      final repo = _HistoryFakeRepo()
+        ..historyList = [
+          (
+            question: _hq('q-s2', 'gs_p089.png · 第1页 · 第1题'),
+            viewedAt: DateTime(now.year, now.month, now.day, 9, 30),
+          ),
+        ];
+      await _pumpHistoryHome(tester, repo: repo);
+      expect(find.text('gs_p089.png · 第1页 · 第1题'), findsOneWidget);
+      expect(find.text('数学 · 今天 09:30'), findsOneWidget);
     });
 
     testWidgets('已归档的题照常显示（归档显示由详情页自己处理）', (tester) async {
