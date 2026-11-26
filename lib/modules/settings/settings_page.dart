@@ -1017,32 +1017,10 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
     return Column(
       children: [
         _row('加入方式', '手动加入：在题目详情点「加入复习」。', const SizedBox.shrink()),
-        _row(
-          '复查间隔',
-          '错因解决后，隔几天复查。',
-          _segmented<int>(
-            value: _s.recheckIntervalDays,
-            options: const [
-              QmSegmentOption(value: 3, label: '3 天'),
-              QmSegmentOption(value: 7, label: '7 天'),
-              QmSegmentOption(value: 14, label: '14 天'),
-            ],
-            onChanged: (v) => _apply(_s.copyWith(recheckIntervalDays: v)),
-          ),
-        ),
-        _row(
-          '几次自查算已解决',
-          '同一错因、同一道题，自查几次算已解决。',
-          _segmented<int>(
-            value: _s.cureChecks,
-            options: const [
-              QmSegmentOption(value: 1, label: '1 次'),
-              QmSegmentOption(value: 2, label: '2 次'),
-              QmSegmentOption(value: 3, label: '3 次'),
-            ],
-            onChanged: (v) => _apply(_s.copyWith(cureChecks: v)),
-          ),
-        ),
+        // 2026-11-25 口径迁移 §5 第 8 项 (a)：「复查间隔」
+        //（recheckIntervalDays）与「几次自查算已解决」（cureChecks）
+        // 两行已隐藏——新流程不读这两个设置，留着会误导。字段、
+        // copyWith 与存储逻辑全部保留，只断界面展示。
         _row(
           '每次复习解决几个错因',
           '一次解决几个，解决完出总结。',

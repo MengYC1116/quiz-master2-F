@@ -21,25 +21,24 @@
 // 里构造器传 FakeRepo 同样经这一层注入，不用再包一层 ProviderScope。
 // 本文件不认识任何 widget，不碰 `BuildContext`、不弹 Dialog、不调导航。
 //
-// 口径（原页内注释，原样搬移，本文件不改口径）：
-// - 三个核心数按同一时间范围（本周/本月/全部）过滤：已解决按 `lastCheck`
-//   在范围内计；待解决同样按 `lastCheck` 在范围内计（S8 B1，Meng
-//   2026-11-13 裁决）；复查通过率按范围内已判定的自查记录计（`review_history`
-//   无复查备注字段，以全部已判定记录为近似）。
-// - `lastCheck` 是近似代理：从未自查的错因 `lastCheck` 为空，与已解决数
-//   同一分支，视为在范围内、计入所有范围。
-// - 弱点与学科分布按所选范围内收集的题目算（以题目 `createdAt` 为收集日期），
-//   只收已整理未归档且未掌握的题，与错题本列表默认收录口径一致
-//   （SR-P1-11：未整理题、已归档题不算进来；SR2-29：已掌握题不算进来，
-//   分布数 = 该科封面总数）：错因行只含未解决的错因，无记录的错因默认待解决；
-//   知识点行排除全部错因已解决的题。弱点计数按题 id，不按题名去重
-//   （SR-P1-10：题名不唯一，同名不同题各算 1 道）。
-// - 已掌握的定义与错题本 / 首页同一口径：按该题现存的全部错因记录算
-//   `QuestionRepository.reviewBucketOf(records) == ReviewBucket.solved`
-//   （SR3-2），不按当前错因逐因查记录。
+// 口径（FSRS 口径迁移，Meng 2026-11-25 定，§5 全部按建议；D-259：
+// 软件不判定掌握，文案只用 FSRS 的词，不出现“已掌握/已解决”类数字）：
+// - 三个核心数按同一时间范围（本周/本月/全部）过滤，范围按
+//   attempts.created_at 截取：正式复习答对按作答次数计（单位“次”）；
+//   正式复习答错按题去重计（单位“题”）；正式复习答对率 = 已判分正式
+//   作答里答对的占比，未判分不计入分母，无已判分记录时为 null（页面
+//   显示 —）。这是客观答对率，与旧的自查通过率不是同一回事。
+// - 弱点按错因：范围内正式答错的题按 attempt 的 cause_ids 归因，
+//   按题数排；弱点按知识点：题目集合口径（只收已整理未归档的题，
+//   不再排除“已掌握”题），按知识点分组、按题数排。
+// - 按学科分布：各科在范围内有正式作答的题数（按题去重）。
+// - 聚合集中在 lib/data/report_stats.dart 的纯函数
+//   computeReportStats（仿 planNewRelease 模式）；本文件只做
+//   “响应式读取 + 范围选择”，派生 getter 均由此派生。
 // - 本周 = 本周一到今天（基线口径）。
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../data/report_stats.dart';
 import '../data/repository.dart';
 import '../data/review_engine.dart';
 import '../models/models.dart';
@@ -142,7 +141,6 @@ class ReportState {
     this.questions = const [],
     this.knowledgePoints = const [],
     this.subjects = const [],
-    this.history = const [],
     this.settings = AppSettings.defaults,
     // P3 入口 3：全部 attempts（样本量统计用）与已在池的题 id。
     this.attempts = const [],
@@ -170,10 +168,8 @@ class ReportState {
   /// 库里的全部学科（原 `_subjects`；空表是删光学科后的合法状态，不回退）。
   final List<Subject> subjects;
 
-  /// 全部自查记录（原 `_history`）。
-  final List<({String result, DateTime reviewedAt})> history;
-
-  /// 设置（原 `_settings`；核心数小字里的复查间隔 / 治愈次数用）。
+  /// 设置（原 `_settings`；报告小字不再读复查间隔 / 治愈次数，
+  /// 字段保留供加载与旧调用方兼容）。
   final AppSettings settings;
 
   /// P3 入口 3：全部 attempts（正式 + 专项，见 [weakStats]）。
@@ -236,135 +232,72 @@ class ReportState {
     return i < 0 ? 99 : i;
   }
 
-  // ---------- 派生：核心数 ----------
+  // ---------- 派生：核心数 / 弱点 / 分布 ----------
+  //
+  // 全部由 lib/data/report_stats.dart 的纯函数 computeReportStats
+  // 集中算出（仿 planNewRelease 模式）；这里只做类型转换与转发。
 
-  /// 已解决错因数：按 `lastCheck` 在范围内计（为空视为在范围内）。
-  int get solvedCount => records
-      .where(
-        (r) =>
-            r.status == CauseStatus.solved &&
-            (r.lastCheck == null || inRange(r.lastCheck!)),
-      )
-      .length;
+  ReportStats get _stats => computeReportStats(
+        attempts: attempts,
+        questions: questions,
+        knowledgePoints: knowledgePoints,
+        subjectIdsInOrder: [for (final s in subjects) s.id],
+        rangeStart: rangeStart,
+      );
 
-  /// 待解决错因数：同上口径。
-  int get pendingCount => records
-      .where(
-        (r) =>
-            r.status != CauseStatus.solved &&
-            (r.lastCheck == null || inRange(r.lastCheck!)),
-      )
-      .length;
+  /// 核心数 1：正式复习答对数——所选范围内正式复习答对的作答次数
+  /// （单位“次”，不是“道”）。
+  int get formalCorrectCount => _stats.formalCorrectCount;
 
-  /// 范围内已判定的自查记录（去掉 `unsure`）。
-  List<({String result, DateTime reviewedAt})> get judgedHistory =>
-      history
-          .where((h) => inRange(h.reviewedAt))
-          .where((h) => h.result != 'unsure')
-          .toList();
+  /// 核心数 2：正式复习答错的题数——所选范围内正式答错的题，
+  /// 按 questionId 去重（单位“题”）。
+  int get formalWrongQuestionCount => _stats.formalWrongQuestionCount;
 
-  /// 范围内复查通过数。
-  int get judgedPassed =>
-      judgedHistory.where((h) => h.result == 'solved').length;
+  /// 范围内正式复习已判分作答次数（答对率的分母；未判分不计入）。
+  int get gradedFormalCount => _stats.gradedFormalCount;
 
-  /// 复查通过率（无已判定记录时为 null，页面显示 —）。
-  int? get passRate => judgedHistory.isEmpty
-      ? null
-      : (judgedPassed * 100 / judgedHistory.length).round();
+  /// 其中答对次数（答对率的分子）。
+  int get gradedFormalCorrectCount => _stats.gradedFormalCorrectCount;
+
+  /// 核心数 3：正式复习答对率（百分比取整；无已判分记录时为 null，
+  /// 页面显示 —）。客观答对率，与旧的自查通过率不是同一回事。
+  int? get passRate => _stats.passRate;
 
   // ---------- 派生：弱点与分布 ----------
 
-  /// （题 id|错因）→ 解决记录；无记录的错因默认待解决。
-  Map<String, CauseRecord> get recordByKey => {
-    for (final r in records) '${r.questionId}|${r.cause}': r,
-  };
+  /// 所选范围内收集的题目（新口径）：只收已整理未归档的题；
+  /// `all` 不按日期过滤；D-259：不再排除“已掌握”题。
+  List<Question> get questionsInRange =>
+      reportQuestionsInRange(questions: questions, rangeStart: rangeStart);
 
-  /// 与错题本 / 首页同一口径（SR3-2）：按该题现存的全部错因记录算
-  /// `reviewBucketOf == solved`；无记录的题不是已掌握。
-  bool isMastered(Question q) {
-    final rs = records.where((r) => r.questionId == q.id).toList();
-    return QuestionRepository.reviewBucketOf(rs) == ReviewBucket.solved;
-  }
-
-  /// 所选范围内收集的题目（原 `_questionsInRange`）：只收已整理未归档
-  /// 且未掌握的题；`all` 不按日期过滤。
-  List<Question> get questionsInRange {
-    final inScope = questions.where(
-      (q) => q.isOrganized && !q.isArchived && !isMastered(q),
+  static WeakGroup _toWeakGroup(ReportWeakGroupData data) {
+    final g = WeakGroup(
+      subjectId: data.subjectId,
+      key: data.key,
+      titles: List.of(data.titles),
     );
-    if (range == 'all') return inScope.toList();
-    return inScope.where((q) => inRange(q.createdAt)).toList();
+    g.questionIds.addAll(data.questionIds);
+    return g;
   }
 
-  /// 最常错的原因 Top（全量，按题数倒序，学科顺序、错因文本兜底；原
-  /// `_causeGroups`）。
-  List<WeakGroup> get causeGroups {
-    final byKey = recordByKey;
-    final groups = <String, WeakGroup>{};
-    final order = <String>[];
-    for (final q in questionsInRange) {
-      for (final cause in q.allCauses) {
-        final record = byKey['${q.id}|$cause'];
-        if (record?.status == CauseStatus.solved) continue;
-        final key = '${q.subjectId}|$cause';
-        var g = groups[key];
-        if (g == null) {
-          g = WeakGroup(subjectId: q.subjectId, key: cause, titles: []);
-          groups[key] = g;
-          order.add(key);
-        }
-        if (g.questionIds.add(q.id)) g.titles.add(q.title);
-      }
-    }
-    final list = order.map((k) => groups[k]!).toList();
-    list.sort((a, b) {
-      final c = b.count.compareTo(a.count);
-      if (c != 0) return c;
-      final s = subjectOrder(a.subjectId) - subjectOrder(b.subjectId);
-      return s != 0 ? s : a.key.compareTo(b.key);
-    });
-    return list;
-  }
+  /// 最常错的原因 Top（全量，按题数倒序，学科顺序、错因文本兜底）：
+  /// 范围内正式答错的题按 attempt 的 cause_ids 归因，单位是题数。
+  List<WeakGroup> get causeGroups =>
+      _stats.causeGroups.map(_toWeakGroup).toList();
 
-  /// 最常错的知识点 Top（全量；原 `_kpGroups`）。
-  List<WeakGroup> get kpGroups {
-    final byKey = recordByKey;
-    final groups = <String, WeakGroup>{};
-    final order = <String>[];
-    for (final q in questionsInRange) {
-      if (q.allCauses.isEmpty) continue;
-      final allSolved = q.allCauses.every(
-        (c) => byKey['${q.id}|$c']?.status == CauseStatus.solved,
-      );
-      if (allSolved) continue;
-      for (final kpId in q.knowledgePointIds) {
-        if (kpOf(kpId) == null) continue;
-        final key = '${q.subjectId}|$kpId';
-        var g = groups[key];
-        if (g == null) {
-          g = WeakGroup(subjectId: q.subjectId, key: kpId, titles: []);
-          groups[key] = g;
-          order.add(key);
-        }
-        if (g.questionIds.add(q.id)) g.titles.add(q.title);
-      }
-    }
-    final list = order.map((k) => groups[k]!).toList();
-    list.sort((a, b) {
-      final c = b.count.compareTo(a.count);
-      if (c != 0) return c;
-      final s = subjectOrder(a.subjectId) - subjectOrder(b.subjectId);
-      if (s != 0) return s;
-      return kpName(a.key).compareTo(kpName(b.key));
-    });
-    return list;
-  }
+  /// 最常错的知识点 Top（全量）：题目集合口径，按题数倒序。
+  List<WeakGroup> get kpGroups =>
+      _stats.kpGroups.map(_toWeakGroup).toList();
 
-  /// “接下来练什么”一句话（原页内 `nextSentence`，无按钮）。
+  /// 按学科分布：各科在范围内有正式作答的题数（按题去重）。
+  Map<String, int> get answeredBySubject => _stats.answeredBySubject;
+
+  /// “接下来练什么”一句话（原页内 `nextSentence`，无按钮）：
+  /// 跟按错因 Top 5 走，取第一名。
   String get nextSentence {
     final top = causeGroups;
     return top.isEmpty
-        ? '这段时间没有待解决的错因，先去复习页把到期的复查做完。'
+        ? '这段时间正式复习还没有答错的题，先去复习页把到期的题做完。'
         : '先解决${subjectOf(top.first.subjectId).name}的${top.first.key}。';
   }
 
@@ -418,7 +351,6 @@ class ReportState {
     List<Question>? questions,
     List<KnowledgePoint>? knowledgePoints,
     List<Subject>? subjects,
-    List<({String result, DateTime reviewedAt})>? history,
     AppSettings? settings,
     List<AttemptData>? attempts,
     Set<String>? fsrsPoolIds,
@@ -431,7 +363,6 @@ class ReportState {
       questions: questions ?? this.questions,
       knowledgePoints: knowledgePoints ?? this.knowledgePoints,
       subjects: subjects ?? this.subjects,
-      history: history ?? this.history,
       settings: settings ?? this.settings,
       attempts: attempts ?? this.attempts,
       fsrsPoolIds: fsrsPoolIds ?? this.fsrsPoolIds,
@@ -459,8 +390,11 @@ class ReportNotifier extends Notifier<ReportState> {
   }
 
   /// 读库（原 `_load` 原样搬移：读错因记录、题目（含已归档）、知识点、
-  /// 学科、设置，再逐题读自查记录）。成功时整份 state 一次性替换
-  ///（范围保持当前值，不重置）；失败时只翻 `loadError`，旧内容留住。
+  /// 学科、设置、全部 attempts 与 FSRS 池内标记）。报告不再读
+  /// review_history（FSRS 口径迁移：通过率改由 attempts 派生，
+  /// load 里逐题 reviewHistory 的循环已删）。成功时整份 state
+  /// 一次性替换（范围保持当前值，不重置）；失败时只翻 `loadError`，
+  /// 旧内容留住。
   Future<void> load() async {
     // D-42：build() 的 microtask 首查可能在页面已离开、Provider 已销毁后
     // 才跑——先判 _disposed 再碰 ref；repo 入口处捕获一次，之后不再 ref.read。
@@ -472,10 +406,6 @@ class ReportNotifier extends Notifier<ReportState> {
       final kps = await repo.knowledgePoints();
       final subjects = await repo.subjects();
       final settings = await repo.settings();
-      final history = <({String result, DateTime reviewedAt})>[];
-      for (final q in questions) {
-        history.addAll(await repo.reviewHistory(q.id));
-      }
       // P3 入口 3：样本量统计用的全部 attempts 与池内标记；读不到
       // 时按空处理（统计口径里样本量为 0 即“数据较少”），不拖垮报告加载。
       List<AttemptData> attempts;
@@ -500,7 +430,6 @@ class ReportNotifier extends Notifier<ReportState> {
         knowledgePoints: kps,
         subjects: subjects,
         settings: settings,
-        history: history,
         attempts: attempts,
         fsrsPoolIds: poolIds,
       );

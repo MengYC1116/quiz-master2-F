@@ -21,26 +21,19 @@ import 'weak_point_list_page.dart';
 /// 弱点行按「学科 × 错因 / 学科 × 知识点」分组，点行进错题本打开
 /// 对应学科那本并按该错因 / 知识点筛好。
 ///
-/// 口径（与 HTML 的对照见 R9-REPORT §6）：
-/// - 三个核心数按同一时间范围（本周/本月/全部）过滤：已解决按
-///   `lastCheck` 在范围内计；待解决同样按 `lastCheck` 在范围内计
-///   （S8 B1，Meng 2026-11-13 裁决，原 R0 §6-B-1）；复查通过率按
-///   范围内已判定的自查记录计（`review_history` 无复查备注字段，
-///   以全部已判定记录为近似）。
-/// - `lastCheck` 是近似代理：模型无“治愈日期”/“待解决起始日”字段，
-///   `lastCheck` 是最近一次自查时间；从未自查的错因 `lastCheck` 为
-///   空，与已解决数同一分支，视为在范围内、计入所有范围。
-/// - 弱点与学科分布按所选范围内收集的题目算（HTML `qsIn` / QDATE 口径，
-///   以题目 `createdAt` 为收集日期），只收已整理未归档且未掌握的题，与错题本
-///   列表默认收录口径一致（SR-P1-11：未整理题、已归档题不算进来；
-///   SR2-29：已掌握题不算进来，分布数 = 该科封面总数）：
-///   错因行只含未解决的错因，无记录的错因默认待解决；知识点行排除
-///   全部错因已解决的题。弱点计数按题 id，不按题名去重（SR-P1-10：
-///   题名不唯一，同名不同题各算 1 道）。
-///   已掌握的定义与错题本 / 首页同一口径：按该题现存的全部错因记录算
-///   `QuestionRepository.reviewBucketOf(records) == ReviewBucket.solved`，
-///   不按当前错因逐因查记录——退出复习后改错因会留下陈旧记录（已删错因
-///   的记录残留、新错因无记录），逐因查会与错题本双向偏离 1 道（SR3-2）。
+/// 口径（FSRS 口径迁移，Meng 2026-11-25 定；D-259：软件不判定掌握，
+/// 文案只用 FSRS 的词，不出现“已掌握/已解决”类数字）：
+/// - 三个核心数按同一时间范围（本周/本月/全部）过滤，范围按
+///   attempts.created_at 截取：正式复习答对按作答次数计（单位“次”）；
+///   正式复习答错按题去重计（单位“题”）；正式复习答对率 = 已判分正式
+///   作答里答对的占比，未判分不计入分母，无已判分记录时显示 —。
+///   这是客观答对率，与旧的自查通过率不是同一回事。
+/// - 弱点按错因：范围内正式答错的题按 attempt 的 cause_ids 归因，
+///   按题数排；弱点按知识点：题目集合口径（只收已整理未归档的题，
+///   不再排除“已掌握”题），按知识点分组、按题数排。
+///   弱点计数按题 id，不按题名去重（SR-P1-10：题名不唯一，
+///   同名不同题各算 1 道）。
+/// - 按学科分布：各科在范围内有正式作答的题数（按题去重）。
 /// - 本周 = 本周一到今天（基线口径；HTML 是今天往前 7 天，见报告）。
 ///
 /// ARCH-PLAN-A 第 2 阶段 A 路：时间范围、三个核心数、弱点 Top 5、按学科
@@ -134,9 +127,8 @@ class _ReportPageState extends ConsumerState<ReportPage> {
     }
 
     // 三个核心数、弱点 Top 5、按学科分布、“接下来练什么”一句都在
-    // ReportState 里派生（`lib/state/report_provider.dart`，S8 B1 口径）；
+    // ReportState 里派生（`lib/state/report_provider.dart`，FSRS 口径）；
     // 本页只取数渲染，不再自己算。
-    final qsIn = report.questionsInRange;
     final causeTop = report.causeGroups;
     final kpTop = report.kpGroups;
     final nextSentence = report.nextSentence;
@@ -203,12 +195,11 @@ class _ReportPageState extends ConsumerState<ReportPage> {
           _coreStrip(
             palette,
             scale,
-            settings: report.settings,
-            solvedCount: report.solvedCount,
-            pendingCount: report.pendingCount,
+            formalCorrectCount: report.formalCorrectCount,
+            formalWrongQuestionCount: report.formalWrongQuestionCount,
             passRate: report.passRate,
-            judgedTotal: report.judgedHistory.length,
-            judgedPassed: report.judgedPassed,
+            gradedTotal: report.gradedFormalCount,
+            gradedCorrect: report.gradedFormalCorrectCount,
           ),
           SizedBox(height: DesignTokens.reportSuggestMarginTop * scale),
           _suggestion(palette, scale, nextSentence),
@@ -282,16 +273,14 @@ class _ReportPageState extends ConsumerState<ReportPage> {
               ],
             ),
           SizedBox(height: DesignTokens.reportSectionMarginTop * scale),
-          _sectionTitle('错在哪个学科（只按学科看）', palette),
+          _sectionTitle('各科正式作答（只按学科看）', palette),
           SizedBox(height: DesignTokens.reportSectionMarginBottom * scale),
           for (var i = 0; i < report.subjects.length; i++)
             _distRow(
               palette,
               scale,
               subject: report.subjects[i],
-              count: qsIn
-                  .where((q) => q.subjectId == report.subjects[i].id)
-                  .length,
+              count: report.answeredBySubject[report.subjects[i].id] ?? 0,
               last: i == report.subjects.length - 1,
             ),
         ],
@@ -311,38 +300,38 @@ class _ReportPageState extends ConsumerState<ReportPage> {
     );
   }
 
-  /// 三个核心数一排（HTML `.rpt-core` / `.rpt-num`）。
+  /// 三个核心数一排（HTML `.rpt-core` / `.rpt-num`；FSRS 口径，
+  /// 单位写清：答对按作答次数计，答错按题计，答对率是客观答对率）。
   Widget _coreStrip(
     AppPalette palette,
     double scale, {
-    required AppSettings settings,
-    required int solvedCount,
-    required int pendingCount,
+    required int formalCorrectCount,
+    required int formalWrongQuestionCount,
     required int? passRate,
-    required int judgedTotal,
-    required int judgedPassed,
+    required int gradedTotal,
+    required int gradedCorrect,
   }) {
-    final rateSmall = judgedTotal == 0
-        ? '这段时间还没有复查记录'
-        : '复查 $judgedTotal 次，通过 $judgedPassed 次'
-              '（已解决满 ${settings.recheckIntervalDays} 天回来复查）';
+    final rateSmall = gradedTotal == 0
+        ? '这段时间还没有已判分的正式复习作答'
+        : '正式复习 $gradedTotal 次已判分，答对 $gradedCorrect 次'
+              ' · 客观答对率，与旧的自查通过率不是同一回事';
     final cells = [
       _CoreCell(
-        valueKey: const ValueKey('report-core-solved'),
-        value: '$solvedCount',
-        label: '已解决错因',
-        small: '同一错因 ${settings.cureChecks} 次自查「已解决」才算解决',
+        valueKey: const ValueKey('report-core-formal-correct'),
+        value: '$formalCorrectCount',
+        label: '正式复习答对',
+        small: '按作答次数计（正式复习）',
       ),
       _CoreCell(
-        valueKey: const ValueKey('report-core-pending'),
-        value: '$pendingCount',
-        label: '待解决错因',
-        small: '待解决 + 解决中，还留在复习列表里',
+        valueKey: const ValueKey('report-core-formal-wrong'),
+        value: '$formalWrongQuestionCount',
+        label: '正式复习答错',
+        small: '按题数计，同一题多次答错只算 1 道',
       ),
       _CoreCell(
-        valueKey: const ValueKey('report-core-rate'),
+        valueKey: const ValueKey('report-core-formal-rate'),
         value: passRate == null ? '—' : '$passRate%',
-        label: '复查通过率',
+        label: '正式复习答对率',
         small: rateSmall,
       ),
     ];
@@ -488,7 +477,7 @@ class _ReportPageState extends ConsumerState<ReportPage> {
         SizedBox(height: DesignTokens.reportSectionMarginBottom * scale),
         if (groups.isEmpty)
           Text(
-            isKp ? '这段时间没有待解决的知识点。' : '这段时间没有待解决的错因。',
+            isKp ? '这段时间没有带知识点的错题。' : '这段时间正式复习还没有答错的题。',
             style: TextStyle(
               fontSize: DesignTokens.reportWeakEmptyFontSize,
               color: palette.ink,
@@ -548,7 +537,7 @@ class _ReportPageState extends ConsumerState<ReportPage> {
     final detail = isKp
         ? '$subjectName${(report.kpOf(group.key)?.chapter.isNotEmpty ?? false) ? ' › ${report.kpOf(group.key)!.chapter}' : ''} · ${group.titles.join('、')}'
         : group.titles.join('、');
-    final countText = isKp ? '还没解决 ${group.count} 道' : '${group.count} 道题';
+    final countText = '${group.count} 道题';
     return Container(
       decoration: BoxDecoration(
         border: Border(bottom: BorderSide(color: palette.line, width: 1)),
@@ -679,7 +668,7 @@ class _ReportPageState extends ConsumerState<ReportPage> {
             : Border(bottom: BorderSide(color: palette.line, width: 1)),
       ),
       child: Text(
-        '${subject.name} · $count 道错题',
+        '${subject.name} · 作答 $count 道',
         style: TextStyle(
           fontSize: DesignTokens.bodyFontSize,
           fontWeight: FontWeight.w700,

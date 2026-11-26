@@ -565,7 +565,67 @@ class QuestionRepository {
     }
   }
 
-  /// P4：题目首次显示时记首次呈现（第六轮补充第 1 项的调用点）。
+  /// FSRS 口径：到期题按学科分组计数（首页学科行与左导航角标共用）。
+  ///
+  /// 实现 = [fsrsDueQuestionIds] 的 id 集合按 `questions.subjectId`
+  /// 分组（归档已在 [fsrsDueQuestionIds] 内滤掉）。键按库里的
+  /// `subjects` 表取（与 [homeRevCounts] 的 B2 约定一致，新学科
+  /// 也要有计数键）；到期题的学科若不在 subjects 表里，仍单独立键，
+  /// 不静默丢数。求和 = [fsrsDueTotal] = `fsrsDueQuestionIds().length`
+  ///（对照测试断言）。读不到时返回全 0 的 map，不抛错。
+  Future<Map<String, int>> fsrsDueCountsBySubject({
+    required ReviewScheduler scheduler,
+    DateTime? now,
+  }) async {
+    try {
+      final dueIds = await fsrsDueQuestionIds(scheduler: scheduler, now: now);
+      final questions = await all(includeArchived: true);
+      final subjectByQuestionId = {
+        for (final q in questions) q.id: q.subjectId,
+      };
+      final subjectsList = await subjects();
+      return fsrsDueCountsBySubjectPure(
+        dueIds: dueIds,
+        subjectByQuestionId: subjectByQuestionId,
+        subjectIds: [for (final s in subjectsList) s.id],
+      );
+    } catch (_) {
+      try {
+        final subjectsList = await subjects();
+        return {for (final s in subjectsList) s.id: 0};
+      } catch (_) {
+        return const {};
+      }
+    }
+  }
+
+  /// FSRS 口径：到期总数 = [fsrsDueCountsBySubject] 各科之和，与
+  /// `fsrsDueQuestionIds().length` 相等（首页焦点卡大数字与角标
+  /// 总数共用；对照测试断言）。
+  Future<int> fsrsDueTotal({
+    required ReviewScheduler scheduler,
+    DateTime? now,
+  }) async {
+    final counts = await fsrsDueCountsBySubject(scheduler: scheduler, now: now);
+    return counts.values.fold<int>(0, (a, b) => a + b);
+  }
+
+  /// [fsrsDueCountsBySubject] 的纯函数核：输入到期 id、题→学科映射、
+  /// 学科 id 列表，输出每科到期数。不读库，便于单测（仿
+  /// `planNewRelease` 的纯函数模式，夹具数据即可覆盖）。
+  static Map<String, int> fsrsDueCountsBySubjectPure({
+    required Iterable<String> dueIds,
+    required Map<String, String> subjectByQuestionId,
+    required Iterable<String> subjectIds,
+  }) {
+    final map = <String, int>{for (final id in subjectIds) id: 0};
+    for (final qid in dueIds) {
+      final sid = subjectByQuestionId[qid];
+      if (sid == null) continue;
+      map[sid] = (map[sid] ?? 0) + 1;
+    }
+    return map;
+  }
   ///
   /// 只在到期复习会话里、题目第一次进入“看题”步时调（专项练习不调，
   /// 不耗新题额度）；同一内容版本已有记录时 recordFirstPresented

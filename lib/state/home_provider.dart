@@ -1,6 +1,6 @@
 // 首页业务状态（ARCH-PLAN-A 第 2 阶段 A 路：首页）。
 //
-// 状态是 [HomeState]（继续上次、每学科待复习/待复查数、最近考试倒计时
+// 状态是 [HomeState]（继续上次、每学科到期数、最近考试倒计时
 // 等首页业务数据），唯一真源仍是 SQLite；本 Provider 只做“响应式读取”，
 // 不另存一份、不改库。
 //
@@ -28,6 +28,7 @@ import '../data/repository.dart';
 import '../models/exam_event.dart';
 import '../models/models.dart';
 import 'repository_provider.dart';
+import 'review_notifier.dart';
 
 /// 首页业务状态的 Provider：页面出现即读库（见 [HomeNotifier.build]）。
 /// FR-19：声明 `dependencies: [repositoryProvider]`（D-49 同款）——
@@ -36,7 +37,7 @@ import 'repository_provider.dart';
 /// 补声明只锁住挂载语义 + 根 Scope + push 测试覆盖。
 final homeProvider = NotifierProvider.autoDispose<HomeNotifier, HomeState>(
   HomeNotifier.new,
-  dependencies: [repositoryProvider],
+  dependencies: [repositoryProvider, reviewSchedulerProvider],
 );
 
 /// 十二批功能 4：最近查看时间的显示格式（纯函数，便于单测；
@@ -70,8 +71,8 @@ class HomeState {
     this.revCounts = const {},
     this.pendingCounts = const {},
     this.subjects = const [],
-    this.duePending = 0,
-    this.dueRecheck = 0,
+    this.dueCount = 0,
+    this.todayNewCount = 0,
     this.recent,
     this.nearestExam,
     this.history = const [],
@@ -88,7 +89,7 @@ class HomeState {
   /// 的学科格，只留问候 + 错误横幅 + 重试）。
   final bool hasLoaded;
 
-  /// 每学科要复习数（`homeRevCounts`；原 `_revCounts`）。
+  /// 每学科到期数（`fsrsDueCountsBySubject`；原 `_revCounts`）。
   final Map<String, int> revCounts;
 
   /// 每学科待整理数（`pendingOrganizeBySubject`；原 `_pendingCounts`）。
@@ -97,11 +98,13 @@ class HomeState {
   /// 库里的全部学科（入库顺序；原 `_subjects`）。
   final List<Subject> subjects;
 
-  /// 要复习拆分：待解决道数（原 `_duePending`）。
-  final int duePending;
+  /// FSRS 到期道数（`fsrsDueQuestionIds().length`，与复习页到期
+  /// 队列、左导航复习角标同一集合；原 `_duePending` 位置）。
+  final int dueCount;
 
-  /// 要复习拆分：复查道数（原 `_dueRecheck`）。
-  final int dueRecheck;
+  /// 今日新题道数（`previewNewRelease().todaysNewIds.length`；
+  /// 原 `_dueRecheck` 位置）。
+  final int todayNewCount;
 
   /// 最近任务（`recentTask()`；原 `_recent`）。
   final ({String kind, String subjectId, String title})? recent;
@@ -112,8 +115,8 @@ class HomeState {
   /// 十二批功能 4：最近查看的题（最新在前，最多 30 条；空时首页整区隐藏）。
   final List<({Question question, DateTime viewedAt})> history;
 
-  /// 要复习总数 = 待解决 + 复查（原 `_totalDue`）。
-  int get totalDue => duePending + dueRecheck;
+  /// 到期总数 = FSRS 到期道数（原 `_totalDue`）。
+  int get totalDue => dueCount;
 
   /// 库里找学科：新学科用库里的名；找不到才回退 `Subject.byId`
   ///（数学兜底，只发生在数据不一致时；原 `_subjectOf`）。
@@ -129,8 +132,8 @@ class HomeState {
     Map<String, int>? revCounts,
     Map<String, int>? pendingCounts,
     List<Subject>? subjects,
-    int? duePending,
-    int? dueRecheck,
+    int? dueCount,
+    int? todayNewCount,
     ({String kind, String subjectId, String title})? recent,
     ExamEvent? nearestExam,
     List<({Question question, DateTime viewedAt})>? history,
@@ -144,8 +147,8 @@ class HomeState {
       revCounts: revCounts ?? this.revCounts,
       pendingCounts: pendingCounts ?? this.pendingCounts,
       subjects: subjects ?? this.subjects,
-      duePending: duePending ?? this.duePending,
-      dueRecheck: dueRecheck ?? this.dueRecheck,
+      dueCount: dueCount ?? this.dueCount,
+      todayNewCount: todayNewCount ?? this.todayNewCount,
       recent: clearRecent ? null : (recent ?? this.recent),
       nearestExam:
           clearNearestExam ? null : (nearestExam ?? this.nearestExam),
@@ -187,70 +190,56 @@ class HomeNotifier extends Notifier<HomeState> {
     return const HomeState();
   }
 
-  /// 读库（原 `_load` 的 `Future.wait` 8 路 + 待解决/复查拆分，原样搬移）：
-  /// - 要复习数与导航速览同一口径（`homeRevCounts` / `dueToday`：手动加入
-  ///   复习且已整理且至少一个错因未解决或已到复查时间，数题不数错因）；
-  /// - 待解决 / 复查拆分按 `QuestionRepository.reviewBucketOf`，
-  ///   与错题本封面三数同一口径（SR-P1-1），本页不再各自定义；
+  /// 读库（FSRS 口径，2026-11-25 口径迁移 §2.1）：
+  /// - 到期数与导航速览同一口径（`fsrsDueCountsBySubject` /
+  ///   `fsrsDueQuestionIds`：池里已开始正式复习且 `next_due_at <= now`
+  ///   的题；未开始的新卡不算到期，算今日新题 / 待开始）；
+  /// - 今日新题数复用 `previewNewRelease()`（要 `dailyNewLimit`
+  ///   设置值，故 `load()` 多读一次 `settings()`；释放计划只做展示）；
   /// - 学科格按库里的 subjects 表显示全部学科（入库顺序），不再写死
   ///   Subject.all 三科（B2；空表是删光学科后的合法状态，不回退预设三科）。
   /// 成功时整份 state 一次性替换；失败时只翻 `loadError`，旧内容留住。
   Future<void> load() async {
     // D-42：build() 的 microtask 首查可能在页面已离开、Provider 已销毁后
-    // 才跑——先判 _disposed 再碰 ref；repo 入口处捕获一次，之后不再 ref.read，
-    // 中途销毁也不抛错（收集页同款，见 D-42）。
+    // 才跑——先判 _disposed 再碰 ref；repo / scheduler 入口处捕获一次，
+    // 之后不再 ref.read，中途销毁也不抛错（收集页同款，见 D-42）。
     if (_disposed) return;
     final repo = _repo;
+    final scheduler = ref.read(reviewSchedulerProvider);
     try {
       final results = await Future.wait([
-        repo.homeRevCounts(),
+        repo.fsrsDueCountsBySubject(scheduler: scheduler),
         repo.pendingOrganizeBySubject(),
         repo.recentTask(),
-        repo.dueToday(),
-        repo.causeRecords(),
         repo.subjects(),
         // B11-9：考试事件列表（首页只取最近一场做倒计时）。
         repo.examEvents(),
         // 十二批功能 4：最近查看的题（最新在前，最多 30 条）。
         repo.recentlyViewedQuestions(),
+        // FSRS 今日新题要每日上限设置值（previewNewRelease 用）。
+        repo.settings(),
       ]);
       if (_disposed) return;
-      final due = results[3] as List<Question>;
-      final records = results[4] as List<CauseRecord>;
-      final byQ = <String, List<CauseRecord>>{};
-      for (final r in records) {
-        (byQ[r.questionId] ??= []).add(r);
-      }
-      // 待解决 / 复查拆分：有未解决错因的题计待解决；只有复查到期的题计
-      // 复查；两者之和 = 要复习总数。dueToday 只返回 pending / recheck
-      // 两类；防御性分支，万一混入也不计入总数。
-      var pending = 0;
-      var recheck = 0;
-      for (final q in due) {
-        final rs = byQ[q.id] ?? const <CauseRecord>[];
-        switch (QuestionRepository.reviewBucketOf(rs)) {
-          case ReviewBucket.pending:
-            pending++;
-          case ReviewBucket.recheck:
-            recheck++;
-          case ReviewBucket.solved:
-          case ReviewBucket.none:
-            break;
-        }
-      }
+      final settings = results[6] as AppSettings;
+      final plan = await repo.previewNewRelease(
+        scheduler: scheduler,
+        dailyNewLimit: settings.dailyNewQuestions,
+      );
+      if (_disposed) return;
+      final revCounts = results[0] as Map<String, int>;
       state = HomeState(
         loading: false,
         loadError: false,
         hasLoaded: true,
-        revCounts: results[0] as Map<String, int>,
+        revCounts: revCounts,
         pendingCounts: results[1] as Map<String, int>,
         recent: results[2] as ({String kind, String subjectId, String title})?,
-        duePending: pending,
-        dueRecheck: recheck,
-        subjects: results[5] as List<Subject>,
-        nearestExam: nearestExamEvent(results[6] as List<ExamEvent>),
+        dueCount: revCounts.values.fold<int>(0, (a, b) => a + b),
+        todayNewCount: plan.todaysNewIds.length,
+        subjects: results[3] as List<Subject>,
+        nearestExam: nearestExamEvent(results[4] as List<ExamEvent>),
         history:
-            results[7] as List<({Question question, DateTime viewedAt})>,
+            results[5] as List<({Question question, DateTime viewedAt})>,
       );
     } catch (_) {
       // 读库失败：不一直转圈（SR-P2-48），出错误横幅 + 重试入口。

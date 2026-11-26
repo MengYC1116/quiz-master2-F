@@ -17,11 +17,12 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:quiz_master2/data/database.dart';
 import 'package:quiz_master2/data/repository.dart';
+import 'package:quiz_master2/data/review_engine.dart';
 import 'package:quiz_master2/models/models.dart';
 import 'package:quiz_master2/theme/design_tokens.dart';
 
 import 'collect_page_test.dart' show FakeRepo, pumpCollect;
-import 'report_page_test.dart' show pumpReport, reportRepo, tq, trec;
+import 'report_page_test.dart' show pumpReport, reportRepo, tatt, tq, trec;
 import 'review_page_test.dart'
     show FakeReviewRepo, pickMenuItem, pumpReview, rec, reviewRepo, rq;
 import 'wrongbook_page_test.dart'
@@ -180,8 +181,15 @@ void main() {
         ...repo.records,
         trec('q-chem', '概念不清', subjectId: 'subject-chem'),
       ];
+      // FSRS 口径迁移：分布 = 范围内正式作答题数（按题去重），
+      // 只加记录不加作答时化学不会出现——补 1 次正式答错作答。
+      final nowMs = DateTime.now().millisecondsSinceEpoch;
+      repo.attemptsValue = [
+        ...repo.attemptsValue,
+        tatt('q-chem', ReviewMode.due, 0, nowMs, causeIds: ['概念不清']),
+      ];
       await pumpReport(tester, repo: repo);
-      expect(find.text('化学 · 1 道错题'), findsOneWidget);
+      expect(find.text('化学 · 作答 1 道'), findsOneWidget);
     });
 
     testWidgets('弱点行：新学科名与颜色走存色，不等于数学色', (tester) async {
@@ -199,6 +207,15 @@ void main() {
         ...repo.records,
         trec('q-chem-1', '概念不清', subjectId: 'subject-chem'),
         trec('q-chem-2', '概念不清', subjectId: 'subject-chem'),
+      ];
+      // FSRS 口径迁移：弱点按错因 = 范围内正式答错 attempts 按题去重、
+      // 按 cause_ids 归因按题数排——只给 records 时化学组不存在，
+      // 补 2 次正式答错作答（同错因，计 2 道，排 Top 5 首行）。
+      final nowMs = DateTime.now().millisecondsSinceEpoch;
+      repo.attemptsValue = [
+        ...repo.attemptsValue,
+        tatt('q-chem-1', ReviewMode.due, 0, nowMs, causeIds: ['概念不清']),
+        tatt('q-chem-2', ReviewMode.due, 0, nowMs, causeIds: ['概念不清']),
       ];
       await pumpReport(tester, repo: repo);
       final color = spanColorFor(tester, '化学');

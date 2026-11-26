@@ -19,6 +19,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:path/path.dart' as p;
 import 'package:quiz_master2/data/database.dart';
 import 'package:quiz_master2/data/repository.dart';
+import 'package:quiz_master2/data/review_scheduler.dart';
 import 'package:quiz_master2/state/home_provider.dart';
 import 'package:quiz_master2/state/repository_provider.dart';
 import 'package:sqlite3/sqlite3.dart' as sqlite3;
@@ -45,6 +46,8 @@ const _v1Ddl = [
 
 /// 造一个“v1 schema + user_version=2”的库文件：3 学科 + 1 道待复习题
 ///（已整理、已加入复习、1 条待解决错因）+ 1 道待整理题 + 1 条最近任务。
+/// 首页 FSRS 口径下 q-due 是否到期取决于 fsrs_cards，测试体内另行
+/// 建一张 3 天前答对（Good 首间隔 2 天）的卡，使其到期。
 Future<String> _v1StampedV2DbFile(Directory tmp) async {
   final dbPath = p.join(tmp.path, 'quiz-master2.db');
   final raw = sqlite3.sqlite3.open(dbPath);
@@ -134,6 +137,20 @@ void main() {
         8,
       );
       expect(await repo.all(), hasLength(2));
+      // FSRS 口径：q-due 只有错因记录、没有 FSRS 卡时不算到期；
+      // 在此建一张 3 天前答对的卡（Good 首间隔 2 天，已到期）。
+      final scheduler = FsrsReviewScheduler(
+        config: const SchedulerConfig(enableFuzzing: false),
+        store: SqliteCardStore.forDatabase(db),
+      );
+      await scheduler.initializeQuestion('q-due');
+      await scheduler.recordAnswer(
+        'q-due',
+        ReviewResult.good,
+        DateTime.now().subtract(const Duration(days: 3)),
+        'evt-b20-q-due',
+      );
+      expect(await repo.fsrsDueQuestionIds(scheduler: scheduler), ['q-due']);
       // 写路径：整行写回不再报 no such column。
       final q = (await repo.all()).firstWhere((e) => e.id == 'q-due');
       await repo.save(q.copyWith(notes: '回归探针改写'));
@@ -161,8 +178,8 @@ void main() {
       expect(s.loadError, isFalse);
       expect(s.hasLoaded, isTrue);
       expect(s.totalDue, 1);
-      expect(s.duePending, 1);
-      expect(s.dueRecheck, 0);
+      expect(s.dueCount, 1);
+      expect(s.todayNewCount, 0);
       expect(s.revCounts, {'math': 1, 'english': 0, 'politics': 0});
       expect(s.pendingCounts, {'math': 0, 'english': 1, 'politics': 0});
       expect(s.subjects.map((e) => e.id), ['math', 'english', 'politics']);

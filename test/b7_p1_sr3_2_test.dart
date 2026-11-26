@@ -1,25 +1,26 @@
-// Batch 7 P1（SR3-2）：报告分布数与错题本封面数在陈旧记录下一致。
-// 报告 `_isMastered` 已改用与错题本/首页同一的记录口径
-// （`QuestionRepository.reviewBucketOf(records) == ReviewBucket.solved`），
-// 不再按 `allCauses` 逐因查记录。覆盖自审里的两条复现路径：
-// （1）报告多算：某题错因 [计算错误] 已治愈 → 取消加入复习（记录保留）
-//     → 详情页加错因 `概念不清`（无记录）。旧口径下报告判未掌握、
-//     错题本判已掌握，分布数 = 封面数 + 1；修后两边都判已掌握，
-//     分布 0 道、封面 0 道。
-// （2）报告少算：某题 [计算错误 已解决，概念不清 待解决] → 取消加入复习
-//     → 详情页删掉 `概念不清`（待解决记录残留）。旧口径下报告只看剩下
-//     的 `计算错误` 判已掌握、错题本判未掌握，分布数 = 封面数 − 1；
-//     修后两边都判未掌握，分布 1 道、封面 1 道。
-// 用同一份 FakeRepo 同时泵报告页（分布行）与错题本页（封面“道题”数），
-// 两边数字必须相等。只用 FakeRepo，不碰真实数据库；不用异步文件 IO。
+// FSRS 口径迁移（方案 §2.3，Meng 2026-11-25 定）：报告分布不再是
+// “范围内未掌握题数”，而是“范围内有正式作答的题数”（attempts 口径，
+// 按题去重；专项练习不计；见 lib/data/report_stats.dart 的
+// computeReportStats.answeredBySubject）。因此分布数与错题本封面数
+// 按定义不再相等——封面是另一口径的数，本文件不再断言两者相等，只断言
+// 报告分布行本身符合新定义。
+// 仍沿用 SR3-2 的两组陈旧记录夹具，证明分布不再受错因记录状态影响：
+// （1）某题错因 [计算错误] 已治愈 → 取消加入复习（记录保留）
+//     → 详情页加错因 `概念不清`（无记录）。旧口径下报告判未掌握，
+//     分布 1 道；新口径只看 attempts：该题有正式作答即计 1 道。
+// （2）某题 [计算错误 已解决，概念不清 待解决] → 取消加入复习
+//     → 详情页删掉 `概念不清`（待解决记录残留）。新口径下同一题
+//     两次正式作答 + 一次专项练习作答仍只计 1 道（按题去重、只计正式）。
+// 只用 FakeRepo，不碰真实数据库；不用异步文件 IO。期望值由
+// computeReportStats 直接算出，不手写。
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:quiz_master2/data/database.dart';
+import 'package:quiz_master2/data/report_stats.dart';
 import 'package:quiz_master2/data/repository.dart';
 import 'package:quiz_master2/data/review_engine.dart';
 import 'package:quiz_master2/models/models.dart';
 import 'package:quiz_master2/modules/report/report_page.dart';
-import 'package:quiz_master2/modules/wrongbook/wrongbook_page.dart';
 import 'package:quiz_master2/theme/app_theme.dart';
 
 DateTime get _today {
@@ -50,13 +51,17 @@ CauseRecord _r(String qid, String cause, CauseStatus status) => CauseRecord(
       joinedAt: _today,
     );
 
-/// 同时服务报告页与错题本页的 FakeRepo（只覆盖读方法，不碰真实数据库）。
+/// 同时服务报告页的 FakeRepo（只覆盖读方法，不碰真实数据库）。
 class _StaleRepo extends QuestionRepository {
-  _StaleRepo({required this.questions, required this.records})
-      : super(AppDatabase.instance);
+  _StaleRepo({
+    required this.questions,
+    required this.records,
+    this.attempts = const [],
+  }) : super(AppDatabase.instance);
 
   List<Question> questions;
   List<CauseRecord> records;
+  List<AttemptData> attempts;
 
   @override
   Future<List<Subject>> subjects() async => [Subject.math];
@@ -98,10 +103,10 @@ class _StaleRepo extends QuestionRepository {
   @override
   Future<List<SavedSearch>> savedSearches() async => const [];
 
-  // P3：报告 load() 读全部 attempts、错题本 load() 读池内标记
-  //（同款 D-225：不覆写会走真实库、页面卡 loading）。
+  // P3：报告 load() 读全部 attempts（同款 D-225：不覆写会走真实库、
+  // 页面卡 loading）。
   @override
-  Future<List<AttemptData>> loadAllAttempts() async => const [];
+  Future<List<AttemptData>> loadAllAttempts() async => List.of(attempts);
 
   @override
   Future<Set<String>> fsrsPoolQuestionIds() async => const {};
@@ -131,84 +136,95 @@ Future<void> _pumpReport(WidgetTester tester, _StaleRepo repo) async {
   await tester.pumpAndSettle();
 }
 
-Future<void> _pumpWrongbook(WidgetTester tester, _StaleRepo repo) async {
-  tester.view.physicalSize = const Size(1280, 720);
-  tester.view.devicePixelRatio = 1.0;
-  addTearDown(tester.view.resetPhysicalSize);
-  addTearDown(tester.view.resetDevicePixelRatio);
-  await tester.pumpWidget(
-    MaterialApp(
-      theme: AppTheme.light(scale: 1.0),
-      home: Scaffold(
-        body: WrongbookPage(
-          repo: repo,
-          onOpenHome: () {},
-          onOpenDetail: (_, __, {String? searchContext}) async {},
-          onGoReview: ({String? subjectId}) {},
-        ),
-      ),
-    ),
-  );
-  await tester.pumpAndSettle();
+/// 一条作答夹具：默认正式复习（mode = 到期复习），今天作答。
+AttemptData _attempt(
+  String questionId, {
+  String mode = ReviewMode.due,
+  int? correct,
+  List<String> causeIds = const [],
+  String session = 's1',
+}) => AttemptData(
+  id: 'att-$questionId-$mode-$correct-$session',
+  questionId: questionId,
+  sessionId: session,
+  mode: mode,
+  correct: correct,
+  answerVersion: 1,
+  contentVersion: 0,
+  status: '已提交',
+  causeIds: causeIds,
+  submissionId: 'sub-$questionId-$mode-$correct-$session',
+  createdAt: _today.millisecondsSinceEpoch,
+);
+
+/// 报告默认范围“本周”的起点（与 ReportState.rangeStart 同口径：
+/// 本周一 00:00）。
+DateTime get _weekStart {
+  final t = _today;
+  return t.subtract(Duration(days: t.weekday - 1));
 }
 
-/// 书架封面“道题”数：`_bookStat('道题', total)` 的数字与“道题”文案
-/// 是同一 Column 里的两个 Text（数字在上、文案在下）。
-String _coverTotal(WidgetTester tester) {
-  final column = find.byWidgetPredicate((w) {
-    if (w is! Column) return false;
-    final texts = w.children.whereType<Text>().toList();
-    return texts.length == 2 && texts[1].data == '道题';
-  });
-  expect(column, findsOneWidget);
-  final texts =
-      tester.widget<Column>(column).children.whereType<Text>().toList();
-  return texts.first.data!;
-}
-
-/// 书架已是默认落点（二十三批 D-250：/wrongbook 不带参数落书架，
-/// 十九批 A5 的筛选面板顶部入口已删）——直接断言已在书架上。
-Future<void> _openShelf(WidgetTester tester) async {
-  expect(
-    find.text('一科一本错题本，点一本打开看这一科的错题。'),
-    findsOneWidget,
+/// 新口径分布行期望值：直接由 computeReportStats 算出（与页面同一函数），
+/// 不手写数字。
+String _expectedDistRow({
+  required List<AttemptData> attempts,
+  required List<Question> questions,
+}) {
+  final stats = computeReportStats(
+    attempts: attempts,
+    questions: questions,
+    knowledgePoints: const [],
+    subjectIdsInOrder: const ['math'],
+    rangeStart: _weekStart,
   );
+  return '数学 · 作答 ${stats.answeredBySubject['math'] ?? 0} 道';
 }
 
 void main() {
-  group('SR3-2 陈旧记录：报告分布数 = 错题本封面数', () {
-    testWidgets('路径 1（旧口径报告多算）：新错因无记录，已治愈的陈旧记录在——两边都判已掌握，分布 0 道、封面 0 道',
+  group('FSRS 口径：报告分布 = 范围内正式作答题数（attempts 口径）', () {
+    testWidgets('路径 1：陈旧已治愈记录在、新错因无记录——分布只看 attempts，该题有正式作答即计 1 道',
         (tester) async {
+      final questions = [_q('q1', ['概念不清'])];
+      final attempts = [_attempt('q1', correct: 1)];
       final repo = _StaleRepo(
-        questions: [_q('q1', ['概念不清'])],
+        questions: questions,
         records: [_r('q1', '计算错误', CauseStatus.solved)],
+        attempts: attempts,
       );
       await _pumpReport(tester, repo);
-      expect(find.text('数学 · 0 道错题'), findsOneWidget);
-      expect(tester.takeException(), isNull);
-
-      await _pumpWrongbook(tester, repo);
-      await _openShelf(tester);
-      expect(_coverTotal(tester), '0');
+      expect(find.text('各科正式作答（只按学科看）'), findsOneWidget);
+      expect(
+        find.text(_expectedDistRow(attempts: attempts, questions: questions)),
+        findsOneWidget,
+      );
+      // 旧文案已无：分布行不再是“X 道错题”。
+      expect(find.textContaining('道错题'), findsNothing);
       expect(tester.takeException(), isNull);
     });
 
-    testWidgets('路径 2（旧口径报告少算）：已删错因的待解决记录残留——两边都判未掌握，分布 1 道、封面 1 道',
+    testWidgets('路径 2：已删错因的待解决记录残留——同一题两次正式作答 + 一次专项练习仍只计 1 道',
         (tester) async {
+      final questions = [_q('q1', ['计算错误'])];
+      final attempts = [
+        _attempt('q1', correct: 0, causeIds: ['概念不清'], session: 's1'),
+        _attempt('q1', correct: 0, causeIds: ['概念不清'], session: 's2'),
+        _attempt('q1', mode: ReviewMode.practice, correct: 0, session: 's3'),
+      ];
       final repo = _StaleRepo(
-        questions: [_q('q1', ['计算错误'])],
+        questions: questions,
         records: [
           _r('q1', '计算错误', CauseStatus.solved),
           _r('q1', '概念不清', CauseStatus.pending),
         ],
+        attempts: attempts,
       );
       await _pumpReport(tester, repo);
-      expect(find.text('数学 · 1 道错题'), findsOneWidget);
-      expect(tester.takeException(), isNull);
-
-      await _pumpWrongbook(tester, repo);
-      await _openShelf(tester);
-      expect(_coverTotal(tester), '1');
+      expect(find.text('各科正式作答（只按学科看）'), findsOneWidget);
+      expect(
+        find.text(_expectedDistRow(attempts: attempts, questions: questions)),
+        findsOneWidget,
+      );
+      expect(find.textContaining('道错题'), findsNothing);
       expect(tester.takeException(), isNull);
     });
   });

@@ -8,6 +8,7 @@
 // 且不等于数学色（任务要求）。
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:quiz_master2/data/review_engine.dart';
 import 'package:quiz_master2/models/models.dart';
 import 'package:quiz_master2/theme/app_theme.dart';
 import 'package:quiz_master2/widgets/uikit.dart';
@@ -15,7 +16,7 @@ import 'package:quiz_master2/widgets/widgets.dart';
 
 import 'collect_page_test.dart' show FakeRepo, pumpCollect;
 import 'report_page_test.dart'
-    show FakeReportRepo, pumpReport, tq, trec;
+    show FakeReportRepo, pumpReport, tatt, tq, trec;
 import 'review_page_test.dart'
     show FakeReviewRepo, pumpReview, rec, rq;
 import 'wrongbook_page_test.dart'
@@ -245,6 +246,9 @@ void main() {
         (tester) async {
       final today = DateTime.now();
       final day = DateTime(today.year, today.month, today.day);
+      // FSRS 口径迁移：下一句跟按错因 Top 5 第一名走，而 Top 5 按
+      // 正式答错 attempts 的 cause_ids 归因——只给 records 不够，
+      // 化学 2 道正式答错（同错因）才能排第一。
       final repo = FakeReportRepo(
         subjects: subjects4,
         questions: [
@@ -264,6 +268,12 @@ void main() {
               subjectId: 'subject-chem', joinedAt: day),
         ],
         kps: const [],
+        attemptsValue: [
+          tatt('q-c1', ReviewMode.due, 0,
+              day.millisecondsSinceEpoch, causeIds: ['概念不清']),
+          tatt('q-c2', ReviewMode.due, 0,
+              day.millisecondsSinceEpoch, causeIds: ['概念不清']),
+        ],
       );
       await pumpReport(tester, repo: repo);
       expect(find.textContaining('先解决化学的概念不清'), findsOneWidget);

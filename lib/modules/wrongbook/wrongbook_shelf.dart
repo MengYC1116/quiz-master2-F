@@ -260,18 +260,11 @@ extension _WrongbookShelfBuild on _WrongbookViewState {
   // 窗口变化只改变 Wrap 每行本数。
   Widget _buildBook(Subject s, {required double width}) {
     final scale = qmScaleOf(context);
-    final counts = _s.counts[s.id] ?? (0, 0, 0);
-    // 封面“道题”与列表默认视图同口径（SR-P2-38 决定 (a)）：
-    // 已掌握的题默认不显示在列表里，封面也不计入。
-    final total = _s.questions
-        .where(
-          (q) =>
-              q.subjectId == s.id &&
-              q.isOrganized &&
-              !q.isArchived &&
-              !_s.isMastered(q),
-        )
-        .length;
+    // 2026-11-25 口径迁移 §2.1/§4 第 1 项：封面两段与首页学科行
+    // 同一口径——到期 N 道 · 待整理 M 道；旧三数（道题/要复习/待复查）
+    // 已撤下（“道题”总数按已掌握排除，不再符合 D-259“软件不判定掌握”）。
+    final due = _s.dueCounts[s.id] ?? 0;
+    final pendingOrganize = _s.pendingOrganizeCounts[s.id] ?? 0;
     final palette = _Book12Palette.of(s);
     // 悬停（板子无悬停态；沿用旧书架的上移 4px，阴影不变）：
     // 未悬停与悬停都是板子阴影 14/18/28/.30，150ms 与旧版一致。
@@ -453,7 +446,7 @@ extension _WrongbookShelfBuild on _WrongbookViewState {
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.stretch,
                         children: [
-                          // 三数字行：顶部分隔线 1px 白 40%，padding-top 11。
+                          // 两数字行：顶部分隔线 1px 白 40%，padding-top 11。
                           Container(
                             decoration: const BoxDecoration(
                               border: Border(
@@ -466,9 +459,8 @@ extension _WrongbookShelfBuild on _WrongbookViewState {
                             child: Row(
                               mainAxisAlignment: MainAxisAlignment.spaceBetween,
                               children: [
-                                _bookStat('道题', total),
-                                _bookStat('要复习', counts.$1),
-                                _bookStat('待复查', counts.$2),
+                                _bookStat('到期', due),
+                                _bookStat('待整理', pendingOrganize),
                               ],
                             ),
                           ),
@@ -495,7 +487,7 @@ extension _WrongbookShelfBuild on _WrongbookViewState {
   }
 
   Widget _bookStat(String label, int value) {
-    // 板子 12 号三数字：数字 21px/900（等宽数字），标签 10.5px/白 .85/
+    // 板子 12 号两数字：数字 21px/900（等宽数字），标签 10.5px/白 .85/
     // 字距 .08em；每格内容居中，Row 用 spaceBetween 左右分散。
     return Column(
       mainAxisSize: MainAxisSize.min,

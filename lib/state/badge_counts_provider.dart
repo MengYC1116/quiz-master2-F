@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../data/data_change_events.dart';
 import '../models/models.dart';
 import 'repository_provider.dart';
+import 'review_notifier.dart';
 
 // ARCH-PLAN-A 第 4 阶段：左导航角标（方案 §四第 4 阶段）。
 //
@@ -35,10 +36,11 @@ class BadgeCounts {
   /// 整理角标（待整理）。
   final int organizeBadge;
 
-  /// 复习角标（要复习题数，`homeRevCounts` 各科之和，数题不数错因）。
+  /// 复习角标（FSRS 到期题数，`fsrsDueCountsBySubject` 各科之和，
+  /// 数题不数错因；2026-11-25 口径迁移 §2.2）。
   final int reviewBadge;
 
-  /// 学科速览：每科待复习数。
+  /// 学科速览：每科到期数。
   final Map<String, int> navRev;
 
   /// 学科速览：每科待整理数。
@@ -100,12 +102,15 @@ class BadgeCountsNotifier extends AsyncNotifier<BadgeCounts> {
 
   /// 旧 `_refreshBadges` 的 5 次串行查询改一次 `Future.wait`
   ///（行为不变，只是少等几轮），结果进 Provider 状态。
+  /// 复习口径是 FSRS（§2.2）：`fsrsDueCountsBySubject` 各科之和
+  /// 与首页焦点卡大数字、复习页到期队列长度是同一集合。
   Future<BadgeCounts> _readCounts() async {
     final repo = ref.read(repositoryProvider);
+    final scheduler = ref.read(reviewSchedulerProvider);
     final results = await Future.wait([
       repo.collectTasks(),
       repo.pendingOrganizeCount(),
-      repo.homeRevCounts(),
+      repo.fsrsDueCountsBySubject(scheduler: scheduler),
       repo.pendingOrganizeBySubject(),
       repo.subjects(),
     ]);
@@ -117,9 +122,9 @@ class BadgeCountsNotifier extends AsyncNotifier<BadgeCounts> {
     return BadgeCounts(
       collectBadge: BadgeCounts.countPendingBox(tasks) + pendingOrganize,
       organizeBadge: pendingOrganize,
-      // B9-3：复习角标取 homeRevCounts 各科之和——每科已是
-      // dueToday() 的题数（数题不数错因），和 = 要复习总数，
-      // 与首页焦点卡“要复习的数量”同一数字。
+      // B9-3：复习角标取 fsrsDueCountsBySubject 各科之和——每科已是
+      // FSRS 到期题数（数题不数错因），和 = 到期总数，
+      // 与首页焦点卡“到期”的大数字同一值（§2.2）。
       reviewBadge: rev.values.fold(0, (a, b) => a + b),
       navRev: rev,
       navPending: pending,
