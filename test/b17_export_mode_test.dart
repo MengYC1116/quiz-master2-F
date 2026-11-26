@@ -263,6 +263,15 @@ Future<void> openMathListCompact(WidgetTester tester) async {
   await openMathList(tester);
 }
 
+/// 方案 A 批量栏：开选择菜单点「全选当前结果」（旧批量条全选
+/// 复选框已删）；菜单在 Overlay 里，点选项即执行并关菜单。
+Future<void> tapBatchSelectAll(WidgetTester tester) async {
+  await tester.tap(find.byKey(const Key('batch-select-menu')));
+  await tester.pumpAndSettle();
+  await tester.tap(find.text('全选当前结果'));
+  await tester.pumpAndSettle();
+}
+
 /// 进导出模式（工具栏「导出」平时是进模式的入口）。
 Future<void> enterExportMode(WidgetTester tester) async {
   await tester.tap(find.byKey(const Key('export-selected-toolbar')));
@@ -629,18 +638,18 @@ void main() {
       await tester.tap(find.text('批量操作'));
       await tester.pumpAndSettle();
       expect(find.byKey(const Key('export-mode-cancel')), findsNothing);
-      expect(find.text('全选当前结果'), findsOneWidget);
+      expect(find.byKey(const Key('batch-select-menu')), findsOneWidget);
+      expect(find.text('已选 0 道'), findsOneWidget);
       expect(isExportSelected(tester, 'q1'), isFalse);
       expect(find.byKey(const Key('export-summary-numbers')), findsNothing);
 
       // 批量全选 3 道，再进导出模式：批量条消失、批量勾选清空。
-      await tester.tap(find.byType(Checkbox).first);
-      await tester.pumpAndSettle();
+      await tapBatchSelectAll(tester);
       expect(find.text('已选 3 道'), findsOneWidget);
       await tester.tap(find.byKey(const Key('export-selected-toolbar')));
       await tester.pump();
       expect(find.byKey(const Key('export-mode-cancel')), findsOneWidget);
-      expect(find.text('全选当前结果'), findsNothing);
+      expect(find.byKey(const Key('batch-select-menu')), findsNothing);
       expect(find.text('已选 3 道'), findsNothing);
       // 导出已选已在进批量时清空，再进导出模式仍是空选。
       expect(isExportSelected(tester, 'q1'), isFalse);

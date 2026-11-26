@@ -48,7 +48,7 @@ void main() {
       expect(isExportSelected(tester, 'q2'), isFalse);
       expect(find.byKey(const Key('export-summary-numbers')), findsNothing);
       // 批量条可见，批量勾选从 0 开始。
-      expect(find.text('全选当前结果'), findsOneWidget);
+      expect(find.byKey(const Key('batch-select-menu')), findsOneWidget);
       expect(find.text('已选 0 道'), findsOneWidget);
     });
 
@@ -70,7 +70,7 @@ void main() {
       expect(find.byKey(const Key('export-summary-numbers')), findsNothing);
       await tester.tap(find.text('批量操作'));
       await tester.pumpAndSettle();
-      expect(find.text('全选当前结果'), findsNothing);
+      expect(find.byKey(const Key('batch-select-menu')), findsNothing);
 
       // 再进导出模式：之前选的 q1 不复活。
       await enterExportMode(tester);

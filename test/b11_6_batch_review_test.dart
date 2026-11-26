@@ -20,7 +20,7 @@ import 'package:quiz_master2/widgets/uikit.dart';
 
 import 'wrongbook_page_test.dart'
     show FakeWrongbookRepo, boardRow, openMathList, openMathListCompact,
-        pumpWrongbook, wbq;
+        pumpWrongbook, tapBatchMenuItem, wbq;
 
 Question _bq(
   String id, {
@@ -303,9 +303,13 @@ void main() {
     Future<void> openBatchBar(WidgetTester tester) async {
       await tester.tap(find.text('批量操作'));
       await tester.pumpAndSettle();
-      expect(find.text('加入复习'), findsOneWidget);
-      expect(find.text('全部加入复习'), findsOneWidget);
-      expect(find.text('取消加入复习'), findsOneWidget);
+      // 方案 A：单行工具条——已选文案 + 三个菜单 + 删除 + 退出。
+      expect(find.text('已选 0 道'), findsOneWidget);
+      expect(find.byKey(const Key('batch-select-menu')), findsOneWidget);
+      expect(find.byKey(const Key('batch-organize-menu')), findsOneWidget);
+      expect(find.byKey(const Key('batch-review-menu')), findsOneWidget);
+      expect(find.text('批量删除'), findsOneWidget);
+      expect(find.text('退出批量'), findsOneWidget);
     }
 
     /// P3：给 repo 与 pumpWrongbook 接同一个内存调度器（不碰真实数据库），
@@ -319,7 +323,7 @@ void main() {
       return scheduler;
     }
 
-    testWidgets('未勾选时加入/取消禁用，全部加入可用',
+    testWidgets('未勾选时整理/复习菜单与批量删除禁用，选择与退出可用',
         (tester) async {
       final repo = reviewRepo();
       await pumpWrongbook(tester, repo: repo);
@@ -332,9 +336,13 @@ void main() {
               matching: find.byType(QmButton),
             ),
           );
-      expect(btn('加入复习').onPressed, isNull);
-      expect(btn('取消加入复习').onPressed, isNull);
-      expect(btn('全部加入复习').onPressed, isNotNull);
+      expect(btn('选择').onPressed, isNotNull);
+      expect(btn('整理').onPressed, isNull);
+      expect(btn('复习').onPressed, isNull);
+      expect(btn('批量删除').onPressed, isNull);
+      expect(btn('退出批量').onPressed, isNotNull);
+      // 全部加入复习按钮已删：其动作走「全选全部筛选结果 + 加入复习」。
+      expect(find.text('全部加入复习'), findsNothing);
     });
 
     testWidgets('勾选加入：3 道都建卡（无错因的题只建卡、不播种），给开始复习入口',
@@ -351,11 +359,10 @@ void main() {
       await openMathListCompact(tester);
       await openBatchBar(tester);
       // 全选：qa（待解决）+ qb（无错因）+ qc（待解决）。
-      await tester.tap(find.byType(Checkbox).first);
-      await tester.pumpAndSettle();
+      await tapBatchMenuItem(tester, 'batch-select-menu', '全选当前结果');
       expect(find.text('已选 3 道'), findsOneWidget);
 
-      await tester.tap(find.text('加入复习'));
+      await tapBatchMenuItem(tester, 'batch-review-menu', '加入复习');
       await tester.pumpAndSettle();
 
       // P3：3 道都建卡（qb 无错因只建卡、不播种，不计入失败/跳过）。
@@ -393,14 +400,14 @@ void main() {
       await pumpWrongbook(tester, repo: repo, scheduler: scheduler);
       await openMathListCompact(tester);
       await openBatchBar(tester);
-      // 复选框顺序：全选、qa 批量、qb 批量、qc 批量……
-      // （按收集时间新→旧；每行只剩批量框，十七批 P2：导出方框已废）。
-      // qb 的批量框是第 2 个。
-      await tester.tap(find.byType(Checkbox).at(2));
+      // 方案 A：批量条不再有全选复选框；复选框顺序：qa 批量、qb 批量、
+      // qc 批量……（按收集时间新→旧；每行只剩批量框，十七批 P2：
+      // 导出方框已废）。qb 的批量框是第 1 个。
+      await tester.tap(find.byType(Checkbox).at(1));
       await tester.pumpAndSettle();
       expect(find.text('已选 1 道'), findsOneWidget);
 
-      await tester.tap(find.text('加入复习'));
+      await tapBatchMenuItem(tester, 'batch-review-menu', '加入复习');
       await tester.pumpAndSettle();
 
       // P3：qb 也建卡（added 1），播种失败不影响计数；仍给开始复习入口。
@@ -413,7 +420,7 @@ void main() {
       expect(repo.records.where((r) => r.questionId == 'qb').length, 0);
     });
 
-    testWidgets('全部加入：作用域是当前筛选结果，不限当前页',
+    testWidgets('全选全部筛选结果 + 加入复习：作用域是当前筛选结果，不限当前页',
         (tester) async {
       final now = DateTime.now();
       final repo = _B116Repo(
@@ -434,14 +441,14 @@ void main() {
       // 默认每页 10 道，只显示 10 张卡；不用勾选直接全部加入。
       await tester.tap(find.text('批量操作'));
       await tester.pumpAndSettle();
-      await tester.tap(find.text('全部加入复习'));
-      await tester.pumpAndSettle();
+      await tapBatchMenuItem(tester, 'batch-select-menu', '全选全部筛选结果');
+      await tapBatchMenuItem(tester, 'batch-review-menu', '加入复习');
 
       expect(find.text('新增 12 道'), findsOneWidget);
       expect(repo.questions.every((q) => q.reviewJoined), isTrue);
     });
 
-    testWidgets('全部加入 + 错因筛选：只加筛出的错因的题',
+    testWidgets('全选全部筛选结果 + 加入复习 + 错因筛选：只加筛出的错因的题',
         (tester) async {
       final repo = reviewRepo();
       final scheduler = wireScheduler(repo);
@@ -458,8 +465,8 @@ void main() {
       expect(boardRow('待解决甲'), findsNothing);
 
       await openBatchBar(tester);
-      await tester.tap(find.text('全部加入复习'));
-      await tester.pumpAndSettle();
+      await tapBatchMenuItem(tester, 'batch-select-menu', '全选全部筛选结果');
+      await tapBatchMenuItem(tester, 'batch-review-menu', '加入复习');
 
       expect(find.text('新增 1 道'), findsOneWidget);
       expect(await scheduler.pooledQuestionIds(), {'qc'});
@@ -508,10 +515,9 @@ void main() {
       await pumpWrongbook(tester, repo: repo);
       await openMathListCompact(tester);
       await openBatchBar(tester);
-      await tester.tap(find.byType(Checkbox).first);
-      await tester.pumpAndSettle();
+      await tapBatchMenuItem(tester, 'batch-select-menu', '全选当前结果');
 
-      await tester.tap(find.text('取消加入复习'));
+      await tapBatchMenuItem(tester, 'batch-review-menu', '取消加入复习');
       await tester.pumpAndSettle();
 
       expect(find.text('已取消加入复习 1 道；1 道未加入复习，跳过'),
