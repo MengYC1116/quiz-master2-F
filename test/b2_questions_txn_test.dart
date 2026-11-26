@@ -214,7 +214,7 @@ void main() {
   test('deleteQuestion 成功：六表联动 + 切片文件随后删除', () async {
     final tmpDir = await Directory.systemTemp.createTemp('b2-q-del-ok-');
     addTearDown(() async {
-      AppDatabase.testDataDirectory = null;
+      await AppDatabase.resetForTest();
       await tmpDir.delete(recursive: true);
     });
     AppDatabase.testDataDirectory = tmpDir.path;
@@ -253,7 +253,7 @@ void main() {
   test('deleteQuestion 失败注入：历史删除中途抛错，全部回滚且切片保留', () async {
     final tmpDir = await Directory.systemTemp.createTemp('b2-q-del-fail-');
     addTearDown(() async {
-      AppDatabase.testDataDirectory = null;
+      await AppDatabase.resetForTest();
       await tmpDir.delete(recursive: true);
     });
     AppDatabase.testDataDirectory = tmpDir.path;

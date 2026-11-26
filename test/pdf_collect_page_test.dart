@@ -121,7 +121,7 @@ void main() {
   });
 
   tearDownAll(() async {
-    AppDatabase.testDataDirectory = null;
+    await AppDatabase.resetForTest();
     await _tmp.delete(recursive: true);
   });
 

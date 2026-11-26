@@ -218,7 +218,7 @@ void main() {
       AppDatabase.testDataDirectory = tmp.path;
       db = await openTestDb();
       addTearDown(() async {
-        AppDatabase.testDataDirectory = null;
+        await AppDatabase.resetForTest();
         try {
           await db.close();
         } catch (_) {}
@@ -403,7 +403,7 @@ void main() {
       AppDatabase.testDataDirectory = tmp.path;
       db = await openTestDb();
       addTearDown(() async {
-        AppDatabase.testDataDirectory = null;
+        await AppDatabase.resetForTest();
         try {
           await db.close();
         } catch (_) {}
@@ -538,7 +538,7 @@ void main() {
       AppDatabase.testDataDirectory = tmp.path;
       db = await openTestDb();
       addTearDown(() async {
-        AppDatabase.testDataDirectory = null;
+        await AppDatabase.resetForTest();
         try {
           await db.close();
         } catch (_) {}
@@ -764,7 +764,7 @@ void main() {
       tmp = await Directory.systemTemp.createTemp('p3-storage-');
       AppDatabase.testDataDirectory = tmp.path;
       addTearDown(() async {
-        AppDatabase.testDataDirectory = null;
+        await AppDatabase.resetForTest();
         try {
           await tmp.delete(recursive: true);
         } catch (_) {}

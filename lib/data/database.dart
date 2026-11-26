@@ -392,21 +392,37 @@ class AppDatabase {
 
   /// B3-P01 测试钩子：复位单例与测试目录重定向（只供测试调用）。
   /// 关掉单例当前持有的库（若有）、清掉缓存的 `_dbFuture` 与
-  /// `dbPathUsed`、把 [testDataDirectory] / [testMarkerDirectory] /
-  /// [startupDataDirectory] 置回 null。同一文件里多个测试都要碰单例时，在 tearDown 里
+  /// `dbPathUsed`、把 [startupDataDirectory] 置回 null，并把
+  /// [testDataDirectory] / [testMarkerDirectory] 重指到一个全新的
+  /// 临时目录。同一文件里多个测试都要碰单例时，在 tearDown 里
   /// 调它，避免前一个测试的库/目录泄漏到下一个测试。
   /// 不改动任何生产打开路径的行为。
+  ///
+  /// D-88 残留（D-260）：旧写法把两个测试目录置 null，复位后到下一
+  /// 个测试重设之间的窗口里，任何未等待的异步工作读
+  /// `dataDirectoryPath()` 都会回落到真实默认数据目录，进而打开／
+  /// 迁移真实演示库（FR-45，见 D-234）。新写法先同步建全新临时目录
+  /// 并重指（`createTempSync`，关库的 await 之前就已生效，窗口不
+  /// 存在），再关旧库；旧临时目录不删——未等待的工作可能还在往里
+  /// 写文件，删目录会让它写失败，残留空目录由系统临时目录清理。
+  /// 建新目录失败时保留旧的临时目录（仍是隔离目录），绝不回落 null。
   @visibleForTesting
   static Future<void> resetForTest() async {
+    try {
+      final fresh =
+          Directory.systemTemp.createTempSync('qm2-reset-test-data-');
+      testDataDirectory = fresh.path;
+      testMarkerDirectory = fresh.path;
+    } catch (_) {
+      // 建不出新目录：保留旧的临时目录指向，仍隔离，不置 null。
+    }
+    startupDataDirectory = null;
     try {
       await instance._db?.close();
     } catch (_) {}
     instance._db = null;
     instance._dbFuture = null;
     instance.dbPathUsed = null;
-    testDataDirectory = null;
-    testMarkerDirectory = null;
-    startupDataDirectory = null;
   }
 
   /// §4.1：缓存 `Future<QuizDatabase>` 本身：启动时多处同时 `await db`

@@ -117,7 +117,7 @@ void main() {
         try {
           await db.close();
         } catch (_) {}
-        AppDatabase.testDataDirectory = null;
+        await AppDatabase.resetForTest();
         try {
           await tmp.delete(recursive: true);
         } catch (_) {}
@@ -190,7 +190,7 @@ void main() {
         try {
           await db.close();
         } catch (_) {}
-        AppDatabase.testDataDirectory = null;
+        await AppDatabase.resetForTest();
         try {
           await tmp.delete(recursive: true);
         } catch (_) {}

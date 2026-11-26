@@ -192,9 +192,85 @@ void main() {
       AppDatabase.startupDataDirectory = '/data/data/com.example/files';
       await AppDatabase.resetForTest();
       expect(AppDatabase.startupDataDirectory, isNull);
-      // resetForTest 同时清掉了 testDataDirectory，恢复它，
-      // 免得同文件后续测试失去 flutter_test_config 的隔离。
+      // D-260：resetForTest 不再把 testDataDirectory 置 null，而是重指
+      // 全新临时目录；恢复 flutter_test_config 的隔离目录，免得同文件
+      // 后续测试受影响。
+      expect(AppDatabase.testDataDirectory, isNotNull);
+      expect(AppDatabase.testDataDirectory, isNot(tmp));
       AppDatabase.testDataDirectory = tmp;
+      AppDatabase.testMarkerDirectory = null;
+    });
+  });
+
+  group('resetForTest 重指全新临时目录（D-88 残留，D-260）', () {
+    test('reset 后两个测试目录非空、指向新建的不同目录', () async {
+      final prevData = AppDatabase.testDataDirectory;
+      final prevMarker = AppDatabase.testMarkerDirectory;
+      expect(prevData, isNotNull);
+      try {
+        await AppDatabase.resetForTest();
+        final after = AppDatabase.testDataDirectory;
+        expect(after, isNotNull);
+        expect(after, isNot(prevData));
+        expect(Directory(after!).existsSync(), isTrue);
+        expect(AppDatabase.testMarkerDirectory, after);
+        expect(AppDatabase.dataDirectoryPath(), after);
+        expect(AppDatabase.startupDataDirectory, isNull);
+        expect(AppDatabase.instance.dbPathUsed, isNull);
+      } finally {
+        AppDatabase.testDataDirectory = prevData;
+        AppDatabase.testMarkerDirectory = prevMarker;
+      }
+    });
+
+    test('连续两次 reset 得到两个不同目录', () async {
+      final prevData = AppDatabase.testDataDirectory;
+      final prevMarker = AppDatabase.testMarkerDirectory;
+      try {
+        await AppDatabase.resetForTest();
+        final first = AppDatabase.testDataDirectory;
+        await AppDatabase.resetForTest();
+        final second = AppDatabase.testDataDirectory;
+        expect(first, isNotNull);
+        expect(second, isNotNull);
+        expect(second, isNot(first));
+        expect(Directory(second!).existsSync(), isTrue);
+      } finally {
+        AppDatabase.testDataDirectory = prevData;
+        AppDatabase.testMarkerDirectory = prevMarker;
+      }
+    });
+
+    test('reset 后写盘仍落在新临时目录，不碰真实数据目录', () async {
+      final prevData = AppDatabase.testDataDirectory;
+      final prevMarker = AppDatabase.testMarkerDirectory;
+      try {
+        await AppDatabase.resetForTest();
+        final dir = AppDatabase.dataDirectoryPath();
+        final realDefault = resolveDefaultDataDirectory(
+          isWindows: Platform.isWindows,
+          isAndroid: false,
+          startupDataDirectory: null,
+          environment: Platform.environment,
+        );
+        expect(dir, isNot(realDefault));
+        final probe = File(p.join(dir, 'qm2-reset-probe.txt'));
+        await probe.writeAsString('probe');
+        try {
+          expect(await probe.exists(), isTrue);
+          expect(
+            File(p.join(realDefault, 'qm2-reset-probe.txt')).existsSync(),
+            isFalse,
+          );
+        } finally {
+          try {
+            await probe.delete();
+          } catch (_) {}
+        }
+      } finally {
+        AppDatabase.testDataDirectory = prevData;
+        AppDatabase.testMarkerDirectory = prevMarker;
+      }
     });
   });
 

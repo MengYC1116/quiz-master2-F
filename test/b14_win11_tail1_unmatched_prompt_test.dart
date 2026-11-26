@@ -265,9 +265,10 @@ void main() {
     db = await AppDatabase.openForTest();
     AppDatabase.useDatabaseForTest(db);
     repo = QuestionRepository(AppDatabase.instance);
-    // FR-45 后续（slices 污染）：同 b13_p1_1——tearDown 的 resetForTest()
-    // 置 null 后，从第 2 个测试起 dataDirectoryPath() 读到真实目录，
-    // 图块版本切片写进真实 slices/（P3 批量 2 实测本文件 +7）。setUp 先给
+    // FR-45 后续（slices 污染）：同 b13_p1_1——D-260 前 tearDown 的
+    // resetForTest() 置 null，从第 2 个测试起 dataDirectoryPath() 读到
+    // 真实目录，图块版本切片写进真实 slices/（P3 批量 2 实测本文件 +7）；
+    // D-260 起 reset 改为重指全新临时目录，该窗口已堵上。setUp 仍先给
     // testDataDirectory 指全新临时目录，再读路径。
     final tmpDataDir = await Directory.systemTemp.createTemp('qm2-tail1-');
     AppDatabase.testDataDirectory = tmpDataDir.path;
