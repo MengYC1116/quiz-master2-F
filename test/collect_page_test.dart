@@ -1,4 +1,6 @@
-// R4 收集中心 widget 测试：6 态渲染、只按导入时间排、筛选不重排、
+// R4 收集中心 widget 测试：6 态渲染、未完成在前已整理在后、筛选不重排、
+// 行主行显示题干（无题干回退文件标题）、副行不重复文件名、副标题无计数、
+// 0 的 chip 隐藏、清理已整理只删已完成任务、
 // 取消导入 / 删除失败任务无二次确认、修框编辑器（画新框直接成题级框、
 // 确认拆分替换原任务、取消留修框中、重叠拦确认、
 // 无框提示、旋转整页）、亮/深、三档缩放无溢出、不用图标字体。
@@ -253,6 +255,7 @@ CollectTask task(
   String? error,
   int pageCount = 1,
   String? sourcePath,
+  String? questionId,
 }) => CollectTask(
   id: id,
   name: name,
@@ -263,6 +266,7 @@ CollectTask task(
   pageCount: pageCount,
   page: 1,
   error: error,
+  questionId: questionId,
   // 默认指向 setUpAll 生成的真实页图（P2：编辑器要读真实页图）。
   sourcePath: sourcePath ?? _pagePngRel,
 );
@@ -278,6 +282,12 @@ class FakeRepo extends QuestionRepository {
   final List<CollectTask> savedTasks = [];
   final List<String> deletedTaskIds = [];
   var organizeCalls = 0;
+
+  /// 题（按 id 存，questionById 读出；load() 据此给行配题干）。
+  final Map<String, Question> questionsById = {};
+
+  @override
+  Future<Question?> questionById(String id) async => questionsById[id];
 
   /// 草稿框（按任务 id 存，saveDraftBoxes 写入、boxesForTask 读出）。
   final Map<String, List<QuestionBox>> draftBoxes = {};
@@ -611,7 +621,13 @@ void main() {
         find.text('手机拍完用微信 / QQ / 局域网传到电脑，再选文件导入即可——传过来的就是文件，不用单独的拍照入口。'),
         findsOneWidget,
       );
-      expect(find.textContaining('按导入时间排，新的在上面，不按状态排'), findsOneWidget);
+      // 副标题只有排序说明，不再放计数（2026-11-26）。
+      expect(
+        find.text('未完成在前、已整理在后，各按导入时间新的在上'),
+        findsOneWidget,
+      );
+      expect(find.textContaining('导入中 0'), findsNothing);
+      expect(find.textContaining('排队中 0'), findsNothing);
       // 首屏行（ListView 懒构建 + 滚动后丢弃屏外行，只能按位置分段断言）。
       expect(find.text('排队中'), findsWidgets);
       expect(find.text('导入中 · 检测 50%'), findsOneWidget);
@@ -636,8 +652,13 @@ void main() {
       expect(find.text('删除任务'), findsOneWidget);
     });
 
-    testWidgets('只按导入时间排：列表顺序与仓库顺序一致，不按状态重排', (tester) async {
+    testWidgets('未完成在前、已整理在后：组内仍按导入时间新的在上', (tester) async {
       final repo = FakeRepo([
+        task(
+          't-done-old',
+          '旧已整理.pdf · 第1页 · 第1题',
+          status: CollectStatus.done,
+        ),
         task(
           't-failed',
           '旧失败.pdf · 第1页 · 第1题',
@@ -650,16 +671,200 @@ void main() {
           status: CollectStatus.importing,
           progress: 20,
         ),
-        task('t-queued', '中排队.pdf · 第1页 · 第1题', status: CollectStatus.queued),
       ]);
       await pumpCollect(tester, repo: repo);
+      // 仓库顺序里已整理在最前，界面上它沉到底：未完成（失败/导入中）
+      // 按仓库顺序在上，已整理在最后。
       final failedY = tester.getTopLeft(find.text('旧失败.pdf · 第1页 · 第1题')).dy;
-      final importingY = tester
-          .getTopLeft(find.text('新导入中.pdf · 第1页 · 第1题'))
-          .dy;
-      final queuedY = tester.getTopLeft(find.text('中排队.pdf · 第1页 · 第1题')).dy;
+      final importingY =
+          tester.getTopLeft(find.text('新导入中.pdf · 第1页 · 第1题')).dy;
+      final doneY =
+          tester.getTopLeft(find.text('旧已整理.pdf · 第1页 · 第1题')).dy;
       expect(failedY < importingY, isTrue);
-      expect(importingY < queuedY, isTrue);
+      expect(importingY < doneY, isTrue);
+    });
+
+    testWidgets('行主行显示题干：有题干的行显示题干，无题干回退文件标题', (tester) async {
+      final repo = FakeRepo([
+        task(
+          't-ready',
+          '待整理文件.pdf · 第1页 · 第1题',
+          status: CollectStatus.pendingOrganize,
+          questionId: 'q1',
+        ),
+        task(
+          't-needbox',
+          '待框选文件.pdf · 第1页 · 第1题',
+          status: CollectStatus.needBox,
+        ),
+      ])
+        ..questionsById['q1'] = Question(
+          id: 'q1',
+          title: '待整理文件.pdf · 第1页 · 第1题',
+          subjectId: 'math',
+          createdAt: DateTime(2026, 11, 10),
+          ocrStem: '测试题干文字',
+        );
+      await pumpCollect(tester, repo: repo);
+      expect(find.text('测试题干文字'), findsOneWidget);
+      expect(find.text('待整理文件.pdf · 第1页 · 第1题'), findsNothing);
+      // 未切框的任务没有题干，回退显示原文件标题。
+      expect(find.text('待框选文件.pdf · 第1页 · 第1题'), findsOneWidget);
+    });
+
+    testWidgets('副行不重复文件名：已整理/失败行副行只有状态 · 学科 · 页码', (
+      tester,
+    ) async {
+      final repo = FakeRepo([
+        task(
+          't-done',
+          '已整理文件.pdf · 第1页 · 第1题',
+          status: CollectStatus.done,
+          questionId: 'q1',
+        ),
+        task(
+          't-failed',
+          '损坏文件.pdf · 第1页 · 第1题',
+          status: CollectStatus.failed,
+          error: '文件损坏',
+        ),
+      ])
+        ..questionsById['q1'] = Question(
+          id: 'q1',
+          title: '已整理文件.pdf · 第1页 · 第1题',
+          subjectId: 'math',
+          createdAt: DateTime(2026, 11, 10),
+          ocrStem: '测试题干文字',
+        );
+      await pumpCollect(tester, repo: repo);
+      expect(find.text('已整理 · 数学 · 第1页'), findsOneWidget);
+      expect(find.text('导入失败 · 数学 · 第1页'), findsOneWidget);
+      expect(find.text('损坏文件.pdf · 数学 · 第1页'), findsNothing);
+      expect(find.text('已整理文件.pdf · 数学 · 第1页'), findsNothing);
+    });
+
+    testWidgets('0 的 chip 隐藏不显示，“全部”始终显示', (tester) async {
+      await pumpCollect(
+        tester,
+        repo: FakeRepo([
+          task(
+            't-queued',
+            '排队文件.pdf · 第1页 · 第1题',
+            status: CollectStatus.queued,
+          ),
+        ]),
+      );
+      expect(find.text('全部 1'), findsOneWidget);
+      expect(find.text('排队中 1'), findsOneWidget);
+      expect(find.text('导入中 0'), findsNothing);
+      expect(find.text('待框选 0'), findsNothing);
+      expect(find.text('修框中 0'), findsNothing);
+      expect(find.text('待整理 0'), findsNothing);
+      expect(find.text('已整理 0'), findsNothing);
+      expect(find.text('导入失败 0'), findsNothing);
+      // 0 的 chip 连 key 都不在树上。
+      expect(find.byKey(const Key('collect-filter-importing')), findsNothing);
+      expect(find.byKey(const Key('collect-filter-queued')), findsOneWidget);
+      expect(find.byKey(const Key('collect-filter-all')), findsOneWidget);
+    });
+
+    testWidgets('清理已整理：确认后只删已完成任务，未完成的还在、题不受影响', (
+      tester,
+    ) async {
+      final repo = FakeRepo([
+        task(
+          't-done1',
+          '已整理一.pdf · 第1页 · 第1题',
+          status: CollectStatus.done,
+          questionId: 'q1',
+        ),
+        task(
+          't-done2',
+          '已整理二.pdf · 第1页 · 第1题',
+          status: CollectStatus.done,
+          questionId: 'q2',
+        ),
+        task(
+          't-queued',
+          '排队文件.pdf · 第1页 · 第1题',
+          status: CollectStatus.queued,
+        ),
+      ])
+        ..questionsById['q1'] = Question(
+          id: 'q1',
+          title: '已整理一.pdf · 第1页 · 第1题',
+          subjectId: 'math',
+          createdAt: DateTime(2026, 11, 10),
+          ocrStem: '题干一',
+        )
+        ..questionsById['q2'] = Question(
+          id: 'q2',
+          title: '已整理二.pdf · 第1页 · 第1题',
+          subjectId: 'math',
+          createdAt: DateTime(2026, 11, 10),
+          ocrStem: '题干二',
+        );
+      await pumpCollect(tester, repo: repo);
+      expect(find.text('全部 3'), findsOneWidget);
+      await tester.tap(find.byKey(const Key('collect-clear-done')));
+      await tester.pumpAndSettle();
+      // 确认弹窗出现（既定删除文案）。
+      expect(find.text('删了就没了，确定吗？'), findsOneWidget);
+      expect(find.textContaining('已整理的 2 个任务记录'), findsOneWidget);
+      await tester.tap(find.text('确认删除'));
+      await tester.pumpAndSettle();
+      // 两个已整理任务被删，未完成的还在。
+      expect(repo.deletedTaskIds, containsAll(['t-done1', 't-done2']));
+      expect(repo.deletedTaskIds, isNot(contains('t-queued')));
+      expect(find.text('排队文件.pdf · 第1页 · 第1题'), findsOneWidget);
+      expect(find.text('题干一'), findsNothing);
+      expect(find.text('题干二'), findsNothing);
+      // 题本身不受影响（Fake 的题还在）。
+      expect(await repo.questionById('q1'), isNotNull);
+      expect(await repo.questionById('q2'), isNotNull);
+      expect(find.text('全部 1'), findsOneWidget);
+    });
+
+    testWidgets('清理已整理：确认框点取消不删', (tester) async {
+      final repo = FakeRepo([
+        task(
+          't-done',
+          '已整理文件.pdf · 第1页 · 第1题',
+          status: CollectStatus.done,
+        ),
+        task(
+          't-queued',
+          '排队文件.pdf · 第1页 · 第1题',
+          status: CollectStatus.queued,
+        ),
+      ]);
+      await pumpCollect(tester, repo: repo);
+      await tester.tap(find.byKey(const Key('collect-clear-done')));
+      await tester.pumpAndSettle();
+      expect(find.text('删了就没了，确定吗？'), findsOneWidget);
+      await tester.tap(find.text('取消'));
+      await tester.pumpAndSettle();
+      expect(repo.deletedTaskIds, isEmpty);
+      expect(find.text('全部 2'), findsOneWidget);
+    });
+
+    testWidgets('没有已整理任务时“清理已整理”禁用', (tester) async {
+      await pumpCollect(
+        tester,
+        repo: FakeRepo([
+          task(
+            't-queued',
+            '排队文件.pdf · 第1页 · 第1题',
+            status: CollectStatus.queued,
+          ),
+        ]),
+      );
+      // 按钮在，但点按无反应（不弹确认框）。
+      expect(find.byKey(const Key('collect-clear-done')), findsOneWidget);
+      await tester.tap(find.byKey(const Key('collect-clear-done')));
+      await tester.pumpAndSettle();
+      expect(find.text('删了就没了，确定吗？'), findsNothing);
+      expect(find.text('全部 1'), findsOneWidget);
     });
 
     testWidgets('状态筛选只过滤、不改变时间顺序', (tester) async {

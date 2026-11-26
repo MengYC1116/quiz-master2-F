@@ -73,6 +73,12 @@ class FakeCollectNotifierRepo extends QuestionRepository {
   final List<(String, String, String)> recentTasks = [];
   final List<String> draftSavedTaskIds = [];
 
+  /// 题（按 id 存，questionById 读出；load() 据此给行配题干）。
+  final Map<String, Question> questionsById = {};
+
+  @override
+  Future<Question?> questionById(String id) async => questionsById[id];
+
   @override
   Future<List<CollectTask>> collectTasks() async => List.of(tasks);
 
@@ -590,6 +596,92 @@ void main() {
       expect(
         taskNote(_task('t1', 'a.png', status: CollectStatus.needBox), '数学'),
         '检测完成，等你修框确认 · 数学 · 第1页',
+      );
+      // 2026-11-26：副行不再重复文件名（主行已是题干或文件标题）。
+      expect(
+        taskNote(_task('t1', 'a.png', status: CollectStatus.failed), '数学'),
+        '导入失败 · 数学 · 第1页',
+      );
+      expect(
+        taskNote(_task('t1', 'a.png', status: CollectStatus.done), '数学'),
+        '已整理 · 数学 · 第1页',
+      );
+    });
+
+    test('shownTasks：未完成在前、已整理在后，组内保持导入时间顺序', () async {
+      repo = FakeCollectNotifierRepo(
+        tasks: [
+          _task('t-done', 'd.png', status: CollectStatus.done),
+          _task('t-failed', 'f.png', status: CollectStatus.failed),
+          _task('t-queued', 'q.png', status: CollectStatus.queued),
+        ],
+      );
+      container = makeContainer(repo);
+      notifier = container.read(collectProvider.notifier);
+      await notifier.load();
+      final shown = container.read(collectProvider).shownTasks(null);
+      expect(shown.map((t) => t.id), ['t-failed', 't-queued', 't-done']);
+      // 筛选只过滤，不改变组内顺序。
+      expect(
+        container
+            .read(collectProvider)
+            .shownTasks(CollectStatus.done)
+            .map((t) => t.id),
+        ['t-done'],
+      );
+    });
+
+    test('load：有 questionId 的任务读出题进 questionsById，读不到的不进', () async {
+      repo = FakeCollectNotifierRepo(
+        tasks: [
+          _task(
+            't-ready',
+            'a.png',
+            status: CollectStatus.pendingOrganize,
+            questionId: 'q1',
+          ),
+          _task(
+            't-done',
+            'b.png',
+            status: CollectStatus.done,
+            questionId: 'q-missing',
+          ),
+        ],
+      )..questionsById['q1'] = Question(
+        id: 'q1',
+        title: 'a.png · 第1页 · 第1题',
+        subjectId: 'math',
+        createdAt: DateTime(2026, 11, 10),
+        ocrStem: '测试题干',
+      );
+      container = makeContainer(repo);
+      notifier = container.read(collectProvider.notifier);
+      await notifier.load();
+      final s = container.read(collectProvider);
+      expect(s.questionsById.keys, ['q1']);
+      expect(s.questionsById['q1']!.ocrStem, '测试题干');
+    });
+
+    test('clearDoneTasks：只删已整理任务，未完成的还在', () async {
+      repo = FakeCollectNotifierRepo(
+        tasks: [
+          _task(
+            't-done',
+            'd.png',
+            status: CollectStatus.done,
+            questionId: 'q1',
+          ),
+          _task('t-queued', 'q.png', status: CollectStatus.queued),
+        ],
+      );
+      container = makeContainer(repo);
+      notifier = container.read(collectProvider.notifier);
+      await notifier.load();
+      await notifier.clearDoneTasks();
+      expect(repo.deletedIds, ['t-done']);
+      expect(
+        container.read(collectProvider).tasks.map((t) => t.id),
+        ['t-queued'],
       );
     });
   });
