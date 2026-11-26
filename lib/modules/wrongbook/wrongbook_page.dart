@@ -856,6 +856,20 @@ class _WrongbookViewState extends ConsumerState<_WrongbookView> {
     }
   }
 
+  /// P3 入口 1“全部加入复习”（2026-11-25 Meng 定：两按钮都加）：
+  /// 作用域 = 当前筛选出的全部题，不限当前页、不用先勾选；
+  /// 已在池的自动跳过，结果文案与“加入复习”同口径。
+  Future<void> _batchJoinReviewFsrsAll() async {
+    final r = await _n.joinReviewFsrsAll();
+    if (mounted) {
+      _snack(
+        r.message,
+        actionLabel: r.showReviewAction ? '开始复习' : null,
+        onAction: r.showReviewAction ? () => widget.onGoReview() : null,
+      );
+    }
+  }
+
   /// P3 入口 1“立即专项练习”：只练不排，不建 FSRS 卡；带题 id 去
   /// 复习页开专项练习（已有未完成正式复习会话时由复习页按单行表
   /// review_state 判定：暂停保留或提示先处理，不丢断点）。

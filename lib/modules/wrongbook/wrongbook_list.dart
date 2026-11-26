@@ -1739,20 +1739,22 @@ extension _WrongbookListBuild on _WrongbookViewState {
   /// 左：已选文案 +「选择 ▾」（全选当前结果 / 勾选当前页 /
   /// 全选全部筛选结果 / 清除选择）；中：「整理 ▾」（移入文件夹 ▸ /
   /// 移出当前文件夹 / 加标签 / 收藏 / 归档）、「复习 ▾」（加入复习 /
-  /// 立即专项练习 / 取消加入复习）；右：批量删除（两段确认）+
-  /// 退出批量。导出打印在标题行，不动。
+  /// 全部加入复习 / 立即专项练习 / 取消加入复习）；右：批量删除
+  /// （两段确认）+ 退出批量。导出打印在标题行，不动。
   ///
   /// 「全选当前结果」与「勾选当前页」不是同一动作（前者把全部筛
   /// 选结果同时填进通用选择与加题选择、可 toggle；后者只把当页
-  /// 题加进加题选择），两个都保留。删掉旧「全部加入复习」按钮：
-  /// 其动作与「选择 ▾ → 全选全部筛选结果 + 复习 ▾ → 加入复习」
-  /// 完全等价（joinReviewFsrsAll 就是先记全选口径再入池）。
+  /// 题加进加题选择），两个都保留。「全部加入复习」按 2026-11-25
+  /// Meng 定“两按钮都加”放回：与“加入复习”不是同一动作（前者
+  /// 作用域是全部筛选结果、不用先勾选，后者只作用于已勾选）。
   ///
   /// 启用态按各菜单动作实际读的选择集：整理 / 删除读通用选择，
   /// 复习读加题选择（reviewEffectiveIds），选择 / 退出始终可用。
-  /// 0 选时三者全禁用；行内勾选与全选当前结果同步两套选择，选
-  /// 中后三者全启用。只用「勾选当前页」时复习启用、整理 / 删除
-  /// 仍禁用——旧栏原样行为（旧栏整理按钮同样只认通用选择）。
+  /// 0 选时整理 / 删除禁用；复习菜单保持可点，里面只有「全部加
+  /// 入复习」可用（它只要筛选结果非空就启用，不需要勾选）。行内
+  /// 勾选与全选当前结果同步两套选择，选中后四项全启用。只用「勾
+  /// 选当前页」时复习启用、整理 / 删除仍禁用——旧栏原样行为（旧
+  /// 栏整理按钮同样只认通用选择）。
   Widget _buildBatchBar(List<Question> all) {
     final scale = qmScaleOf(context);
     final palette = DesignTokens.of(Theme.of(context).brightness);
@@ -1845,7 +1847,7 @@ extension _WrongbookListBuild on _WrongbookViewState {
           _batchMenu(
             key: const Key('batch-review-menu'),
             label: '复习',
-            enabled: hasReviewSelection,
+            enabled: true,
             menuStyle: menuStyle,
             children: [
               _batchMenuItem(
@@ -1853,6 +1855,11 @@ extension _WrongbookListBuild on _WrongbookViewState {
                 style: itemStyle,
                 onPressed:
                     hasReviewSelection ? _batchJoinReviewFsrs : null,
+              ),
+              _batchMenuItem(
+                label: '全部加入复习',
+                style: itemStyle,
+                onPressed: all.isNotEmpty ? _batchJoinReviewFsrsAll : null,
               ),
               _batchMenuItem(
                 label: '立即专项练习',

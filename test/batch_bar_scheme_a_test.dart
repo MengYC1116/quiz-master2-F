@@ -1,19 +1,66 @@
 // 方案 A 批量栏（2026-11-26，Meng 定）：错题本列表页批量模式由三行
 // 平铺按钮改成单行工具条——已选文案 + 选择 / 整理 / 复习三个分组
 // 菜单 + 批量删除（两段确认）+ 退出批量。覆盖新行为：0 选禁用态、
-// 菜单项执行、删除两段确认（点别处 / 退出批量复位）、文件夹选择进菜单。
+// 菜单项执行、删除两段确认（点别处 / 退出批量复位）、文件夹选择进菜单、
+// 「全部加入复习」放回复习菜单（0 选可点、作用域全部筛选结果）。
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:quiz_master2/data/review_scheduler.dart';
+import 'package:quiz_master2/models/models.dart';
 import 'package:quiz_master2/widgets/uikit.dart';
 
 import 'wrongbook_page_test.dart'
     show
+        FakeWrongbookRepo,
         openBatchMenu,
         openMathDirectory,
         openMathList,
         pumpWrongbook,
         tapBatchMenuItem,
         threeSubjectRepo;
+
+/// 内存版 setReviewJoined：FakeWrongbookRepo 的基类实现走真库
+///（AppDatabase.instance），在 testWidgets 的 fake-async 里等不到
+/// 完成，入池会卡在第一道题的播种上；这里用内存版（与 b11_6 的
+/// _B116Repo 同语义：翻 reviewJoined 标记 + 给缺失错因补记录，
+/// 无错因返回 false——只建卡、不播种）。
+class _MemoryJoinRepo extends FakeWrongbookRepo {
+  _MemoryJoinRepo(FakeWrongbookRepo base)
+      : super(
+          questions: base.questions,
+          folderList: base.folderList,
+          examList: base.examList,
+          kpList: base.kpList,
+          tagList: base.tagList,
+          records: base.records,
+          counts: base.counts,
+          dueCounts: base.dueCounts,
+          subjects: base.subjectsValue,
+          settingsValue: base.settingsValue,
+        );
+
+  @override
+  Future<bool> setReviewJoined(Question q, bool joined) async {
+    if (joined && q.allCauses.isEmpty) return false;
+    final i = questions.indexWhere((x) => x.id == q.id);
+    if (i >= 0) questions[i] = questions[i].copyWith(reviewJoined: joined);
+    if (joined) {
+      for (final c in q.allCauses) {
+        if (!records.any((r) => r.questionId == q.id && r.cause == c)) {
+          records.add(
+            CauseRecord(
+              questionId: q.id,
+              cause: c,
+              subjectId: q.subjectId,
+              joinedAt: DateTime.now(),
+            ),
+          );
+        }
+      }
+    }
+    return true;
+  }
+}
 
 void main() {
   group('方案 A 批量栏', () {
@@ -25,7 +72,16 @@ void main() {
           ),
         );
 
-    testWidgets('0 选禁用态：整理/复习/删除禁用，选中后启用', (tester) async {
+    MenuItemButton batchMenuItem(WidgetTester tester, String label) =>
+        tester.widget<MenuItemButton>(
+          find.ancestor(
+            of: find.text(label),
+            matching: find.byType(MenuItemButton),
+          ),
+        );
+
+    testWidgets('0 选禁用态：整理/删除禁用，复习菜单可点，选中后启用',
+        (tester) async {
       await pumpWrongbook(tester);
       await openMathList(tester);
       await tester.tap(find.text('批量操作'));
@@ -33,7 +89,8 @@ void main() {
 
       expect(batchBtn(tester, '选择').onPressed, isNotNull);
       expect(batchBtn(tester, '整理').onPressed, isNull);
-      expect(batchBtn(tester, '复习').onPressed, isNull);
+      // 复习菜单 0 选时保持可点（里面「全部加入复习」不需勾选）。
+      expect(batchBtn(tester, '复习').onPressed, isNotNull);
       expect(batchBtn(tester, '批量删除').onPressed, isNull);
       expect(batchBtn(tester, '退出批量').onPressed, isNotNull);
       // 勾两道后三者全启用。
@@ -45,6 +102,67 @@ void main() {
       expect(batchBtn(tester, '整理').onPressed, isNotNull);
       expect(batchBtn(tester, '复习').onPressed, isNotNull);
       expect(batchBtn(tester, '批量删除').onPressed, isNotNull);
+    });
+
+    testWidgets('0 选时复习菜单可打开：只有全部加入复习可用', (tester) async {
+      await pumpWrongbook(tester);
+      await openMathList(tester);
+      await tester.tap(find.text('批量操作'));
+      await tester.pumpAndSettle();
+      await openBatchMenu(tester, 'batch-review-menu');
+      expect(batchMenuItem(tester, '加入复习').onPressed, isNull);
+      expect(batchMenuItem(tester, '全部加入复习').onPressed, isNotNull);
+      expect(batchMenuItem(tester, '立即专项练习').onPressed, isNull);
+      expect(batchMenuItem(tester, '取消加入复习').onPressed, isNull);
+    });
+
+    testWidgets('0 选点全部加入复习：全部筛选结果入池，已在复习的跳过',
+        (tester) async {
+      final repo = _MemoryJoinRepo(threeSubjectRepo());
+      final scheduler = FsrsReviewScheduler(
+        config: const SchedulerConfig(enableFuzzing: false),
+        store: InMemoryCardStore(),
+      );
+      repo.scheduler = scheduler;
+      var goReviewCalls = 0;
+      await pumpWrongbook(
+        tester,
+        repo: repo,
+        scheduler: scheduler,
+        onGoReview: ({String? subjectId}) => goReviewCalls++,
+      );
+      await openMathList(tester);
+      await tester.tap(find.text('批量操作'));
+      await tester.pumpAndSettle();
+      expect(find.text('已选 0 道'), findsOneWidget);
+      // 数学列表 3 道（q1/q2/q3；q7 已掌握不计入）全入池。
+      await tapBatchMenuItem(tester, 'batch-review-menu', '全部加入复习');
+      expect(find.text('新增 3 道'), findsOneWidget);
+      expect(find.text('开始复习'), findsOneWidget);
+      expect(await scheduler.pooledQuestionIds(), {'q1', 'q2', 'q3'});
+      await tester.tap(find.text('开始复习'));
+      await tester.pumpAndSettle();
+      expect(goReviewCalls, 1);
+      // 再点一次：3 道都已在池，全跳过，不再给开始复习入口。
+      await tapBatchMenuItem(tester, 'batch-review-menu', '全部加入复习');
+      expect(find.text('3 道已在复习，跳过'), findsOneWidget);
+      expect(find.text('开始复习'), findsNothing);
+      expect(await scheduler.pooledQuestionIds(), {'q1', 'q2', 'q3'});
+    });
+
+    testWidgets('选 1 道后复习菜单四项全可用', (tester) async {
+      await pumpWrongbook(tester);
+      await openMathList(tester);
+      await tester.tap(find.text('批量操作'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byType(Checkbox).at(0));
+      await tester.pumpAndSettle();
+      expect(find.text('已选 1 道'), findsOneWidget);
+      await openBatchMenu(tester, 'batch-review-menu');
+      expect(batchMenuItem(tester, '加入复习').onPressed, isNotNull);
+      expect(batchMenuItem(tester, '全部加入复习').onPressed, isNotNull);
+      expect(batchMenuItem(tester, '立即专项练习').onPressed, isNotNull);
+      expect(batchMenuItem(tester, '取消加入复习').onPressed, isNotNull);
     });
 
     testWidgets('菜单项执行：整理菜单收藏 3 道；选择菜单清除选择',

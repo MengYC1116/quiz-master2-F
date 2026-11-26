@@ -19,8 +19,8 @@ import 'package:quiz_master2/models/models.dart';
 import 'package:quiz_master2/widgets/uikit.dart';
 
 import 'wrongbook_page_test.dart'
-    show FakeWrongbookRepo, boardRow, openMathList, openMathListCompact,
-        pumpWrongbook, tapBatchMenuItem, wbq;
+    show FakeWrongbookRepo, boardRow, openBatchMenu, openMathList,
+        openMathListCompact, pumpWrongbook, tapBatchMenuItem, wbq;
 
 Question _bq(
   String id, {
@@ -323,7 +323,7 @@ void main() {
       return scheduler;
     }
 
-    testWidgets('未勾选时整理/复习菜单与批量删除禁用，选择与退出可用',
+    testWidgets('未勾选时整理/批量删除禁用，复习菜单可点，选择与退出可用',
         (tester) async {
       final repo = reviewRepo();
       await pumpWrongbook(tester, repo: repo);
@@ -338,11 +338,22 @@ void main() {
           );
       expect(btn('选择').onPressed, isNotNull);
       expect(btn('整理').onPressed, isNull);
-      expect(btn('复习').onPressed, isNull);
+      expect(btn('复习').onPressed, isNotNull);
       expect(btn('批量删除').onPressed, isNull);
       expect(btn('退出批量').onPressed, isNotNull);
-      // 全部加入复习按钮已删：其动作走「全选全部筛选结果 + 加入复习」。
-      expect(find.text('全部加入复习'), findsNothing);
+      // 复习菜单 0 选时可打开：只有「全部加入复习」可用（它不需勾选，
+      // 作用域是全部筛选结果），其余三项禁用。
+      MenuItemButton item(String label) => tester.widget<MenuItemButton>(
+            find.ancestor(
+              of: find.text(label),
+              matching: find.byType(MenuItemButton),
+            ),
+          );
+      await openBatchMenu(tester, 'batch-review-menu');
+      expect(item('加入复习').onPressed, isNull);
+      expect(item('全部加入复习').onPressed, isNotNull);
+      expect(item('立即专项练习').onPressed, isNull);
+      expect(item('取消加入复习').onPressed, isNull);
     });
 
     testWidgets('勾选加入：3 道都建卡（无错因的题只建卡、不播种），给开始复习入口',
