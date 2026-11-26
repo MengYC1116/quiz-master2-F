@@ -1137,9 +1137,9 @@ void main() {
       expect(find.textContaining('本次练习不改变到期时间'), findsOneWidget);
       await tapButton(tester, '加入时间');
       await tapButton(tester, '开始练习');
-      // 4 道题、4 个错因：q1 1 个 + q2 2 个 + q3 1 个 + q4 0 个
-      //（q4 无错因记录；q5 不在池内）。
-      expect(find.textContaining('本轮共 4 道题、4 个错因'), findsOneWidget);
+      // 4 道题、5 个错因：q1 1 个 + q2 2 个 + q3 1 个 + q4 1 个
+      //（q4 无错因记录，回退到题面错因；q5 不在池内）。
+      expect(find.textContaining('本轮共 4 道题、5 个错因'), findsOneWidget);
       expect(find.textContaining('专项练习：本次练习不改变到期时间'), findsOneWidget);
       for (var i = 0; i < 4; i++) {
         await tapButton(tester, '开始作答');

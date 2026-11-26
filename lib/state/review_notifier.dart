@@ -1293,13 +1293,19 @@ class ReviewNotifier extends Notifier<ReviewState> {
       }
       final records = recordsByQ[qid] ?? const [];
       final recordByCause = {for (final r in records) r.cause: r};
-      // 本轮错因：仍在库里的才保留；到期复习里已治愈且未到复查日的
-      // 错因已不在范围，移除。
+      // 本轮错因：有 cause_records 行的按记录判；没有记录时，错因
+      // 仍在题自己身上（q.allCauses，如未加入复习的专项练习题）
+      // 就保留，两边都没有才删；到期复习里已治愈且未到复查日的
+      // 错因已不在范围，移除（只在记录存在时适用）。
       final causes = <String>[];
       for (final cause in byQ[qid]!) {
         final r = recordByCause[cause];
         if (r == null) {
-          removedAny = true;
+          if (q.allCauses.contains(cause)) {
+            causes.add(cause);
+          } else {
+            removedAny = true;
+          }
           continue;
         }
         if (mode == ReviewMode.due &&
