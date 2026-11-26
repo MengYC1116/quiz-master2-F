@@ -608,7 +608,10 @@ void main() {
     testWidgets('标题行状态 pill 与 panel 里的错因', (tester) async {
       await pumpDetail(tester);
       expect(find.text('概念不清'), findsNWidgets(2)); // 信息错因行 + 复习错因行
-      expect(find.text('解决中'), findsNWidgets(3)); // 标题 pill + 整体状态 pill + 错因 pill
+      // FSRS 口径：标题 pill + 整体状态 pill 都是「未加入复习」，
+      // 复习状态行里还有一处同文案；「解决中」只剩错因自身历史记录的 pill。
+      expect(find.text('未加入复习'), findsNWidgets(3));
+      expect(find.text('解决中'), findsNWidgets(1)); // 仅错因 pill
     });
   });
 
@@ -685,18 +688,20 @@ void main() {
     testWidgets('已加入题：取消加入 + 错因状态 + 复习状态 + 全部记录', (tester) async {
       await pumpDetail(tester);
       expect(find.text('取消加入复习'), findsOneWidget);
-      expect(find.text('已加入复习 · 还有 1 个错因未解决'), findsOneWidget);
-      expect(find.text('取消加入不会删解决记录，再加入时接着上次解决，不用从头来'), findsOneWidget);
+      // FSRS 口径：默认夹具不在 FSRS 池里，加入 pill 只写「已加入复习」。
+      expect(find.text('已加入复习'), findsOneWidget);
+      expect(find.text('取消加入不会删复习记录，再加入时接着上次的到期安排，不用从头来'), findsOneWidget);
       expect(find.text('错因状态'), findsOneWidget);
       expect(find.text('概念不清'), findsNWidgets(2)); // 信息错因行 + 复习错因行
-      expect(find.text('解决中'), findsNWidgets(3)); // 标题 pill + 整体状态 pill + 错因 pill
+      expect(find.text('解决中'), findsNWidgets(1)); // 仅错因 pill
+      expect(find.text('未加入复习'), findsNWidgets(3)); // 标题 + 整体状态 + 复习状态行
       // FSRS 口径迁移（面 B）：每行旧口径「解决次数 N」与 kv 行
       // 「解决次数」（自查计数）已删，改为题目级「复习状态」行；
       // 默认夹具不在 FSRS 池里、无正式复习记录。
       expect(find.text('解决次数 1'), findsNothing);
       expect(find.textContaining('共自查 2 次'), findsNothing);
       expect(find.text('复习状态'), findsOneWidget);
-      expect(find.text('未加入复习'), findsOneWidget);
+      // 「未加入复习」共 3 处：标题 pill + 整体状态 pill + 复习状态行。
       expect(find.text('暂无正式复习记录'), findsOneWidget);
       expect(find.text('解决记录'), findsOneWidget);
       expect(find.textContaining('已解决'), findsWidgets);
@@ -709,7 +714,8 @@ void main() {
       await scheduler.initializeQuestion('q1');
       await pumpDetail(tester, repo: repo, scheduler: scheduler);
       expect(find.text('复习状态'), findsOneWidget);
-      expect(find.text('未开始'), findsOneWidget);
+      // 「未开始」共 3 处：标题 pill + 整体状态 pill + 复习状态行。
+      expect(find.text('未开始'), findsNWidgets(3));
       expect(find.text('暂无正式复习记录'), findsOneWidget);
     });
 
@@ -749,29 +755,27 @@ void main() {
       expect(find.text('正式复习答对 2 次 · 答错 1 次'), findsOneWidget);
     });
 
-    testWidgets('FR-09：复查间隔 3 天时文案写“满 3 天自动回来复查”', (tester) async {
-      final repo = detailRepo();
-      // q1 的错因全部解决后才显示这句文案（默认库里 q1 还有 1 个未解决）。
-      repo.records[0] = repo.records[0].copyWith(
-        status: CauseStatus.solved,
-        solvedCount: 2,
-      );
-      repo.settingsValue = AppSettings.defaults.copyWith(
-        recheckIntervalDays: 3,
-      );
-      await pumpDetail(tester, repo: repo);
-      expect(find.text('已加入复习 · 错因已全部解决，满 3 天自动回来复查'), findsOneWidget);
-      expect(find.textContaining('满 7 天自动回来复查'), findsNothing);
+    testWidgets('FSRS：已加入且在池未开始 → 加入 pill 显示“已加入复习 · 未开始”', (tester) async {
+      final repo = detailRepo()..poolIdsValue = {'q1'};
+      final scheduler = _testScheduler();
+      await scheduler.initializeQuestion('q1');
+      await pumpDetail(tester, repo: repo, scheduler: scheduler);
+      expect(find.text('已加入复习 · 未开始'), findsOneWidget);
     });
 
-    testWidgets('FR-09：默认间隔 7 天时文案仍是“满 7 天自动回来复查”', (tester) async {
-      final repo = detailRepo();
-      repo.records[0] = repo.records[0].copyWith(
-        status: CauseStatus.solved,
-        solvedCount: 2,
+    testWidgets('FSRS：已加入且已开始 → 加入 pill 显示“已加入复习 · 下次到期 M月M日”', (tester) async {
+      final repo = detailRepo()..poolIdsValue = {'q1'};
+      final scheduler = _testScheduler();
+      await scheduler.initializeQuestion('q1');
+      await scheduler.recordAnswer(
+        'q1',
+        ReviewResult.good,
+        DateTime.now(),
+        'evt-q1-good',
       );
-      await pumpDetail(tester, repo: repo);
-      expect(find.text('已加入复习 · 错因已全部解决，满 7 天自动回来复查'), findsOneWidget);
+      final due = await scheduler.nextDueAt('q1');
+      await pumpDetail(tester, repo: repo, scheduler: scheduler);
+      expect(find.text('已加入复习 · 下次到期 ${due!.month}月${due.day}日'), findsOneWidget);
     });
 
     testWidgets('未加入题：加入复习，点后变取消加入复习', (tester) async {
@@ -1763,7 +1767,7 @@ void main() {
       // 两 panel 默认展开：kv 值与加入状态直接可见。
       expect(find.text('试卷'), findsOneWidget);
       expect(find.text('#易错 #常考'), findsOneWidget);
-      expect(find.text('已加入复习 · 还有 1 个错因未解决'), findsOneWidget);
+      expect(find.text('已加入复习'), findsOneWidget);
     });
 
     testWidgets('D1：题目信息与复习记录默认展开，答案默认隐藏', (tester) async {

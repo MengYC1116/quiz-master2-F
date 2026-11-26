@@ -1006,7 +1006,7 @@ class _ListViewState extends ConsumerState<_ListView> {
           ],
           SizedBox(height: 6 * qmScaleOf(context)),
           Text(
-            '到这些题的题目详情「复习记录」里点「加入复习」才会进来；归档的题不出现在复习列表里；错因全部解决的题会自动离开列表，${st.settings.recheckIntervalDays} 天后回来复查。',
+            '到这些题的题目详情「复习记录」里点「加入复习」才会进来；归档的题不出现在复习列表里；加入复习后按 FSRS 间隔安排，到期了会回到上面的到期列表里。',
             style: TextStyle(
               fontSize: DesignTokens.bodySmallFontSize,
               color: DesignTokens.of(Theme.of(context).brightness).muted,

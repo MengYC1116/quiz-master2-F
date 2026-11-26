@@ -1,14 +1,16 @@
 // 十九批 D1 右栏三组测试：Notifier 层 computeDetailRelated /
-// overallCauseStatusLabel 单测 + widget 层三组渲染与跳转。
+// reviewStatusPillLabel / formalAttemptsLabel 单测 + widget 层三组渲染与跳转。
 // 数据按真实演示库 9 道题的分组仿造（3 科 × 3 题，错因/知识点/
 // 文件夹交叉），再加 1 道已归档题验排除。FakeRepo 覆写 all() 与
-// causeRecords()（不覆写会落到真实 Drift，fake async 里永不完成，
+// loadAllAttempts()（不覆写会落到真实 Drift，fake async 里永不完成，
 // 见 D-88）；其余 load() 要读的口与 detail_page_test 的 FakeDetailRepo
-// 同款覆写，不碰真实数据库。
+// 同款覆写，不碰真实数据库。状态文案只记正式复习对错事实
+//（D-259，方案 §5 第 3 项选 (A)），不再用错因治愈记录推结论。
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:quiz_master2/data/database.dart';
 import 'package:quiz_master2/data/repository.dart';
+import 'package:quiz_master2/data/review_engine.dart';
 import 'package:quiz_master2/models/models.dart';
 import 'package:quiz_master2/modules/detail/question_detail_page.dart';
 import 'package:quiz_master2/state/detail_notifier.dart';
@@ -184,22 +186,60 @@ List<CauseRecord> b19Records() {
   ];
 }
 
-Map<String, List<CauseRecord>> _recordsByQ(List<CauseRecord> records) {
-  final map = <String, List<CauseRecord>>{};
-  for (final r in records) {
-    (map[r.questionId] ??= []).add(r);
-  }
-  return map;
-}
+/// 一条作答夹具：默认正式复习（mode = 到期复习）。
+AttemptData _attempt(
+  String questionId, {
+  String mode = ReviewMode.due,
+  int? correct,
+  String session = 's1',
+}) => AttemptData(
+  id: 'att-$questionId-$mode-$correct-$session',
+  questionId: questionId,
+  sessionId: session,
+  mode: mode,
+  correct: correct,
+  answerVersion: 1,
+  contentVersion: 0,
+  status: '已提交',
+  submissionId: 'sub-$questionId-$mode-$correct-$session',
+  createdAt: DateTime.now().millisecondsSinceEpoch,
+);
+
+/// 正式复习对错夹具（`_refreshRelated` 过滤用：专项与未判分不计）：
+/// q-eng-1 答错 1 次（另有未判分 1 次 + 专项答对 1 次，均不计）；
+/// q-pol-2 答对 2 次（另有专项答对 1 次不计）；
+/// q-pol-3 答对 1 次、答错 1 次。
+List<AttemptData> b19Attempts() => [
+  _attempt('q-eng-1', correct: 0, session: 's1'),
+  _attempt('q-eng-1', session: 's2'),
+  _attempt('q-eng-1', mode: ReviewMode.practice, correct: 1, session: 's3'),
+  _attempt('q-pol-2', correct: 1, session: 's1'),
+  _attempt('q-pol-2', correct: 1, session: 's2'),
+  _attempt('q-pol-2', mode: ReviewMode.practice, correct: 1, session: 's3'),
+  _attempt('q-pol-3', correct: 1, session: 's1'),
+  _attempt('q-pol-3', correct: 0, session: 's2'),
+];
 
 class _B19Repo extends QuestionRepository {
   _B19Repo({
     required this.questions,
     required this.records,
+    this.attempts = const [],
   }) : super(AppDatabase.instance);
 
   final List<Question> questions;
   final List<CauseRecord> records;
+
+  /// 正式复习作答夹具（`_refreshRelated` 读它算相关题状态文案；
+  /// 不覆写会落到真实 Drift，fake async 里永不完成，见 D-88）。
+  final List<AttemptData> attempts;
+
+  @override
+  Future<List<AttemptData>> loadAllAttempts() async => List.of(attempts);
+
+  /// `_refreshReviewStatus` 读池 id；夹具题都不在池里。
+  @override
+  Future<Set<String>> fsrsPoolQuestionIds() async => const {};
   final List<Folder> folderList = const [
     Folder(id: 'f1', name: '试卷', subjectId: 'math', sortOrder: 0),
     Folder(id: 'f2', name: '平时作业', subjectId: 'math', sortOrder: 10),
@@ -315,8 +355,11 @@ class _B19Repo extends QuestionRepository {
       const [];
 }
 
-_B19Repo _b19Repo() =>
-    _B19Repo(questions: b19Questions(), records: b19Records());
+_B19Repo _b19Repo() => _B19Repo(
+  questions: b19Questions(),
+  records: b19Records(),
+  attempts: b19Attempts(),
+);
 
 Future<void> _pumpB19Detail(
   WidgetTester tester, {
@@ -380,147 +423,91 @@ Future<void> tapB19TextLast(WidgetTester tester, String text) async {
 }
 
 void main() {
-  group('overallCauseStatusLabel', () {
-    test('无错因 → 待解决', () {
-      final q = _rq(
-        'x',
-        '无错因',
-        subjectId: 'math',
-        folderId: 'f1',
-        createdAt: DateTime(2026, 11, 6),
-      );
-      expect(overallCauseStatusLabel(q, const []), '待解决');
-    });
-
-    test('有错因无记录 → 待解决；pending 记录 → 待解决', () {
-      final q = _rq(
-        'x',
-        '待解决',
-        subjectId: 'math',
-        folderId: 'f1',
-        causes: const ['概念不清'],
-        createdAt: DateTime(2026, 11, 6),
-      );
-      expect(overallCauseStatusLabel(q, const []), '待解决');
+  group('reviewStatusPillLabel 与 formalAttemptsLabel', () {
+    test('pill：不在池里 → 未加入复习；在池未开始 → 未开始', () {
       expect(
-        overallCauseStatusLabel(q, [
-          CauseRecord(
-            questionId: 'x',
-            cause: '概念不清',
-            subjectId: 'math',
-            status: CauseStatus.pending,
-            joinedAt: DateTime.now(),
+        reviewStatusPillLabel(
+          const DetailReviewStatus(
+            inPool: false,
+            formalCorrect: 0,
+            formalWrong: 0,
           ),
-        ]),
-        '待解决',
+        ),
+        '未加入复习',
+      );
+      expect(
+        reviewStatusPillLabel(
+          const DetailReviewStatus(
+            inPool: true,
+            formalCorrect: 0,
+            formalWrong: 0,
+          ),
+        ),
+        '未开始',
       );
     });
 
-    test('解决中 → 解决中；已解决 → 已解决', () {
-      final q = _rq(
-        'x',
-        '混合',
-        subjectId: 'math',
-        folderId: 'f1',
-        causes: const ['概念不清'],
-        createdAt: DateTime(2026, 11, 6),
-      );
-      final now = DateTime.now();
+    test('pill：已开始，到期 → 已到期；未到 → 未到期', () {
+      final now = DateTime(2026, 11, 26, 12);
       expect(
-        overallCauseStatusLabel(q, [
-          CauseRecord(
-            questionId: 'x',
-            cause: '概念不清',
-            subjectId: 'math',
-            status: CauseStatus.inProgress,
-            solvedCount: 1,
-            joinedAt: now,
+        reviewStatusPillLabel(
+          DetailReviewStatus(
+            inPool: true,
+            nextDueAt: DateTime(2026, 11, 25),
+            formalCorrect: 1,
+            formalWrong: 0,
           ),
-        ]),
-        '解决中',
+          now: now,
+        ),
+        '已到期',
       );
       expect(
-        overallCauseStatusLabel(q, [
-          CauseRecord(
-            questionId: 'x',
-            cause: '概念不清',
-            subjectId: 'math',
-            status: CauseStatus.solved,
-            solvedCount: 2,
-            joinedAt: now,
-            recheckDate: now.add(const Duration(days: 7)),
+        reviewStatusPillLabel(
+          DetailReviewStatus(
+            inPool: true,
+            nextDueAt: DateTime(2026, 11, 28),
+            formalCorrect: 1,
+            formalWrong: 0,
           ),
-        ]),
-        '已解决',
+          now: now,
+        ),
+        '未到期',
       );
     });
 
-    test('已解决但到了复查时间 → 待复查；一 solved 一 pending → 解决中', () {
-      final q = _rq(
-        'x',
-        '复查',
-        subjectId: 'math',
-        folderId: 'f1',
-        causes: const ['概念不清', '方法不会'],
-        createdAt: DateTime(2026, 11, 6),
-      );
-      final now = DateTime.now();
-      expect(
-        overallCauseStatusLabel(q, [
-          CauseRecord(
-            questionId: 'x',
-            cause: '概念不清',
-            subjectId: 'math',
-            status: CauseStatus.solved,
-            solvedCount: 2,
-            joinedAt: now,
-            recheckDate: now.subtract(const Duration(days: 1)),
-          ),
-        ]),
-        '待复查',
-      );
-      expect(
-        overallCauseStatusLabel(q, [
-          CauseRecord(
-            questionId: 'x',
-            cause: '概念不清',
-            subjectId: 'math',
-            status: CauseStatus.solved,
-            solvedCount: 2,
-            joinedAt: now,
-            recheckDate: now.add(const Duration(days: 7)),
-          ),
-          CauseRecord(
-            questionId: 'x',
-            cause: '方法不会',
-            subjectId: 'math',
-            status: CauseStatus.pending,
-            joinedAt: now,
-          ),
-        ]),
-        '解决中',
-      );
+    test('对错事实：无记录 → 暂无正式复习记录；有记录 → 按次计', () {
+      expect(formalAttemptsLabel(0, 0), '暂无正式复习记录');
+      expect(formalAttemptsLabel(2, 1), '正式复习答对 2 次 · 答错 1 次');
+      expect(formalAttemptsLabel(0, 1), '正式复习答对 0 次 · 答错 1 次');
     });
   });
 
+  /// 相关题状态文案夹具（只记正式复习对错事实）：q-eng-1 答错 1 次、
+  /// q-pol-2 答对 2 次、q-pol-3 答对 1 次答错 1 次；其余题无记录。
+  const b19AttemptsByQ = {
+    'q-eng-1': (correct: 0, wrong: 1),
+    'q-pol-2': (correct: 2, wrong: 0),
+    'q-pol-3': (correct: 1, wrong: 1),
+  };
+
   group('computeDetailRelated', () {
-    test('q-math-1：同错因 2 道（未解决优先，归档排除）+ 同文件夹 3 道第 1 位', () {
+    test('q-math-1：同错因 2 道（答错过优先，归档排除）+ 同文件夹 3 道第 1 位', () {
       final all = b19Questions();
       final current = all.firstWhere((q) => q.id == 'q-math-1');
       final rel = computeDetailRelated(
         current: current,
         all: all,
-        recordsByQuestion: _recordsByQ(b19Records()),
+        formalAttemptsByQuestion: b19AttemptsByQ,
         folderName: '试卷',
       );
-      // 同错因「概念不清」：q-eng-1（待解决）排前，q-pol-2（已解决）排后；
+      // 同错因「概念不清」：q-eng-1（答错过）排前，q-pol-2（只答对过）排后；
       // 已归档 q-old 不进组，当前题不进组。
       expect(
         rel.sameCause.map((e) => e.question.id).toList(),
         ['q-eng-1', 'q-pol-2'],
       );
-      expect(rel.sameCause.first.statusLabel, '待解决');
-      expect(rel.sameCause.last.statusLabel, '已解决');
+      expect(rel.sameCause.first.statusLabel, '正式复习答对 0 次 · 答错 1 次');
+      expect(rel.sameCause.last.statusLabel, '正式复习答对 2 次 · 答错 0 次');
       // 同知识点「函数极限」只有已归档的 q-old → 空组。
       expect(rel.sameKp, isEmpty);
       // 同文件夹 f1：q-math-1、q-eng-2、q-pol-1（q-old 归档不计），当前题第 1 位。
@@ -536,20 +523,20 @@ void main() {
       final rel = computeDetailRelated(
         current: current,
         all: all,
-        recordsByQuestion: _recordsByQ(b19Records()),
+        formalAttemptsByQuestion: b19AttemptsByQ,
         folderName: '平时作业',
       );
-      // 同错因都是未解决、都不同科 → 收集时间新→旧：q-eng-1（11-09）在前。
+      // 同错因：q-eng-1 答错过排前，q-math-1 无正式复习记录排后。
       expect(
         rel.sameCause.map((e) => e.question.id).toList(),
         ['q-eng-1', 'q-math-1'],
       );
-      // 同知识点「矛盾观」：q-pol-3（解决中）。
+      // 同知识点「矛盾观」：q-pol-3（答对 1 次、答错 1 次）。
       expect(
         rel.sameKp.map((e) => e.question.id).toList(),
         ['q-pol-3'],
       );
-      expect(rel.sameKp.first.statusLabel, '解决中');
+      expect(rel.sameKp.first.statusLabel, '正式复习答对 1 次 · 答错 1 次');
       // 同文件夹 f2：q-math-2、q-eng-1、q-pol-2，当前题最晚收集 → 第 3 位。
       expect(rel.folder!.totalCount, 3);
       expect(rel.folder!.currentPosition, 3);
@@ -561,7 +548,7 @@ void main() {
       final rel = computeDetailRelated(
         current: current,
         all: all,
-        recordsByQuestion: _recordsByQ(b19Records()),
+        formalAttemptsByQuestion: b19AttemptsByQ,
         folderName: '模拟卷',
       );
       expect(rel.sameCause, isEmpty);
@@ -583,7 +570,7 @@ void main() {
       final relOut = computeDetailRelated(
         current: outsider,
         all: all,
-        recordsByQuestion: _recordsByQ(b19Records()),
+        formalAttemptsByQuestion: b19AttemptsByQ,
         folderName: '试卷',
       );
       expect(relOut.folder, isNull);
@@ -598,7 +585,7 @@ void main() {
       final relNf = computeDetailRelated(
         current: noFolder,
         all: all,
-        recordsByQuestion: _recordsByQ(b19Records()),
+        formalAttemptsByQuestion: b19AttemptsByQ,
       );
       expect(relNf.folder, isNull);
     });
@@ -615,7 +602,7 @@ void main() {
       expect(find.text('同错因的其他题 · 概念不清'), findsOneWidget);
       expect(find.text('学术词汇辨析'), findsOneWidget);
       expect(
-        find.text('英语 · 待解决 · 也栽在「概念不清」上，可对照着看'),
+        find.text('英语 · 正式复习答对 0 次 · 答错 1 次 · 也栽在「概念不清」上，可对照着看'),
         findsOneWidget,
       );
       expect(find.text('跳过去 ›'), findsOneWidget);
@@ -637,7 +624,7 @@ void main() {
       expect(find.text('数学 1 · 英语 1'), findsOneWidget);
       expect(find.text('同知识点的题 · 矛盾观'), findsOneWidget);
       expect(find.text('材料分析：中国式现代化'), findsOneWidget);
-      expect(find.text('政治 · 解决中 · 错因 方法不会'), findsOneWidget);
+      expect(find.text('政治 · 正式复习答对 1 次 · 答错 1 次 · 错因 方法不会'), findsOneWidget);
       expect(find.text('同文件夹 · 平时作业（3 道）'), findsOneWidget);
       expect(find.text('当前第 3 道 · 共 3 道'), findsOneWidget);
     });

@@ -18,7 +18,7 @@
 | `lib/state/report_provider.dart` | `reportProvider`：学习报告状态。页面独占，autoDispose。 | 学习报告 |
 | `lib/state/subjects_notifier.dart` | `subjectsProvider`：学科管理状态（学科 / 知识点树 / 标签 / 试卷）。页面独占，autoDispose。 | 学科管理 |
 | `lib/state/wrongbook_notifier.dart` | `wrongbookProvider` + `wrongbookInitialProvider`：错题本状态（书架 / 目录 / 列表、批量操作、文件夹拖动排序）。页面独占，autoDispose。 | 错题本 |
-| `lib/state/review_notifier.dart` | `reviewProvider` + `reviewInitialProvider`：复习状态（错因队列、四步会话、自查、复查）。页面独占，autoDispose。 | 复习 |
+| `lib/state/review_notifier.dart` | `reviewProvider` + `reviewInitialProvider`：复习状态（错因队列、三步会话、核对、FSRS 调度）。页面独占，autoDispose。 | 复习 |
 | `lib/state/organize_notifier.dart` | `organizeProvider`：整理工作台状态（队列、表单、批量操作）。页面独占，autoDispose。 | 整理工作台 |
 | `lib/state/detail_notifier.dart` | `detailProvider` + `detailInitialProvider`：题目详情状态（当前题、错因记录、解决记录、编辑表单、重新框选）。页面独占，autoDispose。 | 题目详情 |
 | `lib/state/collect_notifier.dart` | `collectProvider`：收集中心状态（任务列表、导入、拆题确认、删除任务）。页面独占，autoDispose；修框状态（框选 / 缩放 / 旋转）是纯 UI 临时状态，留在 `box_editor.dart` 本地，不进 Provider。 | 收集中心 |
