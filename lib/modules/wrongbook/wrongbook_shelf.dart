@@ -260,11 +260,31 @@ extension _WrongbookShelfBuild on _WrongbookViewState {
   // 窗口变化只改变 Wrap 每行本数。
   Widget _buildBook(Subject s, {required double width}) {
     final scale = qmScaleOf(context);
-    // 2026-11-25 口径迁移 §2.1/§4 第 1 项：封面两段与首页学科行
-    // 同一口径——到期 N 道 · 待整理 M 道；旧三数（道题/要复习/待复查）
-    // 已撤下（“道题”总数按已掌握排除，不再符合 D-259“软件不判定掌握”）。
-    final due = _s.dueCounts[s.id] ?? 0;
-    final pendingOrganize = _s.pendingOrganizeCounts[s.id] ?? 0;
+    // 2026-11-26 封面改法：「共 M 道 · 文件夹分布」，与首页学科行
+    // 脱钩——到期数只在首页学科行与复习页出现，封面只看书里的题：
+    // M = 该科已整理未归档未掌握题数，与文件夹计数同一口径
+    // （目录口径 _s.folderCount：已整理、未归档、未掌握），只留
+    // > 0 的、按题数从多到少取前 3 个。总数与所显示文件夹数之和
+    // 对得上（每题只进一个顶层文件夹时）。
+    final total = _s.questions
+        .where(
+          (q) =>
+              q.subjectId == s.id &&
+              q.isOrganized &&
+              !q.isArchived &&
+              !_s.isMastered(q),
+        )
+        .length;
+    final topFolders = _s
+        .topFolders(s.id)
+        .map((f) => (name: f.name, count: _s.folderCount(f.id)))
+        .where((e) => e.count > 0)
+        .toList()
+      ..sort((a, b) => b.count.compareTo(a.count));
+    final distribution = [
+      '共 $total 道',
+      for (final e in topFolders.take(3)) '${e.name} ${e.count} 道',
+    ].join(' · ');
     final palette = _Book12Palette.of(s);
     // 悬停（板子无悬停态；沿用旧书架的上移 4px，阴影不变）：
     // 未悬停与悬停都是板子阴影 14/18/28/.30，150ms 与旧版一致。
@@ -456,12 +476,16 @@ extension _WrongbookShelfBuild on _WrongbookViewState {
                               ),
                             ),
                             padding: EdgeInsets.only(top: 11 * scale),
-                            child: Row(
-                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                              children: [
-                                _bookStat('到期', due),
-                                _bookStat('待整理', pendingOrganize),
-                              ],
+                            // 分布行：12px 白字，最多两行、超长省略。
+                            child: Text(
+                              distribution,
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                fontSize: 12,
+                                color: Colors.white,
+                                height: 1.5,
+                              ),
                             ),
                           ),
                           SizedBox(height: 12 * scale),
@@ -486,36 +510,6 @@ extension _WrongbookShelfBuild on _WrongbookViewState {
     );
   }
 
-  Widget _bookStat(String label, int value) {
-    // 板子 12 号两数字：数字 21px/900（等宽数字），标签 10.5px/白 .85/
-    // 字距 .08em；每格内容居中，Row 用 spaceBetween 左右分散。
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Text(
-          '$value',
-          textAlign: TextAlign.center,
-          style: const TextStyle(
-            fontSize: 21,
-            fontWeight: FontWeight.w900,
-            color: Colors.white,
-            height: 1.1,
-            fontFeatures: [FontFeature.tabularFigures()],
-          ),
-        ),
-        Text(
-          label,
-          textAlign: TextAlign.center,
-          style: TextStyle(
-            fontSize: 10.5,
-            letterSpacing: 0.84 * qmScaleOf(context),
-            color: const Color.fromRGBO(255, 255, 255, 0.85),
-            height: 1.25,
-          ),
-        ),
-      ],
-    );
-  }
 }
 
 /// 封面内「开始复习」按钮（板子 12 号 `.bk-cta`：白底、字色 cdd、

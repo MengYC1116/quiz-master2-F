@@ -49,6 +49,7 @@ import '../../state/repository_provider.dart';
 import '../../theme/app_theme.dart';
 import '../../widgets/entrance_animation.dart';
 import '../../widgets/uikit.dart';
+import '../wrongbook/wrongbook_page.dart';
 
 /// 首页：问候 + 焦点大卡片（到期的数量）+ 继续上次 + 快速收集 +
 /// 各学科到期 / 待整理概览，学科按库里的 subjects 表显示（入库顺序）。
@@ -268,7 +269,7 @@ class _HomePageState extends ConsumerState<HomePage> {
               onGoReview: widget.onGoReview,
             ),
           // 十二批功能 4：最近查看——学科行下方，最多 30 行紧凑行
-          //（标题、学科名、最后查看时间）；空时整区隐藏，首页不放
+          //（题干/标题、学科名、最后查看时间）；空时整区隐藏，首页不放
           // 空状态提示；已归档 / 已掌握的题照常显示（详情页自己处理
           // 归档显示）。点行进题目详情（与别处相同的导航方式）。
           if (!home.loading && home.hasLoaded && home.history.isNotEmpty) ...[
@@ -696,8 +697,12 @@ class _RecentlyViewedList extends StatelessWidget {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
+                        // 2026-11-26：主行显示题干，与错题本列表行
+                        // 同一取法（rowDisplayTitle：优先 OCR 题干，
+                        // 无题干回退原 title）；单行、超长省略，副行
+                        // 与行高不动。
                         Text(
-                          history[i].question.title,
+                          rowDisplayTitle(history[i].question),
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                           style: TextStyle(

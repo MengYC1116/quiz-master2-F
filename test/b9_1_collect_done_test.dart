@@ -383,9 +383,9 @@ void main() {
     }
 
     /// 在收集中心断言：待整理计数 0、两行都是“已整理” pill。
-    /// 注意：等“全部 2”而不是“待整理 0”——_load 完成前 _tasks
-    /// 为空，chip 也显示“待整理 0”，那个条件在加载前就成立，
-    /// 会误判（行还没出来）。
+    /// 注意：等“全部 2”而不是“待整理 0”——0 的 chip 直接隐藏，
+    /// “待整理 0”永不出现；_load 完成前 _tasks 为空，“全部”也
+    /// 不是 2，所以等“全部 2”才算加载完成。
     Future<void> expectCollectDone(WidgetTester tester) async {
       await _goNav(tester, '收集中心');
       await _pumpUntil(
@@ -394,7 +394,7 @@ void main() {
         reason: '收集中心未加载出两行任务',
       );
       expect(find.text('全部 2'), findsOneWidget);
-      expect(find.text('待整理 0'), findsOneWidget);
+      expect(find.text('待整理 0'), findsNothing);
       expect(find.text('已整理'), findsNWidgets(2));
       expect(find.text('待整理'), findsNothing);
     }

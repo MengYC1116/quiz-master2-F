@@ -373,6 +373,21 @@ extension _WrongbookListBuild on _WrongbookViewState {
                     ),
                   ),
                 ),
+                // 收藏标志（2026-11-26，用户要求列表可区分收藏）：
+                // 已收藏的题在题干后、状态 pill 前画 ★，与详情页
+                // 同星形同色（paperStarOn）；只展示，不拦截点行进详情。
+                if (q.isFavorite) ...[
+                  SizedBox(width: 6 * scale),
+                  Text(
+                    '★',
+                    key: ValueKey('favorite-star-${q.id}'),
+                    style: TextStyle(
+                      fontSize: DesignTokens.detailStarFontSize,
+                      color: palette.paperStarOn,
+                      height: 1,
+                    ),
+                  ),
+                ],
                 SizedBox(width: 8 * scale),
                 _statusPill(q),
                 // P3 入口 1：已在 FSRS 复习池的题行内标“已在复习”

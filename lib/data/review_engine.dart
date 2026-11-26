@@ -234,16 +234,18 @@ List<QueueQuestion> buildPracticeQueue({
     pool.sort((a, b) => a.createdAt.compareTo(b.createdAt));
   }
   final picked = count > 0 ? pool.take(count).toList() : pool;
-  return picked
-      .map(
-        (q) => QueueQuestion(
-          questionId: q.id,
-          causes: (recordsByQ[q.id] ?? const [])
-              .map((r) => r.cause)
-              .toList(),
-        ),
-      )
-      .toList();
+  return picked.map((q) {
+    // 错因优先取 cause_records；未加入复习的题没有记录，回退到题
+    // 自己身上的错因（q.allCauses），与批量入口 _sessionQuestionsForIds
+    // 同一个兜底——否则专项练习建出空错因，暂停后断点无法恢复。
+    final recordCauses = (recordsByQ[q.id] ?? const [])
+        .map((r) => r.cause)
+        .toList();
+    return QueueQuestion(
+      questionId: q.id,
+      causes: recordCauses.isEmpty ? q.allCauses : recordCauses,
+    );
+  }).toList();
 }
 
 // ---------------------------------------------------------------------------

@@ -206,10 +206,16 @@ class CollectState {
     this.stagedPaths,
     this.subjectGuessHint,
     this.retryingTaskIds = const {},
+    this.questionsById = const {},
   });
 
   /// 任务列表（只按导入时间排，新的在上，来自 `collect_tasks` 的 rowid DESC）。
   final List<CollectTask> tasks;
+
+  /// 已产出题目的任务的题（questionId → Question；只有修框确认后
+  /// 的待整理 / 已整理任务才有，供行主行显示题干；读不到时该行
+  /// 回退显示文件标题）。
+  final Map<String, Question> questionsById;
 
   /// 学科表：读库 subjects（B2 补充；B8-1：空表是删光学科后的合法状态，
   /// 不再回退预设三科；首帧与读库后都以真实列表为准，空就是空）。
@@ -254,15 +260,24 @@ class CollectState {
   Subject subjectOf(String id) =>
       subjects.firstWhere((s) => s.id == id, orElse: () => Subject.byId(id));
 
-  /// 某状态的任务数（任务列表上方统计行与筛选 chips 用）。
+  /// 某状态的任务数（筛选 chips 用；副标题不再放计数）。
   int count(CollectStatus status) =>
       tasks.where((t) => t.status == status).length;
 
-  /// 筛选后的任务列表：只按导入时间排（新的在上），筛选只过滤，
-  /// 不改变顺序；永不按状态重排。
+  /// 筛选后的任务列表：未完成在前、已整理在后；组内按导入时间
+  /// 新的在上（tasks 本身已按 rowid DESC，分组用稳定划分保持
+  /// 组内原顺序）。未完成 = 除 done 外的一切状态（导入失败也
+  /// 算未完成——还没整理进错题本）；筛选只过滤，不改变组内顺序。
   List<CollectTask> shownTasks(CollectStatus? filter) {
-    if (filter == null) return tasks;
-    return tasks.where((t) => t.status == filter).toList();
+    final list = filter == null
+        ? tasks
+        : tasks.where((t) => t.status == filter).toList();
+    return [
+      for (final t in list)
+        if (t.status != CollectStatus.done) t,
+      for (final t in list)
+        if (t.status == CollectStatus.done) t,
+    ];
   }
 
   CollectState copyWith({
@@ -277,6 +292,7 @@ class CollectState {
     Object? stagedPaths = _unset,
     Object? subjectGuessHint = _unset,
     Set<String>? retryingTaskIds,
+    Map<String, Question>? questionsById,
   }) {
     return CollectState(
       tasks: tasks ?? this.tasks,
@@ -298,6 +314,7 @@ class CollectState {
           ? this.subjectGuessHint
           : subjectGuessHint as String?,
       retryingTaskIds: retryingTaskIds ?? this.retryingTaskIds,
+      questionsById: questionsById ?? this.questionsById,
     );
   }
 }
@@ -344,7 +361,8 @@ String noBoxWarningText(CollectTask task, List<int> unboxed) {
   return '还有 ${unboxed.length} 页没有框：第 ${pageListText(unboxed)} 页';
 }
 
-/// 任务行第二行文案（状态 + 学科 + 页码）。
+/// 任务行第二行文案（状态 + 学科 + 页码）。主行已是题干（或回退的
+/// 文件标题），副行不再重复文件名，只留真正补充的信息。
 String taskNote(CollectTask task, String subjectName) {
   final pagePart = task.pageCount > 1
       ? '第${task.page}页 / 共${task.pageCount}页'
@@ -356,8 +374,8 @@ String taskNote(CollectTask task, String subjectName) {
     CollectStatus.boxing =>
       '修框中 · 上次修到一半，点「继续修框」接着修 · $subjectName · $pagePart',
     CollectStatus.pendingOrganize => '已确认修框，等整理 · $subjectName · $pagePart',
-    CollectStatus.failed => '${task.fileName} · $subjectName · $pagePart',
-    CollectStatus.done => '${task.fileName} · $subjectName · $pagePart',
+    CollectStatus.failed => '导入失败 · $subjectName · $pagePart',
+    CollectStatus.done => '已整理 · $subjectName · $pagePart',
   };
 }
 
@@ -444,6 +462,20 @@ class CollectNotifier extends Notifier<CollectState> {
         // 草稿读不到就不出警告，列表本身不受影响。
       }
     }
+    // 2026-11-26：行主行显示题干——有 questionId 的任务（待整理 /
+    // 已整理）读出对应的题；读不到（题已删）就不进 map，行回退
+    // 显示文件标题，列表本身不受影响。
+    final questionsById = <String, Question>{};
+    for (final task in tasks) {
+      final qid = task.questionId;
+      if (qid == null) continue;
+      try {
+        final q = await repo.questionById(qid);
+        if (q != null) questionsById[qid] = q;
+      } catch (_) {
+        // 读不到就不进 map，行回退文件标题。
+      }
+    }
     if (_disposed) return;
     state = state.copyWith(
       tasks: tasks,
@@ -451,6 +483,7 @@ class CollectNotifier extends Notifier<CollectState> {
       unboxedPagesByTask: unboxed,
       hasAnyDraftBox: hasAnyDraftBox,
       hasSplitSibling: hasSplitSibling,
+      questionsById: questionsById,
     );
   }
 
@@ -1303,6 +1336,20 @@ class CollectNotifier extends Notifier<CollectState> {
   /// B3：失败任务的删除不再走这里，改走页面弹模态确认框后调本方法。
   Future<void> deleteTask(CollectTask task) async {
     await _repo.deleteCollectTask(task.id);
+    await load();
+  }
+
+  /// 清理已整理（2026-11-26）：只删已整理任务的记录，走同一条
+  /// deleteCollectTask——已整理进错题本的题不动（见
+  /// deleteCollectTaskFrom）；未完成的任务一个不动。
+  Future<void> clearDoneTasks() async {
+    final doneIds = [
+      for (final t in state.tasks)
+        if (t.status == CollectStatus.done) t.id,
+    ];
+    for (final id in doneIds) {
+      await _repo.deleteCollectTask(id);
+    }
     await load();
   }
 }
