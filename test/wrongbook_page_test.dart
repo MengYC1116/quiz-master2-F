@@ -1327,8 +1327,9 @@ void main() {
     });
 
     // 十九批 A1：大卡片 / 紧凑列表视图切换去掉，只剩板子一种行设计——
-    // 标题 + meta 归属行 + 状态 pill，无整题切片、无收藏星、无序号圆盘。
-    testWidgets('板子行：标题 + meta 归属行 + 状态 pill，无切片/星标/序号', (tester) async {
+    // 标题 + meta 归属行 + 状态 pill，无整题切片、无序号圆盘；已收藏
+    // 的题画 ★（2026-11-26 收藏标志）。
+    testWidgets('板子行：标题 + meta 归属行 + 状态 pill + 收藏星，无切片/序号', (tester) async {
       await pumpWrongbook(tester);
       await openMathList(tester);
       expect(find.byType(QuestionSlice), findsNothing);
@@ -1338,7 +1339,7 @@ void main() {
       // 状态 pill：q1/q2 待解决，q3 解决中 · ✓1/2（cureChecks=2）。
       expect(find.text('待解决'), findsNWidgets(2));
       expect(find.text('解决中 · ✓1/2'), findsOneWidget);
-      expect(find.text('★'), findsNothing);
+      expect(find.text('★'), findsOneWidget); // q1 已收藏画星，q2/q3 不画
       expect(find.text('☆'), findsNothing);
       // meta 行是 RichText：q1 的标签易错、q3 的错因计算错误各只一处。
       expect(
@@ -1498,7 +1499,7 @@ void main() {
       ); // q1 的试卷
       expect(find.text('待解决'), findsNWidgets(2)); // q1、q2
       expect(find.text('解决中 · ✓1/2'), findsOneWidget); // q3
-      expect(find.text('★'), findsNothing); // q1 已收藏也不画星
+      expect(find.text('★'), findsOneWidget); // q1 已收藏画星
       expect(find.text('☆'), findsNothing);
     });
 
@@ -1529,13 +1530,13 @@ void main() {
       expect(_thumbPaperColor(tester), const Color(0xFFD8DCE2));
     });
 
-    // 十九批 A1：板子行无收藏星，收藏只在详情页切；行上只断言无星，
-    // 收藏过滤仍走「仅收藏」筛选（q1 已收藏、q2 未收藏）。
-    testWidgets('板子行无收藏星；仅收藏筛选仍按收藏过滤', (tester) async {
+    // 收藏标志（2026-11-26）：已收藏的题行画 ★；收藏过滤仍走
+    // 「仅收藏」筛选（q1 已收藏、q2 未收藏）。
+    testWidgets('板子行收藏星；仅收藏筛选仍按收藏过滤', (tester) async {
       final repo = threeSubjectRepo();
       await pumpWrongbook(tester, repo: repo);
       await openMathListCompact(tester);
-      expect(find.text('★'), findsNothing);
+      expect(find.text('★'), findsOneWidget); // q1 已收藏画星
       expect(find.text('☆'), findsNothing);
       await tester.tap(find.text('筛选 ▾'));
       await tester.pumpAndSettle();
