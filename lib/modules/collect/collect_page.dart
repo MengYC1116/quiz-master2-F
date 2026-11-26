@@ -14,6 +14,7 @@ import '../../state/repository_provider.dart';
 import '../../theme/design_tokens.dart';
 import '../../widgets/uikit.dart';
 import '../../widgets/widgets.dart';
+import '../wrongbook/wrongbook_page.dart';
 
 import 'batch_import_card.dart';
 import 'box_editor.dart';
@@ -120,7 +121,8 @@ class _CollectViewState extends ConsumerState<_CollectView> {
   bool _picking = false;
   bool _noSubjectWarning = false;
   bool _hideErrorBanner = false;
-  CollectStatus? _filter; // null = 全部；筛选不改变时间顺序
+  CollectStatus? _filter; // null = 全部；筛选只过滤，不改变组内顺序
+  //（未完成在前、已整理在后，见 shownTasks）。
   // B11-1：有文件正悬在拖放区上（只改落点文案与边框，不改布局）。
   bool _dragOver = false;
 
@@ -393,6 +395,35 @@ class _CollectViewState extends ConsumerState<_CollectView> {
     await _notifier.deleteTask(task);
   }
 
+  /// 清理已整理（2026-11-26）：只清已整理任务的记录，已整理的题
+  /// 本身不受影响；用既定删除确认文案确认一次；没有已整理任务
+  /// 时按钮禁用（调不到这里，守门仍留）。
+  Future<void> _clearDoneTasks() async {
+    final doneCount = ref.read(collectProvider).count(CollectStatus.done);
+    if (doneCount == 0) return;
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('删了就没了，确定吗？'),
+        content: Text(
+          '已整理的 $doneCount 个任务记录会被删掉；已经整理进错题本的题还在。',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('取消'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('确认删除'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    await _notifier.clearDoneTasks();
+  }
+
   @override
   Widget build(BuildContext context) {
     final s = ref.watch(collectProvider);
@@ -502,19 +533,35 @@ class _CollectViewState extends ConsumerState<_CollectView> {
               ),
             ],
             SizedBox(height: 22 * scale),
-            Text(
-              '收集任务',
-              style: TextStyle(
-                fontSize: DesignTokens.homeSectionTitleFontSize,
-                fontWeight: FontWeight.w700,
-                letterSpacing: 0.08,
-                color: palette.muted,
-                height: 1.2,
-              ),
+            Row(
+              children: [
+                Text(
+                  '收集任务',
+                  style: TextStyle(
+                    fontSize: DesignTokens.homeSectionTitleFontSize,
+                    fontWeight: FontWeight.w700,
+                    letterSpacing: 0.08,
+                    color: palette.muted,
+                    height: 1.2,
+                  ),
+                ),
+                const Spacer(),
+                // 清理已整理（2026-11-26）：只清已整理任务的记录，
+                // 题本身不受影响；没有已整理任务时禁用。
+                QmButton(
+                  key: const Key('collect-clear-done'),
+                  label: '清理已整理',
+                  variant: QmButtonVariant.plain,
+                  size: QmButtonSize.small,
+                  onPressed: s.count(CollectStatus.done) == 0
+                      ? null
+                      : _clearDoneTasks,
+                ),
+              ],
             ),
             SizedBox(height: 4 * scale),
             Text(
-              '按导入时间排，新的在上面，不按状态排 · 导入中 ${s.count(CollectStatus.importing)} · 排队中 ${s.count(CollectStatus.queued)} · 待框选 ${s.count(CollectStatus.needBox)} · 修框中 ${s.count(CollectStatus.boxing)} · 待整理 ${s.count(CollectStatus.pendingOrganize)}${failed.isNotEmpty ? ' · 失败 ${failed.length}' : ''}',
+              '未完成在前、已整理在后，各按导入时间新的在上',
               style: TextStyle(
                 fontSize: DesignTokens.bodySmallFontSize,
                 color: palette.muted,
@@ -840,6 +887,9 @@ class _CollectViewState extends ConsumerState<_CollectView> {
   }
 
   Widget _filterChips(double scale, CollectState s) {
+    // 2026-11-26：计数只留筛选 chips；题数为 0 的 chip 隐藏不显示，
+    // “全部”始终显示（带总数）。已整理 / 导入失败原来没有 chip，
+    // 计数无处可放，也一并补上（0 时同样隐藏）。
     final filters = <(String, CollectStatus?)>[
       ('全部 ${s.tasks.length}', null),
       ('导入中 ${s.count(CollectStatus.importing)}', CollectStatus.importing),
@@ -850,7 +900,9 @@ class _CollectViewState extends ConsumerState<_CollectView> {
         '待整理 ${s.count(CollectStatus.pendingOrganize)}',
         CollectStatus.pendingOrganize,
       ),
-    ];
+      ('已整理 ${s.count(CollectStatus.done)}', CollectStatus.done),
+      ('导入失败 ${s.count(CollectStatus.failed)}', CollectStatus.failed),
+    ].where((f) => f.$2 == null || s.count(f.$2!) > 0).toList();
     return Wrap(
       spacing: 6 * scale,
       runSpacing: 6 * scale,
@@ -876,6 +928,11 @@ class _CollectViewState extends ConsumerState<_CollectView> {
   ) {
     final subject = s.subjectOf(task.subjectId);
     final isLast = s.shownTasks(_filter).last == task;
+    // 2026-11-26：行主行显示题干（与错题本列表行同一取法）；
+    // 没有题干（未切框/未识别、题读不到）回退显示原文件标题。
+    final question = task.questionId == null
+        ? null
+        : s.questionsById[task.questionId];
     // SR-P2-25：红色无框警告只对“打开过修框或已有任意草稿框”的任务
     // 显示（Meng 已定，收窄范围）。新导入、从未打开过的任务不警告。
     // “打开过”不用新字段：_openBoxEditor 打开时就把任务置为 boxing
@@ -912,7 +969,9 @@ class _CollectViewState extends ConsumerState<_CollectView> {
                         SizedBox(width: 6 * scale),
                         Expanded(
                           child: Text(
-                            task.name,
+                            question == null
+                                ? task.name
+                                : rowDisplayTitle(question),
                             style: TextStyle(
                               fontSize: DesignTokens.bodyFontSize,
                               fontWeight: FontWeight.w700,
