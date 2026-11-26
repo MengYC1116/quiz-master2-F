@@ -39,7 +39,9 @@
 // 不用改；测试里构造器传 FakeRepo 同样经这一层注入，不用再包
 // 一层 ProviderScope。本文件不认识任何 widget，不碰 `BuildContext`、
 // 不弹 Dialog、不调导航。角标走 `badgeCountsProvider`（第 4 阶段：
-// 订阅 `DataChangeBus`，见 `badge_counts_provider.dart`）。
+// 订阅 `DataChangeBus`，见 `badge_counts_provider.dart`）；复习记录
+// 走本 Notifier 在 `build()` 里的 `reviewRecords` 订阅（收尾第 2 路：
+// 复习记录变了，详情页不重进即重读本题复习状态，见 `build()`）。
 import 'dart:async';
 import 'dart:io';
 import 'dart:math' as math;
@@ -645,6 +647,25 @@ class DetailNotifier extends Notifier<DetailState> {
   @override
   DetailState build() {
     ref.onDispose(() => _disposed = true);
+    // 详情页复习记录订阅（D-44 终态，收尾第 2 路接线）：先订阅、后首查
+    //（badgeCountsProvider 同款时序）——订阅建立后再 load，首查期间
+    // 的复习写入不会漏刷新。收到含 reviewRecords 的事件时只重读复习
+    // 相关状态（[_refreshReviewStatus] + [_refreshReviewRecords]），
+    // 不调全量 load()：load() 会重置编辑表单（editBase /
+    // formResetKey）、重触发切片自愈与记查看；编辑中的表单值不受复习
+    // 事件影响。questionId 为空（批量 / 恢复）时按可能影响当前题处理；
+    // 等于当前题以外的单题事件忽略。ref.onDispose 取消订阅。
+    final subscription = DataChangeBus.instance.stream.listen((event) {
+      if (_disposed) return;
+      if (!event.kinds.contains(DataChangeKind.reviewRecords)) return;
+      final currentId = state.currentId;
+      if (event.questionId != null && event.questionId != currentId) return;
+      final q = state.question;
+      if (q == null || q.id != currentId) return;
+      unawaited(_refreshReviewStatus(q));
+      unawaited(_refreshReviewRecords(q));
+    });
+    ref.onDispose(subscription.cancel);
     // 页面出现即读库（原 `initState` 的 `_load`）：不 await，
     // 读完后 state 一次性赋值，首帧先出加载圈。
     Future.microtask(load);
@@ -1015,6 +1036,24 @@ class DetailNotifier extends Notifier<DetailState> {
       );
     } catch (_) {
       // FSRS 状态读不到：「复习状态」行不显示，不挡详情。
+    }
+  }
+
+  /// D-44：复习记录事件到达时只重读当前题的错因记录与解决记录
+  ///（与 [_refreshReviewStatus] 同款 best-effort：读不到保持旧值，
+  /// 不抛、不挡详情；读到后当前题已换（切题/删除）时丢弃本次结果；
+  /// 不碰编辑表单值与 formResetKey，不调全量 load()）。
+  Future<void> _refreshReviewRecords(Question current) async {
+    if (_disposed) return;
+    try {
+      final repo = _repo;
+      final records = await repo.causeRecordsFor(current.id);
+      final history = await repo.reviewHistory(current.id);
+      if (_disposed) return;
+      if (state.question?.id != current.id) return;
+      state = state.copyWith(records: records, history: history);
+    } catch (_) {
+      // 复习记录读不到：保持旧行，不挡详情。
     }
   }
 
