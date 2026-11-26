@@ -48,6 +48,18 @@ class Verification {
   static const String external = '外部资料核对';
 }
 
+/// 队列里“无错因的题”的占位错因（M3-10 轻量持久化，2026-11-26 跟进）：
+///
+/// 专项练习可练完全没记错因的题（整理时错因可选）：这种题的
+/// SessionQuestionState.causes 为空；_persistSession 按题×错因
+/// 展平写队列时，空错因的题一个项都不剩，存下的 queue 为空，
+/// loadReviewState / _validateSavedSession 都按“无断点”丢掉，
+/// 暂停后恢复条不出。占位符让这道题在队列里占一位，校验时
+/// （_validateSavedSession）认出占位符就把该题按 causes 为空
+/// 恢复，不计入错因数、不显示。
+/// 取值带 \uE000（私用区，键盘打不出，不会与真实错因撞上）。
+const kNoCauseQueueMarker = '\uE000无错因';
+
 /// 错因的稳定身份（review_history.cause_id）：优先用 cause_records.id；
 /// 内存里未入库的记录回退为 '$questionId|$cause'。写库与查重必须用
 /// 同一口径，否则同会话重复检查会漏判。
