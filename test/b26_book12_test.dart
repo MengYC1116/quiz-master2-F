@@ -42,7 +42,7 @@ void main() {
       expect(eng.color, const Color.fromRGBO(255, 255, 255, 0.75));
       // 分布行：12px 白字、行高 1.5（2026-11-26，两数字行已撤下）。
       final dist = tester
-          .widget<Text>(find.text('共 4 道 · 试卷 2 道 · 平时作业 1 道'))
+          .widget<Text>(find.text('共 3 道 · 试卷 2 道 · 平时作业 1 道'))
           .style!;
       expect(dist.fontSize, 12);
       expect(dist.color, Colors.white);
@@ -68,21 +68,21 @@ void main() {
       }
     });
 
-    testWidgets('分布行是真实数据：数学共 4 道 · 试卷 2 道 · 平时作业 1 道、英语共 2 道 · 试卷 2 道、政治共 0 道', (
+    testWidgets('分布行是真实数据：数学共 3 道 · 试卷 2 道 · 平时作业 1 道、英语共 2 道 · 试卷 2 道、政治共 0 道', (
       tester,
     ) async {
       await pumpWrongbook(tester);
       await openShelfFromList(tester);
-      // 总数 = 该科已整理未归档题数；文件夹按目录口径计数
+      // 总数 = 该科已整理未归档未掌握题数，与文件夹计数同一口径
       // （已整理、未归档、未掌握），只留 > 0 的、按题数从多到少。
-      // 数学：总数 4（q1/q2/q3/q7；q5 已归档、q6 未整理不计）；
-      // 试卷 2（q1/q3；q7 已掌握不计）、平时作业 1（q2）。
+      // 数学：总数 3（q1/q2/q3；q7 已掌握不计，q5 已归档、q6 未
+      // 整理不计）；试卷 2（q1/q3；q7 已掌握不计）、平时作业 1（q2）。
       // 英语：总数 2（q4/q8）；试卷 2、平时作业 0 道不出现。
       // 政治：总数 0，文件夹全 0 道不出现。
       expect(
         find.descendant(
           of: bookBox('数学'),
-          matching: find.text('共 4 道 · 试卷 2 道 · 平时作业 1 道'),
+          matching: find.text('共 3 道 · 试卷 2 道 · 平时作业 1 道'),
         ),
         findsOneWidget,
       );
@@ -100,6 +100,36 @@ void main() {
         ),
         findsOneWidget,
       );
+    });
+
+    testWidgets('封面总数排除已掌握：总数等于所显示文件夹数之和', (tester) async {
+      await pumpWrongbook(tester);
+      await openShelfFromList(tester);
+      // 分布行里的数加起来对得上：数学 3 = 试卷 2 + 平时作业 1
+      //（q7 已掌握，两边都不计）；英语 2 = 试卷 2；政治 0。
+      List<int> numbers(String name) {
+        final data = tester
+            .widget<Text>(
+              find.descendant(
+                of: bookBox(name),
+                matching: find.byWidgetPredicate(
+                  (w) => w is Text && (w.data ?? '').startsWith('共 '),
+                ),
+              ),
+            )
+            .data!;
+        return RegExp(
+          r'\d+',
+        ).allMatches(data).map((m) => int.parse(m.group(0)!)).toList();
+      }
+      for (final name in ['数学', '英语', '政治']) {
+        final nums = numbers(name);
+        expect(
+          nums.first,
+          nums.skip(1).fold(0, (a, b) => a + b),
+          reason: '$name 分布行总数应等于文件夹数之和',
+        );
+      }
     });
 
     testWidgets('书页边：右沿 8px、上下各 inset 4px', (tester) async {

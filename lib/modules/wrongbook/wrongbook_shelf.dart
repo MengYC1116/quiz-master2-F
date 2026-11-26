@@ -262,12 +262,17 @@ extension _WrongbookShelfBuild on _WrongbookViewState {
     final scale = qmScaleOf(context);
     // 2026-11-26 封面改法：「共 M 道 · 文件夹分布」，与首页学科行
     // 脱钩——到期数只在首页学科行与复习页出现，封面只看书里的题：
-    // M = 该科已整理未归档题数；后面是该科顶层文件夹的题数
+    // M = 该科已整理未归档未掌握题数，与文件夹计数同一口径
     // （目录口径 _s.folderCount：已整理、未归档、未掌握），只留
-    // > 0 的、按题数从多到少取前 3 个。
+    // > 0 的、按题数从多到少取前 3 个。总数与所显示文件夹数之和
+    // 对得上（每题只进一个顶层文件夹时）。
     final total = _s.questions
         .where(
-          (q) => q.subjectId == s.id && q.isOrganized && !q.isArchived,
+          (q) =>
+              q.subjectId == s.id &&
+              q.isOrganized &&
+              !q.isArchived &&
+              !_s.isMastered(q),
         )
         .length;
     final topFolders = _s

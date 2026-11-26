@@ -690,16 +690,16 @@ void main() {
       expect(find.byType(TextField), findsNothing);
       expect(find.text('筛选'), findsNothing);
       // 封面分布行（2026-11-26）：「共 M 道 · 文件夹分布」，与首页
-      // 学科行脱钩。数学共 4 道（q1/q2/q3/q7 已整理未归档；q5 已
-      // 归档、q6 未整理不计）· 试卷 2 道（q1/q3；q7 已掌握按目录
-      // 口径不计）· 平时作业 1 道（q2）；英语共 2 道 · 试卷 2 道
-      //（平时作业 0 道不出现）；政治共 0 道。
+      // 学科行脱钩。数学共 3 道（q1/q2/q3 已整理未归档未掌握；q7
+      // 已掌握、q5 已归档、q6 未整理不计）· 试卷 2 道（q1/q3；q7
+      // 已掌握按目录口径不计）· 平时作业 1 道（q2）；英语共 2 道
+      // · 试卷 2 道（平时作业 0 道不出现）；政治共 0 道。
       expect(find.text('到期'), findsNothing);
       expect(find.text('待整理'), findsNothing);
       expect(find.text('待复查'), findsNothing);
       expect(find.text('要复习'), findsNothing);
       expect(find.text('道题'), findsNothing);
-      expect(find.text('共 4 道 · 试卷 2 道 · 平时作业 1 道'), findsOneWidget);
+      expect(find.text('共 3 道 · 试卷 2 道 · 平时作业 1 道'), findsOneWidget);
       expect(find.text('共 2 道 · 试卷 2 道'), findsOneWidget);
       expect(find.text('共 0 道'), findsOneWidget);
       // 分页器按 HTML 常驻：单页也显示。
@@ -788,7 +788,7 @@ void main() {
       expect(sub.style?.color, const Color.fromRGBO(255, 255, 255, 0.92));
       expect(sub.style?.letterSpacing, 7.44);
       final dist = tester.widget<Text>(
-        find.text('共 4 道 · 试卷 2 道 · 平时作业 1 道').first,
+        find.text('共 3 道 · 试卷 2 道 · 平时作业 1 道').first,
       );
       expect(dist.style?.color, Colors.white);
       expect(dist.style?.fontSize, 12);
