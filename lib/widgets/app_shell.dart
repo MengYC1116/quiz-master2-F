@@ -31,11 +31,11 @@
 // - 收集 = 待框选 + 待整理（`BadgeCounts.countPendingBox` 的
 //   待框选 + 修框中任务数 + `pendingOrganizeCount` 未整理题数）；
 // - 整理 = 待整理（`pendingOrganizeCount`）；
-// - 复习 = 要复习题数（B9-3：`homeRevCounts` 各科之和 =
-//   `dueToday().length`，与首页焦点卡“要复习的数量”同一数字，
-//   数题不数错因；不是复习页顶按错因条数计的 N，见 B9-3 报告）；
-// - 学科速览待复习与首页焦点卡同一口径（`homeRevCounts`：手动加入复习
-//   且已整理且至少一个错因未解决或已到复查时间，数题不数错因）；
+// - 复习 = 到期题数（B9-3：FSRS 到期总数 `fsrsDueTotal`，与首页焦点卡
+//   “到期”的数量同一数字，数题不数错因；不是复习页顶按错因条数计的 N，
+//   见 B9-3 报告）；
+// - 学科速览待复习与首页焦点卡同一口径（`fsrsDueCountsBySubject` 各科
+//   FSRS 到期数）；
 //   待整理按学科实时算（`pendingOrganizeBySubject`），不照搬 HTML
 //   写死的演示数字。角标由 `badgeCountsProvider`（`lib/state/`，
 //   订阅 `DataChangeBus`、收到含 `badges` 的事件后重算）提供，
@@ -82,14 +82,14 @@ class AppNavBar extends StatelessWidget {
   final int collectBadge;
   final int organizeBadge;
 
-  /// B9-3：复习角标（要复习题数 = `homeRevCounts` 各科之和，
-  /// 与首页焦点卡“要复习的数量”同一数字，数题不数错因）。
+  /// B9-3：复习角标（到期题数 = FSRS 到期总数，与首页焦点卡“到期”的
+  /// 数量同一数字，数题不数错因）。
   /// 0 时不渲染（`_NavItem` / `_CollapsedNavItem` 的 `badge > 0`
   /// 条件，与收集/整理角标一致）。accent 档（`badgeGrey` 默认
   /// false，与整理工作台同款“待办”角标；只有收集角标用灰档）。
   final int reviewBadge;
 
-  /// 学科速览：每科待复习数（`homeRevCounts` 口径）与待整理数。
+  /// 学科速览：每科到期数（`fsrsDueCountsBySubject` 口径）与待整理数。
   final Map<String, int> navRev;
   final Map<String, int> navPending;
 

@@ -10,20 +10,17 @@
 // - 新卡不算到期：到期队列只认 firstReviewedAt 非空的卡（P1 已在
 //   getDueQuestions 里隔离），这里只做列表层的区分显示与释放计划。
 //
-// ── 旧写入层评估（P4 结论：保留，不移除） ──────────────────────
+// ── 旧写入层评估（P4 结论：保留，不移除；2026-11-26 口径迁移第二批复核：仍不删） ──
 // submitCauseVerdictIntoImpl / recordSelfCheckIntoImpl /
 // hasSessionVerdictIntoImpl / CureEvaluation / evaluateCure /
 // settings.cureChecks / recheckIntervalDays /
-// cause_records.solvedCount / recheckDate 在 P4 仍是线上 live 状态：
-// 首页要复习数（repository.dueToday / homeRevCounts）、错题本封面三数
-// （subjectCounts）、复习列表分组（review_page.groupQuestionsByStatus）、
-// 详情页“下次复查 / 解决次数”显示，全部还读 solvedCount / recheckDate。
-// 删 writer 会把这些记录永远冻在 pending，删字段会直接断掉上述页面；
-// 真正移除须先把首页/角标/报告/详情的 live 口径整体迁到 FSRS，
-// 那是 P4 之外的一次迁移，不在本包做。旧 writer 的产品调用方已是零
-// （P2 起流程不再调用），只剩旧写入层测试（b14_m3_verdict_test 等）
-// 在覆盖它们；settings 的 cureChecks / recheckIntervalDays 两项
-// 在设置页仍展示（旧复查口径的显示），随 live 口径迁移时再一起处理。
+// cause_records.solvedCount / recheckDate 的 live 口径已全部迁到 FSRS
+// （首页/角标/报告/封面/复习列表分组/详情页，2026-11-25～26 两批）；
+// 旧 writer 的产品调用方仍是零（P2 起流程不再调用），只剩旧写入层
+// 测试（b14_m3_verdict_test 等）在覆盖它们。删 writer 会把旧记录
+// 永远冻在 pending，而迁移审计要靠这套语义解读旧历史；删字段须
+// schema v9 + 备份恢复同步改。settings 的 cureChecks /
+// recheckIntervalDays 已在设置页隐藏（第一批 8(a)）。
 // ────────────────────────────────────────────────────────────────
 //
 // 口径（与 planNewRelease 的字段一一对应）：

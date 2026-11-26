@@ -301,18 +301,11 @@ class _RefreshFakeRepo extends QuestionRepository {
   List<Question> questions = const [];
 
   @override
-  Future<Map<String, int>> homeRevCounts() async => const {};
-
-  @override
   Future<Map<String, int>> pendingOrganizeBySubject() async => const {};
 
   @override
   Future<({String kind, String subjectId, String title})?> recentTask() async =>
       null;
-
-  @override
-  Future<List<Question>> dueToday({bool includeArchived = false}) async =>
-      const [];
 
   // FR-45（二十批 P3 后续分诊）：DetailNotifier.load() 内 unawaited
   // _refreshRelated 调 repo.all() + repo.causeRecords()；未覆写时走真实

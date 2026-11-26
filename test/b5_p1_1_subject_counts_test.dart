@@ -1,21 +1,15 @@
-// SR-P1-1 回归：错题本封面三数与首页焦点卡同一互斥拆分口径。
+// SR-P1-1 回归（历史）：互斥拆分口径（旧 `reviewBucketOf`）。
 //
-// 旧口径两处不一致：
-// (a) subjectCounts 的要复习只算 `status != solved`，纯复查题（全部错因
-//     已解决、但有一条到了复查时间）封面要复习为 0、待复查为 1，
-//     而首页 dueToday 把它算进“要复习”；
-// (b) subjectCounts 两个 if 独立计数，一道题可同时计入要复习与待复查，
-//     而首页焦点卡是互斥拆分（有未解决错因计待解决，只有复查到期才计
-//     复查，两者之和 = 要复习总数）。
-// 修后三处共用 QuestionRepository.reviewBucketOf：
-// 纯复查题只计待复查、未解决错因题只计要复习、两者之和等于总数。
-// 只用 FakeRepo（覆盖 all / causeRecords / subjects），不碰真实数据库。
+// 旧口径背景：subjectCounts 与首页 dueToday 曾有两处不一致（纯复查题
+// 归属、双计），修后三处共用 reviewBucketOf：纯复查题只计待复查、
+// 未解决错因题只计要复习、两者之和等于总数。
 //
-// 口径迁移（2026-11-25 §2.1）：首页焦点卡已改 FSRS 口径（到期数 +
-// 今日新题数），不再读 dueToday / 错因拆分；下方两处 widget 测试已
-// 按新口径重写（到期/今日新题期望值由夹具直接算出，不手写），
-// reviewBucketOf / subjectCounts / homeRevCounts 的仓储层断言仍是
-// 旧口径、保持不动（封面迁移是面 3 的事）。
+// 口径迁移：2026-11-25 §2.1 首页焦点卡改 FSRS 口径；2026-11-26 面 C
+// 删除 `dueToday()` / `homeRevCounts()` / `subjectCounts()` 本体，
+// 直接调它们的三组仓储层断言随之删除；2026-11-26 第二批清理删除
+// `reviewBucketOf` / `isReviewDue` 本体及其纯函数断言组（调用方随
+// 复习列表分组与元信息行迁移而归零）。本文件只保留两处 FSRS 口径
+// 的首页 widget 测试。
 import 'package:flutter_test/flutter_test.dart';
 import 'package:quiz_master2/data/database.dart';
 import 'package:quiz_master2/data/repository.dart';
@@ -23,26 +17,6 @@ import 'package:quiz_master2/data/review_scheduler.dart';
 import 'package:quiz_master2/models/models.dart';
 
 import 'home_page_test.dart' show FakeRepo, pumpHome;
-
-class _CountsFakeRepo extends QuestionRepository {
-  _CountsFakeRepo() : super(AppDatabase.instance);
-
-  List<Question> questions = [];
-  List<CauseRecord> records = [];
-  List<Subject> subjectsValue = Subject.all;
-
-  @override
-  Future<List<Question>> all({bool includeArchived = false}) async =>
-      questions
-          .where((q) => includeArchived || !q.isArchived)
-          .toList();
-
-  @override
-  Future<List<CauseRecord>> causeRecords() async => List.of(records);
-
-  @override
-  Future<List<Subject>> subjects() async => List.of(subjectsValue);
-}
 
 Question _q(String id,
         {String subjectId = 'math',
@@ -113,118 +87,14 @@ CauseRecord _r(String qid,
 }
 
 void main() {
-  group('SR-P1-1 封面三数与首页口径一致（互斥拆分）', () {
-    test('reviewBucketOf：四桶互斥，混合错因题只落待解决', () {
-      final yesterday = DateTime.now().subtract(const Duration(days: 1));
-      final nextWeek = DateTime.now().add(const Duration(days: 7));
-      // SR2-64：复查日恰好是今天——零点与当前时刻各一，都算到期。
-      // isRecheckDue 按日期比较（!d.isAfter(today)），当天任意时刻
-      // 都落 recheck 桶、isReviewDue 为真；这是“待复查”与“已解决”
-      // 的分界点。
-      final now = DateTime.now();
-      final todayMidnight = DateTime(now.year, now.month, now.day);
-      expect(
-          QuestionRepository.reviewBucketOf([
-            _r('x', status: CauseStatus.solved, recheckDate: todayMidnight),
-          ]),
-          ReviewBucket.recheck);
-      expect(
-          QuestionRepository.reviewBucketOf([
-            _r('x', status: CauseStatus.solved, recheckDate: now),
-          ]),
-          ReviewBucket.recheck);
-      expect(
-          QuestionRepository.isReviewDue([
-            _r('x', status: CauseStatus.solved, recheckDate: todayMidnight),
-          ]),
-          isTrue);
-      expect(
-          QuestionRepository.isReviewDue([
-            _r('x', status: CauseStatus.solved, recheckDate: now),
-          ]),
-          isTrue);
-      expect(QuestionRepository.reviewBucketOf([]), ReviewBucket.none);
-      expect(
-          QuestionRepository.reviewBucketOf([_r('x')]), ReviewBucket.pending);
-      expect(
-          QuestionRepository.reviewBucketOf([
-            _r('x', status: CauseStatus.solved, recheckDate: yesterday),
-            _r('x', cause: '审题失误'),
-          ]),
-          ReviewBucket.pending);
-      expect(
-          QuestionRepository.reviewBucketOf([
-            _r('x', status: CauseStatus.solved, recheckDate: yesterday),
-          ]),
-          ReviewBucket.recheck);
-      expect(
-          QuestionRepository.reviewBucketOf([
-            _r('x', status: CauseStatus.solved, recheckDate: nextWeek),
-          ]),
-          ReviewBucket.solved);
-      expect(QuestionRepository.isReviewDue([_r('x')]), isTrue);
-      expect(
-          QuestionRepository.isReviewDue([
-            _r('x', status: CauseStatus.solved, recheckDate: yesterday),
-          ]),
-          isTrue);
-      expect(
-          QuestionRepository.isReviewDue([
-            _r('x', status: CauseStatus.solved, recheckDate: nextWeek),
-          ]),
-          isFalse);
-      expect(QuestionRepository.isReviewDue([]), isFalse);
-    });
-
-    test('subjectCounts：纯复查题只计待复查，混合题只计要复习，不双计',
-        () async {
-      final s = _scenario();
-      final repo = _CountsFakeRepo()
-        ..questions = s.questions
-        ..records = s.records;
-      final counts = await repo.subjectCounts();
-      // 数学：要复习 q1、q3；待复查 q2；已解决 q4；q5/q6/q7 不计。
-      expect(counts['math'], (2, 1, 1));
-      // 英语：待复查 q8。
-      expect(counts['english'], (0, 1, 0));
-      expect(counts['politics'], (0, 0, 0));
-    });
-
-    test('封面两数之和 = 首页要复习总数（同科）', () async {
-      final s = _scenario();
-      final repo = _CountsFakeRepo()
-        ..questions = s.questions
-        ..records = s.records;
-      final counts = await repo.subjectCounts();
-      final rev = await repo.homeRevCounts();
-      for (final subjectId in ['math', 'english', 'politics']) {
-        final c = counts[subjectId]!;
-        expect(c.$1 + c.$2, rev[subjectId],
-            reason: '$subjectId：要复习 + 待复查 应等于首页该科要复习数');
-      }
-      expect(rev['math'], 3);
-      expect(rev['english'], 1);
-      expect(rev['politics'], 0);
-      // dueToday 的题正是要复习 + 待复查那 4 道。
-      expect(
-          (await repo.dueToday()).map((q) => q.id).toSet(),
-          {'q1', 'q2', 'q3', 'q8'});
-    });
-  });
-
   group('首页焦点卡 FSRS 口径（2026-11-25 口径迁移 §2.1）', () {
     testWidgets('首页焦点卡 FSRS 口径：到期总数与今日新题', (tester) async {
-      final s = _scenario();
       final repo = FakeRepo()
-        ..due = s.questions
-            .where((q) => {'q1', 'q2', 'q3', 'q8'}.contains(q.id))
-            .toList()
-        ..records = s.records
         ..rev = {'math': 3, 'english': 1, 'politics': 0};
-      // FSRS 口径：首页焦点卡不再读 dueToday / 错因记录——上面填的
-      // 4 道旧口径要复习题与错因拆分只是对照夹具，不驱动卡片。
-      // 卡片只认 FSRS 桩：到期数 = rev 各科之和，今日新题数 =
-      // todayNewIds 长度；期望值由桩直接算出，不手写。
+      // FSRS 口径：首页焦点卡只认 FSRS 桩——到期数 = rev 各科之和，
+      // 今日新题数 = todayNewIds 长度；期望值由桩直接算出，不手写。
+      // （2026-11-26 面 C：旧口径对照夹具 ..due / ..records 已删，
+      // FakeRepo 的 due 字段与 dueToday() 桩随之移除。）
       final expectedDue =
           repo.rev.values.fold<int>(0, (a, b) => a + b);
       final expectedNew = repo.todayNewIds.length;
@@ -267,14 +137,8 @@ void main() {
         for (final r in s.records) {
           await repo.saveCauseRecord(r);
         }
-        // 旧口径仓储数仍在（封面/旧首页对照用）：要复习 4 道
-        //（q1/q2/q3/q8），分科数学 3、英语 1——首页不再读它们。
-        // 先断言仓储层算出的数与 FakeRepo 手填数一致，再泵首页：
-        // 若文案不对，能分清是仓储算错还是首页渲染错。
-        expect((await repo.dueToday()).map((q) => q.id).toSet(),
-            {'q1', 'q2', 'q3', 'q8'});
-        expect(await repo.homeRevCounts(),
-            {'math': 3, 'english': 1, 'politics': 0});
+        // 2026-11-26 面 C：旧口径仓储数（dueToday / homeRevCounts）
+        // 已随方法本体删除，不再断言对照值。
         // FSRS 口径：本种子只播了学科/题/错因记录，没有建任何 FSRS 卡
         //（建卡只发生在 initializeQuestion / 首次呈现时，save(q)
         // 不建卡）→ 到期 0 道、今日新题 0 道。调度器与首页 provider

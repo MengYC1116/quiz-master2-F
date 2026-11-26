@@ -1157,7 +1157,8 @@ class WrongbookNotifier extends Notifier<WrongbookState> {
       final kps = await repo.knowledgePoints();
       // 2026-11-25 口径迁移 §2.1/§4 第 1 项：封面统计不再读旧口径
       // `subjectCounts()`（要复习/待复查/已解决），改读 FSRS 到期数
-      // + 待整理数，与首页学科行同一口径。`subjectCounts()` 本体不动。
+      // + 待整理数，与首页学科行同一口径。`subjectCounts()` 已随
+      // 2026-11-26 面 C 删除。
       final dueCounts = await repo.fsrsDueCountsBySubject(
         scheduler: scheduler,
       );

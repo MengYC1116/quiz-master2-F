@@ -8,8 +8,8 @@
 // 口径（写死，见 db_settings.dart 的 organizedToday* 注释）：
 // N1 = 当天（本地日期）内经整理确认（含队列批量确认）由未整理变为
 // 已整理的题数；N2 = 待复习题数，与首页焦点卡 / 复习角标同一口径
-// （repo.dueToday：手动加入、已整理、未治愈或到复查时间，数题不数
-// 错因）。只这一行，不加本周累计与连续天数。
+// （2026-11-26 面 C：旧 repo.dueToday() 已删，改读 FSRS 到期题
+// fsrsDueQuestionIds().length）。只这一行，不加本周累计与连续天数。
 import 'package:flutter_test/flutter_test.dart';
 import 'package:quiz_master2/data/database.dart';
 import 'package:quiz_master2/data/repository.dart';
@@ -131,10 +131,7 @@ void main() {
         folderList: const [],
       )
         ..organizedTodayValue = 3
-        ..dueTodayValue = [
-          q('d1', '导数综合', isOrganized: true),
-          q('d2', '阅读主旨', subjectId: 'english', isOrganized: true),
-        ];
+        ..dueIdsValue = ['d1', 'd2'];
       await pumpOrganize(tester, repo: repo);
       expect(find.text('都整理完了，去复习吧'), findsOneWidget);
       expect(find.text('今天整理了 3 道、待复习 2 道'), findsOneWidget);

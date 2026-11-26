@@ -117,7 +117,7 @@ class _ReportPageState extends ConsumerState<ReportPage> {
             SizedBox(height: 14 * scale),
             QmEmptyState(
               title: '还没有复习记录，先去复习吧',
-              description: '在复习页按四步解决几个错因，回来这里就会告诉你弱在哪、有没有效果、接下来练什么。',
+              description: '在复习页按三步（看题、作答、核对）练几道题，回来这里就会告诉你弱在哪、有没有效果、接下来练什么。',
               actionLabel: '去复习',
               onAction: widget.onGoReview,
             ),

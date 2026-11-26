@@ -166,11 +166,6 @@ class FakeWrongbookRepo extends QuestionRepository {
   @override
   Future<List<KnowledgePoint>> knowledgePoints() async => List.of(kpList);
 
-  @override
-  Future<Map<String, (int, int, int)>> subjectCounts({
-    bool includeArchived = false,
-  }) async => counts;
-
   // 2026-11-25 口径迁移 §2.1/§4：封面到期数走这里，不碰真实调度器。
   @override
   Future<Map<String, int>> fsrsDueCountsBySubject({

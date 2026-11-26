@@ -158,10 +158,6 @@ class _P4OrgRepo extends QuestionRepository {
   Future<int> organizedTodayCount({DateTime? now}) async => 0;
 
   @override
-  Future<List<Question>> dueToday({bool includeArchived = false}) async =>
-      const [];
-
-  @override
   Future<List<OcrJob>> ocrJobsForQuestion(String questionId) async => const [];
 
   @override

@@ -51,6 +51,7 @@ import '../data/database.dart';
 import '../data/data_change_events.dart';
 import '../data/file_lifecycle_guard.dart';
 import '../data/repository.dart';
+import '../data/review_engine.dart';
 import '../models/models.dart';
 import '../modules/ocr/question_classifier.dart';
 import '../modules/ocr/stem_correction.dart';
@@ -72,7 +73,11 @@ import 'review_notifier.dart';
 final detailProvider =
     NotifierProvider.autoDispose<DetailNotifier, DetailState>(
       DetailNotifier.new,
-      dependencies: [detailInitialProvider, repositoryProvider],
+      dependencies: [
+        detailInitialProvider,
+        repositoryProvider,
+        reviewSchedulerProvider,
+      ],
     );
 
 /// 详情页的构造参数（初始落点）：题目 id 与来源列表（上一题 / 下一题
@@ -229,6 +234,60 @@ String overallCauseStatusLabel(Question q, List<CauseRecord> records) {
   return '待解决';
 }
 
+// ---------- FSRS 口径迁移（面 B：详情页） ----------
+
+/// 题目级 FSRS 复习状态（详情页「复习状态」行的唯一数据来源）。
+///
+/// 口径（方案 §2.0 + §2.5，2026-11-25 Meng 全按建议定）：
+/// - [inPool]：题在 FSRS 池里（有 `fsrs_cards` 行）；
+/// - [nextDueAt]：调度器 `nextDueAt(questionId)`——已开始正式复习
+///   的卡才有值；未开始（`firstReviewedAt` 为空）与不在池里都返回 null，
+///   两者靠 [inPool] 区分；
+/// - [formalCorrect] / [formalWrong]：`attempts` 里 `mode = 到期复习`
+///   的本行记录，按作答次数计，`correct == null`（未判分）不计；
+///   专项练习不计。
+/// 不含任何软件判定的「已掌握 / 已解决」结论（D-259）。
+class DetailReviewStatus {
+  const DetailReviewStatus({
+    required this.inPool,
+    this.nextDueAt,
+    required this.formalCorrect,
+    required this.formalWrong,
+  });
+
+  /// 题在 FSRS 池里（有 `fsrs_cards` 行）。
+  final bool inPool;
+
+  /// 下次到期时间（已开始正式复习的卡才有值）。
+  final DateTime? nextDueAt;
+
+  /// 正式复习答对次数（`mode = 到期复习` 且 `correct == 1`）。
+  final int formalCorrect;
+
+  /// 正式复习答错次数（`mode = 到期复习` 且 `correct == 0`）。
+  final int formalWrong;
+
+  /// 有正式复习记录（已判分的正式作答 ≥ 1 次）。
+  bool get hasFormalAttempts => formalCorrect + formalWrong > 0;
+}
+
+/// 题目级复习状态的「下次到期」文案（纯函数，可单测）：
+/// 有下次到期时间 →「下次到期 M月M日」；在池里但未开始正式复习 →
+///「未开始」；不在池里 →「未加入复习」。
+String reviewDueLabel(DetailReviewStatus s) {
+  final due = s.nextDueAt;
+  if (due != null) return '下次到期 ${due.month}月${due.day}日';
+  if (s.inPool) return '未开始';
+  return '未加入复习';
+}
+
+/// 题目级复习状态的「正式复习对错」文案（纯函数，可单测）：
+/// 有正式复习记录 →「正式复习答对 X 次 · 答错 Y 次」（按作答次数计）；
+/// 无正式复习记录 →「暂无正式复习记录」。
+String reviewFormalLabel(DetailReviewStatus s) => s.hasFormalAttempts
+    ? '正式复习答对 ${s.formalCorrect} 次 · 答错 ${s.formalWrong} 次'
+    : '暂无正式复习记录';
+
 /// 十九批 D1：右栏三组取数（纯函数，可单测）。
 ///
 /// 匹配：同错因 = 任一错因相同；同知识点 = 任一知识点相同；
@@ -347,6 +406,10 @@ class DetailState {
     this.ocrEnqueueFailed = false,
     // 十九批 D1：右栏三组相关题（同错因 / 同知识点 / 同文件夹）。
     this.related = const DetailRelated(),
+    // FSRS 口径迁移（面 B）：题目级复习状态（见 [DetailReviewStatus]；
+    // [DetailNotifier.load] 后由 [_refreshReviewStatus] best-effort
+    // 填入，null = 未加载 / 读不到，页面不显示「复习状态」行）。
+    this.reviewStatus,
   });
 
   /// 首查进行中（原 `_loading`；初始 true，首帧先出加载圈）。
@@ -394,6 +457,10 @@ class DetailState {
   /// [DetailNotifier.load] 后由 [_refreshRelated] best-effort 填入，
   /// 读不到时为空，右栏对应面板不显示）。
   final DetailRelated related;
+
+  /// FSRS 口径迁移（面 B）：题目级复习状态（见 [DetailReviewStatus]）。
+  /// null = 未加载 / 读不到，页面不显示「复习状态」行，不挡详情。
+  final DetailReviewStatus? reviewStatus;
 
   // ---- 编辑表单值（当前题；文本框内容在页面控制器里，不在这里） ----
 
@@ -468,6 +535,7 @@ class DetailState {
     bool? hasOcrApiKey,
     bool? ocrEnqueueFailed,
     DetailRelated? related,
+    Object? reviewStatus = _unset,
   }) {
     return DetailState(
       loading: loading ?? this.loading,
@@ -514,6 +582,9 @@ class DetailState {
       hasOcrApiKey: hasOcrApiKey ?? this.hasOcrApiKey,
       ocrEnqueueFailed: ocrEnqueueFailed ?? this.ocrEnqueueFailed,
       related: related ?? this.related,
+      reviewStatus: reviewStatus == _unset
+          ? this.reviewStatus
+          : reviewStatus as DetailReviewStatus?,
     );
   }
 }
@@ -631,6 +702,9 @@ class DetailNotifier extends Notifier<DetailState> {
       // 十九批 D1：换题/重读先清空右栏，_refreshRelated 读到后再填
       //（读不到时右栏留空，不挡详情）。
       related: const DetailRelated(),
+      // FSRS 口径迁移（面 B）：换题/重读先清空题目级复习状态，
+      // _refreshReviewStatus 读到后再填（读不到时行不显示，不挡详情）。
+      reviewStatus: null,
     );
     // 十三批 M5：读当前题的 OCR 任务行与 key 有无（状态推导用）。
     // 不 await：它是装饰性 best-effort 加载，失败/挂起都不能挡
@@ -642,6 +716,13 @@ class DetailNotifier extends Notifier<DetailState> {
     // （挂起，见 D-88），但开库建库/迁移真实演示库的副作用照样发生
     // （FR-45，见 D-234）——因此不 await，只在读到后更新 state）。
     if (q != null) unawaited(_refreshRelated(q));
+    // FSRS 口径迁移（面 B）：题目级复习状态（下次到期 + 正式复习对错）。
+    // 同款 best-effort、不 await：调度器默认是 SQLite 实现，Fake
+    // 未覆写 / 真实库在 widget 测试的 fake async 下永不完成时，
+    // await 会卡住详情加载（D-88 同款教训；加入复习的
+    // toggleReviewJoined 里 initializeQuestion 也是同款不 await）。
+    // 读到了再更新 state，读不到时「复习状态」行不显示。
+    if (q != null) unawaited(_refreshReviewStatus(q));
     // 十二批功能 4（D-91）：题目加载成功后记一次查看（同一题只留一条，
     // 时间更新为最后一次）。D-88：load() 本来就没有 try/catch，任一
     // repo 抛错都会停在 loading——记录失败必须自己吞掉，绝不能拖垮
@@ -887,6 +968,53 @@ class DetailNotifier extends Notifier<DetailState> {
       state = state.copyWith(related: related);
     } catch (_) {
       // 相关题读不到：右栏留空，不挡详情。
+    }
+  }
+
+  /// FSRS 口径迁移（面 B）：题目级复习状态（见 [DetailReviewStatus]）。
+  ///
+  /// 只读已有方法，不新开取数口、不改写口径：
+  /// - 下次到期：调度器 `nextDueAt(questionId)`（已开始的卡才有值）；
+  /// - 在池与否：`repo.fsrsPoolQuestionIds()`（读不到时按不在池里计，
+  ///   该方法内部已吞错返回空集）；
+  /// - 正式复习对错：`repo.loadAllAttempts()` 里本行 `mode = 到期复习`
+  ///   的记录，按作答次数计，`correct == null`（未判分）与专项练习不计
+  ///  （该方法内部已吞错返回空列表）。
+  /// 失败/挂起时「复习状态」行留空（`reviewStatus` 保持 null），不抛、
+  /// 不挡详情加载；读到后当前题已换（切题/删除）时丢弃本次结果。
+  Future<void> _refreshReviewStatus(Question current) async {
+    if (_disposed) return;
+    try {
+      // D-42：repo / 调度器入口处捕获一次（多次 await 间不再 ref.read）。
+      final repo = _repo;
+      final scheduler = ref.read(reviewSchedulerProvider);
+      final poolIds = await repo.fsrsPoolQuestionIds();
+      final nextDue = await scheduler.nextDueAt(current.id);
+      final attempts = await repo.loadAllAttempts();
+      if (_disposed) return;
+      if (state.question?.id != current.id) return;
+      var formalCorrect = 0;
+      var formalWrong = 0;
+      for (final a in attempts) {
+        if (a.questionId != current.id || a.mode != ReviewMode.due) {
+          continue;
+        }
+        if (a.correct == 1) {
+          formalCorrect++;
+        } else if (a.correct == 0) {
+          formalWrong++;
+        }
+      }
+      state = state.copyWith(
+        reviewStatus: DetailReviewStatus(
+          inPool: poolIds.contains(current.id),
+          nextDueAt: nextDue,
+          formalCorrect: formalCorrect,
+          formalWrong: formalWrong,
+        ),
+      );
+    } catch (_) {
+      // FSRS 状态读不到：「复习状态」行不显示，不挡详情。
     }
   }
 

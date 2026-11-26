@@ -14,9 +14,12 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:quiz_master2/data/database.dart';
 import 'package:quiz_master2/data/repository.dart';
+import 'package:quiz_master2/data/review_engine.dart';
+import 'package:quiz_master2/data/review_scheduler.dart';
 import 'package:quiz_master2/models/models.dart';
 import 'package:quiz_master2/state/detail_notifier.dart';
 import 'package:quiz_master2/state/repository_provider.dart';
+import 'package:quiz_master2/state/review_notifier.dart';
 
 Question _dq(
   String id,
@@ -83,6 +86,10 @@ class FakeDetailNotifierRepo extends QuestionRepository {
     List<Subject>? subjectsValue,
     // FR-09：复查间隔桩（默认 7 天）；`load()` 读它。
     AppSettings? settingsValue,
+    // FSRS 口径迁移（面 B）：`load()` 经 _refreshReviewStatus 读
+    // 全部 attempts 与池 id；不覆写会落到基类读真实库（D-88 同款）。
+    List<AttemptData> attemptsValue = const [],
+    Set<String> poolIdsValue = const {},
   }) : questions = List.of(questions),
        folderList = List.of(folderList),
        examList = List.of(examList),
@@ -92,6 +99,8 @@ class FakeDetailNotifierRepo extends QuestionRepository {
        history = List.of(history),
        subjectsValue = subjectsValue ?? Subject.all,
        settingsValue = settingsValue ?? AppSettings.defaults,
+       attemptsValue = List.of(attemptsValue),
+       poolIdsValue = Set.of(poolIdsValue),
        super(AppDatabase.instance);
 
   List<Question> questions;
@@ -103,6 +112,17 @@ class FakeDetailNotifierRepo extends QuestionRepository {
   List<({String result, DateTime reviewedAt})> history;
   List<Subject> subjectsValue;
   AppSettings settingsValue;
+
+  /// FSRS 口径迁移（面 B）：全部 attempts 与池 id 桩。
+  List<AttemptData> attemptsValue;
+  Set<String> poolIdsValue;
+
+  @override
+  Future<List<AttemptData>> loadAllAttempts() async =>
+      List.of(attemptsValue);
+
+  @override
+  Future<Set<String>> fsrsPoolQuestionIds() async => Set.of(poolIdsValue);
 
   @override
   Future<AppSettings> settings() async => settingsValue;
@@ -335,14 +355,28 @@ FakeDetailNotifierRepo _repo() {
   );
 }
 
+/// FSRS 口径迁移（面 B）：确定性调度器（fuzzing 关），经
+/// reviewSchedulerProvider 注入；`load()` 的 FSRS 状态是 best-effort
+/// 异步读，不注入会走默认 SQLite 调度器（真实库，D-88 同款）。
+FsrsReviewScheduler _testScheduler() => FsrsReviewScheduler(
+  config: const SchedulerConfig(enableFuzzing: false),
+  store: InMemoryCardStore(),
+);
+
 ProviderContainer _container(
   FakeDetailNotifierRepo repo, {
   String questionId = 'q1',
   List<String> orderIds = const ['q1', 'q2', 'q3'],
+  // FSRS 口径迁移（面 B）：预置卡片的调度器（未开始/已开始场景用）；
+  // 不传时用空内存调度器（不在池里）。
+  FsrsReviewScheduler? scheduler,
 }) {
   final container = ProviderContainer.test(
     overrides: [
       repositoryProvider.overrideWithValue(repo),
+      reviewSchedulerProvider.overrideWithValue(
+        scheduler ?? _testScheduler(),
+      ),
       detailInitialProvider.overrideWithValue(
         DetailInitial(questionId: questionId, orderIds: orderIds),
       ),
@@ -458,6 +492,135 @@ void main() {
       final st = container.read(detailProvider);
       expect(st.subjectOf('math').name, '数学');
       expect(st.subjectOf('no-such').name, '数学');
+    });
+  });
+
+  group('FSRS 口径复习状态（面 B）', () {
+    // 一条作答夹具：默认正式复习（mode = 到期复习）。
+    AttemptData attempt(
+      String questionId, {
+      String mode = ReviewMode.due,
+      int? correct,
+      String session = 's1',
+    }) => AttemptData(
+      id: 'att-$questionId-$mode-$correct-$session',
+      questionId: questionId,
+      sessionId: session,
+      mode: mode,
+      correct: correct,
+      answerVersion: 1,
+      contentVersion: 0,
+      status: '已提交',
+      submissionId: 'sub-$questionId-$mode-$correct-$session',
+      createdAt: DateTime.now().millisecondsSinceEpoch,
+    );
+
+    // load() 的 FSRS 状态是 best-effort 异步读（不 await）：等它填入
+    // 再断言；1s 内未填入即失败，不静默跳过。
+    Future<DetailReviewStatus> waitReviewStatus(
+      DetailNotifier notifier,
+    ) async {
+      for (var i = 0; i < 100; i++) {
+        final s = notifier.state.reviewStatus;
+        if (s != null) return s;
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+      }
+      throw StateError('reviewStatus 未在 1s 内填入');
+    }
+
+    test('文案纯函数：未加入 / 未开始 / 下次到期 + 有无正式记录', () {
+      const notInPool = DetailReviewStatus(
+        inPool: false,
+        formalCorrect: 0,
+        formalWrong: 0,
+      );
+      expect(reviewDueLabel(notInPool), '未加入复习');
+      expect(reviewFormalLabel(notInPool), '暂无正式复习记录');
+      const notStarted = DetailReviewStatus(
+        inPool: true,
+        formalCorrect: 0,
+        formalWrong: 0,
+      );
+      expect(reviewDueLabel(notStarted), '未开始');
+      const due = DetailReviewStatus(
+        inPool: true,
+        nextDueAt: null,
+        formalCorrect: 2,
+        formalWrong: 1,
+      );
+      // nextDueAt 为空时仍按在池未开始显示，与正式对错无关。
+      expect(reviewDueLabel(due), '未开始');
+      expect(reviewFormalLabel(due), '正式复习答对 2 次 · 答错 1 次');
+    });
+
+    test('不在池里、无正式记录 → 未加入复习 + 暂无正式复习记录', () async {
+      final repo = _repo();
+      final container = _container(repo);
+      final notifier = _notifier(container);
+      await notifier.load();
+      final s = await waitReviewStatus(notifier);
+      expect(s.inPool, isFalse);
+      expect(s.nextDueAt, isNull);
+      expect(s.formalCorrect, 0);
+      expect(s.formalWrong, 0);
+      expect(reviewDueLabel(s), '未加入复习');
+      expect(reviewFormalLabel(s), '暂无正式复习记录');
+    });
+
+    test('在池里、未开始正式复习 → 未开始', () async {
+      final repo = _repo()..poolIdsValue = {'q1'};
+      final scheduler = _testScheduler();
+      await scheduler.initializeQuestion('q1');
+      final container = _container(repo, scheduler: scheduler);
+      final notifier = _notifier(container);
+      await notifier.load();
+      final s = await waitReviewStatus(notifier);
+      expect(s.inPool, isTrue);
+      expect(s.nextDueAt, isNull);
+      expect(reviewDueLabel(s), '未开始');
+    });
+
+    test('已开始正式复习 → 下次到期 M月M日（与调度器同一值）', () async {
+      final repo = _repo()..poolIdsValue = {'q1'};
+      final scheduler = _testScheduler();
+      await scheduler.initializeQuestion('q1');
+      await scheduler.recordAnswer(
+        'q1',
+        ReviewResult.good,
+        DateTime.now(),
+        'evt-q1-good',
+      );
+      final container = _container(repo, scheduler: scheduler);
+      final notifier = _notifier(container);
+      await notifier.load();
+      final s = await waitReviewStatus(notifier);
+      final due = await scheduler.nextDueAt('q1');
+      expect(due, isNotNull);
+      expect(s.nextDueAt, due);
+      expect(reviewDueLabel(s), '下次到期 ${due!.month}月${due.day}日');
+    });
+
+    test('正式对错按作答次数计：专项与未判分不计，他题不计', () async {
+      final repo = _repo()
+        ..poolIdsValue = {'q1'}
+        ..attemptsValue = [
+          attempt('q1', correct: 1, session: 's1'),
+          attempt('q1', correct: 1, session: 's2'),
+          attempt('q1', correct: 0, session: 's3'),
+          // 专项练习不计。
+          attempt('q1', mode: ReviewMode.practice, correct: 1, session: 's4'),
+          // 未判分（correct 为空）不计。
+          attempt('q1', session: 's5'),
+          // 他题不计。
+          attempt('q2', correct: 1, session: 's6'),
+        ];
+      final container = _container(repo);
+      final notifier = _notifier(container);
+      await notifier.load();
+      final s = await waitReviewStatus(notifier);
+      expect(s.formalCorrect, 2);
+      expect(s.formalWrong, 1);
+      expect(reviewFormalLabel(s), '正式复习答对 2 次 · 答错 1 次');
     });
   });
 

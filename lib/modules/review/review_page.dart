@@ -1,9 +1,9 @@
 // 复习页（P2 简化基线，D2）。
 //
-// 列表：按学习状态分组（①已逾期复查 → ②今日到期复查 → ③未解决错因 →
-// ④已掌握未到期 → ⑤未加入复习），一题一行（错因数与状态）；页顶
-// 今日待复习（X 道题 / Y 个错因）+ “开始复习”主按钮 + “专项练习”
-// 次按钮；学科/题型/错因筛选保留；已治愈区与未加入盒保留。
+// 列表：按 FSRS 卡片状态分组（①已逾期 → ②今日到期 → ③未到期 →
+// ④未开始 → ⑤未加入复习），一题一行（错因名与 FSRS 状态）；页顶
+// 到期 / 今日新题（与首页焦点卡同一口径）+ “开始复习”主按钮 +
+// “专项练习”次按钮；学科/题型/错因筛选保留；未加入盒保留。
 // 会话：三步统一流程（看题 → 作答 → 核对 → 下一题 → 小结），一道题
 // 内部的状态变化，不是每段翻一页；一题多错因时题目只展示一次、用户
 // 只需重做一次、答案只需揭示一次；核对页一次提交：写 attempts 正式
@@ -183,38 +183,52 @@ Widget _styledDropdown<T>(
   );
 }
 
-/// 按学习状态分组的列表行（一题一行）。
+/// 按 FSRS 卡片状态分组的列表行（一题一行）。
 class _QuestionRowData {
   _QuestionRowData({
     required this.question,
     required this.records,
+    required this.fsrsCard,
   });
 
   final Question question;
   final List<CauseRecord> records;
 
-  int get overdueCount => records
-      .where(
-        (r) =>
-            r.status == CauseStatus.solved &&
-            r.recheckDate != null &&
-            r.isRecheckDue,
-      )
-      .length;
+  /// 本题的 FSRS 卡片状态（null = 无卡，按「未开始」处理）。
+  final FsrsCardStatus? fsrsCard;
 
+  /// 是否已逾期（行内复查角标用）。
+  bool get isOverdue =>
+      fsrsListBucketFor(fsrsCard) == FsrsListBucket.overdue;
+
+  /// 行状态文案（FSRS 口径，与分组同源）：
+  /// 已逾期 N 天 / 今日到期 / 未到期 · M月M日 / 未开始。
   String get statusText {
-    final pending = records
-        .where((r) => r.status != CauseStatus.solved)
-        .length;
-    final due = records.where((r) => r.isRecheckDue).length;
-    if (pending > 0) return '$pending 项未解决';
-    if (due > 0) return '$due 项待复查';
-    return '已掌握';
+    final card = fsrsCard;
+    if (card == null) return '未开始';
+    switch (fsrsListBucketFor(card)) {
+      case FsrsListBucket.notStarted:
+        return '未开始';
+      case FsrsListBucket.overdue:
+        final now = DateTime.now();
+        final todayDay = DateTime(now.year, now.month, now.day);
+        final dueLocal = card.nextDueAt.toLocal();
+        final dueDay = DateTime(dueLocal.year, dueLocal.month, dueLocal.day);
+        return '已逾期 ${todayDay.difference(dueDay).inDays} 天';
+      case FsrsListBucket.dueToday:
+        return '今日到期';
+      case FsrsListBucket.notDue:
+        final dueLocal = card.nextDueAt.toLocal();
+        return '未到期 · ${dueLocal.month}月${dueLocal.day}日';
+    }
   }
 }
 
-/// 列表按学习状态分组（M3-11）：①已逾期复查 ②今日到期复查
-/// ③未解决错因 ④已掌握未到期 ⑤未加入复习。
+/// 列表按 FSRS 卡片状态分组（面 A）：①已逾期 ②今日到期
+/// ③未到期 ④未开始 ⑤未加入复习（未加入盒另行渲染，不在这里）。
+/// 分组只看卡片状态（`st.fsrsCardStatus`），不看错因记录；
+/// 已加入复习但无卡的题归入「未开始」，不丢题。
+/// 学科/题型/错因三维筛选保留（错因只作筛选维度，不作分组依据）。
 (List<_QuestionRowData>, List<_QuestionRowData>, List<_QuestionRowData>,
     List<_QuestionRowData>) groupQuestionsByStatus(ReviewState st) {
   final byQ = <String, List<CauseRecord>>{};
@@ -240,55 +254,36 @@ class _QuestionRowData {
 
   final overdue = <_QuestionRowData>[];
   final dueToday = <_QuestionRowData>[];
-  final unsolved = <_QuestionRowData>[];
-  final mastered = <_QuestionRowData>[];
-  final today = DateTime.now();
-  final todayDay = DateTime(today.year, today.month, today.day);
+  final notDue = <_QuestionRowData>[];
+  final notStarted = <_QuestionRowData>[];
   for (final entry in byQ.entries) {
     final q = st.questionOf(entry.key);
     if (q == null) continue;
     final rs = entry.value;
     if (!keep(q, rs)) continue;
-    final row = _QuestionRowData(question: q, records: rs);
-    final hasOverdue = rs.any(
-      (r) =>
-          r.status == CauseStatus.solved &&
-          r.recheckDate != null &&
-          DateTime(
-            r.recheckDate!.year,
-            r.recheckDate!.month,
-            r.recheckDate!.day,
-          ).isBefore(todayDay),
+    final row = _QuestionRowData(
+      question: q,
+      records: rs,
+      fsrsCard: st.fsrsCardStatus[q.id],
     );
-    final hasDueToday = rs.any(
-      (r) =>
-          r.status == CauseStatus.solved &&
-          r.recheckDate != null &&
-          !DateTime(
-            r.recheckDate!.year,
-            r.recheckDate!.month,
-            r.recheckDate!.day,
-          ).isBefore(todayDay) &&
-          r.isRecheckDue,
-    );
-    final hasUnsolved = rs.any((r) => r.status != CauseStatus.solved);
-    if (hasOverdue) {
-      overdue.add(row);
-    } else if (hasDueToday) {
-      dueToday.add(row);
-    } else if (hasUnsolved) {
-      unsolved.add(row);
-    } else {
-      mastered.add(row);
+    switch (fsrsListBucketFor(st.fsrsCardStatus[q.id])) {
+      case FsrsListBucket.overdue:
+        overdue.add(row);
+      case FsrsListBucket.dueToday:
+        dueToday.add(row);
+      case FsrsListBucket.notDue:
+        notDue.add(row);
+      case FsrsListBucket.notStarted:
+        notStarted.add(row);
     }
   }
-  return (overdue, dueToday, unsolved, mastered);
+  return (overdue, dueToday, notDue, notStarted);
 }
 
 // ---------- 列表 ----------
 
-/// 复习列表（页顶今日待复习 + 开始复习/专项练习、状态分组、筛选、
-/// 已解决区、未加入盒、恢复条、空状态）。
+/// 复习列表（页顶到期 / 今日新题 + 开始复习/专项练习、FSRS 状态
+/// 分组、筛选、未加入盒、恢复条、空状态）。
 class _ListView extends ConsumerStatefulWidget {
   const _ListView({required this.onOpenDetail, required this.onGoWrongbook});
 
@@ -300,18 +295,18 @@ class _ListView extends ConsumerStatefulWidget {
 }
 
 class _ListViewState extends ConsumerState<_ListView> {
-  /// 空状态里“查看已掌握题目/查看复习历史”点开后就地展开已解决区。
-  bool _showMastered = false;
-
   @override
   Widget build(BuildContext context) {
     final st = ref.watch(reviewProvider);
     final notifier = ref.read(reviewProvider.notifier);
     final scale = qmScaleOf(context);
-    final (dueQuestions, dueCauses) = st.dueTodayCounts;
-    final (pendCount, checkCount, curedCount) = st.metaCounts;
+    // 页顶数（面 A：与首页焦点卡同一 FSRS 口径）：到期 X 道 ·
+    // 今日新题 Y 道（Y=0 时只显示到期）；旧三数已取消。
+    final dueCount = st.fsrsDueIds.length;
+    final todayNewCount = st.fsrsTodaysNewIds.length;
+    final (notDueCount, notStartedCount) = st.fsrsFutureCounts;
     final hasData = st.groups.isNotEmpty || st.curedGroups.isNotEmpty;
-    final (overdue, dueToday, unsolved, mastered) =
+    final (overdue, dueToday, notDue, notStarted) =
         groupQuestionsByStatus(st);
     return _centered(
       context,
@@ -355,12 +350,14 @@ class _ListViewState extends ConsumerState<_ListView> {
           if (st.resume != null) _buildResumeBar(context, st),
           // P4：FSRS 当日清单——到期题与新题区分显示，未释放的标
           // “待开始”，不混入到期题（池里有卡时才显示；老数据无卡时
-          // 不出这块，列表仍按旧分组显示）。
+          // 不出这块）。
           if (st.fsrsPoolIds.isNotEmpty) ...[
             _buildFsrsBox(context, st),
             SizedBox(height: 14 * scale),
           ],
-          // 页顶：今日待复习 + 开始复习（主）+ 专项练习（次）。
+          // 页顶：到期 / 今日新题 + 开始复习（主）+ 专项练习（次）。
+          // “开始复习”按会话实际能否开队决定（见 canStartDueSession：
+          // 池空的老数据走旧错因队列，不只看 FSRS 数）。
           _DetailBox(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -369,17 +366,22 @@ class _ListViewState extends ConsumerState<_ListView> {
                   TextSpan(
                     style: const TextStyle(fontSize: 14),
                     children: [
-                      const TextSpan(text: '今日待复习 '),
+                      const TextSpan(text: '到期 '),
                       TextSpan(
-                        text: '$dueQuestions',
+                        text: '$dueCount',
                         style: const TextStyle(fontWeight: FontWeight.w700),
                       ),
-                      const TextSpan(text: ' 道题 / '),
-                      TextSpan(
-                        text: '$dueCauses',
-                        style: const TextStyle(fontWeight: FontWeight.w700),
-                      ),
-                      const TextSpan(text: ' 个错因'),
+                      const TextSpan(text: ' 道'),
+                      if (todayNewCount > 0) ...[
+                        const TextSpan(text: ' · 今日新题 '),
+                        TextSpan(
+                          text: '$todayNewCount',
+                          style: const TextStyle(
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                        const TextSpan(text: ' 道'),
+                      ],
                     ],
                   ),
                 ),
@@ -390,9 +392,9 @@ class _ListViewState extends ConsumerState<_ListView> {
                   children: [
                     QmButton(
                       label: '开始复习',
-                      onPressed: dueQuestions == 0
-                          ? null
-                          : () => _startDue(context, st),
+                      onPressed: st.canStartDueSession
+                          ? () => _startDue(context, st)
+                          : null,
                     ),
                     QmButton(
                       label: '专项练习',
@@ -412,63 +414,48 @@ class _ListViewState extends ConsumerState<_ListView> {
               actionLabel: '去错题本选题',
               onAction: widget.onGoWrongbook,
             ),
-          ] else if (dueQuestions == 0 && st.resume == null) ...[
-            // 空状态（M3-11 用户流程第 10 节）：今天没有到期/逾期错因。
-            _DetailBox(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  CompanionWidget(
-                    size: 72 * scale,
-                    message: '今天没有到期复习',
-                  ),
-                  SizedBox(height: 8 * scale),
-                  Text(
-                    '正在等待未来复查的错因有 ${st.futureRecheckCount} 个，到了复查日会自动回来。',
-                    style: TextStyle(
-                      fontSize: DesignTokens.bodySmallFontSize,
-                      color: DesignTokens.of(Theme.of(context).brightness)
-                          .muted,
-                    ),
-                  ),
-                  SizedBox(height: 10 * scale),
-                  Wrap(
-                    spacing: 8 * scale,
-                    runSpacing: 8 * scale,
-                    children: [
-                      QmButton(
-                        label: '去专项练习',
-                        variant: QmButtonVariant.secondary,
-                        onPressed: () => _startPractice(context, st),
-                      ),
-                      QmButton(
-                        label: '查看已掌握题目',
-                        variant: QmButtonVariant.secondary,
-                        onPressed: () =>
-                            setState(() => _showMastered = true),
-                      ),
-                      QmButton(
-                        label: '查看复习历史',
-                        variant: QmButtonVariant.secondary,
-                        onPressed: () =>
-                            setState(() => _showMastered = true),
-                      ),
-                    ],
-                  ),
-                ],
-              ),
-            ),
-            SizedBox(height: 14 * scale),
-            if (_showMastered && st.filteredCured.isNotEmpty)
-              _buildCuredSection(context, st),
           ] else ...[
-            _buildMetaRow(context, st, pendCount, checkCount, curedCount),
-            _buildToolbar(context, st),
-            _buildPagedRows(context, st, overdue, dueToday, unsolved, mastered),
-            if (st.filteredCured.isNotEmpty) ...[
+            // 今天开不了到期复习时，提示条只作提醒（面 A：未到期/
+            // 未开始的题仍在下面分组里列出，不再像旧口径那样整段
+            // 藏起列表）。
+            if (!st.canStartDueSession && st.resume == null) ...[
+              _DetailBox(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    CompanionWidget(
+                      size: 72 * scale,
+                      message: '今天没有到期复习',
+                    ),
+                    SizedBox(height: 8 * scale),
+                    Text(
+                      '未到期的题有 $notDueCount 道，未开始的题有 $notStartedCount 道。',
+                      style: TextStyle(
+                        fontSize: DesignTokens.bodySmallFontSize,
+                        color: DesignTokens.of(Theme.of(context).brightness)
+                            .muted,
+                      ),
+                    ),
+                    SizedBox(height: 10 * scale),
+                    Wrap(
+                      spacing: 8 * scale,
+                      runSpacing: 8 * scale,
+                      children: [
+                        QmButton(
+                          label: '去专项练习',
+                          variant: QmButtonVariant.secondary,
+                          onPressed: () => _startPractice(context, st),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
               SizedBox(height: 14 * scale),
-              _buildCuredSection(context, st),
             ],
+            _buildMetaRow(context, st),
+            _buildToolbar(context, st),
+            _buildPagedRows(context, st, overdue, dueToday, notDue, notStarted),
           ],
           if (st.notJoined.isNotEmpty) ...[
             SizedBox(height: 14 * scale),
@@ -635,13 +622,8 @@ class _ListViewState extends ConsumerState<_ListView> {
     );
   }
 
-  Widget _buildMetaRow(
-    BuildContext context,
-    ReviewState st,
-    int pend,
-    int check,
-    int cured,
-  ) {
+  /// 列表排序说明行（面 A：旧三数已取消，只留排序文案）。
+  Widget _buildMetaRow(BuildContext context, ReviewState st) {
     final scale = qmScaleOf(context);
     final palette = DesignTokens.of(Theme.of(context).brightness);
     final metaStyle = TextStyle(
@@ -661,26 +643,10 @@ class _ListViewState extends ConsumerState<_ListView> {
         runSpacing: 4 * scale,
         crossAxisAlignment: WrapCrossAlignment.center,
         children: [
-          Text.rich(
-            TextSpan(
-              style: metaStyle,
-              children: [
-                const TextSpan(text: '待解决 / 解决中 '),
-                TextSpan(
-                  text: '$pend',
-                  style: const TextStyle(fontWeight: FontWeight.w700),
-                ),
-                const TextSpan(text: ' 道题'),
-              ],
-            ),
-          ),
-          if (check > 0)
-            QmStatusPill.tone(label: '复查 $check 道', tone: QmTone.error),
-          Text('已解决 $cured 道', style: metaStyle),
           Text(
             st.settings.reviewSort == 'subject'
-                ? '列表按学科排$subjectHint，同一科里先加入的先解决'
-                : '列表按加入时间排，先加入的先解决',
+                ? '列表按学科排$subjectHint'
+                : '列表按加入时间排',
             style: metaStyle,
           ),
         ],
@@ -773,7 +739,7 @@ class _ListViewState extends ConsumerState<_ListView> {
   }
 
   /// 状态分组列表 + 分页（M3-11 分组 + 旧分页行为保留）：四组按
-  /// ①已逾期复查 → ②今日到期复查 → ③未解决错因 → ④已掌握未到期
+  /// ①已逾期 → ②今日到期 → ③未到期 → ④未开始
   /// 的顺序拼成一列，一题一行，按每页条数切片；分组头只在该页
   /// 首次出现该组时画一次。筛选改动后回第 1 页（notifier 侧已复位）。
   Widget _buildPagedRows(
@@ -781,16 +747,16 @@ class _ListViewState extends ConsumerState<_ListView> {
     ReviewState st,
     List<_QuestionRowData> overdue,
     List<_QuestionRowData> dueToday,
-    List<_QuestionRowData> unsolved,
-    List<_QuestionRowData> mastered,
+    List<_QuestionRowData> notDue,
+    List<_QuestionRowData> notStarted,
   ) {
     final scale = qmScaleOf(context);
     final palette = DesignTokens.of(Theme.of(context).brightness);
     final flat = <(String, _QuestionRowData)>[
-      for (final r in overdue) ('已逾期复查', r),
-      for (final r in dueToday) ('今日到期复查', r),
-      for (final r in unsolved) ('未解决错因', r),
-      for (final r in mastered) ('已掌握未到期', r),
+      for (final r in overdue) ('已逾期', r),
+      for (final r in dueToday) ('今日到期', r),
+      for (final r in notDue) ('未到期', r),
+      for (final r in notStarted) ('未开始', r),
     ];
     if (flat.isEmpty) {
       return _DetailBox(
@@ -919,8 +885,8 @@ class _ListViewState extends ConsumerState<_ListView> {
     final subject = st.subjectOf(q.subjectId);
     final orderIds = st.allQuestions.map((e) => e.id).toList();
     // P4：行内 FSRS 状态标——到期 / 今日新题 / 待开始三者取其一，
-    // 不在池里（或已掌握未到期）不标；未释放的题明确标“待开始”，
-    // 不混入到期题。
+    // 未开始且未释放的题明确标“待开始”，不混入到期题；已开始未到期的
+    // 题不标（状态文案里已有“未到期 · M月M日”）。
     final fsrsLabel = fsrsListLabel(
       questionId: q.id,
       dueIds: st.fsrsDueIds,
@@ -983,7 +949,7 @@ class _ListViewState extends ConsumerState<_ListView> {
                 ],
               ),
             ),
-            if (row.overdueCount > 0) ...[
+            if (row.isOverdue) ...[
               QmStatusPill.cause(QmCauseStatus.recheck),
               SizedBox(width: 6 * scale),
             ],
@@ -991,206 +957,6 @@ class _ListViewState extends ConsumerState<_ListView> {
         ),
       ),
     );
-  }
-
-  Widget _buildCuredSection(BuildContext context, ReviewState st) {
-    final scale = qmScaleOf(context);
-    final palette = DesignTokens.of(Theme.of(context).brightness);
-    // 已解决区也分页（SR-P2-47）：与待解决列表同一每页条数，
-    // 不再全量渲染到底。
-    final groups = st.filteredCured;
-    final totalPages = (groups.length / st.pageSize).ceil().clamp(1, 9999);
-    final page = st.curedPage.clamp(0, totalPages - 1);
-    final items = groups.skip(page * st.pageSize).take(st.pageSize).toList();
-    return Container(
-      margin: EdgeInsets.only(
-        bottom: DesignTokens.reviewCuredMarginBottom * scale,
-      ),
-      decoration: BoxDecoration(
-        border: Border.all(color: palette.line),
-        borderRadius: BorderRadius.circular(DesignTokens.radiusLg * scale),
-      ),
-      clipBehavior: Clip.antiAlias,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Container(
-            width: double.infinity,
-            padding: EdgeInsets.symmetric(
-              horizontal: DesignTokens.reviewRowPaddingH * scale,
-              vertical: DesignTokens.reviewCuredHeadPaddingV * scale,
-            ),
-            decoration: BoxDecoration(
-              color: palette.surface2,
-              border: Border(bottom: BorderSide(color: palette.line)),
-            ),
-            child: Text(
-              '已解决的错因（点一行看解决记录 · 已解决满 ${st.settings.recheckIntervalDays} 天会自动回到上面的列表复查）',
-              style: TextStyle(
-                fontSize: DesignTokens.reviewPendHeadFontSize,
-                fontWeight: FontWeight.w700,
-                color: palette.muted,
-                letterSpacing: 0.8,
-              ),
-            ),
-          ),
-          for (final g in items) _buildCuredRow(context, st, g),
-          if (totalPages > 1)
-            Container(
-              padding: EdgeInsets.symmetric(
-                horizontal: DesignTokens.reviewRowPaddingH * scale,
-                vertical: 10 * scale,
-              ),
-              decoration: BoxDecoration(
-                border: Border(top: BorderSide(color: palette.line)),
-              ),
-              child: Row(
-                children: [
-                  Text(
-                    '共 ${groups.length} 组 · 第 ${page + 1} / $totalPages 页',
-                    style: TextStyle(
-                      fontSize: DesignTokens.pagerFontSize,
-                      color: palette.muted,
-                    ),
-                  ),
-                  const Spacer(),
-                  QmButton(
-                    label: '上一页',
-                    size: QmButtonSize.small,
-                    variant: QmButtonVariant.secondary,
-                    onPressed: page > 0
-                        ? () => ref
-                              .read(reviewProvider.notifier)
-                              .setCuredPage(page - 1)
-                        : null,
-                  ),
-                  SizedBox(width: 6 * scale),
-                  QmButton(
-                    label: '下一页',
-                    size: QmButtonSize.small,
-                    variant: QmButtonVariant.secondary,
-                    onPressed: page < totalPages - 1
-                        ? () => ref
-                              .read(reviewProvider.notifier)
-                              .setCuredPage(page + 1)
-                        : null,
-                  ),
-                ],
-              ),
-            ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildCuredRow(BuildContext context, ReviewState st, CauseGroup g) {
-    final scale = qmScaleOf(context);
-    final palette = DesignTokens.of(Theme.of(context).brightness);
-    final key = '${g.subjectId}|${g.cause}';
-    final open = st.openCuredKey == key;
-    final subject = st.subjectOf(g.subjectId);
-    final subjectName = subject.name;
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        InkWell(
-          onTap: () => ref.read(reviewProvider.notifier).toggleCured(key),
-          child: Container(
-            padding: EdgeInsets.symmetric(
-              vertical: DesignTokens.reviewCuredHeadPaddingV * scale,
-              horizontal: DesignTokens.reviewRowPaddingH * scale,
-            ),
-            decoration: BoxDecoration(
-              color: open ? palette.accentSoft : null,
-              border: Border(bottom: BorderSide(color: palette.line)),
-            ),
-            child: Row(
-              children: [
-                Text(
-                  subjectName,
-                  style: TextStyle(
-                    fontSize: DesignTokens.bodySmallFontSize,
-                    fontWeight: FontWeight.w800,
-                    color: DesignTokens.subjectInk(
-                      g.subjectId,
-                      Theme.of(context).brightness,
-                      subject.color,
-                    ),
-                  ),
-                ),
-                SizedBox(width: 10 * scale),
-                Expanded(
-                  child: Text.rich(
-                    TextSpan(
-                      style: TextStyle(
-                        fontSize: DesignTokens.bodySmallFontSize,
-                        color: palette.ink2,
-                      ),
-                      children: [
-                        TextSpan(
-                          text: g.cause,
-                          style: const TextStyle(fontWeight: FontWeight.w700),
-                        ),
-                        TextSpan(text: ' · 关联 ${g.items.length} 道题'),
-                      ],
-                    ),
-                  ),
-                ),
-                QmStatusPill.cause(QmCauseStatus.solved),
-                SizedBox(width: 10 * scale),
-                Text(
-                  open ? '收起' : '解决记录',
-                  style: TextStyle(
-                    fontSize: DesignTokens.captionFontSize,
-                    color: palette.muted,
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ),
-        if (open)
-          Container(
-            width: double.infinity,
-            padding: EdgeInsets.fromLTRB(
-              DesignTokens.reviewRowPaddingH * scale,
-              6 * scale,
-              DesignTokens.reviewRowPaddingH * scale,
-              10 * scale,
-            ),
-            decoration: BoxDecoration(
-              color: palette.surface2,
-              border: Border(bottom: BorderSide(color: palette.line)),
-            ),
-            child: Column(
-              children: [
-                for (final it in g.items)
-                  _KvRow(
-                    label: it.question.title,
-                    value: _curedDetail(it.record),
-                  ),
-              ],
-            ),
-          ),
-      ],
-    );
-  }
-
-  String _curedDetail(CauseRecord r) {
-    final parts = <String>[];
-    if (r.lastCheck != null) {
-      parts.add('解决于 ${formatReviewDate(r.lastCheck!)}');
-    }
-    if (r.recheckDate != null) {
-      parts.add(
-        '下次复查 ${formatReviewDate(r.recheckDate!)}（${formatReviewMd(r.recheckDate!)}）',
-      );
-    }
-    var text = parts.join(' · ');
-    if (r.remedyHistory.isNotEmpty) {
-      text += '\n补救记录：${r.remedyHistory.join('\n')}';
-    }
-    return text;
   }
 
   Widget _buildNotJoinedBox(BuildContext context, ReviewState st) {

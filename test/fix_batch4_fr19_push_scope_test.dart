@@ -79,17 +79,11 @@ class Fr19FakeRepo extends QuestionRepository {
       [_fakeQuestion];
 
   @override
-  Future<Map<String, int>> homeRevCounts() async => {};
-
-  @override
   Future<Map<String, int>> pendingOrganizeBySubject() async => {};
 
   @override
   Future<({String kind, String subjectId, String title})?> recentTask() async =>
       null;
-
-  @override
-  Future<List<Question>> dueToday({bool includeArchived = false}) async => [];
 
   @override
   Future<List<CauseRecord>> causeRecords() async => [];

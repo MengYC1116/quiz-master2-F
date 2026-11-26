@@ -9,20 +9,12 @@ import '../models/models.dart';
 import '../services/import_service.dart';
 import '../services/ocr_key_store.dart';
 
-/// 一道题的复习归属（互斥拆分）：首页焦点卡“待解决 / 复查”与错题本
-/// 封面三数共用此口径，同一道题只落一个桶。
-///
-/// - [ReviewBucket.pending]：至少一个错因未解决（待解决 / 解决中）
-///   → 计入“要复习”。
-/// - [ReviewBucket.recheck]：全部错因已解决、且至少一条到了复查时间
-///   → 只计入“待复查”，不计入“要复习”。
-/// - [ReviewBucket.solved]：全部错因已解决、且无一条到复查时间
-///   → 计入三元组第三项“已解决”（已掌握且不在复查期，不在要复习总数内）。
-/// - [ReviewBucket.none]：无错因记录 → 三处都不计。
-///
-/// 互斥保证：`pending` 题数 + `recheck` 题数 = 要复习总数
-/// （[QuestionRepository.dueToday] 的题数、首页焦点卡总数）。
-enum ReviewBucket { pending, recheck, solved, none }
+/// 2026-11-26 口径迁移第二批清理：旧口径互斥拆分
+/// `ReviewBucket` / `reviewBucketOf` / `isReviewDue` 已删除——lib 内
+/// 调用方已全部迁走（复习列表分组迁 FSRS 四组、元信息行已取消、
+/// `dueToday`/`homeRevCounts`/`subjectCounts` 已删）；仅剩的
+/// b5 纯函数断言组随之删除。`CauseRecord.isRecheckDue` 本身保留
+/// （错题本筛选与详情页错因 pill 仍读它作历史状态）。
 
 /// 仓库：各页面模块共用的查询口径（首页计数、错题本筛选、整理队列、复习）。
 /// 不直接读其他模块的状态，只读数据层。
@@ -35,25 +27,6 @@ class QuestionRepository {
   /// BigModel key 的安全存储（十三批 M3 契约：键名 bigmodel_api_key 冻结；
   /// 本仓库只问“有没有 key”，不读出 key 值、不记日志）。
   final OcrKeyStore _keyStore;
-
-  /// 一道题的复习归属：按它的全部错因记录互斥分类（见 [ReviewBucket]）。
-  /// 首页焦点卡的待解决 / 复查拆分与错题本封面三数都走这里，
-  /// 不再各自定义（SR-P1-1）。
-  static ReviewBucket reviewBucketOf(List<CauseRecord> records) {
-    if (records.isEmpty) return ReviewBucket.none;
-    if (records.any((r) => r.status != CauseStatus.solved)) {
-      return ReviewBucket.pending;
-    }
-    if (records.any((r) => r.isRecheckDue)) return ReviewBucket.recheck;
-    return ReviewBucket.solved;
-  }
-
-  /// 这道题要不要复习：有未解决错因，或全部已解决但到了复查时间。
-  /// 等价于 `reviewBucketOf` 落在 `pending` 或 `recheck`。
-  static bool isReviewDue(List<CauseRecord> records) {
-    final bucket = reviewBucketOf(records);
-    return bucket == ReviewBucket.pending || bucket == ReviewBucket.recheck;
-  }
 
   AppDatabase get db => _db;
 
@@ -200,7 +173,7 @@ class QuestionRepository {
   /// 逐题走同一 [ReviewScheduler.initializeQuestion]：已在池的题
   /// 直接返回现有卡片，不建第二张（去重，一题一卡）；不在池的建新卡。
   /// 入池同时调 [setReviewJoined]（q, true）播种错因记录——到期复习
-  /// 的现有队列（buildDueQueue / dueToday）仍以 reviewJoined +
+  /// 的现有队列（buildDueQueue）仍以 reviewJoined +
   /// cause_records 为准，FSRS 卡片与旧队列必须同进同出；播种失败
   /// （如无错因返回 false）不影响入池计数，卡片已建即算新增。
   /// 单题 initialize 失败计入 `failed`，不中断整批；输入重复 id 只
@@ -272,96 +245,14 @@ class QuestionRepository {
   /// SR-P2-8：删旧 + 补新同事务（见 [AppDatabase.syncCauseRecords]）。
   Future<void> syncCauseRecords(Question q) => _db.syncCauseRecords(q);
 
-  /// 要复习的题：手动加入复习、已整理、至少一个错因还没解决
-  /// （待解决 / 解决中）或到了复查时间。数题不数错因。
-  /// 口径即 [reviewBucketOf] 落在 `pending` 或 `recheck`，
-  /// 与首页焦点卡、错题本封面三数互斥拆分同源（SR-P1-1）。
-  /// 已归档的题不算（与复习页 B6 主列表同口径；记录保留在库里，
-  /// 取消归档后重新计入）。`includeArchived: true` 仅供显式
-  /// 需要时用，默认排除。
-  Future<List<Question>> dueToday({bool includeArchived = false}) async {
-    final questions = await all(includeArchived: includeArchived);
-    // 记录走仓库方法 causeRecords()（与 _db.allCauseRecords() 同义，
-    // 便于单测覆盖；subjectCounts 同款做法）。
-    final records = await causeRecords();
-    final byQ = <String, List<CauseRecord>>{};
-    for (final r in records) {
-      (byQ[r.questionId] ??= []).add(r);
-    }
-    return questions.where((q) {
-      if (!q.reviewJoined || !q.isOrganized) return false;
-      final rs = byQ[q.id] ?? const <CauseRecord>[];
-      return isReviewDue(rs);
-    }).toList();
-  }
-
-  /// 首页焦点卡与导航速览同一口径（homeRevCounts）：每科要复习的题数
-  /// （手动加入、未解决，含到复查时间的题；数题不数错因）。
-  ///
-  /// 键按库里的 subjects 表取（B2：新增学科也要有计数键；以前按
-  /// `Subject.all` 初始化，新学科的键缺失，首页 `?? 0` 会把有题
-  /// 的新学科显示成 0）。口径本身不变，只改键的来源。
-  Future<Map<String, int>> homeRevCounts() async {
-    final due = await dueToday();
-    final subjects = await this.subjects();
-    final map = <String, int>{};
-    for (final s in subjects) {
-      map[s.id] = due.where((q) => q.subjectId == s.id).length;
-    }
-    return map;
-  }
-
-  /// 各科三数：要复习 / 待复查 / 已解决（不显示总题数）。
-  /// 与首页焦点卡同一互斥拆分（见 [ReviewBucket]、[reviewBucketOf]）：
-  /// 有未解决错因的题只计“要复习”；全部已解决且到了复查时间的题
-  /// 只计“待复查”；全部已解决且未到复查时间的题只计第三项“已解决”。
-  /// 同一道题只落一个桶，不双计；要复习 + 待复查 = 该科要复习总数
-  /// （[homeRevCounts] 该科数、[dueToday] 该科题数）。
-  /// 第三项 `solved` 的语义：已加入复习、已整理、全部错因已解决
-  /// 且无一条到复查时间的题数——即已掌握且不在复查期的题；已掌握
-  /// 但到了复查时间的题计入“待复查”而不计入这一项。
-  /// 已归档的题不算（与 dueToday / 复习页同口径；取消归档后
-  /// 重新计入）。
-  ///
-  /// 键按库里的 subjects 表取（B2 补充：新增学科也要有计数键；以前按
-  /// `Subject.all` 初始化，新学科的键缺失，错题本封面三数会显示 0）。
-  /// 口径本身不变，只改键的来源。记录走仓库方法 `causeRecords()`
-  ///（与 `_db.allCauseRecords()` 同义），便于单测覆盖。
-  Future<Map<String, (int toReview, int toRecheck, int solved)>> subjectCounts({
-    bool includeArchived = false,
-  }) async {
-    final questions = await all(includeArchived: includeArchived);
-    final records = await causeRecords();
-    final byQ = <String, List<CauseRecord>>{};
-    for (final r in records) {
-      (byQ[r.questionId] ??= []).add(r);
-    }
-    final subjects = await this.subjects();
-    final map = <String, (int, int, int)>{};
-    for (final s in subjects) {
-      var toReview = 0;
-      var toRecheck = 0;
-      var solved = 0;
-      for (final q in questions) {
-        if (q.subjectId != s.id || !q.reviewJoined || !q.isOrganized) {
-          continue;
-        }
-        final rs = byQ[q.id] ?? const <CauseRecord>[];
-        switch (reviewBucketOf(rs)) {
-          case ReviewBucket.pending:
-            toReview++;
-          case ReviewBucket.recheck:
-            toRecheck++;
-          case ReviewBucket.solved:
-            solved++;
-          case ReviewBucket.none:
-            break;
-        }
-      }
-      map[s.id] = (toReview, toRecheck, solved);
-    }
-    return map;
-  }
+  /// 2026-11-26 口径迁移面 C：`dueToday()` / `homeRevCounts()` /
+  /// `subjectCounts()` 已删除——全仓 grep 确认 lib 内只剩
+  /// `organize_notifier.dart` 一处调用方，已迁到 FSRS 口径
+  /// `fsrsDueQuestionIds().length`；首页 / 角标 / 错题本封面此前已
+  /// 分别迁到 `fsrsDueCountsBySubject` / `fsrsDueTotal`。
+  /// 2026-11-26 第二批清理：旧口径互斥拆分 `reviewBucketOf` /
+  /// `isReviewDue` 也已删除（调用方随复习列表分组与元信息行迁移
+  /// 而归零）；`buildDueQueue` 保留（到期复习建队回落兜底仍在用）。
 
   /// 自查一个错因：result 是 'solved' / 'unsolved' / 'unsure'。
   /// - 已解决：solvedCount + 1；满 cureChecks 次 → 已解决，复查日 =
@@ -569,10 +460,10 @@ class QuestionRepository {
   ///
   /// 实现 = [fsrsDueQuestionIds] 的 id 集合按 `questions.subjectId`
   /// 分组（归档已在 [fsrsDueQuestionIds] 内滤掉）。键按库里的
-  /// `subjects` 表取（与 [homeRevCounts] 的 B2 约定一致，新学科
-  /// 也要有计数键）；到期题的学科若不在 subjects 表里，仍单独立键，
-  /// 不静默丢数。求和 = [fsrsDueTotal] = `fsrsDueQuestionIds().length`
-  ///（对照测试断言）。读不到时返回全 0 的 map，不抛错。
+  /// `subjects` 表取（B2 约定：新学科也要有计数键；到期题的学科若不在
+  /// subjects 表里，仍单独立键，不静默丢数）。求和 = [fsrsDueTotal] =
+  /// `fsrsDueQuestionIds().length`（对照测试断言）。读不到时返回全 0 的
+  /// map，不抛错。
   Future<Map<String, int>> fsrsDueCountsBySubject({
     required ReviewScheduler scheduler,
     DateTime? now,
@@ -715,8 +606,8 @@ class QuestionRepository {
     return list.where((q) => !q.isOrganized && !q.isArchived).length;
   }
 
-  /// 待整理题数（按学科）。键按库里的 subjects 表取（B2：与
-  /// [homeRevCounts] 同理，新学科也要有计数键；口径本身不变）。
+  /// 待整理题数（按学科）。键按库里的 subjects 表取（B2：新学科也要
+  /// 有计数键；口径本身不变）。
   Future<Map<String, int>> pendingOrganizeBySubject() async {
     final list = await all();
     final subjects = await this.subjects();
@@ -978,7 +869,7 @@ class QuestionRepository {
       ImportService.storageUsageBreakdown();
 
   /// B4.1：到了复查时间的错因数（已解决且复查日 ≤ 今天，数错因
-  /// 不数题）。口径与 dueToday 一致：只算已加入复习、已整理的题，
+  /// 不数题）。口径与已删的旧口径 dueToday 一致：只算已加入复习、已整理的题，
   /// 已归档的题不算（取消归档后重新计入）。
   Future<int> recheckDueCauseCount({bool includeArchived = false}) async {
     final questions = await all(includeArchived: includeArchived);

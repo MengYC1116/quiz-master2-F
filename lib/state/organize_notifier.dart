@@ -50,6 +50,7 @@ import '../modules/ocr/stem_correction.dart';
 import '../services/glm_ocr_client.dart';
 import '../services/ocr_queue.dart';
 import 'repository_provider.dart';
+import 'review_notifier.dart';
 import 'subject_sort.dart';
 
 /// 整理页业务状态的 Provider：页面出现即读库（见 [OrganizeNotifier.build]）。
@@ -58,7 +59,7 @@ import 'subject_sort.dart';
 final organizeProvider =
     NotifierProvider.autoDispose<OrganizeNotifier, OrganizeState>(
       OrganizeNotifier.new,
-      dependencies: [repositoryProvider],
+      dependencies: [repositoryProvider, reviewSchedulerProvider],
     );
 
 /// 整理页学科排序的学科名来源见 `_sorted`（FR-08：与错题本共用
@@ -512,6 +513,9 @@ class OrganizeNotifier extends Notifier<OrganizeState> {
 
   Future<void> _refreshBody(int gen) async {
     final repo = _repo;
+    // D-42 同款：调度器入口处一次读出，之后不再 ref.read，中途销毁
+    // 也不抛错（首页 / 错题本同款做法）。
+    final scheduler = ref.read(reviewSchedulerProvider);
     final all = await repo.all();
     final pending = all.where((q) => !q.isOrganized && !q.isArchived).toList();
     final exams = await repo.exams();
@@ -526,12 +530,15 @@ class OrganizeNotifier extends Notifier<OrganizeState> {
     // 两个数；队列非空时空状态不显示，不读。N1 = 今天已整理的题数
     // （settings 键 organizedToday，当天内整理确认的跃迁计数）；
     // N2 = 待复习题数，与首页焦点卡 / 复习角标同一口径
-    // （repo.dueToday：手动加入、已整理、未治愈或到复查时间，数题）。
+    // （2026-11-26 面 C：旧 `repo.dueToday()` 已删，改读 FSRS 到期题
+    // `repo.fsrsDueQuestionIds(scheduler: scheduler).length`；调度器
+    // 与首页 / 错题本同源，见 `reviewSchedulerProvider`）。
     var organizedToday = 0;
     var toReview = 0;
     if (pending.isEmpty && all.isNotEmpty) {
       organizedToday = await repo.organizedTodayCount();
-      toReview = (await repo.dueToday()).length;
+      toReview =
+          (await repo.fsrsDueQuestionIds(scheduler: scheduler)).length;
     }
     // S1-2 / R3-6：读库期间若有更新的 refresh 开始（代次又加了），
     // 本次旧刷新不把旧队列写回；等赢的 refresh 落完再返回（见上）。

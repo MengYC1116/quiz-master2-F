@@ -93,11 +93,6 @@ class _StaleRepo extends QuestionRepository {
   @override
   Future<List<String>> tags() async => const [];
 
-  @override
-  Future<Map<String, (int, int, int)>> subjectCounts(
-          {bool includeArchived = false}) async =>
-      const {};
-
   // 十九批 C：内存版已存查找（A3 起 load() 读 savedSearches；不覆写
   // 会走真实库、页面卡 loading、pumpAndSettle 超时，见 D-225）。
   @override

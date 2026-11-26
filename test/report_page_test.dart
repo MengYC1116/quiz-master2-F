@@ -661,6 +661,18 @@ void main() {
       expect(_lastWentReview(), isTrue);
     });
 
+    testWidgets('FSRS 口径迁移面 D：空态文案是三步（看题、作答、核对），不出现“四步”', (
+      tester,
+    ) async {
+      final empty = FakeReportRepo(questions: [], records: [], kps: []);
+      await pumpReport(tester, repo: empty);
+      expect(
+        find.text('在复习页按三步（看题、作答、核对）练几道题，回来这里就会告诉你弱在哪、有没有效果、接下来练什么。'),
+        findsOneWidget,
+      );
+      expect(find.textContaining('四步'), findsNothing);
+    });
+
     testWidgets('加载失败：出错误横幅，可点“知道了”关闭', (tester) async {
       final broken = reportRepo()..throwOnLoad = true;
       await pumpReport(tester, repo: broken);

@@ -5,7 +5,8 @@
 // 3. 报告弱点定位 indexWhere report_page.dart:163
 // 4. 报告按学科分布 report_page.dart:444-450
 // 5. 报告弱点行颜色 subjectInk 补传存色 report_page.dart:622-623
-// 6. subjectCounts() 初始化键 repository.dart:202
+// 6. subjectCounts() 初始化键——2026-11-26 面 C 方法已删，本组删除；
+//    新学科计数键语义现由 fsrsDueCountsBySubject 承接。
 // 7. 收集中心导入学科下拉 collect_page.dart:577
 // 8. 错题本板子行学科圆点 _buildBoardRow wrongbook_list.dart:262
 //    （十九批 C：紧凑行 / 归档行已随视图切换去掉，断言改到板子行圆点）
@@ -15,8 +16,6 @@
 // 复用各页测试文件的 FakeRepo / pump 助手（与 S8A5 同一做法）。
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:quiz_master2/data/database.dart';
-import 'package:quiz_master2/data/repository.dart';
 import 'package:quiz_master2/data/review_engine.dart';
 import 'package:quiz_master2/models/models.dart';
 import 'package:quiz_master2/theme/design_tokens.dart';
@@ -59,58 +58,7 @@ TextSpan? _findSpan(TextSpan span, String text) {
   return null;
 }
 
-/// subjectCounts 专用 Fake：覆盖 all / causeRecords / subjects，
-/// 不碰真实数据库（subjectCounts 原先直读 _db.allCauseRecords，
-/// 本次改走仓库方法 causeRecords，行为不变，见 repository.dart）。
-class FakeCountsRepo extends QuestionRepository {
-  FakeCountsRepo({
-    required this.questions,
-    required this.records,
-    required this.subjectsValue,
-  }) : super(AppDatabase.instance);
-
-  List<Question> questions;
-  List<CauseRecord> records;
-  List<Subject> subjectsValue;
-
-  @override
-  Future<List<Question>> all({bool includeArchived = false}) async =>
-      List.of(questions);
-
-  @override
-  Future<List<CauseRecord>> causeRecords() async => List.of(records);
-
-  @override
-  Future<List<Subject>> subjects() async => List.of(subjectsValue);
-}
-
 void main() {
-  group('6. subjectCounts', () {
-    test('新学科有计数键，不再缺键变 0', () async {
-      final repo = FakeCountsRepo(
-        subjectsValue: subjects4,
-        questions: [
-          rq('q-chem-1', '化学平衡移动',
-              subjectId: 'subject-chem',
-              errorTypes: const ['概念不清'],
-              reviewJoined: true),
-          rq('q-m1', '函数极限',
-              errorTypes: const ['概念不清'], reviewJoined: true),
-        ],
-        records: [
-          rec('q-chem-1', '概念不清', subjectId: 'subject-chem'),
-          rec('q-m1', '概念不清',
-              status: CauseStatus.solved, solvedCount: 2),
-        ],
-      );
-      final counts = await repo.subjectCounts();
-      expect(counts.containsKey('subject-chem'), isTrue);
-      expect(counts['subject-chem'], (1, 0, 0));
-      expect(counts['math'], (0, 0, 1));
-      expect(counts['english'], (0, 0, 0));
-    });
-  });
-
   group('1+2. 复习', () {
     testWidgets('按学科排序：两个新学科按入库顺序排，不再同落 99 位',
         (tester) async {

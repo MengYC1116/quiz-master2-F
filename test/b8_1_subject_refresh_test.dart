@@ -74,11 +74,6 @@ class _B8FakeRepo extends QuestionRepository {
   @override
   Future<List<KnowledgePoint>> knowledgePoints() async => const [];
 
-  @override
-  Future<Map<String, (int, int, int)>> subjectCounts(
-          {bool includeArchived = false}) async =>
-      const {};
-
   // 2026-11-25 口径迁移 §2.1/§4：load() 封面到期数走这里（同款 D-225：
   // 不覆写会走真实库、页面卡 loading、pumpAndSettle 超时）。
   @override
@@ -120,18 +115,11 @@ class _B8FakeRepo extends QuestionRepository {
   Future<Set<String>> fsrsPoolQuestionIds() async => const {};
 
   @override
-  Future<Map<String, int>> homeRevCounts() async => const {};
-
-  @override
   Future<Map<String, int>> pendingOrganizeBySubject() async => const {};
 
   @override
   Future<({String kind, String subjectId, String title})?> recentTask() async =>
       null;
-
-  @override
-  Future<List<Question>> dueToday({bool includeArchived = false}) async =>
-      const [];
 
   /// B11-9：考试事件列表（默认空，首页不显示倒计时条；不覆盖会走到
   /// 真实库——旧 Fake 必须补这一行，见 B11-9 报告 §6）。
