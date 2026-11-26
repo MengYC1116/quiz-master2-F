@@ -1734,19 +1734,34 @@ extension _WrongbookListBuild on _WrongbookViewState {
     );
   }
 
+  /// 方案 A 批量栏：单行工具条（替代旧三行平铺面板）。
+  ///
+  /// 左：已选文案 +「选择 ▾」（全选当前结果 / 勾选当前页 /
+  /// 全选全部筛选结果 / 清除选择）；中：「整理 ▾」（移入文件夹 ▸ /
+  /// 移出当前文件夹 / 加标签 / 收藏 / 归档）、「复习 ▾」（加入复习 /
+  /// 全部加入复习 / 立即专项练习 / 取消加入复习）；右：批量删除
+  /// （两段确认）+ 退出批量。导出打印在标题行，不动。
+  ///
+  /// 「全选当前结果」与「勾选当前页」不是同一动作（前者把全部筛
+  /// 选结果同时填进通用选择与加题选择、可 toggle；后者只把当页
+  /// 题加进加题选择），两个都保留。「全部加入复习」按 2026-11-25
+  /// Meng 定“两按钮都加”放回：与“加入复习”不是同一动作（前者
+  /// 作用域是全部筛选结果、不用先勾选，后者只作用于已勾选）。
+  ///
+  /// 启用态按各菜单动作实际读的选择集：整理 / 删除读通用选择，
+  /// 复习读加题选择（reviewEffectiveIds），选择 / 退出始终可用。
+  /// 0 选时整理 / 删除禁用；复习菜单保持可点，里面只有「全部加
+  /// 入复习」可用（它只要筛选结果非空就启用，不需要勾选）。行内
+  /// 勾选与全选当前结果同步两套选择，选中后四项全启用。只用「勾
+  /// 选当前页」时复习启用、整理 / 删除仍禁用——旧栏原样行为（旧
+  /// 栏整理按钮同样只认通用选择）。
   Widget _buildBatchBar(List<Question> all) {
     final scale = qmScaleOf(context);
     final palette = DesignTokens.of(Theme.of(context).brightness);
-    final selInList = all.where((q) => _s.selected.contains(q.id)).length;
-    final allChecked = all.isNotEmpty && selInList == all.length;
-    final someChecked = selInList > 0 && selInList < all.length;
-    final options = _s.batchFolderOptions();
-    // 下拉的当前值必须在选项里：存量值失效（文件夹被删）时回落到首项，
-    // 不在 build 里写回状态。
-    final batchFolderId = options.any((f) => f.id == _s.batchFolderId)
-        ? _s.batchFolderId
-        : (options.isNotEmpty ? options.first.id : null);
     final hasSelection = _s.selected.isNotEmpty;
+    final hasReviewSelection = _s.reviewEffectiveIds().isNotEmpty;
+    final menuStyle = _batchMenuStyle(palette, scale);
+    final itemStyle = _batchMenuItemStyle(palette, scale);
     return Container(
       margin: EdgeInsets.only(bottom: 12 * scale),
       padding: EdgeInsets.symmetric(
@@ -1758,181 +1773,249 @@ extension _WrongbookListBuild on _WrongbookViewState {
         border: Border.all(color: palette.line),
         borderRadius: BorderRadius.circular(DesignTokens.radius * scale),
       ),
-      child: Wrap(
-        spacing: 8 * scale,
-        runSpacing: 8 * scale,
-        crossAxisAlignment: WrapCrossAlignment.center,
+      child: Row(
         children: [
-          Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Checkbox(
-                tristate: true,
-                value: allChecked ? true : (someChecked ? null : false),
-                onChanged: (_) => _toggleSelectAll(all),
-              ),
-              GestureDetector(
-                onTap: () => _toggleSelectAll(all),
-                child: const Text(
-                  '全选当前结果',
-                  style: TextStyle(fontSize: 13.5, fontWeight: FontWeight.w700),
-                ),
-              ),
-            ],
-          ),
-          // P3 入口 1：批量条只留一个已选文案——加题选择与通用批量选择
-          // 同步（见 Notifier 的 toggleSelected），通用那行
-          // '已选 N 道' 与 reviewSelectionLabel() 恒相同，留一个；
-          // 全选口径时后者多一句“（全部筛选结果）”。
-          // 跨学科列表（错因/知识点筛选进来）没有归属学科，批量移
-          // 文件夹的目标下拉是空的（SR-P2-41）：进批量模式就说明，
-          // 别等用户点了才发现移不了。
-          if (_s.subjectId == null)
-            Text(
-              '跨学科列表不能批量移文件夹：先打开一本书，再批量移',
-              style: TextStyle(fontSize: 12.5, color: palette.muted),
-            ),
-          QmButton(
-            label: '批量加标签',
-            variant: QmButtonVariant.plain,
-            size: QmButtonSize.small,
-            onPressed: hasSelection ? _batchAddTag : null,
-          ),
-          if (options.isNotEmpty)
-            SizedBox(
-              width: 200 * scale,
-              child: _styledDropdown<String>(
-                value: batchFolderId,
-                items: [
-                  for (final f in options)
-                    DropdownMenuItem(
-                      value: f.id,
-                      child: Text(_s.folderLabel(f)),
-                    ),
-                ],
-                onChanged: (v) {
-                  if (v != null) {
-                    _n.update((st) => st.copyWith(batchFolderId: v));
-                  }
-                },
-              ),
-            ),
-          QmButton(
-            label: _s.folderId != null ? '批量移入文件夹' : '批量加入文件夹',
-            variant: QmButtonVariant.plain,
-            size: QmButtonSize.small,
-            onPressed: hasSelection && options.isNotEmpty
-                ? () => _batchMoveToFolder(batchFolderId)
-                : null,
-          ),
-          if (_s.folderId != null)
-            QmButton(
-              label: '批量移出当前文件夹',
-              variant: QmButtonVariant.plain,
-              size: QmButtonSize.small,
-              onPressed: hasSelection ? _batchMoveOut : null,
-            ),
-          QmButton(
-            label: '批量收藏',
-            variant: QmButtonVariant.plain,
-            size: QmButtonSize.small,
-            onPressed: hasSelection ? _batchFavorite : null,
-          ),
-          QmButton(
-            label: '批量归档',
-            variant: QmButtonVariant.plain,
-            size: QmButtonSize.small,
-            onPressed: hasSelection ? _batchArchive : null,
-          ),
-          // P3 入口 1（D6）：批量加入 FSRS 复习池 / 立即专项练习。
-          // 行内勾选（通用批量选择）与加题选择同步（见 Notifier 的
-          // toggleSelected）；“勾选当前页”只加当页进加题选择，
-          // “全选全部筛选结果”把范围记成当前筛选的全部题（不限当前页，
-          // 确认时重验筛选）；两个按钮都作用于当前选择范围；
-          // “立即专项练习”不建 FSRS 卡；已在池的题点加入时自动跳过，
-          // 结果报“新增 N 道，M 道已跳过”。
           Text(
             _s.reviewSelectionLabel(),
             key: const Key('review-selection-label'),
             style: const TextStyle(fontWeight: FontWeight.w800),
           ),
-          QmButton(
-            label: '勾选当前页',
-            variant: QmButtonVariant.plain,
-            size: QmButtonSize.small,
-            onPressed: () => _n.selectReviewPage(_reviewPageItems(all)),
+          SizedBox(width: 8 * scale),
+          _batchMenu(
+            key: const Key('batch-select-menu'),
+            label: '选择',
+            enabled: true,
+            menuStyle: menuStyle,
+            children: [
+              _batchMenuItem(
+                label: '全选当前结果',
+                style: itemStyle,
+                onPressed: () => _toggleSelectAll(all),
+              ),
+              _batchMenuItem(
+                label: '勾选当前页',
+                style: itemStyle,
+                onPressed: () => _n.selectReviewPage(_reviewPageItems(all)),
+              ),
+              _batchMenuItem(
+                label: '全选全部筛选结果',
+                style: itemStyle,
+                onPressed:
+                    all.isNotEmpty ? _n.selectReviewAllFiltered : null,
+              ),
+              _batchMenuItem(
+                label: '清除选择',
+                style: itemStyle,
+                onPressed: hasSelection || hasReviewSelection
+                    ? _clearBatchSelection
+                    : null,
+              ),
+            ],
           ),
-          QmButton(
-            label: '全选全部筛选结果',
-            variant: QmButtonVariant.plain,
-            size: QmButtonSize.small,
-            onPressed: all.isNotEmpty ? _n.selectReviewAllFiltered : null,
+          SizedBox(width: 8 * scale),
+          _batchMenu(
+            key: const Key('batch-organize-menu'),
+            label: '整理',
+            enabled: hasSelection,
+            menuStyle: menuStyle,
+            children: [
+              _batchMoveFolderSubmenu(itemStyle),
+              if (_s.folderId != null)
+                _batchMenuItem(
+                  label: '移出当前文件夹',
+                  style: itemStyle,
+                  onPressed: _batchMoveOut,
+                ),
+              _batchMenuItem(
+                label: '加标签',
+                style: itemStyle,
+                onPressed: _batchAddTag,
+              ),
+              _batchMenuItem(
+                label: '收藏',
+                style: itemStyle,
+                onPressed: _batchFavorite,
+              ),
+              _batchMenuItem(
+                label: '归档',
+                style: itemStyle,
+                onPressed: _batchArchive,
+              ),
+            ],
           ),
-          QmButton(
-            label: '加入复习',
-            variant: QmButtonVariant.plain,
-            size: QmButtonSize.small,
-            onPressed: _s.reviewEffectiveIds().isNotEmpty
-                ? _batchJoinReviewFsrs
-                : null,
+          SizedBox(width: 8 * scale),
+          _batchMenu(
+            key: const Key('batch-review-menu'),
+            label: '复习',
+            enabled: true,
+            menuStyle: menuStyle,
+            children: [
+              _batchMenuItem(
+                label: '加入复习',
+                style: itemStyle,
+                onPressed:
+                    hasReviewSelection ? _batchJoinReviewFsrs : null,
+              ),
+              _batchMenuItem(
+                label: '全部加入复习',
+                style: itemStyle,
+                onPressed: all.isNotEmpty ? _batchJoinReviewFsrsAll : null,
+              ),
+              _batchMenuItem(
+                label: '立即专项练习',
+                style: itemStyle,
+                onPressed:
+                    hasReviewSelection ? _startPracticeFromReview : null,
+              ),
+              _batchMenuItem(
+                label: '取消加入复习',
+                style: itemStyle,
+                onPressed:
+                    hasSelection ? _batchCancelReviewSelected : null,
+              ),
+            ],
           ),
-          QmButton(
-            label: '全部加入复习',
-            variant: QmButtonVariant.plain,
-            size: QmButtonSize.small,
-            onPressed: all.isNotEmpty ? _batchJoinReviewFsrsAll : null,
+          const Spacer(),
+          TapRegion(
+            onTapOutside: (_) => _disarmBatchDelete(),
+            child: QmButton(
+              key: const Key('batch-delete'),
+              label: _deleteArmed
+                  ? '再点一次确认删除 ${_s.selected.length} 道'
+                  : '批量删除',
+              variant: QmButtonVariant.danger,
+              size: QmButtonSize.small,
+              onPressed: hasSelection ? _onBatchDeleteTap : null,
+            ),
           ),
-          QmButton(
-            label: '立即专项练习',
-            variant: QmButtonVariant.plain,
-            size: QmButtonSize.small,
-            onPressed: _s.reviewEffectiveIds().isNotEmpty
-                ? _startPracticeFromReview
-                : null,
-          ),
-          QmButton(
-            label: '取消加入复习',
-            variant: QmButtonVariant.plain,
-            size: QmButtonSize.small,
-            onPressed: hasSelection ? _batchCancelReviewSelected : null,
-          ),
-          QmButton(
-            label: '批量删除',
-            variant: QmButtonVariant.plain,
-            size: QmButtonSize.small,
-            onPressed: hasSelection ? _askBatchDelete : null,
-          ),
-          QmButton(
-            label: '清除选择',
-            variant: QmButtonVariant.plain,
-            size: QmButtonSize.small,
-            onPressed: hasSelection
-                ? () => _n.update(
-                      (st) => st.copyWith(
-                        selected: const <String>{},
-                        reviewSelected: const <String>{},
-                        reviewSelectAllFiltered: false,
-                        reviewFilterKey: null,
-                      ),
-                    )
-                : null,
-          ),
+          SizedBox(width: 8 * scale),
           QmButton(
             label: '退出批量',
             variant: QmButtonVariant.plain,
             size: QmButtonSize.small,
-            onPressed: () => _n.update(
-              (st) => st.copyWith(
-                batchMode: false,
-                selected: const <String>{},
-                reviewSelected: const <String>{},
-                reviewSelectAllFiltered: false,
-                reviewFilterKey: null,
-              ),
-            ),
+            onPressed: _exitBatchMode,
           ),
         ],
       ),
+    );
+  }
+
+  /// 方案 A 批量栏菜单样式：与命令面板同款——圆角、阴影、条目
+  /// hover 底 accent-soft。
+  MenuStyle _batchMenuStyle(AppPalette palette, double scale) {
+    return MenuStyle(
+      backgroundColor: WidgetStatePropertyAll(palette.surface),
+      surfaceTintColor: WidgetStatePropertyAll(Colors.transparent),
+      elevation: const WidgetStatePropertyAll(8),
+      shadowColor: WidgetStatePropertyAll(Colors.black.withValues(alpha: 0.25)),
+      shape: WidgetStatePropertyAll(
+        RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(DesignTokens.radius * scale),
+        ),
+      ),
+      padding: WidgetStatePropertyAll(
+        EdgeInsets.symmetric(vertical: 4 * scale),
+      ),
+    );
+  }
+
+  /// 方案 A 批量栏菜单条目样式：hover / 聚焦底 accent-soft，
+  /// 禁用态 muted 字（与命令面板条目同款）。
+  ButtonStyle _batchMenuItemStyle(AppPalette palette, double scale) {
+    return ButtonStyle(
+      backgroundColor: WidgetStateProperty.resolveWith((states) {
+        if (states.contains(WidgetState.hovered) ||
+            states.contains(WidgetState.focused)) {
+          return palette.accentSoft;
+        }
+        return Colors.transparent;
+      }),
+      foregroundColor: WidgetStateProperty.resolveWith((states) {
+        if (states.contains(WidgetState.disabled)) return palette.muted;
+        return palette.ink;
+      }),
+      overlayColor: WidgetStatePropertyAll(Colors.transparent),
+      padding: WidgetStatePropertyAll(
+        EdgeInsets.symmetric(horizontal: 12 * scale, vertical: 8 * scale),
+      ),
+      shape: WidgetStatePropertyAll(
+        RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(8 * scale),
+        ),
+      ),
+      textStyle: WidgetStatePropertyAll(
+        const TextStyle(fontSize: 13.5),
+      ),
+    );
+  }
+
+  /// 方案 A 批量栏菜单触发按钮（MenuAnchor + QmButton plain 小按钮）。
+  Widget _batchMenu({
+    required Key key,
+    required String label,
+    required bool enabled,
+    required MenuStyle menuStyle,
+    required List<Widget> children,
+  }) {
+    return MenuAnchor(
+      key: key,
+      style: menuStyle,
+      menuChildren: children,
+      builder: (context, controller, child) => QmButton(
+        label: label,
+        trailingGlyph: '▾',
+        variant: QmButtonVariant.plain,
+        size: QmButtonSize.small,
+        onPressed: enabled
+            ? () => controller.isOpen ? controller.close() : controller.open()
+            : null,
+      ),
+    );
+  }
+
+  /// 方案 A 批量栏菜单条目：点选项即执行并关菜单（MenuItemButton
+  /// 默认 closeOnActivate）。
+  MenuItemButton _batchMenuItem({
+    required String label,
+    required ButtonStyle style,
+    required VoidCallback? onPressed,
+  }) {
+    return MenuItemButton(
+      style: style,
+      onPressed: onPressed,
+      child: Text(label),
+    );
+  }
+
+  /// 方案 A 批量栏「移入文件夹」子菜单：文件夹选择放进点开后的
+  /// 列表里（旧独立下拉删掉），点文件夹即执行移入并关菜单。
+  /// 跨学科列表（无归属学科）没有可移的目标：子菜单里留一条禁用
+  /// 的旧提示原文；同学科下无其他文件夹时同理留一条禁用提示。
+  Widget _batchMoveFolderSubmenu(ButtonStyle itemStyle) {
+    final options = _s.batchFolderOptions();
+    final children = <Widget>[
+      if (options.isEmpty)
+        MenuItemButton(
+          style: itemStyle,
+          onPressed: null,
+          child: Text(
+            _s.subjectId == null
+                ? '跨学科列表不能批量移文件夹：先打开一本书，再批量移'
+                : '没有其他文件夹',
+          ),
+        )
+      else
+        for (final f in options)
+          MenuItemButton(
+            style: itemStyle,
+            onPressed: () => _batchMoveToFolder(f.id),
+            child: Text(_s.folderLabel(f)),
+          ),
+    ];
+    return SubmenuButton(
+      style: itemStyle,
+      menuChildren: children,
+      child: Text(_s.folderId != null ? '移入文件夹' : '加入文件夹'),
     );
   }
 

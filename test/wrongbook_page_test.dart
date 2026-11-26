@@ -576,6 +576,41 @@ Future<void> openMathListCompact(WidgetTester tester) async {
   await openMathList(tester);
 }
 
+/// 方案 A 批量栏：开指定菜单（点触发按钮；菜单在 Overlay 里）。
+/// menuKey 是触发按钮 MenuAnchor 的 key。
+Future<void> openBatchMenu(WidgetTester tester, String menuKey) async {
+  await tester.tap(find.byKey(Key(menuKey)));
+  await tester.pumpAndSettle();
+}
+
+/// 方案 A 批量栏：开菜单后点其中一项（点选项即执行并关菜单）。
+Future<void> tapBatchMenuItem(
+  WidgetTester tester,
+  String menuKey,
+  String label,
+) async {
+  await openBatchMenu(tester, menuKey);
+  await tester.tap(find.text(label));
+  await tester.pumpAndSettle();
+}
+
+/// 方案 A 批量栏：开整理菜单 → 移入/加入文件夹子菜单 → 点文件夹。
+/// 子菜单触发文案随范围变：学科内是「移入文件夹」，学科列表
+/// （无文件夹）是「加入文件夹」。
+Future<void> tapBatchMoveFolder(
+  WidgetTester tester,
+  String folderLabel,
+) async {
+  await openBatchMenu(tester, 'batch-organize-menu');
+  final joinFinder = find.text('加入文件夹');
+  await tester.tap(
+    joinFinder.evaluate().isNotEmpty ? joinFinder : find.text('移入文件夹'),
+  );
+  await tester.pumpAndSettle();
+  await tester.tap(find.text(folderLabel).last);
+  await tester.pumpAndSettle();
+}
+
 /// 板子行标题是 RichText（不是普通 Text）：按题名找行。
 /// 板子行（按显示文字找行）：二十一批 D-244 起行标题改显示题干
 /// （2026-11-22 11:32 修订：取消 15 字限制，完整显示、自动换行），
@@ -1959,37 +1994,47 @@ void main() {
       expect(find.text('批量操作'), findsOneWidget);
       await tester.tap(find.text('批量操作'));
       await tester.pumpAndSettle();
-      expect(find.text('全选当前结果'), findsOneWidget);
+      // 方案 A：单行工具条——已选文案 + 三个菜单 + 删除 + 退出；
+      // 0 选时整理 / 复习 / 删除禁用，选择与退出可用。
       expect(find.text('已选 0 道'), findsOneWidget);
-      expect(find.text('批量收藏'), findsOneWidget);
-      expect(find.text('批量归档'), findsOneWidget);
+      expect(find.byKey(const Key('batch-select-menu')), findsOneWidget);
+      expect(find.byKey(const Key('batch-organize-menu')), findsOneWidget);
+      expect(find.byKey(const Key('batch-review-menu')), findsOneWidget);
       expect(find.text('批量删除'), findsOneWidget);
       expect(find.text('退出批量'), findsOneWidget);
-      await tester.tap(find.text('全选当前结果'));
-      await tester.pumpAndSettle();
+      // 旧平铺按钮收进菜单里了，不再直接可见。
+      expect(find.text('批量收藏'), findsNothing);
+      expect(find.text('批量归档'), findsNothing);
+      expect(find.text('全选当前结果'), findsNothing);
+      // 选择菜单里全选当前结果。
+      await tapBatchMenuItem(tester, 'batch-select-menu', '全选当前结果');
       expect(find.text('已选 3 道'), findsOneWidget);
       await tester.tap(find.text('退出批量'));
       await tester.pumpAndSettle();
-      expect(find.text('全选当前结果'), findsNothing);
+      expect(find.text('已选 0 道'), findsNothing);
       await tester.tap(find.text('批量操作'));
       await tester.pumpAndSettle();
       expect(find.text('已选 0 道'), findsOneWidget);
     });
 
-    testWidgets('单选卡片复选框；批量删除模态弹窗确认', (tester) async {
+    testWidgets('单选卡片复选框；批量删除两段确认', (tester) async {
       final repo = threeSubjectRepo();
       await pumpWrongbook(tester, repo: repo);
       await openMathList(tester);
       await tester.tap(find.text('批量操作'));
       await tester.pumpAndSettle();
-      // 第 0 个复选框是批量条的全选，第 1 个是首张卡。
-      await tester.tap(find.byType(Checkbox).at(1));
+      // 方案 A：批量条不再有全选复选框，第 0 个就是首张卡。
+      await tester.tap(find.byType(Checkbox).at(0));
       await tester.pumpAndSettle();
       expect(find.text('已选 1 道'), findsOneWidget);
+      // 第一下只改文案，不删题、不弹模态框。
       await tester.tap(find.text('批量删除'));
       await tester.pumpAndSettle();
-      expect(find.text('删了就没了，确定吗？'), findsOneWidget);
-      await tester.tap(find.text('确认删除'));
+      expect(find.text('再点一次确认删除 1 道'), findsOneWidget);
+      expect(find.text('删了就没了，确定吗？'), findsNothing);
+      expect(repo.deletedIds, isNot(contains('q1')));
+      // 第二下真正执行。
+      await tester.tap(find.text('再点一次确认删除 1 道'));
       await tester.pumpAndSettle();
       expect(repo.deletedIds, contains('q1'));
       expect(find.text('批量操作'), findsOneWidget);
@@ -2001,15 +2046,10 @@ void main() {
       await openMathList(tester);
       await tester.tap(find.text('批量操作'));
       await tester.pumpAndSettle();
-      await tester.tap(find.byType(Checkbox).at(1));
+      await tester.tap(find.byType(Checkbox).at(0));
       await tester.pumpAndSettle();
-      // 批量文件夹下拉是第 2 个 String 下拉（第 1 个是排序）。
-      await tester.tap(find.byType(DropdownButton<String>).at(1));
-      await tester.pumpAndSettle();
-      await tester.tap(find.text('平时作业').last);
-      await tester.pumpAndSettle();
-      await tester.tap(find.text('批量加入文件夹'));
-      await tester.pumpAndSettle();
+      // 方案 A：文件夹选择在整理菜单 → 加入文件夹子菜单里。
+      await tapBatchMoveFolder(tester, '平时作业');
       final q1 = repo.questions.firstWhere((q) => q.id == 'q1');
       expect(q1.folderIds, contains('f2'));
     });
@@ -2510,10 +2550,9 @@ void main() {
       await openMathList(tester);
       await tester.tap(find.text('批量操作'));
       await tester.pumpAndSettle();
-      await tester.tap(find.byType(Checkbox).at(1));
+      await tester.tap(find.byType(Checkbox).at(0));
       await tester.pumpAndSettle();
-      await tester.tap(find.text('批量加标签'));
-      await tester.pumpAndSettle();
+      await tapBatchMenuItem(tester, 'batch-organize-menu', '加标签');
       await tester.enterText(find.byType(TextField).last, '新标,签');
       await tester.tap(find.text('确定'));
       await tester.pumpAndSettle();
@@ -2528,10 +2567,9 @@ void main() {
       await openMathList(tester);
       await tester.tap(find.text('批量操作'));
       await tester.pumpAndSettle();
-      await tester.tap(find.byType(Checkbox).at(1));
+      await tester.tap(find.byType(Checkbox).at(0));
       await tester.pumpAndSettle();
-      await tester.tap(find.text('批量加标签'));
-      await tester.pumpAndSettle();
+      await tapBatchMenuItem(tester, 'batch-organize-menu', '加标签');
       await tester.enterText(find.byType(TextField).last, '新标|签');
       await tester.tap(find.text('确定'));
       await tester.pumpAndSettle();
@@ -2554,13 +2592,12 @@ void main() {
       await openMathList(tester);
       await tester.tap(find.text('批量操作'));
       await tester.pumpAndSettle();
-      await tester.tap(find.text('全选当前结果'));
-      await tester.pumpAndSettle();
+      await tapBatchMenuItem(tester, 'batch-select-menu', '全选当前结果');
       expect(find.text('已选 3 道'), findsOneWidget);
       await tester.tap(boardRowKey('q1'));
       await tester.pumpAndSettle();
       expect(opened?.id, 'q1');
-      await tester.tap(find.text('批量收藏'));
+      await tapBatchMenuItem(tester, 'batch-organize-menu', '收藏');
       await tester.pumpAndSettle();
       expect(find.textContaining('已收藏 2 道'), findsOneWidget);
       expect(find.textContaining('1 道已不在列表里，跳过'), findsOneWidget);
@@ -2569,6 +2606,13 @@ void main() {
     testWidgets('SR-P2-41 跨学科列表批量模式提示不能批量移文件夹', (tester) async {
       await pumpWrongbook(tester, filterCause: '概念不清');
       await tester.tap(find.text('批量操作'));
+      await tester.pumpAndSettle();
+      // 方案 A：提示收进整理菜单 → 加入文件夹子菜单里（禁用条目）；
+      // 整理菜单 0 选时禁用，先勾一道再开。
+      await tester.tap(find.byType(Checkbox).at(0));
+      await tester.pumpAndSettle();
+      await openBatchMenu(tester, 'batch-organize-menu');
+      await tester.tap(find.text('加入文件夹'));
       await tester.pumpAndSettle();
       expect(find.text('跨学科列表不能批量移文件夹：先打开一本书，再批量移'), findsOneWidget);
     });
@@ -2827,14 +2871,14 @@ void main() {
       expect(find.textContaining('第 2/2 页'), findsOneWidget);
       await tester.tap(find.text('批量操作'));
       await tester.pumpAndSettle();
-      // 第 0 个 Checkbox 是批量条的全选框；每行只剩批量复选框
-      //（十七批 P2：导出方框已废），第 1、2 个是第 2 页两道题的批量框。
+      // 方案 A：批量条不再有全选复选框；每行只剩批量框
+      //（十七批 P2：导出方框已废），第 0、1 个是第 2 页两道题的批量框。
+      await tester.tap(find.byType(Checkbox).at(0));
+      await tester.pumpAndSettle();
       await tester.tap(find.byType(Checkbox).at(1));
       await tester.pumpAndSettle();
-      await tester.tap(find.byType(Checkbox).at(2));
-      await tester.pumpAndSettle();
       expect(find.text('已选 2 道'), findsOneWidget);
-      await tester.tap(find.text('批量归档'));
+      await tapBatchMenuItem(tester, 'batch-organize-menu', '归档');
       await tester.pumpAndSettle();
       expect(find.text('共 10 道 · 按收集时间 新 → 旧'), findsOneWidget);
       expect(find.textContaining('第 1/1 页'), findsOneWidget);

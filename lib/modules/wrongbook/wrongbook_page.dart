@@ -228,11 +228,18 @@ class _WrongbookViewState extends ConsumerState<_WrongbookView> {
   /// 模式里点一行即切换导出选中、不进详情；模式外点行照常进详情。
   bool _exportMode = false;
 
+  /// 方案 A 批量栏：批量删除两段确认的待确认态（第一下只改文案
+  /// 「再点一次确认删除 N 道」，第二下才真正执行）。点别处（删除
+  /// 按钮外的 TapRegion）/ 进出批量 / 退出批量 / 清除选择 / 执行
+  /// 后都复位；文案里的 N 始终取当前已选数。
+  bool _deleteArmed = false;
+
   /// 进入导出模式：与批量模式互斥——进导出模式时退出批量模式
   ///（批量勾选一并清空，与“退出批量”同款语义）；导出已选保留。
   /// P3：加题选择（reviewSelected）与批量选择同进同出，一并清空。
   void _enterExportMode() {
     if (_sr.batchMode) {
+      _deleteArmed = false;
       _n.update(
         (st) => st.copyWith(
           batchMode: false,
@@ -261,6 +268,7 @@ class _WrongbookViewState extends ConsumerState<_WrongbookView> {
   /// 于点「取消」退出导出模式，不适用于进批量模式；开关本身的
   /// 语义（切换 batchMode 并清空批量勾选）与原来工具栏芯片一致。
   void _toggleBatchMode() {
+    _deleteArmed = false;
     final entering = !_sr.batchMode;
     if (entering && _exportMode) {
       setState(() {
@@ -848,8 +856,9 @@ class _WrongbookViewState extends ConsumerState<_WrongbookView> {
     }
   }
 
-  /// P3 入口 1“全部加入复习”：作用域 = 当前筛选出的全部题，不是全库，
-  /// 也不限当前页；不用先勾选。
+  /// P3 入口 1“全部加入复习”（2026-11-25 Meng 定：两按钮都加）：
+  /// 作用域 = 当前筛选出的全部题，不限当前页、不用先勾选；
+  /// 已在池的自动跳过，结果文案与“加入复习”同口径。
   Future<void> _batchJoinReviewFsrsAll() async {
     final r = await _n.joinReviewFsrsAll();
     if (mounted) {
@@ -881,29 +890,61 @@ class _WrongbookViewState extends ConsumerState<_WrongbookView> {
     if (mounted) _snack(msg);
   }
 
-  /// B3：批量删除确认（模态 AlertDialog；原来行内条只有标题一句，
-  /// 无补充文案，原样保留，不另加题数）。
-  Future<void> _askBatchDelete() async {
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('删了就没了，确定吗？'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(false),
-            child: const Text('取消'),
-          ),
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(true),
-            child: const Text('确认删除'),
-          ),
-        ],
+  /// 方案 A 批量栏：复位批量删除待确认态（供列表 part 的 TapRegion
+  /// 用；extension 里调不了受保护的 setState，复位走这里）。
+  void _disarmBatchDelete() {
+    if (_deleteArmed) {
+      setState(() {
+        _deleteArmed = false;
+      });
+    }
+  }
+
+  /// 方案 A 批量栏：批量删除两段确认（替代旧 B3 模态弹窗）。第一下
+  /// 只把按钮文案改成「再点一次确认删除 N 道」（N 取当前已选数）；
+  /// 第二下真正执行（Notifier 的 batchDeleteConfirmed 执行并清空
+  /// 通用选择）并复位待确认态。
+  Future<void> _onBatchDeleteTap() async {
+    if (!_deleteArmed) {
+      setState(() {
+        _deleteArmed = true;
+      });
+      return;
+    }
+    setState(() {
+      _deleteArmed = false;
+    });
+    final msg = await _n.batchDeleteConfirmed();
+    if (mounted) _snack(msg);
+  }
+
+  /// 方案 A 批量栏「清除选择」：通用选择与加题选择一并清空（与旧栏
+  /// 同款语义），并复位删除待确认态。
+  void _clearBatchSelection() {
+    _deleteArmed = false;
+    _n.update(
+      (st) => st.copyWith(
+        selected: const <String>{},
+        reviewSelected: const <String>{},
+        reviewSelectAllFiltered: false,
+        reviewFilterKey: null,
       ),
     );
-    if (ok == true && mounted) {
-      final msg = await _n.batchDeleteConfirmed();
-      if (mounted) _snack(msg);
-    }
+  }
+
+  /// 方案 A 批量栏「退出批量」：退批量模式并清空两套选择（与旧栏
+  /// 同款语义），并复位删除待确认态。
+  void _exitBatchMode() {
+    _deleteArmed = false;
+    _n.update(
+      (st) => st.copyWith(
+        batchMode: false,
+        selected: const <String>{},
+        reviewSelected: const <String>{},
+        reviewSelectAllFiltered: false,
+        reviewFilterKey: null,
+      ),
+    );
   }
 
   Future<void> _restoreArchived(Question q) async {
