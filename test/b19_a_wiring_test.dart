@@ -18,6 +18,8 @@ import 'package:quiz_master2/app.dart';
 import 'package:quiz_master2/data/database.dart';
 import 'package:quiz_master2/data/repository.dart';
 import 'package:quiz_master2/models/models.dart';
+import 'package:quiz_master2/modules/detail/question_detail_page.dart';
+import 'package:quiz_master2/modules/review/review_page.dart';
 
 /// 左导航栏本体的 key（见 b8_1_subject_refresh_flow_test）。
 final _navBar = find.byKey(const ValueKey('qm-nav-bar'));
@@ -317,6 +319,31 @@ void main() {
       expect(_boardRow('泰勒公式'), findsOneWidget);
       expect(_boardRow('定积分'), findsOneWidget);
       expect(find.text('全部题目'), findsOneWidget);
+    });
+
+    // Win11 反馈：详情页「复习记录」空状态的「去复习」点了没反应——详情
+    // 压在根 Navigator 栈顶，只改底层路由不 pop，用户看到的仍是详情。
+    testWidgets('详情页「去复习」：详情出栈并落到复习页', (tester) async {
+      await _seed();
+      await _pumpApp(tester);
+      await _openQ1Detail(tester);
+      expect(find.byType(QuestionDetailPage), findsOneWidget);
+      await _tapJumpEntry(tester, '去复习');
+      // 详情被 pop，底层切到复习页（不能只断言回调被调到）。
+      await _pumpUntil(
+        tester,
+        () => find.byType(ReviewPage).evaluate().isNotEmpty,
+        reason: '点「去复习」后未落到复习页',
+      );
+      await _pumpUntil(
+        tester,
+        () => find.byType(QuestionDetailPage).evaluate().isEmpty,
+        reason: '点「去复习」后详情页仍在栈顶',
+      );
+      expect(
+        find.text('暂无复习记录，去复习页练一次会出现在这里'),
+        findsNothing,
+      );
     });
   });
 }

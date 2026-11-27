@@ -462,6 +462,10 @@ class _QuizMasterAppState extends ConsumerState<QuizMasterApp> {
       _reviewPracticeCount = practiceCount;
     });
     unawaited(repo.saveLastRoute('/review'));
+    // 详情页「复习记录」空状态的「去复习」是从压栈的详情页点进来的：
+    // 只改底层路由不 pop，用户看到的仍是详情（与 _goWrongbookFiltered
+    // 同款）。pop 到栈底才看到复习页；从根路由点进来时 popUntil 是空操作。
+    _navigatorKey.currentState?.popUntil((route) => route.isFirst);
   }
 
   void _goWrongbookFiltered({
