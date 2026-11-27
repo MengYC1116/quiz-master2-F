@@ -16,6 +16,8 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:quiz_master2/data/database.dart';
 import 'package:quiz_master2/data/drift/quiz_database.dart';
 import 'package:quiz_master2/data/repository.dart';
+import 'package:quiz_master2/data/review_engine.dart';
+import 'package:quiz_master2/data/review_scheduler.dart';
 import 'package:quiz_master2/models/models.dart';
 import 'package:quiz_master2/modules/collect/batch_import.dart';
 import 'package:quiz_master2/modules/collect/batch_import_card.dart';
@@ -98,6 +100,13 @@ Future<(QuizDatabase, QuestionRepository)> _openFreshDb(
   return (db, repo);
 }
 
+/// 确定性调度器（fuzzing 关）+ SQLite store，绑指定库（test/p5 同款）。
+FsrsReviewScheduler _testScheduler(QuizDatabase db) =>
+    FsrsReviewScheduler(
+      config: const SchedulerConfig(enableFuzzing: false),
+      store: SqliteCardStore.forDatabase(db),
+    );
+
 /// 种子一题并加入复习。错题本按“已整理”口径计数（subjectCounts 要求
 /// reviewJoined && isOrganized），故种子题默认进一个同科文件夹并标记
 /// 已整理（探针 8：未整理种子在书架上是 0 道题、进书为空）；复习队列
@@ -113,8 +122,13 @@ Future<void> _seedJoined(
   );
   final organized = q.copyWith(folderIds: [folderId], isOrganized: true);
   await AppDatabase.upsertQuestionInto(db, organized);
-  final ok = await repo.setReviewJoined(organized, true);
-  assert(ok, 'setReviewJoined 失败：${q.id}');
+  // FSRS 全量迁移包2：只翻标志，不播种错因记录（专项练习读 q.allCauses）。
+  final ok = await repo.setReviewJoinedFlag(organized, true);
+  assert(ok, 'setReviewJoinedFlag 失败：${q.id}');
+  // sim 清理批：legacy 回落已删，池空即无到期；要建出到期会话，
+  // 须先给每道题建一张 FSRS 卡（p2 同款办法）。只建卡、不预答——
+  // 建卡后即进今日新题释放，当天可练。
+  await _testScheduler(db).initializeQuestion(q.id);
 }
 
 Future<void> _pumpReview(
@@ -200,33 +214,15 @@ Future<void> _tapText(WidgetTester tester, String text) async {
   await _settle(tester);
 }
 
-/// 只在按钮出现时才点（核对确认等可选步骤）。
-Future<bool> _maybeTapBtn(WidgetTester tester, String label) async {
-  final finder = find.widgetWithText(QmButton, label);
-  if (finder.evaluate().isEmpty) return false;
-  await _tapBtn(tester, label);
-  return true;
-}
-
-Future<void> _tapNextOrSummary(WidgetTester tester) async {
-  if (find.widgetWithText(QmButton, '看总结').evaluate().isNotEmpty) {
-    await _tapBtn(tester, '看总结');
-  } else {
-    await _tapBtn(tester, '下一题');
-  }
-}
-
 bool _currentIs(WidgetTester tester, String title) =>
     find.textContaining(title).evaluate().isNotEmpty;
 
-/// 纸上作答的题在到期复习里走完：作答 → 核对（符合）→ 自查已解决 → 下一题/看总结。
+/// 纸上作答的题在到期复习里走完三步：看题 → 作答（我已完成作答）
+/// → 核对（确认核对，下一题）。无置信度、无错因自查、无 verdict。
 Future<void> _completeDuePaper(WidgetTester tester) async {
   await _tapBtn(tester, '开始作答');
   await _tapBtn(tester, '我已完成作答');
-  await _maybeTapBtn(tester, '已对照，关键答案/步骤符合');
-  await _tapBtn(tester, '下一步：自查');
-  await _tapBtn(tester, '已解决');
-  await _tapNextOrSummary(tester);
+  await _tapBtn(tester, '确认核对，下一题');
 }
 
 /// 专项练习里做完当前题（纸上或单选都行），点“下一题”。
@@ -234,13 +230,14 @@ Future<void> _completePracticeCurrent(WidgetTester tester) async {
   await _tapBtn(tester, '开始作答');
   if (find.widgetWithText(QmButton, 'B').evaluate().isNotEmpty) {
     await _tapBtn(tester, 'B');
-    await _tapBtn(tester, '确定');
     await _tapBtn(tester, '提交答案');
     expect(find.text('回答正确'), findsOneWidget);
   } else {
     await _tapBtn(tester, '我已完成作答');
-    await _maybeTapBtn(tester, '已对照，关键答案/步骤符合');
   }
+  // 专项练习没有逐错因自查环节：核对步直接“下一题”，没有“下一步：自查”。
+  expect(find.widgetWithText(QmButton, '下一步：自查'), findsNothing,
+      reason: '专项练习没有逐错因自查环节');
   await _tapBtn(tester, '下一题');
 }
 
@@ -265,12 +262,28 @@ Future<void> _pickMenuItem<T>(
   await _settle(tester);
 }
 
+// FSRS 全量迁移包 7：CauseRecord 已无状态列；快照改取仍存活的
+// 冻结历史载体字段（补救条数 + 加入时间），用途不变（断言练习
+// 不改写错因记录）。
 Future<Map<String, String>> _causeSnapshot(QuestionRepository repo) async {
   final out = <String, String>{};
   for (final r in await repo.causeRecords()) {
     out['${r.questionId}|${r.cause}'] =
-        '${r.status}|${r.solvedCount}|${r.recheckDate?.toIso8601String()}|'
-        '${r.lastCountedSuccessAt}|${r.lastCountedSessionId}';
+        '${r.remedyHistory.length}|${r.joinedAt.toIso8601String()}';
+  }
+  return out;
+}
+
+/// FSRS 卡片快照：只取调度进度字段（整张卡状态 + 是否已开始正式
+/// 复习），不含首次呈现账本字段。专项练习不调 FSRS：练完前后
+/// 快照必须一字不变。
+Future<Map<String, String>> _fsrsCardSnapshot(
+  FsrsReviewScheduler scheduler,
+) async {
+  final out = <String, String>{};
+  for (final c in await scheduler.loadAllCards()) {
+    out[c.questionId] =
+        '${c.card}|firstReviewedAt=${c.firstReviewedAt?.toIso8601String()}';
   }
   return out;
 }
@@ -288,7 +301,7 @@ Future<Map<String, int>> _historyCounts(
 
 void main() {
   group('#23 跳过与断点续接', () {
-    testWidgets('跳过一次移队尾、第二次留到下次：不写 verdict、不改进度', (
+    testWidgets('跳过一次移队尾、第二次留到下次：不写记录、不改进度', (
       tester,
     ) async {
       final (db, repo) = await _openFreshDb('d2-23-skip-twice');
@@ -329,14 +342,16 @@ void main() {
       expect(find.text('本轮复习总结'), findsOneWidget);
       expect(find.textContaining('留待下次 1 道'), findsOneWidget);
 
-      // DB 断言：被跳过的题没有任何 verdict、不改进度。
+      // DB 断言：被跳过的题没有任何正式作答记录、不改进度。
       expect(await _historyCounts(repo, [ids[0]]), {'s1': 0},
-          reason: '跳过不写 verdict');
-      final rec = (await repo.causeRecords())
-          .firstWhere((r) => r.questionId == ids[0]);
-      expect(rec.status, CauseStatus.pending);
-      expect(rec.solvedCount, 0);
-      expect(rec.recheckDate, isNull);
+          reason: '跳过不写正式作答记录');
+      // 新流程不再播种错因记录（包 2）：跳过不产生任何错因记录。
+      expect(
+        (await repo.causeRecords())
+            .where((r) => r.questionId == ids[0]),
+        isEmpty,
+        reason: '跳过不写记录：不产生错因记录',
+      );
     });
 
     testWidgets('跳过已提交答案的题：队尾重遇保留原选择与客观结果，不可重新提交', (
@@ -366,14 +381,13 @@ void main() {
       await _tapBtn(tester, '开始复习');
       final sessionId = (await repo.reviewState())!.sessionId!;
 
-      // 先把单选题做到“已提交答案”那一步：点选 B + 确定 + 提交。
+      // 先把单选题做到“已提交答案”那一步：点选 B + 提交。
       if (_currentIs(tester, '纸上跳过题')) {
         await _completeDuePaper(tester);
       }
       expect(_currentIs(tester, '单选跳过题'), isTrue);
       await _tapBtn(tester, '开始作答');
       await _tapBtn(tester, 'B');
-      await _tapBtn(tester, '确定');
       await _tapBtn(tester, '提交答案');
       expect(find.text('回答正确'), findsOneWidget);
 
@@ -390,7 +404,11 @@ void main() {
           reason: '已提交的题不允许重新提交');
       expect(find.text('③ 核对'), findsOneWidget);
 
-      // 同一会话同一题只有一条 attempt，仍是原来那条（B、对）。
+      // 同一会话同一题只有一条 attempt——attempt 只在核对提交时写库
+      // （客观提交只改内存状态），所以断言移到核对提交完成之后。
+      // 收尾：核对提交后直接进小结，确认流程能正常结束。
+      await _tapBtn(tester, '确认核对，下一题');
+      expect(find.text('本轮复习总结'), findsOneWidget);
       final attempts = await repo.loadAttemptsForSession(sessionId);
       final choiceAttempts = attempts
           .where((a) => a.questionId == 'c1')
@@ -398,20 +416,9 @@ void main() {
       expect(choiceAttempts, hasLength(1));
       expect(choiceAttempts.single.selected, ['B']);
       expect(choiceAttempts.single.correct, 1);
-
-      // 收尾：走完自查进小结，确认流程能正常结束。
-      await _tapBtn(tester, '下一步：自查');
-      if (find.textContaining('本次作答是否直接检验了这个错因')
-          .evaluate()
-          .isNotEmpty) {
-        await _tapBtn(tester, '是');
-      }
-      await _tapBtn(tester, '已解决');
-      await _tapBtn(tester, '看总结');
-      expect(find.text('本轮复习总结'), findsOneWidget);
     });
 
-    testWidgets('暂停 → 关闭应用重进：继续上次会话从断点恢复；放弃重开重新生成', (
+    testWidgets('暂停 → 关闭应用重进：继续上次会话从断点恢复；放弃后重新生成', (
       tester,
     ) async {
       final (db, repo) = await _openFreshDb('d2-23-pause-resume');
@@ -438,7 +445,7 @@ void main() {
       await _restartApp(tester, repo);
       expect(find.textContaining('继续上次会话'), findsNWidgets(2),
           reason: '恢复条文案 + 按钮各一处');
-      expect(find.text('放弃重开'), findsOneWidget);
+      expect(find.text('放弃上次会话'), findsOneWidget);
       expect(find.textContaining('第 2 / 3 道题'), findsOneWidget,
           reason: '恢复条应标出断点位置');
 
@@ -447,10 +454,10 @@ void main() {
       expect(find.textContaining('第 2 / 3 道题'), findsOneWidget);
       expect(find.text('① 看题'), findsOneWidget);
 
-      // 再暂停、重进，点“放弃重开”：按当前到期状态重新生成队列，从第 1 题起。
+      // 再暂停、重进，点“放弃上次会话”：按当前到期状态重新生成队列，从第 1 题起。
       await _tapBtn(tester, '暂停');
       await _restartApp(tester, repo);
-      await _tapBtn(tester, '放弃重开');
+      await _tapBtn(tester, '放弃上次会话');
       expect(find.textContaining('第 1 / 3 道题'), findsOneWidget);
     });
 
@@ -485,9 +492,14 @@ void main() {
       expect(find.textContaining('第 1 / 2 道题'), findsOneWidget);
 
       // 再暂停、再开专项练习，选“放弃上次会话”：旧断点清掉，进选题页。
+      // 恢复条上也有同名按钮，只点弹窗里的那一个。
       await _tapBtn(tester, '暂停');
       await _tapBtn(tester, '专项练习');
-      await tester.tap(find.text('放弃上次会话'));
+      final dialogAbandon = find.descendant(
+        of: find.byType(AlertDialog),
+        matching: find.text('放弃上次会话'),
+      );
+      await tester.tap(dialogAbandon);
       await _settle(tester);
       expect(find.widgetWithText(QmButton, '开始练习'), findsOneWidget);
       expect(await repo.reviewState(), isNull,
@@ -496,7 +508,7 @@ void main() {
   });
 
   group('#26 专项练习全程', () {
-    testWidgets('选题默认 + 练完全程：小结写明不改变治疗进度，DB 一点没变', (
+    testWidgets('选题默认 + 练完全程：专项不改变 FSRS 进度、DB 卡片不变', (
       tester,
     ) async {
       final (db, repo) = await _openFreshDb('d2-26-practice-full');
@@ -536,53 +548,52 @@ void main() {
         repo,
         const ['pp1', 'pp2', 'pc1'],
       );
+      // 专项练习不调 FSRS：练前记下三张卡的调度进度，练后逐字比对。
+      final scheduler = _testScheduler(db);
+      final cardsBefore = await _fsrsCardSnapshot(scheduler);
 
       await _pumpReview(tester, repo);
       await _tapBtn(tester, '专项练习');
-      // 选题页默认：全部 / 10 道 / 随机 + 不改变治疗进度说明。
+      // 选题页默认：全部 / 10 道 / 随机。“只练，不排期”那句说明小字
+      // 已随文案走查批删除（final-report §2 模块 07），不再断言文案，
+      // “不改变 FSRS 进度”改由下面的 DB 快照断言。
       expect(find.text('专项练习'), findsOneWidget);
-      expect(
-        find.textContaining('本次练习不改变治疗进度'),
-        findsWidgets,
-      );
       expect(find.widgetWithText(QmButton, '10 道'), findsOneWidget);
       expect(find.widgetWithText(QmButton, '随机'), findsOneWidget);
       expect(find.widgetWithText(QmButton, '加入时间'), findsOneWidget);
       await _tapBtn(tester, '开始练习');
       final sessionId = (await repo.reviewState())!.sessionId!;
-      expect(find.textContaining('本轮共 3 道题、3 个错因'), findsOneWidget);
-      expect(
-        find.text('专项练习：本次练习不改变治疗进度。'),
-        findsOneWidget,
-      );
+      expect(find.textContaining('第 1 / 3 道题'), findsOneWidget);
+      expect(find.textContaining('本轮共 3 个错因'), findsOneWidget);
 
       // 随机顺序：按当前题做完 3 道（核对后直接“下一题”，无自查环节）。
       for (var i = 0; i < 3; i++) {
-        // 专项练习没有逐错因自查环节：核对后直接“下一题”，没有“下一步：自查”。
-        expect(find.widgetWithText(QmButton, '下一步：自查'), findsNothing,
-            reason: '专项练习没有逐错因自查环节');
         await _completePracticeCurrent(tester);
       }
-      expect(find.text('本次专项练习小结'), findsOneWidget);
-      expect(find.textContaining('本次练习不改变治疗进度'), findsWidgets);
+      expect(find.text('本轮专项练习小结'), findsOneWidget);
+      // 小结收题块的短提示：专项练习的错不记成正式复习记录。
+      expect(find.text('加入后从下一次正式复习开始记录。'), findsOneWidget);
 
-      // DB 断言：cause_records 一点没变，review_history 一行没加；
-      // attempts 记了 3 条（每题一条），练习记录本身在。
+      // DB 断言：FSRS 卡片一点没变，cause_records 一点没变，
+      // review_history 一行没加；attempts 记了 3 条（每题一条），
+      // 练习记录本身在。
+      expect(await _fsrsCardSnapshot(scheduler), cardsBefore,
+          reason: '专项练习不调 FSRS：卡片进度必须一点没变');
       expect(await _causeSnapshot(repo), causesBefore,
-          reason: '专项练习不改变治疗进度：cause_records 必须一点没变');
+          reason: '专项练习不改变 FSRS 进度：cause_records 必须一点没变');
       expect(await _historyCounts(repo, const ['pp1', 'pp2', 'pc1']),
           historyBefore,
-          reason: '专项练习不写正式 verdict：review_history 必须一行没加');
+          reason: '专项练习不写正式作答记录：review_history 必须一行没加');
       final attempts = await repo.loadAttemptsForSession(sessionId);
       expect(attempts.map((a) => a.questionId).toSet(),
           {'pp1', 'pp2', 'pc1'});
       expect(
-        attempts.where((a) => a.mode == '专项练习'),
+        attempts.where((a) => a.mode == ReviewMode.practice),
         hasLength(3),
       );
     });
 
-    testWidgets('所选范围无题：专项练习空状态，不进空白会话，返回选题页', (
+    testWidgets('所选范围无题：专项练习空状态，不进空白会话，改范围回选题页', (
       tester,
     ) async {
       final (db, repo) = await _openFreshDb('d2-26-practice-empty');
@@ -630,86 +641,24 @@ void main() {
         '计算错误',
       );
       await _tapBtn(tester, '开始练习');
-      expect(
-        find.textContaining('该范围内没有可练的题，换个范围试试'),
-        findsOneWidget,
-      );
+      // 空范围不进会话：选题页内出空态盒（伙伴 + 换个范围试试 + 改范围）。
+      expect(find.text('该范围内没有可练的题'), findsOneWidget);
+      expect(find.text('换个范围试试。'), findsOneWidget);
       expect(find.textContaining('第 1 /'), findsNothing,
           reason: '空范围不进入空白会话');
-      await _tapBtn(tester, '返回选题页');
-      expect(find.textContaining('该范围内没有可练的题'), findsNothing);
+      await _tapBtn(tester, '改范围');
+      expect(find.text('该范围内没有可练的题'), findsNothing);
       expect(find.widgetWithText(QmButton, '开始练习'), findsOneWidget,
           reason: '返回后仍在选题页');
     });
   });
 
-  group('#27 练习中重新加入复习', () {
-    testWidgets('已治愈错因重新加入复习：回到解决中，只影响后续会话', (
-      tester,
-    ) async {
-      final (db, repo) = await _openFreshDb('d2-27-rejoin');
-      await _seedJoined(
-        db,
-        repo,
-        _mkQ(
-          'rj1',
-          '重加入题',
-          subjectId: 'english',
-          answer: '答案',
-          explanation: '解析。',
-        ),
-      );
-      await _seedJoined(
-        db,
-        repo,
-        _mkQ('rj2', '普通题', answer: '答案', explanation: '解析。'),
-      );
-
-      // 先用 cureChecks=1 把 rj1 的错因治愈（真实 verdict 路径）。
-      final settings = await repo.settings();
-      await repo.saveSettings(settings.copyWith(cureChecks: 1));
-      await _pumpReview(tester, repo);
-      await _tapBtn(tester, '开始复习');
-      // 队列里两题都做完（各 1 个错因），rj1 治愈。
-      await _completeDuePaper(tester);
-      await _completeDuePaper(tester);
-      expect(find.text('本轮复习总结'), findsOneWidget);
-      var rec = (await repo.causeRecords())
-          .firstWhere((r) => r.questionId == 'rj1');
-      expect(rec.status, CauseStatus.solved, reason: '预备：rj1 应已治愈');
-      expect(rec.solvedCount, 1);
-      await repo.saveSettings(settings.copyWith(cureChecks: 2));
-      final historyBefore = await _historyCounts(repo, const ['rj1']);
-
-      // 专项练习只练英语：做完纸上作答，到核对步点“将此错因重新加入复习”。
-      await _tapBtn(tester, '回复习列表');
-      await _tapBtn(tester, '专项练习');
-      await _pickMenuItem<String>(
-        tester,
-        find.byType(DropdownButton<String>).first,
-        '英语',
-      );
-      await _tapBtn(tester, '开始练习');
-      expect(find.textContaining('本轮共 1 道题、1 个错因'), findsOneWidget);
-      await _tapBtn(tester, '开始作答');
-      await _tapBtn(tester, '我已完成作答');
-      await _maybeTapBtn(tester, '已对照，关键答案/步骤符合');
-      expect(
-        find.widgetWithText(QmButton, '将此错因重新加入复习'),
-        findsOneWidget,
-      );
-      await _tapBtn(tester, '将此错因重新加入复习');
-      expect(find.textContaining('已重新加入复习'), findsOneWidget);
-      rec = (await repo.causeRecords())
-          .firstWhere((r) => r.questionId == 'rj1');
-      expect(rec.status, CauseStatus.inProgress,
-          reason: '已治愈错因重新加入后回到解决中');
-      expect(rec.solvedCount, 0);
-      expect(await _historyCounts(repo, const ['rj1']), historyBefore,
-          reason: '重新加入只影响后续会话，不改变本次练习记录');
-    });
-  });
-
+  // FSRS 全量迁移包 7：已删 #27 组（1 个测试：'已治愈错因重新加入
+  // 复习：回到解决中，只影响后续会话'）——它覆盖的行为已随包 1/包 2
+  // 删除：经 cureChecks=1 + 真实 verdict 路径治愈错因，再经
+  // unsolvedReset 回到解决中；新语义是按题重入池、记录冻结不动，
+  // 由单元测试覆盖（review_notifier_test 与 review_page_test 的
+  // '专项练习重新加入复习：按题入池，记录冻结不动'）。
   group('#32 回归抽查', () {
     // 注意：种子必须在 test 体内开库+写（seed32），不能放 group setUp——
     // 探针 10/11/12 证实：setUp 里开库后，testWidgets 体内第一次 repo
@@ -806,12 +755,13 @@ void main() {
       expect(find.text('默认文件夹'), findsOneWidget);
       await tester.tap(find.text('默认文件夹'));
       await _settle(tester);
-      // 默认是大卡片视图：卡片只画题面切片（QuestionSlice），不渲染题名
-      // 文字；material 种子无切片文字时题名根本不在树里。切到紧凑列表
-      // 再按题名断言（探针 15 的 dump 已证实：列表确有 1 道题）。
-      await tester.tap(find.text('紧凑列表'));
-      await _settle(tester);
-      expect(find.textContaining('回归数学题'), findsOneWidget);
+      // 板子行直接渲染完整题干（行标题即题名），视图切换已去掉，
+      // 不用再切“紧凑列表”就能按题名断言。行标题是独立 RichText，
+      // textContaining 默认不匹配，须传 findRichText: true。
+      expect(
+        find.textContaining('回归数学题', findRichText: true),
+        findsOneWidget,
+      );
       expect(tester.takeException(), isNull);
       // 回到书架走真实导航（列表 ← 目录 → 返回书架）：不能重 pump
       // 一个新的 WrongbookPage——无 key 时 Flutter 会复用旧 State，
@@ -823,9 +773,10 @@ void main() {
       expect(find.text('默认文件夹'), findsOneWidget);
       await tester.tap(find.text('默认文件夹'));
       await _settle(tester);
-      await tester.tap(find.text('紧凑列表'));
-      await _settle(tester);
-      expect(find.textContaining('回归英语题'), findsOneWidget);
+      expect(
+        find.textContaining('回归英语题', findRichText: true),
+        findsOneWidget,
+      );
       expect(tester.takeException(), isNull);
     });
 
@@ -850,8 +801,34 @@ void main() {
       expect(tester.takeException(), isNull);
     });
 
-    testWidgets('D-50 报告点薄弱点直达已筛选的错题本列表', (tester) async {
-      final (_, repo) = await seed32('d2-32-report');
+    testWidgets('D-50 报告点薄弱点进题目列表，再经「在错题本中查看」直达已筛选的错题本列表', (tester) async {
+      final (db, repo) = await seed32('d2-32-report');
+      // 包 6：报告空态守门改看正式作答——seed32 只有题、零正式作答，
+      // 新守门下会进空态。补一笔正式作答种子（g1 答错一次，Again），
+      // 再进数据视图（b8_1 同款做法，走真实 submitReviewCheck）。
+      final g1q = (await repo.all()).firstWhere((q) => q.id == 'g1');
+      final now = DateTime.now();
+      await repo.submitReviewCheck(
+        attempt: AttemptData(
+          id: 'att-d2-32-report',
+          questionId: 'g1',
+          sessionId: 'sess-d2-32-report',
+          mode: ReviewMode.due,
+          selected: const ['B'],
+          correct: 0,
+          confidence: null,
+          answerVersion: g1q.answerVersion,
+          contentVersion: g1q.contentVersion,
+          status: '已提交',
+          causeIds: const ['概念不清'],
+          submissionId: 'attsub-d2-32-report',
+          createdAt: now.millisecondsSinceEpoch,
+        ),
+        result: ReviewResult.again,
+        reviewedAt: now,
+        eventId: 'attsub-d2-32-report',
+        scheduler: _testScheduler(db),
+      );
       String? gotSubject;
       String? gotCause;
       await _pumpPage(
@@ -866,13 +843,13 @@ void main() {
         ),
       );
       expect(find.textContaining('有没有效果'), findsOneWidget);
-      expect(find.textContaining('最常错的5个原因'), findsOneWidget);
+      expect(find.textContaining('最常错的 5 个原因'), findsOneWidget);
       expect(find.textContaining('接下来练什么'), findsOneWidget);
       // 默认范围“本周”按题的 createdAt 过滤——种子题的 createdAt
-      //（2026-11-18）不在测试假时钟的本周内，弱点行是空的；切到“全部”
+      //（2026-11-08）不在测试假时钟的本周内，弱点行是空的；切到“全部”
       // 再验弱点行（范围切换本身也是报告行为）。
       await _tapText(tester, '全部');
-      // 薄弱点 Top：数学 · 概念不清（g1 未治愈）应有一行，点它。
+      // 薄弱点 Top：数学 · 概念不清（g1 正式答错一次）应有一行，点它。
       // 行标题是 Text.rich（“数学 · 概念不清”）；“接下来练什么”那句
       // “先解决数学的概念不清。”也是 RichText 且在树里排在前面
       // （探针 14），按包含匹配会点到它且不触发回调——按行标题全文
@@ -887,17 +864,26 @@ void main() {
       await _settle(tester);
       await tester.tap(firstCause);
       await _settle(tester);
+      // 点弱点行先进薄弱点题目列表页（P3 入口 3），再点次入口
+      // “在错题本中查看”才走旧深链路回调。
+      expect(find.textContaining('回归数学题'), findsOneWidget);
+      await _tapBtn(tester, '在错题本中查看');
       expect(gotSubject, 'math');
       expect(gotCause, '概念不清');
       expect(tester.takeException(), isNull);
     });
 
-    testWidgets('复习页能打开：今日待复习 + 开始复习 / 专项练习', (
+    testWidgets('复习页能打开：到期 / 今日新题 + 开始复习 / 专项练习', (
       tester,
     ) async {
       final (_, repo) = await seed32('d2-32-review');
       await _pumpReview(tester, repo);
-      expect(find.textContaining('今日待复习'), findsOneWidget);
+      // seed32 已给 3 道题建卡：到期 0 道、今日新题 3 道。
+      // “今日新题 3 道”在页顶与 FSRS 清单盒各出现一处。
+      expect(
+        find.textContaining('今日新题 3 道'),
+        findsNWidgets(2),
+      );
       expect(find.widgetWithText(QmButton, '开始复习'), findsOneWidget);
       expect(find.widgetWithText(QmButton, '专项练习'), findsOneWidget);
       expect(tester.takeException(), isNull);

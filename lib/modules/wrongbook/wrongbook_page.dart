@@ -20,10 +20,10 @@ import '../../services/pdf_export/pdf_delivery.dart';
 import '../../services/pdf_export/pdf_export_service.dart';
 import '../../services/word_export/word_delivery.dart';
 import '../../services/word_export/word_export_service.dart';
+import '../../state/detail_notifier.dart';
 import '../../state/repository_provider.dart';
 import '../../state/wrongbook_notifier.dart';
 import '../../theme/app_theme.dart'; // 转出 design_tokens，本文件不再单引它。
-import '../../widgets/command_palette.dart';
 import '../../widgets/entrance_animation.dart';
 import '../../widgets/uikit.dart';
 import '../../widgets/widgets.dart';
@@ -34,6 +34,19 @@ part 'wrongbook_directory.dart';
 part 'wrongbook_list.dart';
 part 'wrongbook_shelf.dart';
 part 'wrongbook_widgets.dart';
+
+/// 导出 PDF 信息区用的排序文案（纯函数，可单测）：与结果头
+/// sortLabel 同组排序值、不同措辞（这里是“时间新 → 旧”短式）。
+/// FSRS 全量迁移包 4：错因状态两项改成到期时间两项，旧文案不得
+/// 再印进 PDF。
+String wrongbookExportSortText(String sort) => switch (sort) {
+  'old' => '时间旧 → 新',
+  'subj-asc' || 'subject' => '学科首字母 A → Z',
+  'subj-desc' => '学科首字母 Z → A',
+  'due-asc' => '到期时间 最近到期 → 最晚到期',
+  'due-desc' => '到期时间 最晚到期 → 最近到期',
+  _ => '时间新 → 旧',
+};
 
 /// 错题本：书架 → 目录页 → 题目列表（同一路由 /wrongbook）。
 /// 已归档经书架顶部入口进跨学科列表；打开的书里另有本学科的已归档视图。
@@ -253,7 +266,7 @@ class _WrongbookViewState extends ConsumerState<_WrongbookView> {
     setState(() {
       _exportMode = true;
     });
-    _snack('已进入导出模式：点题行选中，再点一次取消');
+    _snack('已进入导出模式：点题行选中，再点一次取消选中');
   }
 
   /// 退出导出模式：已选保留，再进模式还能看到（D-208 定）。
@@ -313,17 +326,22 @@ class _WrongbookViewState extends ConsumerState<_WrongbookView> {
   /// 应用完调 onPendingSearchApplied，让 app 清掉自己的字段。
   /// 找到的题不在当前筛选里时 Notifier 会按条件重算列表；搜索框
   /// 文字由 _applySearchConditions 同步。
+  ///
+  /// 跟进批第 8 项：initState / didUpdateWidget 里同步写 provider，
+  /// Riverpod 3.5 只在 debug 下拦 build 期写 provider，widget
+  /// 测试里写操作被拒、查找不应用、toast 不出。整个应用一步
+  ///（写 provider + 同步搜索框 + toast）延后到首帧后，内容与
+  /// 顺序不变；清字段的回调与应用放进同一帧回调，先应用、再清。
   void _maybeApplyPendingSearch() {
     final pending = widget.pendingSearch;
     if (pending == null) return;
-    // initState 里直接调 Notifier 写状态是安全的（ref.read 不订阅）；
-    // toast 要等首帧之后（ScaffoldMessenger 需 context 已挂载）。
-    _applySearchConditions(
-      pending.conditions,
-      label: pending.label,
-      toast: '已用命令面板打开查找：${pending.label}',
-    );
     WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _applySearchConditions(
+        pending.conditions,
+        label: pending.label,
+        toast: '已用命令面板打开查找：${pending.label}',
+      );
       widget.onPendingSearchApplied?.call();
     });
   }
@@ -601,14 +619,7 @@ class _WrongbookViewState extends ConsumerState<_WrongbookView> {
     final filterParts = <String>[];
     if (subject != null) filterParts.add('学科：${subject.name}');
     if (folderName != null) filterParts.add('文件夹：$folderName');
-    final sortText = switch (st.sort) {
-      'old' => '时间旧 → 新',
-      'subj-asc' || 'subject' => '学科首字母 A → Z',
-      'subj-desc' => '学科首字母 Z → A',
-      'status-asc' => '错因状态 待解决 → 已解决',
-      'status-desc' => '错因状态 已解决 → 待解决',
-      _ => '时间新 → 旧',
-    };
+    final sortText = wrongbookExportSortText(st.sort);
     final session = ExportConfirmSession(
       controller: controller,
       input: ExportConfirmInput(
@@ -706,7 +717,7 @@ class _WrongbookViewState extends ConsumerState<_WrongbookView> {
         title: Text(
           '删除这个文件夹会删掉其中 $only 道题（只在这个文件夹里的）'
           '${multi > 0 ? '，另外 $multi 道题还在别的文件夹里、只是从这个文件夹移走' : ''}'
-          '${kidN > 0 ? '，它下面的 $kidN 个子文件夹也会一起删掉' : ''}，确定吗？',
+          '${kidN > 0 ? '，它下面的 $kidN 个子文件夹也会一起删掉' : ''}，删了就没了，确定吗？',
         ),
         content: Text(
           '要删的是${subject.name}的文件夹「${f.name}」，只删这一科的，其他学科的同名文件夹不受影响。',
@@ -751,7 +762,7 @@ class _WrongbookViewState extends ConsumerState<_WrongbookView> {
 
   // ---------- 批量操作（弹窗留页面，写库与汇总走 Notifier） ----------
 
-  /// 批量全选 / 全不选（复选框与「全选当前结果」文案共用：点文案也切换）。
+  /// 批量全选 / 全不选（复选框与「全选（整理、复习、删除）」文案共用：点文案也切换）。
   void _toggleSelectAll(List<Question> all) {
     _n.toggleSelectAll(all);
   }
@@ -1007,21 +1018,6 @@ class _WrongbookViewState extends ConsumerState<_WrongbookView> {
       style: TextStyle(
         fontSize: DesignTokens.pageTitleFontSize,
         fontWeight: DesignTokens.pageTitleFontWeight,
-      ),
-    );
-  }
-
-  /// 副标题（13.5px muted，HTML `.psub`）。
-  Widget _pageSubtitle(String text) {
-    final palette = DesignTokens.of(Theme.of(context).brightness);
-    return Padding(
-      padding: const EdgeInsets.only(top: 3, bottom: 20),
-      child: Text(
-        text,
-        style: TextStyle(
-          fontSize: DesignTokens.bodySmallFontSize,
-          color: palette.muted,
-        ),
       ),
     );
   }

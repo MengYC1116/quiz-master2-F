@@ -66,9 +66,6 @@ class _FakeRepo extends QuestionRepository {
   Future<void> save(Question question, {SaveToken? token}) async {}
 
   @override
-  Future<void> syncCauseRecords(Question question) async {}
-
-  @override
   Future<void> saveRecentTask({
     required String kind,
     required String subjectId,
@@ -268,7 +265,6 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(find.text('答案 · 解析 · 笔记（可选）'));
       await tester.pumpAndSettle();
-      expect(find.textContaining('与解析分开'), findsOneWidget);
       expect(find.text('平时作业'), findsNothing);
       expect(find.text('选择试卷（可选）'), findsNothing);
       expect(find.text('已选 0 个'), findsNothing);

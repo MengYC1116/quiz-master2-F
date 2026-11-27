@@ -151,9 +151,6 @@ class _FakeOrganizeRepo extends QuestionRepository {
       questions.where((x) => x.id == id).firstOrNull;
 
   @override
-  Future<void> syncCauseRecords(Question question) async {}
-
-  @override
   Future<void> saveRecentTask({
     required String kind,
     required String subjectId,
@@ -226,9 +223,6 @@ class _FakeDetailRepo extends QuestionRepository {
   Future<void> recordQuestionViewed(String questionId) async {
     recordedViews.add(questionId);
   }
-
-  @override
-  Future<void> syncCauseRecords(Question q) async {}
 
   @override
   Future<List<OcrJob>> ocrJobsForQuestion(String questionId) async =>
@@ -852,7 +846,7 @@ void main() {
       expect(outcome.message, contains('已生成 2 道题，去整理吧'));
       expect(
         outcome.message,
-        contains('其中 2 道题 OCR 未入队，可在详情页重新识别。'),
+        contains('其中 2 道题还没识别，可在详情页重新识别。'),
       );
     });
 

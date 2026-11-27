@@ -81,7 +81,7 @@ void main() {
         ),
       );
       expect(bad.printable, isFalse);
-      expect(bad.skipReason, '选项无法派生');
+      expect(bad.skipReason, '无法确定选项');
     });
 
     test('题型为 NULL：md 切不出选项 → 不要求选项 → 可印', () {
@@ -119,7 +119,7 @@ void main() {
         ),
       );
       expect(p.printable, isFalse);
-      expect(p.skipReason, '选项无法派生');
+      expect(p.skipReason, '无法确定选项');
     });
   });
 
@@ -184,7 +184,7 @@ void main() {
         ),
       );
       expect(p.printable, isFalse);
-      expect(p.skipReason, '选项无法派生');
+      expect(p.skipReason, '无法确定选项');
       expect(p.optionsState, OptionsState.unavailable);
     });
 
@@ -193,7 +193,7 @@ void main() {
         choiceRecord(id: 'q1', optionContentsJson: '{bad json'),
       );
       expect(p.printable, isFalse);
-      expect(p.skipReason, '选项无法派生');
+      expect(p.skipReason, '无法确定选项');
       expect(p.suspiciousFlags, contains('optionContentsCorrupt'));
     });
 
@@ -202,7 +202,7 @@ void main() {
         choiceRecord(id: 'q1', parserVersion: 99),
       );
       expect(p.printable, isFalse);
-      expect(p.skipReason, '选项无法派生');
+      expect(p.skipReason, '无法确定选项');
       expect(p.suspiciousFlags, contains('unknownParserVersion'));
     });
 

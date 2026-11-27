@@ -86,11 +86,11 @@ class SettingsNotifier extends AsyncNotifier<AppSettings> {
   // ---------- 问候语（纯函数，不碰库） ----------
 
   /// 校验并拼出要保存的设置：留空抛 [SettingsValidationException]，
-  /// 调用方按异常的 message 提示（原页内文案“留空保存不生效”）。
+  /// 调用方按异常的 message 提示（原页内文案“问候语不能为空”）。
   AppSettings greetingToSave(AppSettings current, String rawText) {
     final text = rawText.trim();
     if (text.isEmpty) {
-      throw const SettingsValidationException('留空保存不生效');
+      throw const SettingsValidationException('问候语不能为空');
     }
     return current.copyWith(greeting: text);
   }
@@ -144,7 +144,7 @@ class SettingsNotifier extends AsyncNotifier<AppSettings> {
       if (size > maxBackupFileBytes) {
         throw BackupRestoreException(
           '备份文件超过 200MB 上限（当前 ${(size / 1024 / 1024).toStringAsFixed(1)}MB），'
-          '请先减少题目/图片后重新导出',
+          '请先减少题目/图片后重新备份',
         );
       }
     } on BackupRestoreException {

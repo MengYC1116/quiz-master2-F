@@ -21,7 +21,7 @@ import 'package:quiz_master2/models/models.dart';
 import 'package:quiz_master2/theme/design_tokens.dart';
 
 import 'collect_page_test.dart' show FakeRepo, pumpCollect;
-import 'report_page_test.dart' show pumpReport, reportRepo, tatt, tq, trec;
+import 'report_page_test.dart' show pumpReport, reportRepo, tatt, tq;
 import 'review_page_test.dart'
     show FakeReviewRepo, pickMenuItem, pumpReview, rec, reviewRepo, rq;
 import 'wrongbook_page_test.dart'
@@ -125,12 +125,8 @@ void main() {
         tq('q-chem', '化学平衡移动',
             subjectId: 'subject-chem', errorTypes: const ['概念不清']),
       ];
-      repo.records = [
-        ...repo.records,
-        trec('q-chem', '概念不清', subjectId: 'subject-chem'),
-      ];
-      // FSRS 口径迁移：分布 = 范围内正式作答题数（按题去重），
-      // 只加记录不加作答时化学不会出现——补 1 次正式答错作答。
+      // 包 6 遗留同步（包 7 补）：报告页不再读错因记录，删 records
+      // 夹具；分布只看正式作答——补 1 次正式答错作答。
       final nowMs = DateTime.now().millisecondsSinceEpoch;
       repo.attemptsValue = [
         ...repo.attemptsValue,
@@ -151,14 +147,10 @@ void main() {
         tq('q-chem-2', '氧化还原配平',
             subjectId: 'subject-chem', errorTypes: const ['概念不清']),
       ];
-      repo.records = [
-        ...repo.records,
-        trec('q-chem-1', '概念不清', subjectId: 'subject-chem'),
-        trec('q-chem-2', '概念不清', subjectId: 'subject-chem'),
-      ];
-      // FSRS 口径迁移：弱点按错因 = 范围内正式答错 attempts 按题去重、
-      // 按 cause_ids 归因按题数排——只给 records 时化学组不存在，
-      // 补 2 次正式答错作答（同错因，计 2 道，排 Top 5 首行）。
+      // 包 6 遗留同步（包 7 补）：报告页不再读错因记录，删 records
+      // 夹具；弱点按错因 = 范围内正式答错 attempts 按题去重、按
+      // cause_ids 归因按题数排——补 2 次正式答错作答（同错因，
+      // 计 2 道，排 Top 5 首行）。
       final nowMs = DateTime.now().millisecondsSinceEpoch;
       repo.attemptsValue = [
         ...repo.attemptsValue,

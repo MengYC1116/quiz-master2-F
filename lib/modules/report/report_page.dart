@@ -48,12 +48,23 @@ class ReportPage extends ConsumerStatefulWidget {
     super.key,
     required this.repo,
     required this.onGoReview,
+    this.onGoCollect,
+    this.onGoWrongbook,
     required this.onOpenWrongbookFiltered,
     this.onStartPracticeWithQuestions,
   });
 
   final QuestionRepository repo;
   final VoidCallback onGoReview;
+
+  /// 空库空态的“去收集”入口（可空；app.dart 接 `/collect`）。
+  /// 有题无正式作答的空态走 [onGoReview]，不需要它。
+  final VoidCallback? onGoCollect;
+
+  /// 库里有题但无一可复习的空态的“去错题本”入口（可空；app.dart 接
+  /// `/wrongbook`，与复习页的 onGoWrongbook 同款）。只在新分支用；
+  /// 不传时不显示按钮。
+  final VoidCallback? onGoWrongbook;
 
   /// 点弱点行进错题本：打开对应学科那本，并按该错因 / 知识点筛好。
   /// P3 入口 3 起弱点行改为先进题目列表页；本回调保留作列表页里的
@@ -106,8 +117,40 @@ class _ReportPageState extends ConsumerState<ReportPage> {
     final scale = qmScaleOf(context);
     final palette = DesignTokens.of(Theme.of(context).brightness);
 
-    // 空态：没有任何复习记录（HTML `state==='empty'` 的形态）。
-    if (report.records.isEmpty && !report.loadError) {
+    // 空态（四态，V11；包 6 → 跟进批 5 收紧）：零正式作答时才进空态
+    // （与范围无关），有正式作答即按有数据展示——题已删的 attempts
+    // 孤儿也在此列，核心数照算（见 report_stats.dart 头注）。
+    // loadError 时不进空态（旧行为：留住上次内容 + 横幅）。
+    // 三支文案与按钮分别定义，不共用：
+    // ① 有已整理未归档的题 → 旧文案 + 去复习；
+    // ④ 库里有题但无一可复习（全未整理 / 全已归档 / 混合）→ 去错题本
+    // （整理 / 取消归档）；② 空库 → 去收集（文案一字不动）。
+    if (!report.hasFormalAttempts && !report.loadError) {
+      final hasQuestions = report.hasQuestions;
+      final hasAnyQuestions = report.hasAnyQuestions;
+      final String title;
+      final String description;
+      final String? actionLabel;
+      final VoidCallback? onAction;
+      if (hasQuestions) {
+        title = '还没有复习记录，先去复习吧';
+        description =
+            '在复习页按三步（看题、作答、核对）练几道题，回来这里就会告诉你弱在哪、有没有效果、接下来练什么。';
+        actionLabel = '去复习';
+        onAction = widget.onGoReview;
+      } else if (hasAnyQuestions) {
+        title = '这些题还不能复习';
+        description =
+            '库里的题还没有整理、或已经归档了。去错题本把它们整理好、或取消归档，再去复习，回来这里就会告诉你弱在哪、有没有效果、接下来练什么。';
+        actionLabel = widget.onGoWrongbook == null ? null : '去错题本';
+        onAction = widget.onGoWrongbook;
+      } else {
+        title = '这里还没有题目，先去收集吧';
+        description =
+            '去收集中心导入第一道题吧，回来这里就会告诉你弱在哪、有没有效果、接下来练什么。';
+        actionLabel = widget.onGoCollect == null ? null : '去收集';
+        onAction = widget.onGoCollect;
+      }
       return SingleChildScrollView(
         padding: EdgeInsets.zero,
         child: Column(
@@ -116,10 +159,10 @@ class _ReportPageState extends ConsumerState<ReportPage> {
             Text('学习报告', style: Theme.of(context).textTheme.titleLarge),
             SizedBox(height: 14 * scale),
             QmEmptyState(
-              title: '还没有复习记录，先去复习吧',
-              description: '在复习页按三步（看题、作答、核对）练几道题，回来这里就会告诉你弱在哪、有没有效果、接下来练什么。',
-              actionLabel: '去复习',
-              onAction: widget.onGoReview,
+              title: title,
+              description: description,
+              actionLabel: actionLabel,
+              onAction: onAction,
             ),
           ],
         ),
@@ -314,19 +357,19 @@ class _ReportPageState extends ConsumerState<ReportPage> {
     final rateSmall = gradedTotal == 0
         ? '这段时间还没有已判分的正式复习作答'
         : '正式复习 $gradedTotal 次已判分，答对 $gradedCorrect 次'
-              ' · 客观答对率，与旧的自查通过率不是同一回事';
+              ' · 客观答对率';
     final cells = [
       _CoreCell(
         valueKey: const ValueKey('report-core-formal-correct'),
         value: '$formalCorrectCount',
         label: '正式复习答对',
-        small: '按作答次数计（正式复习）',
+        small: '按作答次数计',
       ),
       _CoreCell(
         valueKey: const ValueKey('report-core-formal-wrong'),
         value: '$formalWrongQuestionCount',
         label: '正式复习答错',
-        small: '按题数计，同一题多次答错只算 1 道',
+        small: '按题数计',
       ),
       _CoreCell(
         valueKey: const ValueKey('report-core-formal-rate'),

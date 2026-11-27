@@ -15,8 +15,8 @@ void main() {
       // 在列表页，不在书架上。
       expect(find.text('错题本'), findsOneWidget);
       expect(
-        find.text('一科一本错题本，点一本打开看这一科的错题。'),
-        findsOneWidget,
+        find.text('错 题 本'),
+        findsWidgets,
       );
       expect(find.byKey(const ValueKey('big-search')), findsNothing);
       expect(find.text('全部题目'), findsNothing);
@@ -40,34 +40,6 @@ void main() {
       expect(boardRow('定积分'), findsOneWidget);
       expect(boardRow('阅读主旨'), findsNothing);
       expect(boardRow('图表作文'), findsNothing);
-    });
-
-    testWidgets('命令面板：点范围说明行的 Ctrl+K kbd 呼出，点文件夹应用', (tester) async {
-      await pumpWrongbook(tester);
-      // 二十三批 D-250：默认落点是书架，命令面板在列表页，先进列表。
-      await openMathList(tester);
-      // 二十一批 D-242：大搜索框里的深色 Ctrl+K kbd 已去掉，
-      // 页面上只剩范围说明行里的一对浅色 kbd。
-      expect(find.text('Ctrl'), findsOneWidget);
-      expect(find.text('K'), findsOneWidget);
-      await tester.tap(find.text('Ctrl').first);
-      await tester.pumpAndSettle();
-      expect(find.byKey(const ValueKey('command-palette')), findsOneWidget);
-      // 二十一批 D-241：旧“只搜元数据”全站消失（含命令面板 placeholder）。
-      expect(find.textContaining('只搜元数据'), findsNothing);
-      expect(find.text('文件夹'), findsOneWidget);
-      // 两个「📁 试卷」（数学 f1 在前、英语 f3 在后），点第一个进 f1。
-      await tester.tap(find.text('📁 试卷').first);
-      await tester.pump();
-      expect(find.text('已用命令面板打开查找：试卷'), findsOneWidget);
-      await tester.pumpAndSettle();
-      expect(find.byKey(const ValueKey('command-palette')), findsNothing);
-      // 二十三批 D-250：页头恢复，文件夹范围以页头标题呈现。
-      expect(find.text('数学 · 试卷'), findsOneWidget);
-      expect(boardRow('函数极限'), findsOneWidget);
-      expect(boardRow('定积分'), findsOneWidget);
-      expect(boardRow('导数综合'), findsNothing);
-      expect(boardRow('阅读主旨'), findsNothing);
     });
 
     testWidgets('我的查找：saved chip 点按应用条件 + toast', (tester) async {

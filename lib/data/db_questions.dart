@@ -20,595 +20,37 @@ Future<List<Question>> allQuestionsFromImpl(QuizDatabase db) async {
   return rows.map(_questionFromDb).toList();
 }
 
-/// SR-P2-8：手动加入 / 取消加入复习（可单测版）：题行 + 错因记录
-/// 同一个事务。旧写法是仓库里两步：先 upsertQuestion、再
-/// ensureCauseRecords（逐条 insert）；中间抛错/被杀，题已标
-/// “已加入复习”却没有一条 cause_records，旧口径的复习计数
-/// 对无记录的题静默跳过——题从复习计数里消失，用户以为已加入、
-/// 实际永远排不到。`joined && causes.isEmpty` 时不写库、返回 false
-/// （错因是空的题加不进复习，与旧仓库口径一致）。
-/// 播种用 [_seedCauseRecordsTyped]（insertOrIgnore，已有记录不动；
-/// 再加入时接着治）。
+/// FSRS 全量迁移包2（2026-11-27）：只翻 `review_joined` 标志位，
+/// 不再播种 cause_records（旧 `setReviewJoinedIntoImpl` 的播种分支
+/// 已删除；入池建卡走 `QuestionRepository.joinFsrsPool`）。
 /// SR2-14：题行只按列 UPDATE `review_joined`，不用整行 REPLACE——
-/// 旧写法整行写回会把内存旧快照里的 `review_count`（如 5）写回库里，
-/// 覆盖自查刚用 SQL `+1` 加出来的 6。`review_count` 只应由 SQL `+1` 改，
-/// 任何整行写都不应带它（见 [upsertQuestionIntoImpl]）。题行不存在时才整行
-/// INSERT（新题入库，快照值即初始值，无可覆盖的库内值）。
-Future<bool> setReviewJoinedIntoImpl(
+/// 旧写法整行写回会把内存旧快照里的 `review_count` 写回库里。
+/// 题行不存在时才整行 INSERT（新题入库，快照值即初始值）。
+/// 空错因的题也可翻标志（FSRS 按题，不按错因；旧“错因为空返回 false”
+/// 的限制随播种一起删除）。
+Future<bool> setReviewJoinedFlagIntoImpl(
   QuizDatabase db,
   Question q,
   bool joined,
 ) async {
-  final causes = q.allCauses;
-  if (joined && causes.isEmpty) return false;
-  await db.transaction(() async {
-    final updated =
-        await (db.update(db.questions)..where((t) => t.id.equals(q.id))).write(
-          QuestionsCompanion(reviewJoined: Value(joined ? 1 : 0)),
+  final updated =
+      await (db.update(db.questions)..where((t) => t.id.equals(q.id))).write(
+        QuestionsCompanion(reviewJoined: Value(joined ? 1 : 0)),
+      );
+  if (updated == 0) {
+    await db
+        .into(db.questions)
+        .insert(
+          _questionCompanion(q.copyWith(reviewJoined: joined)),
+          mode: InsertMode.insertOrReplace,
         );
-    if (updated == 0) {
-      await db
-          .into(db.questions)
-          .insert(
-            _questionCompanion(q.copyWith(reviewJoined: joined)),
-            mode: InsertMode.insertOrReplace,
-          );
-    }
-    if (joined) {
-      await _seedCauseRecordsTyped(db, q, joinedAt: DateTime.now());
-    }
-  });
+  }
   return true;
 }
 
-/// SR-P2-8：同步某题的解决记录与它当前的错因（可单测版）：删掉
-/// 已不在错因里的记录 + 给新加的错因补一条待解决记录，同事务。
-/// 旧写法是仓库里三段分离（全表读 + 逐条删 + ensureCauseRecords），
-/// 中间失败会留下“旧错因记录已删、新错因记录未补”的半截状态。
-/// 仅已加入复习的题同步；未加入的直接返回（与旧仓库口径一致）。
-Future<void> syncCauseRecordsIntoImpl(QuizDatabase db, Question q) async {
-  if (!q.reviewJoined) return;
-  final causes = q.allCauses.toSet();
-  await db.transaction(() async {
-    final rows = await (db.select(
-      db.causeRecords,
-    )..where((t) => t.questionId.equals(q.id))).get();
-    for (final row in rows) {
-      if (!causes.contains(row.cause)) {
-        await (db.delete(db.causeRecords)..where(
-              (t) => t.questionId.equals(q.id) & t.cause.equals(row.cause),
-            ))
-            .go();
-      }
-    }
-    await _seedCauseRecordsTyped(db, q, joinedAt: DateTime.now());
-  });
-}
-
-/// §4.2：自查事务（可单测版）：直接对传入的库句柄做，不碰单例、不 bump。
-/// SR-P2-16：新值按库内当前行重算，不按传入的快照——[updated] 只
-/// 提供“这次自查的方向”（result）与无行可读时的回退值。两处自查若
-/// 基于同一份旧 CauseRecord 先后提交，旧写法里后提交的会覆盖
-/// 先提交的计数（如两次快速点“已解决”，solvedCount 都按旧值 +1，
-/// 本应 +2 只 +1）。新写法在事务内先读库内当前行：有行时
-/// solvedCount 在当前值上递增、状态/复查日按当前值重算，
-/// remedyHistory / joinedAt 也以库内值为准（不拿旧快照覆盖）；
-/// 无行时（记录还没入库）才按传入的 [updated] 写。
-/// 返回实际写库的记录（调用方用它刷新界面，不再用快照推导值）。
-/// `review_count` 的 +1 用 Companion.custom 的列自增表达式（与旧
-/// `SET review_count = review_count + 1` 同语义），不在 Dart 侧读改写。
-///
-/// 十四批 M3：本函数保留给旧调用方（兼容旧口径：不确定不写库、
-/// 已解决按旧计数）。新会话走 [submitCauseVerdictIntoImpl]（M3-7
-/// 治愈规则 + M3-8 核验字段 + M3-10 幂等），旧口径不再扩大使用。
-/// P2（2026-11-25）审计：本函数在产品流程里已无调用方（只剩旧测试
-/// 直接调 AppDatabase.recordSelfCheckInto）；它是 review_history
-/// 的第二个写入点，P2 起与 submitCauseVerdictIntoImpl 一样停止写入，
-/// 只保留历史查询能力。
-/// P5 决定（2026-11-25）：保留，不移除。原因：cause_records 的
-/// solvedCount / recheckDate 仍是复习列表分组、到期队列、详情页与
-/// 报告的线上状态，settings 的 cureChecks / recheckIntervalDays
-/// 仍是其参数；只删写入层会让旧状态永远卡住且无人能写，而迁移审计
-/// 要靠这套语义解读旧历史。移除归 P3/P4 队列替换时一并做（那时
-/// cause_records 的治愈状态才真正退役）。
-/// P3 评估（2026-11-25）：已复核——P3 改的是加题入口（新入池走
-/// FSRS，旧到期队列 buildDueQueue 仍以 cause_records
-/// 治愈状态为准），不能安全移除；留给 P4 队列替换时一并做。
-Future<CauseRecord> recordSelfCheckIntoImpl(
-  QuizDatabase db, {
-  required CauseRecord updated,
-  required String questionId,
-  required String result,
-  int cureChecks = 2,
-  int recheckIntervalDays = 7,
-  bool isRecheck = false,
-}) async {
-  late CauseRecord written;
-  await db.transaction(() async {
-    Future<DbCauseRecord?> readCurrent() =>
-        (db.select(db.causeRecords)..where(
-              (t) =>
-                  t.questionId.equals(updated.questionId) &
-                  t.cause.equals(updated.cause),
-            ))
-            .getSingleOrNull();
-    if (result == 'unsure') {
-      // “不确定”不算，不写库：返回库内现有行（有）或传入值（无）。
-      final row = await readCurrent();
-      written = row == null ? updated : _causeRecordFromDb(row);
-      return;
-    }
-    final row = await readCurrent();
-    final now = DateTime.now();
-    final today = DateTime(now.year, now.month, now.day);
-    if (row == null) {
-      written = updated;
-    } else {
-      final current = _causeRecordFromDb(row);
-      if (result == 'solved') {
-        final count = isRecheck ? current.solvedCount : current.solvedCount + 1;
-        if (isRecheck || count >= cureChecks) {
-          written = current.copyWith(
-            status: CauseStatus.solved,
-            solvedCount: count,
-            lastCheck: now,
-            recheckDate: today.add(Duration(days: recheckIntervalDays)),
-          );
-        } else {
-          written = current.copyWith(
-            status: CauseStatus.inProgress,
-            solvedCount: count,
-            lastCheck: now,
-            clearRecheckDate: true,
-          );
-        }
-      } else {
-        // 未解决：solvedCount 清 0 → 解决中，复查日清掉
-        // （复查不过，回到解决中重新治，旧复查日作废）。
-        written = current.copyWith(
-          status: CauseStatus.inProgress,
-          solvedCount: 0,
-          lastCheck: now,
-          clearRecheckDate: true,
-        );
-      }
-    }
-    await db
-        .into(db.causeRecords)
-        .insert(
-          _causeRecordCompanion(written),
-          mode: InsertMode.insertOrReplace,
-        );
-    await db
-        .into(db.reviewHistory)
-        .insert(
-          ReviewHistoryCompanion.insert(
-            questionId: questionId,
-            result: result,
-            reviewedAt: DateTime.now().millisecondsSinceEpoch,
-          ),
-        );
-    await (db.update(
-      db.questions,
-    )..where((t) => t.id.equals(questionId))).write(
-      QuestionsCompanion.custom(
-        reviewCount: db.questions.reviewCount + const Constant(1),
-      ),
-    );
-  });
-  return written;
-}
-
 // ---------------------------------------------------------------------------
-// 十四批 M3：verdict 提交 / attempts / 会话持久化
+// 十四批 M3：attempts / 会话持久化
 // ---------------------------------------------------------------------------
-
-/// 单条错因 verdict 提交失败：错因记录已不存在（题已删/错因已改）。
-/// 调用方按“该错因已失效”跳过该错因、不阻断其他错因提交。
-class CauseRecordMissingException implements Exception {
-  CauseRecordMissingException(this.questionId, this.cause);
-
-  final String questionId;
-  final String cause;
-
-  @override
-  String toString() => 'CauseRecordMissingException($questionId, $cause)';
-}
-
-/// 单条错因 verdict 的提交结果（M3-7/M3-8/M3-10/M3-14）。
-class VerdictSubmitResult {
-  const VerdictSubmitResult({
-    required this.record,
-    required this.counted,
-    required this.alreadySubmitted,
-    required this.historyId,
-    required this.cured,
-    required this.isRecheckPassed,
-    required this.isRecheckFailed,
-  });
-
-  /// 写库后的错因记录（“不确定”中性事件不改记录时为原记录；
-  /// 原提交重试时为库内当前记录）。
-  final CauseRecord record;
-
-  /// 本次是否计入治愈次数（(d)+⑥ 判定后）。
-  final bool counted;
-
-  /// 子级 submission_id 已存在：原提交的重试/恢复重放，返回已有结果，
-  /// 不算第二次真实操作，不写新事件、不重复计数。
-  final bool alreadySubmitted;
-
-  /// 本次（或重试命中的已有）review_history 行 id。
-  final int historyId;
-
-  /// 本次提交后该错因是否刚治愈（状态从非 solved 变为 solved）。
-  final bool cured;
-
-  /// 复查通过 / 复查失败（小结汇总用；非复查项均为 false）。
-  final bool isRecheckPassed;
-  final bool isRecheckFailed;
-}
-
-/// 两次治愈成功之间的最小间隔（M3-7 ⑥）：24 小时。
-///
-/// P2：治愈判定已从产品流程删除，本常量与下面的 [CureEvaluation] /
-/// [evaluateCure] 仅供旧写入层 [submitCauseVerdictIntoImpl] 保留。
-/// P5 决定（2026-11-25）：保留，不移除——理由见 [recordSelfCheckIntoImpl]
-/// 的 P5 决定（旧治愈状态仍是线上状态，移除归 P3/P4 队列替换时一并做）。
-const int cureMinIntervalMs = 24 * 60 * 60 * 1000;
-
-/// 一次已核验“已解决”能否计入治愈的判定结果（旧写入层用，P2 已废止）。
-class CureEvaluation {
-  const CureEvaluation({
-    required this.counted,
-    required this.newSolvedCount,
-    required this.newStatus,
-    this.newRecheckDate,
-    this.newLastCountedSuccessAt,
-    this.newLastCountedSessionId,
-  });
-
-  /// 本次是否计入治愈次数。
-  final bool counted;
-
-  /// 计入后的 solvedCount（不计入时保持原值）。
-  final int newSolvedCount;
-
-  /// 计入/复查后的状态。
-  final CauseStatus newStatus;
-
-  /// 治愈或复查通过后的下次复查日（未治愈时为 null）。
-  final DateTime? newRecheckDate;
-
-  /// 计入后要保存的锚点（不计入时为 null，调用方不刷新锚点）。
-  final int? newLastCountedSuccessAt;
-  final String? newLastCountedSessionId;
-}
-
-/// 判定一次已核验“已解决”是否计入治愈（纯函数；调用方须先完成
-/// 同会话重复检查，把 [alreadySolvedInSession] 传进来——事务内按
-/// cause_id + session_id 查 review_history，含第一次未核验的
-/// “已解决”，不能只查已计入成功的事件）。
-///
-/// 规则：
-/// - isRecheck（已治愈错因的复查通过）：不增加初次治愈次数，锚点不动，
-///   状态保持已解决、复查日顺延。
-/// - cureChecks == 1：一次有效成功直接治愈，不等待 24 小时。
-/// - 首次计入（锚点为空）：计数并保存锚点。
-/// - 后续：须同时满足 session 与上次计入会话不同、且距上次计入成功
-///   ≥ 24 小时；计入后更新两个锚点；不足 24 小时不计数、不刷新锚点。
-/// - alreadySolvedInSession（(d)）：本次只记 history，不计数、不刷新锚点。
-CureEvaluation evaluateCure({
-  required CauseRecord record,
-  required String sessionId,
-  required int nowMs,
-  required int cureChecks,
-  required int recheckIntervalDays,
-  bool isRecheck = false,
-  bool alreadySolvedInSession = false,
-}) {
-  final today = DateTime.fromMillisecondsSinceEpoch(nowMs);
-  final todayDate = DateTime(today.year, today.month, today.day);
-  final nextRecheck = todayDate.add(Duration(days: recheckIntervalDays));
-  if (isRecheck) {
-    // 复查通过：不增加初次治愈次数（HTML 口径），只顺延复查日。
-    return CureEvaluation(
-      counted: false,
-      newSolvedCount: record.solvedCount,
-      newStatus: CauseStatus.solved,
-      newRecheckDate: nextRecheck,
-    );
-  }
-  if (alreadySolvedInSession) {
-    // (d)：同一会话内同一错因第二次“已解决”只记 history，不推进治愈。
-    return CureEvaluation(
-      counted: false,
-      newSolvedCount: record.solvedCount,
-      newStatus: record.status,
-    );
-  }
-  bool counts;
-  if (cureChecks <= 1) {
-    counts = true;
-  } else if (record.lastCountedSuccessAt == null ||
-      record.lastCountedSessionId == null) {
-    counts = true;
-  } else {
-    counts =
-        record.lastCountedSessionId != sessionId &&
-        nowMs - record.lastCountedSuccessAt! >= cureMinIntervalMs;
-  }
-  if (!counts) {
-    return CureEvaluation(
-      counted: false,
-      newSolvedCount: record.solvedCount,
-      newStatus: record.status,
-    );
-  }
-  final newCount = record.solvedCount + 1;
-  if (newCount >= cureChecks) {
-    return CureEvaluation(
-      counted: true,
-      newSolvedCount: newCount,
-      newStatus: CauseStatus.solved,
-      newRecheckDate: nextRecheck,
-      newLastCountedSuccessAt: nowMs,
-      newLastCountedSessionId: sessionId,
-    );
-  }
-  return CureEvaluation(
-    counted: true,
-    newSolvedCount: newCount,
-    newStatus: CauseStatus.inProgress,
-    newLastCountedSuccessAt: nowMs,
-    newLastCountedSessionId: sessionId,
-  );
-}
-
-/// M3-7/M3-8/M3-10：单条错因 verdict 提交（每错因一次独立事务）。
-/// 调用方（repository.submitCauseVerdict）按题循环调用，跨错因部分
-/// 失败时已写错因保留、只补未写成的。
-///
-/// 事务内顺序：
-/// 1. 校验核验字段组合（M3-8 DDL CHECK 同口径）：已核验时来源 ∈
-///    {软件标准答案，客观判分，外部资料核对}；未核验时来源 = 未核验；
-///    客观判分时 attemptId 必填。非法组合抛 ArgumentError，整条
-///    verdict 提交失败，不静默改写。
-/// 2. 按子级 submission_id 查重：已存在 → 返回已有结果（不写新事件）。
-/// 3. 读库内当前错因行：不存在 → 抛 CauseRecordMissingException。
-/// 4. (d) 同会话重复检查：该 cause_id 在当前 session_id 下是否已存在
-///    verdict='已解决' 的历史事件（含第一次未核验的“已解决”）。
-/// 5. 按 verdict 分流：
-///    - 不确定：只写一条中性 review_history 事件，不改 cause_records、
-///      不改 review_count、不刷新 24 小时锚点（取代旧“不确定不写库”）。
-///    - 未解决：按现有治疗规则重置（solved_count 清零、锚点清空、
-///      状态回解决中、复查日清掉），记 history，review_count +1。
-///    - 已解决：已核验时按锚点链 + 同会话检查判定是否计入（M3-7）；
-///      未核验时只记 history、不计数、不刷新锚点；复查通过不增加
-///      初次治愈次数、只顺延复查日。
-/// 6. review_count +1（每错因事件一次；沿用旧口径，不确定中性事件除外）。
-Future<VerdictSubmitResult> submitCauseVerdictIntoImpl(
-  QuizDatabase db, {
-  required String questionId,
-  required CauseRecord record,
-  required String verdict,
-  required String verificationStatus,
-  required String verificationSource,
-  String? attemptId,
-  required String sessionId,
-  required String submissionId,
-  int cureChecks = 2,
-  int recheckIntervalDays = 7,
-  bool isRecheck = false,
-  DateTime? now,
-}) async {
-  // 1. 核验字段组合校验（非法即整条提交失败，不静默改写）。
-  final validPair =
-      (verificationStatus == Verification.verified &&
-          (verificationSource == Verification.softwareAnswer ||
-              verificationSource == Verification.objectiveGrading ||
-              verificationSource == Verification.external)) ||
-      (verificationStatus == Verification.unverified &&
-          verificationSource == Verification.unverified);
-  if (!validPair) {
-    throw ArgumentError(
-      '非法核验组合：$verificationStatus / $verificationSource',
-    );
-  }
-  if (verificationSource == Verification.objectiveGrading &&
-      attemptId == null) {
-    throw ArgumentError('客观判分的核验必须带 attempt_id');
-  }
-  if (verdict != ReviewVerdict.solved &&
-      verdict != ReviewVerdict.unsolved &&
-      verdict != ReviewVerdict.unsure) {
-    throw ArgumentError('非法 verdict：$verdict');
-  }
-  final nowValue = now ?? DateTime.now();
-  final nowMs = nowValue.millisecondsSinceEpoch;
-  final resultCode = switch (verdict) {
-    ReviewVerdict.solved => 'solved',
-    ReviewVerdict.unsolved => 'unsolved',
-    _ => 'unsure',
-  };
-  late VerdictSubmitResult out;
-  await db.transaction(() async {
-    // 2. 子级 submission_id 查重：原提交重试 → 返回已有结果。
-    final existing = await (db.select(
-      db.reviewHistory,
-    )..where((t) => t.submissionId.equals(submissionId))).getSingleOrNull();
-    Future<DbCauseRecord?> readCurrent() =>
-        (db.select(db.causeRecords)..where(
-              (t) =>
-                  t.questionId.equals(record.questionId) &
-                  t.cause.equals(record.cause),
-            ))
-            .getSingleOrNull();
-    if (existing != null) {
-      final row = await readCurrent();
-      final current = row == null ? record : _causeRecordFromDb(row);
-      out = VerdictSubmitResult(
-        record: current,
-        counted: false,
-        alreadySubmitted: true,
-        historyId: existing.id,
-        cured: false,
-        isRecheckPassed: false,
-        isRecheckFailed: false,
-      );
-      return;
-    }
-    // 3. 读库内当前行。
-    final row = await readCurrent();
-    if (row == null) {
-      throw CauseRecordMissingException(record.questionId, record.cause);
-    }
-    final current = _causeRecordFromDb(row);
-    final stableId = causeStableId(current);
-    final wasSolved = current.status == CauseStatus.solved;
-    if (verdict == ReviewVerdict.unsure) {
-      // 5a. 不确定：中性事件写库，不改 cause_records、不改 review_count。
-      final historyId = await db
-          .into(db.reviewHistory)
-          .insert(
-            ReviewHistoryCompanion.insert(
-              questionId: questionId,
-              result: resultCode,
-              reviewedAt: nowMs,
-              causeId: Value(stableId),
-              sessionId: Value(sessionId),
-              reviewMode: const Value(ReviewMode.due),
-              verdict: const Value(ReviewVerdict.unsure),
-              verificationStatus: const Value(Verification.unverified),
-              verificationSource: const Value(Verification.unverified),
-              submissionId: Value(submissionId),
-            ),
-          );
-      out = VerdictSubmitResult(
-        record: current,
-        counted: false,
-        alreadySubmitted: false,
-        historyId: historyId,
-        cured: false,
-        isRecheckPassed: false,
-        isRecheckFailed: false,
-      );
-      return;
-    }
-    late CauseRecord written;
-    var counted = false;
-    if (verdict == ReviewVerdict.unsolved) {
-      // 5b. 未解决：重置治愈进度及时间锚点。
-      written = unsolvedReset(current, nowValue);
-    } else {
-      // 5c. 已解决。
-      if (verificationStatus == Verification.verified) {
-        // 4. (d) 同会话重复检查：含第一次未核验的“已解决”。
-        final sameSessionSolved =
-            await (db.select(db.reviewHistory)..where(
-                  (t) =>
-                      t.causeId.equals(stableId) &
-                      t.sessionId.equals(sessionId) &
-                      t.verdict.equals(ReviewVerdict.solved),
-                ))
-                .get();
-        final evaluation = evaluateCure(
-          record: current,
-          sessionId: sessionId,
-          nowMs: nowMs,
-          cureChecks: cureChecks,
-          recheckIntervalDays: recheckIntervalDays,
-          isRecheck: isRecheck,
-          alreadySolvedInSession: sameSessionSolved.isNotEmpty,
-        );
-        counted = evaluation.counted;
-        if (isRecheck) {
-          written = current.copyWith(
-            status: CauseStatus.solved,
-            lastCheck: nowValue,
-            recheckDate: evaluation.newRecheckDate,
-          );
-        } else if (evaluation.newStatus == CauseStatus.solved) {
-          written = current.copyWith(
-            status: CauseStatus.solved,
-            solvedCount: evaluation.newSolvedCount,
-            lastCheck: nowValue,
-            recheckDate: evaluation.newRecheckDate,
-            lastCountedSuccessAt: evaluation.newLastCountedSuccessAt,
-            lastCountedSessionId: evaluation.newLastCountedSessionId,
-          );
-        } else if (counted) {
-          written = current.copyWith(
-            status: CauseStatus.inProgress,
-            solvedCount: evaluation.newSolvedCount,
-            lastCheck: nowValue,
-            clearRecheckDate: true,
-            lastCountedSuccessAt: evaluation.newLastCountedSuccessAt,
-            lastCountedSessionId: evaluation.newLastCountedSessionId,
-          );
-        } else {
-          // 未计入（同会话重复或不足 24 小时）：只更新上次自查时间，
-          // 不计数、不刷新锚点。
-          written = current.copyWith(lastCheck: nowValue);
-        }
-      } else {
-        // 未核验的自我判断：不推进治愈。非复查时状态进“解决中”
-        // （solvedCount 不变）；复查时不延长复查日、不算复查通过。
-        written = isRecheck
-            ? current.copyWith(lastCheck: nowValue)
-            : current.copyWith(
-                status: current.status == CauseStatus.solved
-                    ? CauseStatus.solved
-                    : CauseStatus.inProgress,
-                lastCheck: nowValue,
-                clearRecheckDate:
-                    current.status != CauseStatus.solved,
-              );
-      }
-    }
-    await db
-        .into(db.causeRecords)
-        .insert(_causeRecordCompanion(written), mode: InsertMode.insertOrReplace);
-    final historyId = await db.into(db.reviewHistory).insert(
-      ReviewHistoryCompanion.insert(
-        questionId: questionId,
-        result: resultCode,
-        reviewedAt: nowMs,
-        causeId: Value(stableId),
-        sessionId: Value(sessionId),
-        reviewMode: const Value(ReviewMode.due),
-        verdict: Value(verdict),
-        verificationStatus: Value(verificationStatus),
-        verificationSource: Value(verificationSource),
-        attemptId: Value(attemptId),
-        submissionId: Value(submissionId),
-      ),
-    );
-    await (db.update(
-      db.questions,
-    )..where((t) => t.id.equals(questionId))).write(
-      QuestionsCompanion.custom(
-        reviewCount: db.questions.reviewCount + const Constant(1),
-      ),
-    );
-    out = VerdictSubmitResult(
-      record: written,
-      counted: counted,
-      alreadySubmitted: false,
-      historyId: historyId,
-      cured: !wasSolved && written.status == CauseStatus.solved,
-      // 复查通过 = 已核验的已解决（未核验的自评不延长复查日、不算通过，
-      // 该错因仍是到期状态）；复查失败 = 未解决打回解决中。
-      isRecheckPassed:
-          isRecheck &&
-          verdict == ReviewVerdict.solved &&
-          verificationStatus == Verification.verified,
-      isRecheckFailed:
-          isRecheck && verdict == ReviewVerdict.unsolved,
-    );
-  });
-  return out;
-}
 
 /// M3-10/M3-14：attempt 写入（一次会话每题一条）。按
 /// UNIQUE(session_id, question_id) 查：已有 → 更新作答字段
@@ -632,10 +74,7 @@ Future<String> recordAttemptIntoImpl(
 
 /// attempt 写入的事务内版本（调用方已包事务时直接调本函数；
 /// 单独调时走 [recordAttemptIntoImpl]，它包事务）。
-Future<String> _recordAttemptInTxn(
-  QuizDatabase db,
-  AttemptData attempt,
-) async {
+Future<String> _recordAttemptInTxn(QuizDatabase db, AttemptData attempt) async {
   late String id;
   {
     final existing =
@@ -652,9 +91,7 @@ Future<String> _recordAttemptInTxn(
       )..where((t) => t.id.equals(existing.id))).write(
         AttemptsCompanion(
           selected: Value(
-            attempt.selected == null
-                ? null
-                : jsonEncode(attempt.selected),
+            attempt.selected == null ? null : jsonEncode(attempt.selected),
           ),
           correct: Value(attempt.correct),
           confidence: Value(attempt.confidence),
@@ -676,9 +113,7 @@ Future<String> _recordAttemptInTxn(
               sessionId: attempt.sessionId,
               mode: attempt.mode,
               selected: Value(
-                attempt.selected == null
-                    ? null
-                    : jsonEncode(attempt.selected),
+                attempt.selected == null ? null : jsonEncode(attempt.selected),
               ),
               correct: Value(attempt.correct),
               confidence: Value(attempt.confidence),
@@ -705,8 +140,7 @@ Future<AttemptData?> loadAttemptIntoImpl(
   final row =
       await (db.select(db.attempts)..where(
             (t) =>
-                t.sessionId.equals(sessionId) &
-                t.questionId.equals(questionId),
+                t.sessionId.equals(sessionId) & t.questionId.equals(questionId),
           ))
           .getSingleOrNull();
   if (row == null) return null;
@@ -718,11 +152,9 @@ Future<List<AttemptData>> loadAttemptsForSessionIntoImpl(
   QuizDatabase db, {
   required String sessionId,
 }) async {
-  final rows =
-      await (db.select(db.attempts)..where(
-            (t) => t.sessionId.equals(sessionId),
-          ))
-          .get();
+  final rows = await (db.select(
+    db.attempts,
+  )..where((t) => t.sessionId.equals(sessionId))).get();
   return rows.map(_attemptFromDb).toList();
 }
 
@@ -740,8 +172,7 @@ Future<bool> hasSessionVerdictIntoImpl(
   final rows =
       await (db.select(db.reviewHistory)..where(
             (t) =>
-                t.causeId.equals(causeStableId) &
-                t.sessionId.equals(sessionId),
+                t.causeId.equals(causeStableId) & t.sessionId.equals(sessionId),
           ))
           .get();
   return rows.isNotEmpty;
@@ -760,67 +191,17 @@ AttemptData _attemptFromDb(DbAttempt r) => AttemptData(
   answerVersion: r.answerVersion,
   contentVersion: r.contentVersion,
   status: r.status,
-  causeIds: (jsonDecode(r.causeIds) as List)
-      .map((e) => e.toString())
-      .toList(),
+  causeIds: (jsonDecode(r.causeIds) as List).map((e) => e.toString()).toList(),
   durationMs: r.durationMs,
   submissionId: r.submissionId,
   createdAt: r.createdAt,
 );
 
-/// M3-2 专项练习“将此错因重新加入复习”（用户主动操作）：只影响后续
-/// 会话，不改变本次练习记录，不自动触发治疗状态变化。已治愈的错因
-/// 回到解决中（solvedCount 清零、锚点清空、复查日清掉）；未治愈的
-/// 保持原样；无记录时新建一条待解决记录；题行 review_joined 置 1。
-Future<void> rejoinCauseIntoImpl(
-  QuizDatabase db, {
-  required String questionId,
-  required String cause,
-  required String subjectId,
-}) async {
-  await db.transaction(() async {
-    await (db.update(
-      db.questions,
-    )..where((t) => t.id.equals(questionId))).write(
-      const QuestionsCompanion(reviewJoined: Value(1)),
-    );
-    final row =
-        await (db.select(db.causeRecords)..where(
-              (t) =>
-                  t.questionId.equals(questionId) & t.cause.equals(cause),
-            ))
-            .getSingleOrNull();
-    if (row == null) {
-      await db
-          .into(db.causeRecords)
-          .insert(
-            CauseRecordsCompanion.insert(
-              questionId: questionId,
-              cause: cause,
-              subjectId: subjectId,
-              remedyHistory: const Value([]),
-              joinedAt: DateTime.now().millisecondsSinceEpoch,
-            ),
-          );
-    } else if (row.status == 'solved') {
-      final current = _causeRecordFromDb(row);
-      await db
-          .into(db.causeRecords)
-          .insert(
-            _causeRecordCompanion(
-              unsolvedReset(current, DateTime.now()),
-            ),
-            mode: InsertMode.insertOrReplace,
-          );
-    }
-  });
-}
-
 /// §8.1：写题（可单测版）：直接对传入的库句柄写，不碰单例、不 bump。
 /// SR2-14：UPDATE-first，且 UPDATE 的列里不含 `review_count`——
-/// 它只应由 [recordSelfCheckIntoImpl] 里的 SQL `+1` 改。旧写法是
-/// 整行 REPLACE：拿着旧快照（`reviewCount: 5`）的
-/// toggleFavorite / archive / save 会把自查刚加到 6 的库内值打回 5。
+/// 它自 FSRS 迁移包1起不再有 +1 写入（旧自查写入层已退役）。
+/// 旧写法是整行 REPLACE：拿着旧快照（`reviewCount: 5`）的
+/// toggleFavorite / archive / save 会把库内值打回 5。
 /// 已存在的行只 UPDATE 其它列（标题、文件夹、标签、收藏/归档等编辑
 /// 内容照常写回）；不存在时才整行 INSERT（快照值即新题初始值）。
 /// U1-1 版本令牌（REV5）：一次保存携带的“新鲜度断言”，取自表单加载
@@ -913,8 +294,7 @@ Future<void> _upsertQuestionIntoTxn(
         old?.contentVersion,
       );
     }
-    if (old == null ||
-        old.contentVersion != token.expectedContentVersion) {
+    if (old == null || old.contentVersion != token.expectedContentVersion) {
       throw SaveTokenMismatch(
         token.questionId,
         token.expectedContentVersion,
@@ -962,8 +342,7 @@ Future<void> _upsertQuestionIntoTxn(
         old.explanation != effective.explanation ||
         old.correctOption != effective.correctOption ||
         !_optionLabelsEqual(old.optionLabels, effective.optionLabels) ||
-        old.answerPendingRecheck !=
-            (effective.answerPendingRecheck ? 1 : 0);
+        old.answerPendingRecheck != (effective.answerPendingRecheck ? 1 : 0);
     answerSubstantiveChanged =
         old.answer != effective.answer ||
         old.correctOption != effective.correctOption ||
@@ -1014,11 +393,7 @@ Future<void> _upsertQuestionIntoTxn(
   // 不参与新版本重放；card_id 不变。新行（old == null）没有卡可重置。
   // 与题写同一事务：题保存失败时重置不生效，重置失败时题也不保存。
   if (old != null && (visibleChanged || answerSubstantiveChanged)) {
-    await resetFsrsCardForContentChangeInto(
-      db,
-      q.id,
-      effective.contentVersion,
-    );
+    await resetFsrsCardForContentChangeInto(db, q.id, effective.contentVersion);
   }
   // B9-1：题变为已整理时，同句柄把指向它的收集任务置 done。
   // 这是全部整理路径的汇合点（整理确认、批量整理都走 repo.save →
@@ -1084,10 +459,7 @@ bool _optionLabelsEqual(List<String>? a, List<String>? b) {
 
 /// Win11 反馈包 5：选项内容按标签映射比较（键序不同不算变；
 /// Dart 的 Map == 是同一性，不能直接比）。
-bool _optionContentsEqual(
-  Map<String, String>? a,
-  Map<String, String>? b,
-) {
+bool _optionContentsEqual(Map<String, String>? a, Map<String, String>? b) {
   if (identical(a, b)) return true;
   if (a == null || b == null) return false;
   if (a.length != b.length) return false;
@@ -1402,21 +774,18 @@ extension AppDatabaseQuestions on AppDatabase {
     return rows.map(_causeRecordFromDb).toList();
   }
 
-  Future<void> ensureCauseRecords(Question q) async {
-    final d = await db;
-    await _seedCauseRecordsTyped(d, q, joinedAt: DateTime.now());
-  }
-
   /// SR3-4：方法名即语义——只改 `remedy_history` 列，不整行
-  /// REPLACE。唯一生产调用方是 `repository.saveRemedy`（只改补救
-  /// 历史）；状态 / 计数 / 复查日 / 上次自查的唯一写路径是
-  /// [recordSelfCheckIntoImpl]（事务内先读库内行再重算），
-  /// `saveCauseRecord` 只是本方法的仓库层转发（测试播种走 INSERT
-  /// 路径时用）。旧名 `upsertCauseRecord` 暗示全量 upsert，但行
-  /// 已存在时 `status` / `solvedCount` / `recheckDate` /
-  /// `lastCheck` 的改动会被静默丢弃——改名让窄化显性化：经本方法
-  /// 改状态是“按设计丢弃”，不是“写入失败”。行不存在时才整行
-  /// INSERT（新记录无可覆盖的库内值，全列写无 SR2-14 同类风险）。
+  /// REPLACE。FSRS 全量迁移包 7（R1 冻结规则）：
+  /// ① 行已存在时只 UPDATE `remedy_history` 列，状态列（`status` /
+  /// `solvedCount` / `recheckDate` / `lastCheck` / 锚点）绝不碰；
+  /// ② 行不存在时 INSERT 只允许冻结默认值（`status='pending'`、
+  /// `solvedCount=0`、`recheckDate` / `lastCheck` / 锚点全空），
+  /// 不信任传入记录的状态字段（`saveRemedy` 传入的记录已无状态
+  /// 字段；`saveCauseRecord` 只剩测试调用，同样只写默认值）。
+  /// 唯一生产调用方是 `repository.saveRemedy`（只改补救历史）。
+  /// 旧名 `upsertCauseRecord` 暗示全量 upsert，但行已存在时状态
+  /// 改动会被静默丢弃——改名让窄化显性化：经本方法改状态是
+  /// “按设计丢弃”，不是“写入失败”。
   Future<void> updateCauseRemedy(CauseRecord r) async {
     final d = await db;
     final updated =
@@ -1432,22 +801,24 @@ extension AppDatabaseQuestions on AppDatabase {
           .into(d.causeRecords)
           .insert(_causeRecordCompanion(r), mode: InsertMode.insertOrReplace);
     }
-    // Stage 4：补救历史是复习记录；行不存在时整行 INSERT 可能新建一条
-    // 待解决记录，会影响角标——沿用旧 bump 口径，两种 kind 都发。
+    // FSRS 全量迁移包 7（R1 复核）：补救历史是复习记录，详情页
+    // 订阅 reviewRecords 刷新展示；角标已全量读 FSRS（见
+    // badge_counts_provider），补救写入不可能改变任何角标数，
+    // 故只发 reviewRecords，不再发 badges。
     DataChangeBus.instance.emit(
       DataChangeEvent(
-        kinds: const {DataChangeKind.badges, DataChangeKind.reviewRecords},
+        kinds: const {DataChangeKind.reviewRecords},
         questionId: r.questionId,
       ),
     );
   }
 
-  /// SR-P2-8：手动加入 / 取消加入复习（实例版）：题行 + 错因记录
-  /// 同事务（见 [AppDatabase.setReviewJoinedInto]），提交成功后
-  /// 才 bump 一次。错因是空的题加不进复习，返回 false。
-  Future<bool> setReviewJoined(Question q, bool joined) async {
+  /// FSRS 全量迁移包2：只翻 `review_joined` 标志位（实例版，
+  /// 见 [AppDatabase.setReviewJoinedFlagInto]），不播种 cause_records。
+  /// 提交成功后才 bump 一次。
+  Future<bool> setReviewJoinedFlag(Question q, bool joined) async {
     final d = await db;
-    final ok = await AppDatabase.setReviewJoinedInto(d, q, joined);
+    final ok = await AppDatabase.setReviewJoinedFlagInto(d, q, joined);
     if (ok) {
       DataChangeBus.instance.emit(
         DataChangeEvent(
@@ -1457,95 +828,6 @@ extension AppDatabaseQuestions on AppDatabase {
       );
     }
     return ok;
-  }
-
-  /// SR-P2-8：同步某题的解决记录与它当前的错因（实例版）：删旧
-  /// + 补新同事务（见 [AppDatabase.syncCauseRecordsInto]）。
-  Future<void> syncCauseRecords(Question q) async {
-    final d = await db;
-    await AppDatabase.syncCauseRecordsInto(d, q);
-  }
-
-  /// §4.2：自查三步同事务：改错因记录 → 记自查历史 → 题目自查次数 +1。
-  /// 中间失败整体回滚，不留“状态已变、历史没记、次数没加”的半截记录。
-  /// 角标在提交成功后才 bump 一次（事务内不调 UI 通知）。
-  /// SR-P2-16：新值在事务内按库内当前行重算（见
-  /// [AppDatabase.recordSelfCheckInto]），返回实际写库的记录。
-  Future<CauseRecord> recordSelfCheckTxn({
-    required CauseRecord updated,
-    required String questionId,
-    required String result,
-    int cureChecks = 2,
-    int recheckIntervalDays = 7,
-    bool isRecheck = false,
-  }) async {
-    final d = await db;
-    final written = await AppDatabase.recordSelfCheckInto(
-      d,
-      updated: updated,
-      questionId: questionId,
-      result: result,
-      cureChecks: cureChecks,
-      recheckIntervalDays: recheckIntervalDays,
-      isRecheck: isRecheck,
-    );
-    // “不确定”不写库，也不发事件。
-    if (result != 'unsure') {
-      DataChangeBus.instance.emit(
-        DataChangeEvent(
-          kinds: const {DataChangeKind.badges, DataChangeKind.reviewRecords},
-          questionId: questionId,
-        ),
-      );
-    }
-    return written;
-  }
-
-  /// 十四批 M3（M3-10 轻量会话持久化）：除队列与位置外，一并保存
-  /// session_id、模式、每题跳过次数、各题作答/核对/verdict 状态
-  /// （含 question_submission_id 与两版本快照）。旧调用方只传
-  /// queue/position 时其余列写 NULL（老行为兼容）。
-  /// 十四批 M3：单条错因 verdict 提交（见 submitCauseVerdictIntoImpl）。
-  /// 成功写库后发 badges + reviewRecords 事件（“不确定”中性事件也发，
-  /// 复习记录变了；旧 recordSelfCheckTxn 的“不确定不发事件”口径
-  /// 随旧行为废止，新会话一律走本方法）。
-  Future<VerdictSubmitResult> submitCauseVerdictTxn({
-    required String questionId,
-    required CauseRecord record,
-    required String verdict,
-    required String verificationStatus,
-    required String verificationSource,
-    String? attemptId,
-    required String sessionId,
-    required String submissionId,
-    int cureChecks = 2,
-    int recheckIntervalDays = 7,
-    bool isRecheck = false,
-    DateTime? now,
-  }) async {
-    final d = await db;
-    final result = await AppDatabase.submitCauseVerdictInto(
-      d,
-      questionId: questionId,
-      record: record,
-      verdict: verdict,
-      verificationStatus: verificationStatus,
-      verificationSource: verificationSource,
-      attemptId: attemptId,
-      sessionId: sessionId,
-      submissionId: submissionId,
-      cureChecks: cureChecks,
-      recheckIntervalDays: recheckIntervalDays,
-      isRecheck: isRecheck,
-      now: now,
-    );
-    DataChangeBus.instance.emit(
-      DataChangeEvent(
-        kinds: const {DataChangeKind.badges, DataChangeKind.reviewRecords},
-        questionId: questionId,
-      ),
-    );
-    return result;
   }
 
   /// 十四批 M3：attempt 写入（见 recordAttemptIntoImpl）。
@@ -1578,10 +860,9 @@ extension AppDatabaseQuestions on AppDatabase {
   /// 只读；按 created_at 升序，便于按时间范围截取。
   Future<List<AttemptData>> allAttempts() async {
     final d = await db;
-    final rows = await (d.select(d.attempts)..orderBy([
-          (t) => OrderingTerm(expression: t.createdAt),
-        ]))
-        .get();
+    final rows = await (d.select(
+      d.attempts,
+    )..orderBy([(t) => OrderingTerm(expression: t.createdAt)])).get();
     return rows.map(_attemptFromDb).toList();
   }
 
@@ -1598,27 +879,10 @@ extension AppDatabaseQuestions on AppDatabase {
     );
   }
 
-  /// 十四批 M3：专项练习“将此错因重新加入复习”。
-  Future<void> rejoinCauseTxn({
-    required String questionId,
-    required String cause,
-    required String subjectId,
-  }) async {
-    final d = await db;
-    await AppDatabase.rejoinCauseInto(
-      d,
-      questionId: questionId,
-      cause: cause,
-      subjectId: subjectId,
-    );
-    DataChangeBus.instance.emit(
-      DataChangeEvent(
-        kinds: const {DataChangeKind.badges, DataChangeKind.reviewRecords},
-        questionId: questionId,
-      ),
-    );
-  }
-
+  /// 十四批 M3（M3-10 轻量会话持久化）：除队列与位置外，一并保存
+  /// session_id、模式、每题跳过次数、各题作答/核对/verdict 状态
+  /// （含 question_submission_id 与两版本快照）。旧调用方只传
+  /// queue/position 时其余列写 NULL（老行为兼容）。
   Future<void> saveReviewState({
     required List<ReviewQueueItem> queue,
     required int position,
@@ -1638,9 +902,7 @@ extension AppDatabaseQuestions on AppDatabase {
             updatedAt: DateTime.now().millisecondsSinceEpoch,
             sessionId: Value(sessionId),
             mode: Value(mode),
-            skips: Value(
-              skips == null ? null : encodeSkips(skips),
-            ),
+            skips: Value(skips == null ? null : encodeSkips(skips)),
             perQuestionState: Value(
               perQuestionState == null
                   ? null
@@ -1845,72 +1107,36 @@ QuestionsCompanion _questionCompanion(
   answerPendingRecheck: Value(q.answerPendingRecheck ? 1 : 0),
 );
 
+/// FSRS 全量迁移包 7：业务读取模型已缩为冻结历史载体——只读行身份
+/// 与补救历史；状态列（`status / solvedCount / lastCheck /
+/// recheckDate / 锚点`）不进模型。备份链路读写原始行，不经此处。
 CauseRecord _causeRecordFromDb(DbCauseRecord r) => CauseRecord(
   // 十四批 M3：行 id 进模型（review_history.cause_id 用它）。
   id: r.id,
   questionId: r.questionId,
   cause: r.cause,
   subjectId: r.subjectId,
-  status: switch (r.status) {
-    'inProgress' => CauseStatus.inProgress,
-    'solved' => CauseStatus.solved,
-    _ => CauseStatus.pending,
-  },
-  solvedCount: r.solvedCount,
-  lastCheck: r.lastCheck == null
-      ? null
-      : DateTime.fromMillisecondsSinceEpoch(r.lastCheck!),
-  recheckDate: r.recheckDate == null
-      ? null
-      : DateTime.fromMillisecondsSinceEpoch(r.recheckDate!),
   remedyHistory: r.remedyHistory,
   joinedAt: DateTime.fromMillisecondsSinceEpoch(r.joinedAt),
-  // 十四批 M1：24 小时锚点（毫秒时间戳原样带上）。
-  lastCountedSuccessAt: r.lastCountedSuccessAt,
-  lastCountedSessionId: r.lastCountedSessionId,
 );
 
+/// FSRS 全量迁移包 7（R1 冻结规则）：本函数只供 `updateCauseRemedy`
+/// 的缺行 INSERT 用；状态列强制写冻结默认值，绝不取传入记录的值
+/// （`CauseRecord` 已无状态字段）。`id` 有值时带上（insertOrReplace
+/// 按主键更新同一行）；无 id（内存新造）时缺席，靠
+/// UNIQUE(question_id, cause) 去重。
 CauseRecordsCompanion _causeRecordCompanion(CauseRecord r) =>
     CauseRecordsCompanion(
-      // 十四批 M3：有 id 时带上（insertOrReplace 按主键更新同一行）；
-      // 无 id（内存新造）时缺席，靠 UNIQUE(question_id, cause) 去重。
       id: r.id == null ? const Value.absent() : Value(r.id!),
       questionId: Value(r.questionId),
       cause: Value(r.cause),
       subjectId: Value(r.subjectId),
-      status: Value(r.status.name),
-      solvedCount: Value(r.solvedCount),
-      lastCheck: Value(r.lastCheck?.millisecondsSinceEpoch),
-      recheckDate: Value(r.recheckDate?.millisecondsSinceEpoch),
+      status: const Value('pending'),
+      solvedCount: const Value(0),
+      lastCheck: const Value.absent(),
+      recheckDate: const Value.absent(),
       remedyHistory: Value(r.remedyHistory),
       joinedAt: Value(r.joinedAt.millisecondsSinceEpoch),
-      lastCountedSuccessAt: Value(r.lastCountedSuccessAt),
-      lastCountedSessionId: Value(r.lastCountedSessionId),
+      lastCountedSuccessAt: const Value.absent(),
+      lastCountedSessionId: const Value.absent(),
     );
-
-/// 错因记录播种（类型化版）：每个错因一条待解决记录（已存在的不动），
-/// 语义等价于 INSERT OR IGNORE。
-Future<void> _seedCauseRecordsTyped(
-  QuizDatabase db,
-  Question q, {
-  required DateTime joinedAt,
-  int solvedCount = 0,
-}) async {
-  for (final cause in q.allCauses) {
-    await db
-        .into(db.causeRecords)
-        .insert(
-          CauseRecordsCompanion.insert(
-            questionId: q.id,
-            cause: cause,
-            subjectId: q.subjectId,
-            solvedCount: Value(solvedCount),
-            // remedy_history 必须显式写 '[]'：列默认值是 ''，旧代码显式写
-            // '[]'；缺省会让存储表示从 '[]' 漂成 ''（p2_json_fields 回归）。
-            remedyHistory: const Value([]),
-            joinedAt: joinedAt.millisecondsSinceEpoch,
-          ),
-          mode: InsertMode.insertOrIgnore,
-        );
-  }
-}

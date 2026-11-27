@@ -418,4 +418,314 @@ void main() {
       expect(c.supportsOpen, isTrue);
     });
   });
+
+  group('P7：共用错误文案按模式区分', () {
+    test('盘点未知异常：兜底说盘点失败，不说生成失败', () async {
+      final c = ExportFlowController(
+        computeInventory:
+            ({
+              required List<String> ids,
+              required List<ExcludedQuestion> excluded,
+              required int circledCount,
+            }) async => throw Exception('boom'),
+        generateVersions:
+            ({
+              required List<String> ids,
+              required List<ExcludedQuestion> excluded,
+              required String filterText,
+              required String sortText,
+              required ExportVersionSelection versions,
+              required int circledCount,
+              required ExportCancellationToken token,
+              void Function(int done, int total, String label)? onProgress,
+              String subjectName = '多学科',
+              String? folderName,
+              bool excludeLowDpi = false,
+            }) async => fakeTwoVersion(),
+        deliverAll:
+            ({required List<VersionDeliveryRequest> requests}) async => [],
+      );
+      await c.prepare(
+        ids: const ['q1'],
+        excluded: const [],
+        circledCount: 1,
+      );
+      expect(c.phase, ExportFlowPhase.failed);
+      expect(c.error, '盘点失败，请重试。');
+    });
+
+    test('PDF 生成未知异常：兜底说 PDF 生成失败', () async {
+      final c = fakeController(generateError: Exception('boom'));
+      await c.start(
+        ids: const ['q1', 'q2'],
+        excluded: const [],
+        filterText: '全部题目',
+        sortText: '时间新→旧',
+        versions: const ExportVersionSelection.both(),
+        circledCount: 2,
+        fileNameFor: (v) => 'x${v.fileSuffix}.pdf',
+      );
+      expect(c.phase, ExportFlowPhase.failed);
+      expect(c.error, 'PDF 生成失败，请重试。');
+    });
+
+    test('Word 生成未知异常：兜底说 Word 生成失败', () async {
+      final c = ExportFlowController(
+        computeInventory:
+            ({
+              required List<String> ids,
+              required List<ExcludedQuestion> excluded,
+              required int circledCount,
+            }) async => fakeInventory(),
+        generateVersions:
+            ({
+              required List<String> ids,
+              required List<ExcludedQuestion> excluded,
+              required String filterText,
+              required String sortText,
+              required ExportVersionSelection versions,
+              required int circledCount,
+              required ExportCancellationToken token,
+              void Function(int done, int total, String label)? onProgress,
+              String subjectName = '多学科',
+              String? folderName,
+              bool excludeLowDpi = false,
+            }) async => fakeTwoVersion(),
+        deliverAll:
+            ({required List<VersionDeliveryRequest> requests}) async => [],
+        generateWord:
+            ({
+              required List<String> ids,
+              required List<ExcludedQuestion> excluded,
+              required String filterText,
+              required String sortText,
+              required ExportVersionSelection versions,
+              required int circledCount,
+              required ExportCancellationToken token,
+              void Function(int done, int total, String label)? onProgress,
+              String subjectName = '多学科',
+              String? folderName,
+              bool excludeLowDpi = false,
+            }) async => throw Exception('boom'),
+        deliverWord:
+            ({
+              required Uint8List docxBytes,
+              required String fileName,
+              required int expectedImageCount,
+            }) async => FileDeliveryResult(
+              status: FileDeliveryStatus.delivered,
+              version: ExportVersion.practice,
+              fileName: fileName,
+              filePath: '/tmp/$fileName',
+            ),
+      );
+      await c.start(
+        ids: const ['q1', 'q2'],
+        excluded: const [],
+        filterText: '全部题目',
+        sortText: '时间新→旧',
+        versions: const ExportVersionSelection.practiceOnly(),
+        circledCount: 2,
+        fileNameFor: (_) => 'out.docx',
+        format: ExportFormat.word,
+      );
+      expect(c.phase, ExportFlowPhase.failed);
+      expect(c.error, 'Word 生成失败，请重试。');
+    });
+  });
+
+  group('P8：跳过提示 0 拼接', () {
+    Future<ExportFlowController> startCRoute({
+      required IntegrityReport report,
+    }) async {
+      final c = fakeController(
+        twoVersion: TwoVersionExportResult(
+          practice: VersionExportOutcome.success(fakePdfResult()),
+          answer: VersionExportOutcome.success(
+            fakePdfResult(variant: ExportVersion.answer, totalPages: 5),
+          ),
+          route: ExportRoute.c,
+          report: report,
+        ),
+      );
+      await c.start(
+        ids: const ['q1', 'q2'],
+        excluded: const [],
+        filterText: '全部题目',
+        sortText: '时间新→旧',
+        versions: const ExportVersionSelection.both(),
+        circledCount: 2,
+        fileNameFor: (v) => 'x${v.fileSuffix}.pdf',
+      );
+      return c;
+    }
+
+    test('C 路线摘要：跳过 0 道时不拼“跳过 0 / N 道”', () async {
+      final c = await startCRoute(report: fakeReport(route: ExportRoute.c));
+      expect(c.phase, ExportFlowPhase.done);
+      expect(
+        c.reportSummaryLines.any((l) => l.contains('可印 2 / 2 道')),
+        isTrue,
+      );
+      expect(
+        c.reportSummaryLines.every((l) => !l.contains('跳过')),
+        isTrue,
+      );
+    });
+
+    test('C 路线摘要：跳过 > 0 时仍拼跳过数', () async {
+      final c = await startCRoute(
+        report: const IntegrityReport(
+          route: ExportRoute.c,
+          selectedCount: 3,
+          snapshotCount: 3,
+          excludedCount: 0,
+          entries: [
+            IntegrityEntry(
+              questionId: 'q1',
+              title: '题 q1',
+              status: IntegrityStatus.complete,
+              warnings: [],
+            ),
+            IntegrityEntry(
+              questionId: 'q2',
+              title: '题 q2',
+              status: IntegrityStatus.skipped,
+              warnings: [],
+            ),
+            IntegrityEntry(
+              questionId: 'q3',
+              title: '题 q3',
+              status: IntegrityStatus.complete,
+              warnings: [],
+            ),
+          ],
+          answersRecorded: 1,
+          answersTotal: 3,
+          explanationsRecorded: 0,
+          explanationsTotal: 3,
+        ),
+      );
+      expect(c.phase, ExportFlowPhase.done);
+      expect(
+        c.reportSummaryLines.any((l) => l.contains('跳过 1 / 3 道')),
+        isTrue,
+      );
+    });
+  });
+
+  group('P8 跟进：同类 0 数量段', () {
+    Future<ExportFlowController> startRoute({
+      required IntegrityReport report,
+    }) async {
+      final c = fakeController(
+        twoVersion: TwoVersionExportResult(
+          practice: VersionExportOutcome.success(fakePdfResult()),
+          answer: VersionExportOutcome.success(
+            fakePdfResult(variant: ExportVersion.answer, totalPages: 5),
+          ),
+          route: report.route,
+          report: report,
+        ),
+      );
+      await c.start(
+        ids: const ['q1', 'q2'],
+        excluded: const [],
+        filterText: '全部题目',
+        sortText: '时间新→旧',
+        versions: const ExportVersionSelection.both(),
+        circledCount: 2,
+        fileNameFor: (v) => 'x${v.fileSuffix}.pdf',
+      );
+      return c;
+    }
+
+    test('C 路线摘要：公式为原图 0 道时不拼该段', () async {
+      final c = await startRoute(report: fakeReport(route: ExportRoute.c));
+      expect(c.phase, ExportFlowPhase.done);
+      expect(
+        c.reportSummaryLines.every((l) => !l.contains('公式为原图')),
+        isTrue,
+      );
+    });
+
+    test('C 路线摘要：公式为原图 > 0 时仍拼该段', () async {
+      final c = await startRoute(
+        report: const IntegrityReport(
+          route: ExportRoute.c,
+          selectedCount: 2,
+          snapshotCount: 2,
+          excludedCount: 0,
+          entries: [
+            IntegrityEntry(
+              questionId: 'q1',
+              title: '题 q1',
+              status: IntegrityStatus.complete,
+              warnings: ['公式为原图'],
+            ),
+            IntegrityEntry(
+              questionId: 'q2',
+              title: '题 q2',
+              status: IntegrityStatus.complete,
+              warnings: [],
+            ),
+          ],
+          answersRecorded: 1,
+          answersTotal: 2,
+          explanationsRecorded: 0,
+          explanationsTotal: 2,
+        ),
+      );
+      expect(c.phase, ExportFlowPhase.done);
+      expect(
+        c.reportSummaryLines.any((l) => l.contains('公式为原图 1 道')),
+        isTrue,
+      );
+    });
+
+    test('A 路线摘要：回退 / 低于阈值 0 道时不拼该段', () async {
+      final c = await startRoute(
+        report: const IntegrityReport(
+          route: ExportRoute.a,
+          selectedCount: 2,
+          snapshotCount: 2,
+          excludedCount: 0,
+          entries: [
+            IntegrityEntry(
+              questionId: 'q1',
+              title: '题 q1',
+              status: IntegrityStatus.complete,
+              warnings: [],
+            ),
+            IntegrityEntry(
+              questionId: 'q2',
+              title: '题 q2',
+              status: IntegrityStatus.partial,
+              warnings: [],
+            ),
+          ],
+          answersRecorded: 1,
+          answersTotal: 2,
+          explanationsRecorded: 0,
+          explanationsTotal: 2,
+        ),
+      );
+      expect(c.phase, ExportFlowPhase.done);
+      expect(
+        c.reportSummaryLines.every(
+          (l) => !l.contains('回退原图') && !l.contains('低于清晰度阈值'),
+        ),
+        isTrue,
+      );
+    });
+
+    test('A 路线摘要：回退 > 0 时仍拼该段', () async {
+      final c = await startRoute(report: fakeReport());
+      expect(c.phase, ExportFlowPhase.done);
+      expect(
+        c.reportSummaryLines.any((l) => l.contains('回退原图 1 道')),
+        isTrue,
+      );
+    });
+  });
 }

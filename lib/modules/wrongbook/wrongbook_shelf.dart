@@ -101,7 +101,6 @@ extension _WrongbookShelfBuild on _WrongbookViewState {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           _pageTitle('错题本'),
-          _pageSubtitle('一科一本错题本，点一本打开看这一科的错题。'),
           _buildShelfTop(archivedCount),
           // B8-1：学科删空时书架不再摆三本 0 道题的幽灵书，
           // 给空状态（文案与学科管理页“还没有学科，先添加一个吧。”
@@ -146,7 +145,6 @@ extension _WrongbookShelfBuild on _WrongbookViewState {
 
   Widget _buildShelfTop(int archivedCount) {
     final scale = qmScaleOf(context);
-    final palette = DesignTokens.of(Theme.of(context).brightness);
     // 十六批 B（D-190）：书架页顶栏「新建导出单」入口已废（D-169 作废，
     // 导出改到错题本列表页直接勾选）；这里只留已归档入口与提示。
     return Padding(
@@ -157,13 +155,6 @@ extension _WrongbookShelfBuild on _WrongbookViewState {
             label: '已归档（$archivedCount）',
             onTap: () => _n.update(
               (st) => st.copyWith(view: WrongbookView.archived, page: 0),
-            ),
-          ),
-          SizedBox(width: 10 * scale),
-          Expanded(
-            child: Text(
-              '归档的题不在书里，点这里看归档列表、能恢复回错题本',
-              style: TextStyle(fontSize: 13, color: palette.muted),
             ),
           ),
         ],
@@ -260,31 +251,16 @@ extension _WrongbookShelfBuild on _WrongbookViewState {
   // 窗口变化只改变 Wrap 每行本数。
   Widget _buildBook(Subject s, {required double width}) {
     final scale = qmScaleOf(context);
-    // 2026-11-26 封面改法：「共 M 道 · 文件夹分布」，与首页学科行
-    // 脱钩——到期数只在首页学科行与复习页出现，封面只看书里的题：
-    // M = 该科已整理未归档未掌握题数，与文件夹计数同一口径
-    // （目录口径 _s.folderCount：已整理、未归档、未掌握），只留
-    // > 0 的、按题数从多到少取前 3 个。总数与所显示文件夹数之和
-    // 对得上（每题只进一个顶层文件夹时）。
+    // 2026-11-27 封面只留总数（GPT 评审后跟进）：「共 M 道」，与首页
+    // 学科行脱钩——到期数只在首页学科行与复习页出现，封面只看书里
+    // 的题：M = 该科已整理未归档题数，与文件夹计数同一口径
+    // （目录口径 _s.folderCount：已整理、未归档）。分布行
+    // 已删，不恢复文件夹分布。
     final total = _s.questions
         .where(
-          (q) =>
-              q.subjectId == s.id &&
-              q.isOrganized &&
-              !q.isArchived &&
-              !_s.isMastered(q),
+          (q) => q.subjectId == s.id && q.isOrganized && !q.isArchived,
         )
         .length;
-    final topFolders = _s
-        .topFolders(s.id)
-        .map((f) => (name: f.name, count: _s.folderCount(f.id)))
-        .where((e) => e.count > 0)
-        .toList()
-      ..sort((a, b) => b.count.compareTo(a.count));
-    final distribution = [
-      '共 $total 道',
-      for (final e in topFolders.take(3)) '${e.name} ${e.count} 道',
-    ].join(' · ');
     final palette = _Book12Palette.of(s);
     // 悬停（板子无悬停态；沿用旧书架的上移 4px，阴影不变）：
     // 未悬停与悬停都是板子阴影 14/18/28/.30，150ms 与旧版一致。
@@ -466,7 +442,7 @@ extension _WrongbookShelfBuild on _WrongbookViewState {
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.stretch,
                         children: [
-                          // 两数字行：顶部分隔线 1px 白 40%，padding-top 11。
+                          // 总数行：顶部分隔线 1px 白 40%，padding-top 11。
                           Container(
                             decoration: const BoxDecoration(
                               border: Border(
@@ -476,9 +452,9 @@ extension _WrongbookShelfBuild on _WrongbookViewState {
                               ),
                             ),
                             padding: EdgeInsets.only(top: 11 * scale),
-                            // 分布行：12px 白字，最多两行、超长省略。
+                            // 总数：12px 白字，最多两行、超长省略。
                             child: Text(
-                              distribution,
+                              '共 $total 道',
                               maxLines: 2,
                               overflow: TextOverflow.ellipsis,
                               style: const TextStyle(

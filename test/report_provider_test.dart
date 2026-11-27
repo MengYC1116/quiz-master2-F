@@ -44,25 +44,6 @@ Question _tq(
       sliceText: '题：$title',
     );
 
-CauseRecord _trec(
-  String questionId,
-  String cause, {
-  String subjectId = 'math',
-  CauseStatus status = CauseStatus.pending,
-  int solvedCount = 0,
-  DateTime? lastCheck,
-  DateTime? joinedAt,
-}) =>
-    CauseRecord(
-      questionId: questionId,
-      cause: cause,
-      subjectId: subjectId,
-      status: status,
-      solvedCount: solvedCount,
-      lastCheck: lastCheck,
-      joinedAt: joinedAt ?? _today,
-    );
-
 KnowledgePoint _tkp(String id, String subjectId, String chapter, String name) =>
     KnowledgePoint(id: id, subjectId: subjectId, chapter: chapter, name: name);
 
@@ -91,7 +72,6 @@ AttemptData _att(
 class FakeReportRepo extends QuestionRepository {
   FakeReportRepo({
     required this.questions,
-    required this.records,
     required this.kps,
     this.attemptsValue = const [],
     this.throwOnLoad = false,
@@ -100,7 +80,6 @@ class FakeReportRepo extends QuestionRepository {
         super(AppDatabase.instance);
 
   List<Question> questions;
-  List<CauseRecord> records;
   List<KnowledgePoint> kps;
   List<AttemptData> attemptsValue;
   bool throwOnLoad;
@@ -113,12 +92,6 @@ class FakeReportRepo extends QuestionRepository {
   Future<List<Question>> all({bool includeArchived = false}) async {
     if (throwOnLoad) throw StateError('db down');
     return List.of(questions);
-  }
-
-  @override
-  Future<List<CauseRecord>> causeRecords() async {
-    if (throwOnLoad) throw StateError('db down');
-    return List.of(records);
   }
 
   @override
@@ -169,18 +142,6 @@ FakeReportRepo _defaultRepo() {
         knowledgePointIds: ['kp-limit'],
         createdAt: today.subtract(const Duration(days: 40))),
   ];
-  final records = [
-    _trec('q1', '概念不清'),
-    _trec('q2', '方法不会'),
-    _trec('q3', '计算错误',
-        status: CauseStatus.inProgress, solvedCount: 1, lastCheck: today),
-    _trec('q4', '概念不清',
-        subjectId: 'english',
-        status: CauseStatus.solved,
-        solvedCount: 2,
-        lastCheck: today),
-    _trec('q-old', '概念不清', joinedAt: today.subtract(const Duration(days: 40))),
-  ];
   final kps = [
     _tkp('kp-limit', 'math', '函数与极限', '函数极限'),
     _tkp('kp-derivative', 'math', '导数与微分', '导数应用'),
@@ -208,7 +169,6 @@ FakeReportRepo _defaultRepo() {
   ];
   return FakeReportRepo(
     questions: questions,
-    records: records,
     kps: kps,
     attemptsValue: attempts,
   );
@@ -263,7 +223,6 @@ void main() {
       final container = _container(
         FakeReportRepo(
           questions: [_tq('q1', '题', errorTypes: ['概念不清'])],
-          records: [_trec('q1', '概念不清')],
           kps: [],
           attemptsValue: [_att('q1', ReviewMode.due, null, _nowMs)],
         ),
@@ -315,7 +274,6 @@ void main() {
           _tq('q3', '已归档题', errorTypes: ['概念不清'],
               knowledgePointIds: ['kp-limit'], isArchived: true),
         ],
-        records: [_trec('q1', '概念不清')],
         kps: [_tkp('kp-limit', 'math', '函数与极限', '函数极限')],
         attemptsValue: [
           _att('q1', ReviewMode.due, 0, _nowMs, causeIds: ['概念不清']),
@@ -337,7 +295,8 @@ void main() {
       var s = container.read(reportProvider);
       expect(s.range, 'week');
       expect(s.questionsInRange.length, 8);
-      expect(s.records.length, 5);
+      expect(s.hasQuestions, isTrue);
+      expect(s.hasFormalAttempts, isTrue);
       expect(s.formalWrongQuestionCount, 6);
       expect(s.passRate, 40);
       notifier.setRange('all');
@@ -354,8 +313,9 @@ void main() {
       expect(s.passRate, 36);
       expect(s.nextSentence, '先解决数学的概念不清。');
       // 切范围只重算派生值：读库数据本身没变。
-      expect(s.records.length, 5);
-      expect(s.rangeNote, '全部时间 · 数字按这个时间段算');
+      expect(s.hasQuestions, isTrue);
+      expect(s.hasFormalAttempts, isTrue);
+      expect(s.rangeNote, '全部时间');
     });
 
     test('核心数按范围过滤（attempts.created_at）：本周与全部', () async {
@@ -379,7 +339,6 @@ void main() {
       final container = _container(
         FakeReportRepo(
           questions: questions,
-          records: const [],
           kps: const [],
           attemptsValue: attempts,
         ),
@@ -405,7 +364,6 @@ void main() {
             _tq('q1', '题', errorTypes: ['概念不清'],
                 knowledgePointIds: ['kp-limit']),
           ],
-          records: [_trec('q1', '概念不清')],
           kps: [_tkp('kp-limit', 'math', '函数与极限', '函数极限')],
           attemptsValue: [
             _att('q1', ReviewMode.due, 0, now, causeIds: ['方法不会'],
@@ -447,27 +405,180 @@ void main() {
       var s = container.read(reportProvider);
       expect(s.loading, isFalse);
       expect(s.loadError, isTrue);
-      expect(s.records, isEmpty);
+      expect(s.hasQuestions, isFalse);
+      expect(s.hasFormalAttempts, isFalse);
       repo.throwOnLoad = false;
       await notifier.load();
       s = container.read(reportProvider);
       expect(s.loadError, isFalse);
-      expect(s.records.length, 5);
+      expect(s.hasQuestions, isTrue);
+      expect(s.hasFormalAttempts, isTrue);
       expect(s.formalCorrectCount, 4);
     });
 
     test('没有任何记录：nextSentence 为无正式答错那句', () async {
       final container = _container(
-        FakeReportRepo(questions: [], records: [], kps: []),
+        FakeReportRepo(questions: [], kps: []),
       );
       await container.read(reportProvider.notifier).load();
       final s = container.read(reportProvider);
-      expect(s.records, isEmpty);
+      expect(s.hasQuestions, isFalse);
+      expect(s.hasFormalAttempts, isFalse);
       expect(s.causeGroups, isEmpty);
       expect(
         s.nextSentence,
         '这段时间正式复习还没有答错的题，先去复习页把到期的题做完。',
       );
+    });
+  });
+
+  group('空态三态（包 6，V11）：守门只看题目与正式作答', () {
+    test('① 有题无正式作答：hasQuestions 真、hasFormalAttempts 假', () async {
+      final container = _container(
+        FakeReportRepo(
+          questions: [_tq('q1', '题', errorTypes: ['概念不清'])],
+          kps: const [],
+        ),
+      );
+      await container.read(reportProvider.notifier).load();
+      final s = container.read(reportProvider);
+      expect(s.hasQuestions, isTrue);
+      expect(s.hasFormalAttempts, isFalse);
+    });
+
+    test('② 空库：两项都假', () async {
+      final container = _container(
+        FakeReportRepo(questions: [], kps: []),
+      );
+      await container.read(reportProvider.notifier).load();
+      final s = container.read(reportProvider);
+      expect(s.hasQuestions, isFalse);
+      expect(s.hasFormalAttempts, isFalse);
+    });
+
+    test('③ 题已删但有正式作答：hasFormalAttempts 真，核心数照算', () async {
+      final container = _container(
+        FakeReportRepo(
+          questions: [],
+          kps: [],
+          attemptsValue: [
+            _att('q-gone', ReviewMode.due, 1, _nowMs),
+            _att('q-gone', ReviewMode.due, 0, _nowMs,
+                causeIds: ['概念不清'], sessionId: 's2'),
+          ],
+        ),
+      );
+      await container.read(reportProvider.notifier).load();
+      final s = container.read(reportProvider);
+      expect(s.hasQuestions, isFalse);
+      expect(s.hasFormalAttempts, isTrue);
+      expect(s.formalCorrectCount, 1);
+      expect(s.formalWrongQuestionCount, 1);
+      expect(s.passRate, 50);
+      // 孤儿不进错因组与分布（report_stats 头注）。
+      expect(s.causeGroups, isEmpty);
+      expect(s.answeredBySubject, isEmpty);
+    });
+
+    test('只有专项练习作答：仍算零正式作答', () async {
+      final container = _container(
+        FakeReportRepo(
+          questions: [_tq('q1', '题', errorTypes: ['概念不清'])],
+          kps: const [],
+          attemptsValue: [
+            _att('q1', ReviewMode.practice, 1, _nowMs),
+          ],
+        ),
+      );
+      await container.read(reportProvider.notifier).load();
+      final s = container.read(reportProvider);
+      expect(s.hasQuestions, isTrue);
+      expect(s.hasFormalAttempts, isFalse);
+      expect(s.formalCorrectCount, 0);
+    });
+  });
+
+  group('空态收紧（跟进批 5）：hasQuestions 只认已整理未归档的题', () {
+    test('④ 全未整理：hasQuestions 假、hasAnyQuestions 真', () async {
+      final container = _container(
+        FakeReportRepo(
+          questions: [
+            _tq('q1', '题一', isOrganized: false),
+            _tq('q2', '题二', isOrganized: false),
+          ],
+          kps: const [],
+        ),
+      );
+      await container.read(reportProvider.notifier).load();
+      final s = container.read(reportProvider);
+      expect(s.hasQuestions, isFalse);
+      expect(s.hasAnyQuestions, isTrue);
+      expect(s.hasFormalAttempts, isFalse);
+    });
+
+    test('④ 全已归档：hasQuestions 假、hasAnyQuestions 真', () async {
+      final container = _container(
+        FakeReportRepo(
+          questions: [
+            _tq('q1', '题一', isArchived: true),
+            _tq('q2', '题二', isArchived: true),
+          ],
+          kps: const [],
+        ),
+      );
+      await container.read(reportProvider.notifier).load();
+      final s = container.read(reportProvider);
+      expect(s.hasQuestions, isFalse);
+      expect(s.hasAnyQuestions, isTrue);
+      expect(s.hasFormalAttempts, isFalse);
+    });
+
+    test('④ 混合（未整理 + 已归档）：hasQuestions 假、hasAnyQuestions 真',
+        () async {
+      final container = _container(
+        FakeReportRepo(
+          questions: [
+            _tq('q1', '未整理题', isOrganized: false),
+            _tq('q2', '已归档题', isArchived: true),
+            _tq('q3', '已整理又归档题', isArchived: true),
+          ],
+          kps: const [],
+        ),
+      );
+      await container.read(reportProvider.notifier).load();
+      final s = container.read(reportProvider);
+      expect(s.hasQuestions, isFalse);
+      expect(s.hasAnyQuestions, isTrue);
+      expect(s.hasFormalAttempts, isFalse);
+    });
+
+    test('有一道已整理未归档的题：hasQuestions 真，不进④', () async {
+      final container = _container(
+        FakeReportRepo(
+          questions: [
+            _tq('q1', '未整理题', isOrganized: false),
+            _tq('q2', '已归档题', isArchived: true),
+            _tq('q3', '可复习题'),
+          ],
+          kps: const [],
+        ),
+      );
+      await container.read(reportProvider.notifier).load();
+      final s = container.read(reportProvider);
+      expect(s.hasQuestions, isTrue);
+      expect(s.hasAnyQuestions, isTrue);
+      expect(s.hasFormalAttempts, isFalse);
+    });
+
+    test('② 空库：hasQuestions 与 hasAnyQuestions 都假', () async {
+      final container = _container(
+        FakeReportRepo(questions: [], kps: []),
+      );
+      await container.read(reportProvider.notifier).load();
+      final s = container.read(reportProvider);
+      expect(s.hasQuestions, isFalse);
+      expect(s.hasAnyQuestions, isFalse);
+      expect(s.hasFormalAttempts, isFalse);
     });
   });
 }

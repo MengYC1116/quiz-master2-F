@@ -62,7 +62,7 @@ File resolveTargetConflict(File desired) {
     if (!candidate.existsSync()) return candidate;
   }
   throw AtomicWriteException(
-    '目标位置已有同名文件且无法顺延命名：${desired.path}',
+    '目标位置已有同名文件，且无法自动生成新文件名：${desired.path}',
   );
 }
 
@@ -149,7 +149,7 @@ Future<File> writePdfAtomically({
       await tempFile.rename(finalTarget.path);
     } on FileSystemException catch (e) {
       throw AtomicWriteException(
-        '发布文件失败（${e.message}），原有文件未被破坏。',
+        '保存文件失败（${e.message}），原有文件未被破坏。',
       );
     }
     return finalTarget;

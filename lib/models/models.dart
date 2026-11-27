@@ -132,21 +132,15 @@ class CoverColors {
   static Color of(String key) => hex[key] ?? hex['blue']!;
 }
 
-/// 错因解决状态（v2 复习模型，旧 1/3/7/14 与翻卡已废弃）。
-/// 待解决 → 解决中（至少一次自查“已解决”，未满两次）→ 已解决
-/// （同一错因在同一道题上两次自查“已解决”）；已解决满复查间隔
-/// （默认 7 天）自动回来复查，复查不过打回解决中。
-enum CauseStatus { pending, inProgress, solved }
-
-extension CauseStatusLabel on CauseStatus {
-  String get label => switch (this) {
-        CauseStatus.pending => '待解决',
-        CauseStatus.inProgress => '解决中',
-        CauseStatus.solved => '已解决',
-      };
-}
-
-/// “题 × 错因”解决记录：复习按错因治，一道题的每个错因各一条记录。
+/// “题 × 错因”冻结历史记录（FSRS 全量迁移包 7：旧治愈状态机已退役）。
+/// 本类只作冻结历史载体——题面错因名 + 补救历史 + 加入时间；`id` 是
+/// 行身份（`review_history.cause_id` 用它，见 `causeStableId`），
+/// `subjectId` 是行身份的一部分。状态列（`status / solvedCount /
+/// recheckDate / lastCheck / 锚点`）仍在 `cause_records` 表里作冻结
+/// 历史保留，但不再进模型、不再有业务写入（见
+/// `db_questions.updateCauseRemedy` 的冻结规则：已有行只 UPDATE
+/// `remedy_history` 列，缺行 INSERT 只允许默认值）；备份链路读写
+/// 原始行（Drift companion / 原始 map），不经本类中转状态列。
 class CauseRecord {
   const CauseRecord({
     // 十四批 M3：数据库行 id（cause_records.id，自增主键）。内存里新造的
@@ -156,73 +150,29 @@ class CauseRecord {
     required this.questionId,
     required this.cause,
     required this.subjectId,
-    this.status = CauseStatus.pending,
-    this.solvedCount = 0,
-    this.lastCheck,
-    this.recheckDate,
     this.remedyHistory = const [],
     required this.joinedAt,
-    // 十四批 M1（M3-7 的 24 小时锚点链）：上一次计入治愈次数的成功
-    // 时间（毫秒时间戳）与所在会话；未计入的成功不刷新锚点；
-    // “未解决”重置时两者清空；v4→v5 迁移后旧行均为 NULL。
-    this.lastCountedSuccessAt,
-    this.lastCountedSessionId,
   });
 
   final int? id;
   final String questionId;
   final String cause;
   final String subjectId;
-  final CauseStatus status;
-  final int solvedCount; // 同一错因同一道题自查“已解决”的累计次数
-  final DateTime? lastCheck;
-  final DateTime? recheckDate;
   final List<String> remedyHistory; // 每次写补救的内容（带日期），新→旧
   final DateTime joinedAt; // 加入复习的时间，列表按它排
-  final int? lastCountedSuccessAt;
-  final String? lastCountedSessionId;
-
-  /// 是否到了复查时间：已解决且复查日 ≤ 今天。
-  bool get isRecheckDue {
-    if (status != CauseStatus.solved || recheckDate == null) return false;
-    final now = DateTime.now();
-    final today = DateTime(now.year, now.month, now.day);
-    final d = DateTime(
-        recheckDate!.year, recheckDate!.month, recheckDate!.day);
-    return !d.isAfter(today);
-  }
 
   CauseRecord copyWith({
     int? id,
-    CauseStatus? status,
-    int? solvedCount,
-    DateTime? lastCheck,
-    DateTime? recheckDate,
     List<String>? remedyHistory,
     DateTime? joinedAt,
-    int? lastCountedSuccessAt,
-    String? lastCountedSessionId,
-    bool clearRecheckDate = false,
-    bool clearCountedAnchors = false,
   }) {
     return CauseRecord(
       id: id ?? this.id,
       questionId: questionId,
       cause: cause,
       subjectId: subjectId,
-      status: status ?? this.status,
-      solvedCount: solvedCount ?? this.solvedCount,
-      lastCheck: lastCheck ?? this.lastCheck,
-      recheckDate:
-          clearRecheckDate ? null : (recheckDate ?? this.recheckDate),
       remedyHistory: remedyHistory ?? this.remedyHistory,
       joinedAt: joinedAt ?? this.joinedAt,
-      lastCountedSuccessAt: clearCountedAnchors
-          ? null
-          : (lastCountedSuccessAt ?? this.lastCountedSuccessAt),
-      lastCountedSessionId: clearCountedAnchors
-          ? null
-          : (lastCountedSessionId ?? this.lastCountedSessionId),
     );
   }
 }
@@ -349,6 +299,10 @@ class Exam {
 /// favorite / overdue / tags / kpIds / search——只存非默认值
 ///（见 wrongbook_notifier.dart 的条件 helpers）。conditions 里
 /// 的 kpIds / tags 是字符串列表；其余键是字符串 / 布尔。
+/// 其中 causeStatus 是 FSRS 状态键（all 不存；due 已到期 /
+/// notDue 未到期 / notStarted 未开始 / notJoined 未加入复习）——
+/// 键名沿用旧错因状态键（旧值 pending / inProgress / solved /
+/// recheck 加载时由 normalizeConditions 丢弃为全部，不硬映射）。
 /// 最近搜过（session 内、不入库）复用同一模型，id 为
 /// `'recent:$label'`、createdAt 为记入时间。
 class SavedSearch {
@@ -412,7 +366,7 @@ class Question {
     this.isFavorite = false,
     this.isArchived = false,
     // 手动加入复习（治错因）：加入后复习页按错因治；取消后记录保留，
-    // 再加入可续接。未整理与无错因的题加不进复习。
+    // 再加入可续接。未整理的题加不进复习；无错因的题也可加入。
     this.reviewJoined = false,
     required this.createdAt,
     this.sliceKind = 'material',
@@ -1024,9 +978,10 @@ class AppSettings {
     this.themeMode = 'system', // system / light / dark
     this.fontSize = 'standard', // standard / large / extraLarge
     this.greeting = '今天也要加油呀',
-    this.recheckIntervalDays = 7, // 3 / 7 / 14
-    this.cureChecks = 2, // 1 / 2 / 3
-    this.causesPerSession = 0, // 5 / 10 / 0=不限
+    // FSRS 全量迁移包 7：`recheckIntervalDays`（复查间隔）与
+    // `cureChecks`（几次自查算已解决）已删除——旧治愈状态机退役，
+    // 设置 KV 里的旧键不再读写、不迁移、不清理（忽略即可）。
+    this.questionsPerSession = 0, // 5 / 10 / 0=不限（FSRS 全量迁移包2：按题数，V2）
     this.skipLimit = 2, // 1 / 2
     this.redoAnswerHidden = true,
     this.notifyEnabled = true,
@@ -1035,8 +990,9 @@ class AppSettings {
     this.wrongbookView = 'large', // large / compact
     this.pageSize = 10, // 10 / 20 / 30 / 40 / 50
     this.wrongbookSort = 'new', // new / old / subj-asc / subj-desc /
-    // status-asc / status-desc（与错题本列表下拉六项一致；旧值 'subject'
-    // 读库 / 写入时由 normalizeWrongbookSort 归一为 subj-asc）
+    // due-asc / due-desc（与错题本列表下拉六项一致；旧值 'subject'
+    // 读库 / 写入时由 normalizeWrongbookSort 归一为 subj-asc；
+    // 旧 'status-asc' / 'status-desc' 不再合法，归一回落为 'new'）
     this.startupPage = 'home', // home / last
     this.dailyNewQuestions = 10, // P4：每日新增新题默认 10 道，上限 50
   });
@@ -1044,9 +1000,7 @@ class AppSettings {
   final String themeMode;
   final String fontSize;
   final String greeting;
-  final int recheckIntervalDays;
-  final int cureChecks;
-  final int causesPerSession;
+  final int questionsPerSession;
   final int skipLimit;
   final bool redoAnswerHidden;
   final bool notifyEnabled;
@@ -1070,8 +1024,8 @@ class AppSettings {
     'old',
     'subj-asc',
     'subj-desc',
-    'status-asc',
-    'status-desc',
+    'due-asc',
+    'due-desc',
   };
 
   /// 归一错题本默认排序：旧值 'subject'（SR-P0-2 之前设置页的选项，
@@ -1087,9 +1041,11 @@ class AppSettings {
         'themeMode': themeMode,
         'fontSize': fontSize,
         'greeting': greeting,
-        'recheckIntervalDays': '$recheckIntervalDays',
-        'cureChecks': '$cureChecks',
-        'causesPerSession': '$causesPerSession',
+        // FSRS 全量迁移包 7：'recheckIntervalDays' / 'cureChecks'
+        // 两键不再写入；旧库里的旧键由 fromMap 忽略（不读、不迁移）。
+        // V2：持久化键保留 'causesPerSession'（字段已改名 questionsPerSession，
+        // 键不改——旧值不丢失，不做一次性迁移）。
+        'causesPerSession': '$questionsPerSession',
         'skipLimit': '$skipLimit',
         'redoAnswerHidden': redoAnswerHidden ? '1' : '0',
         'notifyEnabled': notifyEnabled ? '1' : '0',
@@ -1110,9 +1066,9 @@ class AppSettings {
       themeMode: m['themeMode'] ?? 'system',
       fontSize: m['fontSize'] ?? 'standard',
       greeting: m['greeting'] ?? '今天也要加油呀',
-      recheckIntervalDays: parseInt('recheckIntervalDays', 7),
-      cureChecks: parseInt('cureChecks', 2),
-      causesPerSession: parseInt('causesPerSession', 0),
+      // FSRS 全量迁移包 7：旧键 'recheckIntervalDays' /
+      // 'cureChecks' 不再读取（忽略即可）。
+      questionsPerSession: parseInt('causesPerSession', 0),
       skipLimit: parseInt('skipLimit', 2),
       redoAnswerHidden: parseBool('redoAnswerHidden', true),
       notifyEnabled: parseBool('notifyEnabled', true),
@@ -1133,9 +1089,7 @@ class AppSettings {
     String? themeMode,
     String? fontSize,
     String? greeting,
-    int? recheckIntervalDays,
-    int? cureChecks,
-    int? causesPerSession,
+    int? questionsPerSession,
     int? skipLimit,
     bool? redoAnswerHidden,
     bool? notifyEnabled,
@@ -1151,9 +1105,8 @@ class AppSettings {
         themeMode: themeMode ?? this.themeMode,
         fontSize: fontSize ?? this.fontSize,
         greeting: greeting ?? this.greeting,
-        recheckIntervalDays: recheckIntervalDays ?? this.recheckIntervalDays,
-        cureChecks: cureChecks ?? this.cureChecks,
-        causesPerSession: causesPerSession ?? this.causesPerSession,
+        questionsPerSession:
+            questionsPerSession ?? this.questionsPerSession,
         skipLimit: skipLimit ?? this.skipLimit,
         redoAnswerHidden: redoAnswerHidden ?? this.redoAnswerHidden,
         notifyEnabled: notifyEnabled ?? this.notifyEnabled,

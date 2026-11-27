@@ -71,6 +71,13 @@ class ShelfFakeRepo extends QuestionRepository {
   // 页面卡 loading、pumpAndSettle 超时）。
   @override
   Future<Set<String>> fsrsPoolQuestionIds() async => const {};
+
+  // FSRS 全量迁移包 4：load() 读下次到期表（同款 D-225：不覆写
+  // 会走真实库）。
+  @override
+  Future<Map<String, DateTime>> fsrsNextDueByQuestion({
+    required ReviewScheduler scheduler,
+  }) async => const {};
 }
 
 Future<void> pumpShelf(WidgetTester tester, ShelfFakeRepo repo) async {
@@ -104,12 +111,8 @@ void main() {
       expect(find.byKey(const Key('new-export-order')), findsNothing);
       expect(find.text('新建导出单'), findsNothing);
       expect(find.text('先筛选出题目'), findsNothing);
-      // 已归档入口与提示仍在。
+      // 已归档入口仍在（提示文案已随文案走查批删除）。
       expect(find.textContaining('已归档'), findsOneWidget);
-      expect(
-        find.text('归档的题不在书里，点这里看归档列表、能恢复回错题本'),
-        findsOneWidget,
-      );
     });
 
     testWidgets('0 题时同样没有导出入口', (tester) async {

@@ -772,8 +772,7 @@ class _FakeP4Repo extends QuestionRepository {
   }
 
   @override
-  Future<bool> setReviewJoined(Question q, bool joined) async {
-    if (q.allCauses.isEmpty) return false;
+  Future<bool> setReviewJoinedFlag(Question q, bool joined) async {
     final i = questions.indexWhere((e) => e.id == q.id);
     if (i >= 0) questions[i] = q.copyWith(reviewJoined: joined);
     return true;

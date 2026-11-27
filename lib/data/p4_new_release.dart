@@ -10,17 +10,17 @@
 // - 新卡不算到期：到期队列只认 firstReviewedAt 非空的卡（P1 已在
 //   getDueQuestions 里隔离），这里只做列表层的区分显示与释放计划。
 //
-// ── 旧写入层评估（P4 结论：保留，不移除；2026-11-26 口径迁移第二批复核：仍不删） ──
+// ── 旧写入层评估（FSRS 全量迁移包1，2026-11-27：已退役删除） ──
 // submitCauseVerdictIntoImpl / recordSelfCheckIntoImpl /
-// hasSessionVerdictIntoImpl / CureEvaluation / evaluateCure /
-// settings.cureChecks / recheckIntervalDays /
-// cause_records.solvedCount / recheckDate 的 live 口径已全部迁到 FSRS
-// （首页/角标/报告/封面/复习列表分组/详情页，2026-11-25～26 两批）；
-// 旧 writer 的产品调用方仍是零（P2 起流程不再调用），只剩旧写入层
-// 测试（b14_m3_verdict_test 等）在覆盖它们。删 writer 会把旧记录
-// 永远冻在 pending，而迁移审计要靠这套语义解读旧历史；删字段须
-// schema v9 + 备份恢复同步改。settings 的 cureChecks /
-// recheckIntervalDays 已在设置页隐藏（第一批 8(a)）。
+// CureEvaluation / evaluateCure / ReviewVerdict 已删除；
+// hasSessionVerdictIntoImpl（读）保留；settings.cureChecks /
+// recheckIntervalDays 与 cause_records.solvedCount / recheckDate
+// 的 live 口径已全部迁到 FSRS（首页/角标/报告/封面/复习列表分组/
+// 详情页，2026-11-25～26 两批）；旧状态列冻结为历史，不再有写入。
+// settings 的 cureChecks / recheckIntervalDays 已在设置页隐藏
+// （第一批 8(a)）；两字段已由 FSRS 全量迁移包 7 从 AppSettings
+// 删除（toMap / fromMap 不再读写，KV 旧键忽略；不升 schema v9，
+// 备份格式不动）。
 // ────────────────────────────────────────────────────────────────
 //
 // 口径（与 planNewRelease 的字段一一对应）：
@@ -137,12 +137,15 @@ FsrsReleasePlan planNewRelease({
 }) {
   final limit = clampDailyNewLimit(dailyNewLimit);
   // 待释放新题：未开始正式复习 + 未归档，按加入顺序（cardId）。
-  final pending = cards
-      .where(
-        (c) => c.firstReviewedAt == null && !archivedIds.contains(c.questionId),
-      )
-      .toList()
-    ..sort((a, b) => a.cardId.compareTo(b.cardId));
+  final pending =
+      cards
+          .where(
+            (c) =>
+                c.firstReviewedAt == null &&
+                !archivedIds.contains(c.questionId),
+          )
+          .toList()
+        ..sort((a, b) => a.cardId.compareTo(b.cardId));
   final presented = <StoredCard>[];
   final unpresented = <StoredCard>[];
   for (final c in pending) {
@@ -173,10 +176,7 @@ FsrsReleasePlan planNewRelease({
       .take(allowance)
       .map((c) => c.questionId)
       .toList();
-  final waiting = unpresented
-      .skip(allowance)
-      .map((c) => c.questionId)
-      .toList();
+  final waiting = unpresented.skip(allowance).map((c) => c.questionId).toList();
   return FsrsReleasePlan(
     todaysNewIds: [
       for (final c in carryover) c.questionId,

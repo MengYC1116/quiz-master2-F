@@ -292,7 +292,7 @@ void main() {
       }
     });
 
-    test('像素（真实页）：检测框经变换后在旋转页上框住同一道题', () async {
+    test('像素（真实页）：自动框经变换后在旋转页上框住同一道题', () async {
       TestWidgetsFlutterBinding.ensureInitialized();
       if (!File(_page1).existsSync()) {
         markTestSkipped('本机无真实页图 $_page1');

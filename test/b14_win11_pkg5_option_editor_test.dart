@@ -172,6 +172,23 @@ void main() {
       expect(cap.contentsCalls.last, {'A': '新补的文字'});
     });
 
+    testWidgets('选项文字输入框 hint 不教 LaTeX 写法（P10）', (tester) async {
+      final cap = _Cap();
+      await _pump(
+        tester,
+        cap,
+        questionType: 'choice_single',
+        optionLabels: const ['A', 'B'],
+        optionContents: const {},
+        correctOption: 'A',
+      );
+      await tester.tap(find.byTooltip('编辑选项 A 文字'));
+      await tester.pumpAndSettle();
+      expect(find.byType(TextField), findsOneWidget);
+      expect(find.text('输入选项文字'), findsOneWidget);
+      expect(find.textContaining(r'$...$'), findsNothing);
+    });
+
     testWidgets('检测到的选项文字只作初始值：已有值时不覆盖', (tester) async {
       final cap = _Cap();
       await _pump(

@@ -1,11 +1,13 @@
 // ARCH-PLAN-B 第 2 阶段（W-questions）：两个跨表事务的验收测试。
 //
-// setReviewJoinedIntoImpl（questions + cause_records）与
-// _deleteQuestionTxn（cause_records + review_history + collect_tasks +
-// review_state + question_boxes + questions）各一个成功路径测试与一个
-// 失败注入测试：用 SQLite 触发器（RAISE(ABORT)）在事务中途注入失败，
-// 断言“要么全提交、要么全回滚”——数据库两表的改动全部回滚；删题失败时
-// 切片文件也不删。
+// setReviewJoinedFlagInto（FSRS 全量迁移包2：只翻 review_joined 标志，
+// 不再播种 cause_records；旧 setReviewJoinedIntoImpl 的“题行 + 播种同事务”
+// 已删除）与 _deleteQuestionTxn（cause_records + review_history +
+// collect_tasks + review_state + question_boxes + questions）各一个
+// 成功路径测试与一个失败注入测试：删题用 SQLite 触发器（RAISE(ABORT)）
+// 在事务中途注入失败，断言“要么全提交、要么全回滚”——数据库两表的改动
+// 全部回滚；删题失败时切片文件也不删。翻标志另有一条触发器隔离测试：
+// cause_records 触发器不再影响翻标志。
 //
 // 写法铁律（D-45）：建库在测试体内做（AppDatabase.openForTest，内部已
 // SELECT 1 强制建连）；只用普通 test，不用 testWidgets，不用 runAsync
@@ -60,8 +62,19 @@ Future<void> _seedDeleteGraph(
 }) async {
   final q = _question(id: id, slicePath: 'slices/$id.png');
   await AppDatabase.upsertQuestionInto(db, q);
-  expect(await AppDatabase.setReviewJoinedInto(db, q, true), isTrue);
-  // 错因记录播种只有 1 条（errorTypes 只有 1 个）；再补 1 条走另一错因。
+  expect(await AppDatabase.setReviewJoinedFlagInto(db, q, true), isTrue);
+  // FSRS 全量迁移包2：播种已删；两条错因记录改为直接插行
+  //（errorTypes 只有 1 个，先插 1 条，再补 1 条走另一错因）。
+  await db
+      .into(db.causeRecords)
+      .insert(
+        CauseRecordsCompanion.insert(
+          questionId: id,
+          cause: q.allCauses.single,
+          subjectId: 'math',
+          joinedAt: 1000,
+        ),
+      );
   await db
       .into(db.causeRecords)
       .insert(
@@ -159,39 +172,43 @@ Future<void> _seedDeleteGraph(
 }
 
 void main() {
-  test('setReviewJoined 成功：已入库题标 joined 并播种错因记录', () async {
+  test('setReviewJoinedFlag 成功：已入库题标 joined，不播种错因记录', () async {
     final db = await AppDatabase.openForTest();
     addTearDown(db.close);
     final q = _question(id: 'q-join-ok');
     await AppDatabase.upsertQuestionInto(db, q);
 
-    expect(await AppDatabase.setReviewJoinedInto(db, q, true), isTrue);
+    expect(await AppDatabase.setReviewJoinedFlagInto(db, q, true), isTrue);
     expect((await _questionRow(db, 'q-join-ok'))?.reviewJoined, 1);
-    expect(await _causeCount(db, 'q-join-ok'), 1);
+    // FSRS 全量迁移包2：只翻标志，不播种。
+    expect(await _causeCount(db, 'q-join-ok'), 0);
 
-    // 取消加入：题行翻回，记录保留（再加入可续接）。
-    expect(await AppDatabase.setReviewJoinedInto(db, q, false), isTrue);
+    // 取消加入：题行翻回。
+    expect(await AppDatabase.setReviewJoinedFlagInto(db, q, false), isTrue);
     expect((await _questionRow(db, 'q-join-ok'))?.reviewJoined, 0);
-    expect(await _causeCount(db, 'q-join-ok'), 1);
+    expect(await _causeCount(db, 'q-join-ok'), 0);
   });
 
-  test('setReviewJoined 成功：题行不存在时整行 INSERT 再播种', () async {
+  test('setReviewJoinedFlag 成功：题行不存在时整行 INSERT，不播种', () async {
     final db = await AppDatabase.openForTest();
     addTearDown(db.close);
     final q = _question(id: 'q-join-new', errorTypes: ['概念不清', '方法不会']);
 
-    expect(await AppDatabase.setReviewJoinedInto(db, q, true), isTrue);
+    expect(await AppDatabase.setReviewJoinedFlagInto(db, q, true), isTrue);
     final row = await _questionRow(db, 'q-join-new');
     expect(row, isNotNull);
     expect(row!.reviewJoined, 1);
     expect(row.title, '题 q-join-new');
-    expect(await _causeCount(db, 'q-join-new'), 2);
+    expect(await _causeCount(db, 'q-join-new'), 0);
   });
 
-  test('setReviewJoined 失败注入：播种中途抛错，题行改动全部回滚', () async {
+  // 已删（FSRS 全量迁移包2）：'setReviewJoined 失败注入：播种中途抛错，
+  // 题行改动全部回滚'——旧方法题行 + 播种同事务，触发器拦播种可验证
+  // 回滚；新方法只做单列 UPDATE，无第二写可回滚，该行为已删除，无替代测试。
+  test('setReviewJoinedFlag 失败注入：cause_records 触发器不再影响翻标志', () async {
     final db = await AppDatabase.openForTest();
     addTearDown(db.close);
-    // 触发器只在播种写 cause_records 时炸：先走的题行 UPDATE 必须回滚。
+    // 触发器只在播种写 cause_records 时炸；新方法不写该表，翻标志照常成功。
     await db.customStatement(
       "CREATE TRIGGER b2_fail_seed BEFORE INSERT ON cause_records "
       "WHEN NEW.cause = '__b2_fail__' "
@@ -201,13 +218,9 @@ void main() {
     await AppDatabase.upsertQuestionInto(db, q);
     expect((await _questionRow(db, 'q-join-fail'))?.reviewJoined, 0);
 
-    await expectLater(
-      AppDatabase.setReviewJoinedInto(db, q, true),
-      throwsA(isA<Exception>()),
-    );
+    expect(await AppDatabase.setReviewJoinedFlagInto(db, q, true), isTrue);
 
-    // 要么全提交、要么全回滚：题行仍是未加入，且一条错因记录都没留下。
-    expect((await _questionRow(db, 'q-join-fail'))?.reviewJoined, 0);
+    expect((await _questionRow(db, 'q-join-fail'))?.reviewJoined, 1);
     expect(await _causeCount(db, 'q-join-fail'), 0);
   });
 

@@ -1,9 +1,9 @@
 // 十四批 M3：review_engine 纯逻辑单测（客观判分、选题、跳过、版本
 // 检查、提交身份）。不碰库。
 // P2（2026-11-25）：核验判定 resolveVerification 与治愈规则
-// evaluateCure 两组已随简化基线删除（判定函数本身已删；
-// evaluateCure 仅供旧写入层保留在 db_questions.dart，覆盖见
-// b14_m3_verdict_test.dart）。
+// evaluateCure 两组已随简化基线删除。FSRS 全量迁移包1
+// （2026-11-27）：evaluateCure / CureEvaluation 连同旧写入层
+// 一并退役删除；治愈规则不再有任何覆盖。
 import 'dart:math';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -22,45 +22,33 @@ Question _q(
   List<String> errorTypes = const [],
   bool isOrganized = true,
   bool reviewJoined = true,
-}) =>
-    Question(
-      id: id,
-      title: '题 $id',
-      subjectId: 'math',
-      errorTypes: errorTypes,
-      createdAt: DateTime(2026, 11, 10),
-      isOrganized: isOrganized,
-      reviewJoined: reviewJoined,
-      questionType: questionType,
-      optionLabels: optionLabels,
-      optionLabelsConfirmed: optionLabelsConfirmed,
-      correctOption: correctOption,
-      answer: answer,
-      explanation: explanation,
-      answerPendingRecheck: answerPendingRecheck,
-    );
+}) => Question(
+  id: id,
+  title: '题 $id',
+  subjectId: 'math',
+  errorTypes: errorTypes,
+  createdAt: DateTime(2026, 11, 10),
+  isOrganized: isOrganized,
+  reviewJoined: reviewJoined,
+  questionType: questionType,
+  optionLabels: optionLabels,
+  optionLabelsConfirmed: optionLabelsConfirmed,
+  correctOption: correctOption,
+  answer: answer,
+  explanation: explanation,
+  answerPendingRecheck: answerPendingRecheck,
+);
 
 CauseRecord _rec(
   String questionId,
   String cause, {
-  CauseStatus status = CauseStatus.pending,
-  int solvedCount = 0,
-  DateTime? recheckDate,
   DateTime? joinedAt,
-  int? lastCountedSuccessAt,
-  String? lastCountedSessionId,
-}) =>
-    CauseRecord(
-      questionId: questionId,
-      cause: cause,
-      subjectId: 'math',
-      status: status,
-      solvedCount: solvedCount,
-      recheckDate: recheckDate,
-      joinedAt: joinedAt ?? DateTime(2026, 11, 10),
-      lastCountedSuccessAt: lastCountedSuccessAt,
-      lastCountedSessionId: lastCountedSessionId,
-    );
+}) => CauseRecord(
+  questionId: questionId,
+  cause: cause,
+  subjectId: 'math',
+  joinedAt: joinedAt ?? DateTime(2026, 11, 10),
+);
 
 void main() {
   group('客观判分 gradeObjective', () {
@@ -155,91 +143,35 @@ void main() {
     });
   });
 
-  group('选题 buildDueQueue / buildPracticeQueue', () {
-    final questions = {
-      'q1': _q('q1', errorTypes: ['计算错误']),
-      'q2': _q('q2', errorTypes: ['概念不清']),
-      'q3': _q('q3', errorTypes: ['审题失误']),
-      'q4': _q('q4', errorTypes: ['方法不会']),
-    };
-    final today = DateTime(2026, 11, 19);
+  group('选题 buildPracticeQueue', () {
+    // FSRS 全量迁移包2：删 buildDueQueue 测试时一并删掉它俩专用的
+    // questions/today（buildPracticeQueue 测试不用它们）。
     final records = [
       _rec('q1', '计算错误', joinedAt: DateTime(2026, 11, 10)),
       _rec(
         'q2',
         '概念不清',
-        status: CauseStatus.solved,
-        solvedCount: 2,
-        recheckDate: DateTime(2026, 11, 18),
         joinedAt: DateTime(2026, 11, 9),
       ),
       _rec(
         'q3',
         '审题失误',
-        status: CauseStatus.solved,
-        solvedCount: 2,
-        recheckDate: DateTime(2026, 11, 19),
         joinedAt: DateTime(2026, 11, 8),
       ),
       _rec(
         'q4',
         '方法不会',
-        status: CauseStatus.solved,
-        solvedCount: 2,
-        recheckDate: DateTime(2026, 11, 25),
         joinedAt: DateTime(2026, 11, 7),
       ),
     ];
 
-    test('默认池：逾期复查 → 今日到期复查 → 未解决；已治愈未到期不进池', () {
-      final queue = buildDueQueue(
-        records: records,
-        joinedQuestionIds: {'q1', 'q2', 'q3', 'q4'},
-        questionsById: questions,
-        now: today,
-      );
-      expect(
-        queue.map((e) => e.questionId).toList(),
-        ['q2', 'q3', 'q1'],
-      );
-    });
-
-    test('按错因数截断：同一题的本轮错因完整处理，可少量超出', () {
-      final multi = [
-        _rec('q1', '计算错误', joinedAt: DateTime(2026, 11, 10)),
-        _rec('q1', '概念不清', joinedAt: DateTime(2026, 11, 10)),
-        _rec('q2', '审题失误', joinedAt: DateTime(2026, 11, 11)),
-      ];
-      final qs = {
-        'q1': _q('q1', errorTypes: ['计算错误', '概念不清']),
-        'q2': _q('q2', errorTypes: ['审题失误']),
-      };
-      final queue = buildDueQueue(
-        records: multi,
-        joinedQuestionIds: {'q1', 'q2'},
-        questionsById: qs,
-        limit: 1,
-        now: today,
-      );
-      // limit=1 但 q1 的 2 个错因必须完整处理，会话为 1 题 2 错因。
-      expect(queue.length, 1);
-      expect(queue.single.causes, ['计算错误', '概念不清']);
-    });
-
-    test('一题多错因先筛错因再按题去重', () {
-      final multi = [
-        _rec('q1', '计算错误', joinedAt: DateTime(2026, 11, 10)),
-        _rec('q1', '概念不清', joinedAt: DateTime(2026, 11, 10)),
-      ];
-      final queue = buildDueQueue(
-        records: multi,
-        joinedQuestionIds: {'q1'},
-        questionsById: {'q1': _q('q1')},
-        now: today,
-      );
-      expect(queue.length, 1);
-      expect(queue.single.causes.length, 2);
-    });
+    // 已删（FSRS 全量迁移包2）：3 个 buildDueQueue 测试——
+    // '默认池：逾期复查 → 今日到期复查 → 未解决；已治愈未到期不进池'、
+    // '按错因数截断：同一题的本轮错因完整处理，可少量超出'、
+    // '一题多错因先筛错因再按题去重'。函数已删（FSRS 主路径建队
+    // 在 ReviewNotifier._buildDueSessionQuestions）。替代：
+    // 新文件 test/fsrs_pkg2_migration_test.dart 的“FSRS 队列”组
+    //（删回落前后集合一致、池空即无到期、到期与新释放混合时 limit 按题数）。
 
     test('专项练习可含已掌握/未到期题，数量按去重后题数，默认随机', () {
       final qs = [
@@ -271,10 +203,7 @@ void main() {
 
   group('跳过 skipDecision 与版本检查 versionCheck', () {
     test('单题队列第一次跳过直接留到下次，不循环', () {
-      expect(
-        skipDecision(queueLength: 1, skips: 0),
-        SkipAction.defer,
-      );
+      expect(skipDecision(queueLength: 1, skips: 0), SkipAction.defer);
     });
 
     test('多题队列第一次队尾、第二次留到下次', () {

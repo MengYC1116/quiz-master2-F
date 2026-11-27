@@ -104,7 +104,7 @@ class HomePage extends ConsumerStatefulWidget {
   /// HTML 首页错误态横幅文案（原型 `viewHome` 的 `errBanner` 原文）。
   static const String backupFailedMessage =
       '本地数据备份失败：磁盘空间不足，新收集的题目已保存在本地库中，'
-      '但这次手动备份没有完成。请清理磁盘后在「设置」中重新备份。';
+      '请清理磁盘后在「设置」中重新备份。';
 
   @override
   ConsumerState<HomePage> createState() => _HomePageState();
@@ -562,18 +562,6 @@ class _FocusCard extends StatelessWidget {
                             color: palette.ink,
                           ),
                         ),
-                        SizedBox(height: 2 * scale),
-                        Text(
-                          hasRecent
-                              ? _recentDescription(recent!.kind)
-                              : '先去收集第一道题吧',
-                          maxLines: 2,
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(
-                            fontSize: DesignTokens.captionFontSize,
-                            color: palette.muted,
-                          ),
-                        ),
                       ],
                     ),
                   ),
@@ -778,9 +766,6 @@ class _BottomGrid extends StatelessWidget {
         palette: palette,
         title: '快速收集',
         titleColor: palette.ink,
-        description:
-            '只有一个入口：导入文件 PDF / JPG / PNG，导入后自动框出整题'
-            '（手机拍的照片先传到电脑，再当普通文件导入）',
         actions: [
           QmButton(
             label: '去收集中心',
@@ -884,7 +869,7 @@ class _MiniCell extends StatelessWidget {
     required this.palette,
     required this.title,
     required this.titleColor,
-    required this.description,
+    this.description,
     required this.actions,
     this.background,
   });
@@ -893,7 +878,7 @@ class _MiniCell extends StatelessWidget {
   final AppPalette palette;
   final String title;
   final Color titleColor;
-  final String description;
+  final String? description;
   final List<Widget> actions;
   final Color? background;
 
@@ -922,14 +907,16 @@ class _MiniCell extends StatelessWidget {
               color: titleColor,
             ),
           ),
-          SizedBox(height: 2 * scale),
-          Text(
-            description,
-            style: TextStyle(
-              fontSize: DesignTokens.captionFontSize,
-              color: palette.muted,
+          if (description != null) ...[
+            SizedBox(height: 2 * scale),
+            Text(
+              description!,
+              style: TextStyle(
+                fontSize: DesignTokens.captionFontSize,
+                color: palette.muted,
+              ),
             ),
-          ),
+          ],
           SizedBox(height: 10 * scale),
           Wrap(
             spacing: 8 * scale,
@@ -948,11 +935,4 @@ String _kindPageName(String kind) => switch (kind) {
       'organize' || '整理' => '整理工作台',
       'collect' || '收集' => '收集中心',
       _ => '复习',
-    };
-
-/// 最近任务 kind → 继续条说明。
-String _recentDescription(String kind) => switch (kind) {
-      'organize' || '整理' => '上次停在待整理队列的这道题',
-      'collect' || '收集' => '上次在这里导入了文件',
-      _ => '上次复习到这里',
     };

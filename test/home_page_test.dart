@@ -27,23 +27,18 @@ class FakeRepo extends QuestionRepository {
       questionId: 'q-m1',
       cause: '概念不清',
       subjectId: 'math',
-      status: CauseStatus.pending,
       joinedAt: DateTime(2026, 11, 10),
     ),
     CauseRecord(
       questionId: 'q-m2',
       cause: '概念不清',
       subjectId: 'math',
-      status: CauseStatus.solved,
-      solvedCount: 2,
-      recheckDate: DateTime.now().subtract(const Duration(days: 1)),
       joinedAt: DateTime(2026, 11, 10),
     ),
     CauseRecord(
       questionId: 'q-e1',
       cause: '审题失误',
       subjectId: 'english',
-      status: CauseStatus.pending,
       joinedAt: DateTime(2026, 11, 10),
     ),
   ];
@@ -183,7 +178,6 @@ void main() {
       expect(find.text('3 道到期'), findsOneWidget);
       expect(find.text('到期 3 道 · 今日新题 1 道'), findsOneWidget);
       expect(find.text('继续上次：整理工作台 · 数学「函数极限」'), findsOneWidget);
-      expect(find.text('上次停在待整理队列的这道题'), findsOneWidget);
       expect(find.text('继续上次'), findsOneWidget);
     });
 
@@ -303,7 +297,6 @@ void main() {
         onGoReview: () => review++,
       );
       expect(find.text('继续上次：还没有记录'), findsOneWidget);
-      expect(find.text('先去收集第一道题吧'), findsOneWidget);
       await tester.tap(find.text('去收集'));
       await tester.pumpAndSettle();
       expect(collect, 1);

@@ -306,7 +306,7 @@ class ExportFlowController extends ChangeNotifier {
     } on ExportCancelledException {
       _setPhase(ExportFlowPhase.cancelled);
     } catch (e) {
-      error = _userMessage(e);
+      error = _userMessage(e, '盘点失败，请重试。');
       _setPhase(ExportFlowPhase.failed);
     }
   }
@@ -399,7 +399,7 @@ class ExportFlowController extends ChangeNotifier {
         error =
             result.practice?.error ??
             result.answer?.error ??
-            '生成失败，请重试。';
+            'PDF 生成失败，请重试。';
         _setPhase(ExportFlowPhase.failed);
         return;
       }
@@ -429,7 +429,7 @@ class ExportFlowController extends ChangeNotifier {
       // 取消即停：服务侧已清理快照临时目录，不留半截 PDF。
       _setPhase(ExportFlowPhase.cancelled);
     } catch (e) {
-      error = _userMessage(e);
+      error = _userMessage(e, 'PDF 生成失败，请重试。');
       _setPhase(ExportFlowPhase.failed);
     }
   }
@@ -490,7 +490,7 @@ class ExportFlowController extends ChangeNotifier {
       // 取消即停：服务侧已清理快照临时目录，不留半截 docx。
       _setPhase(ExportFlowPhase.cancelled);
     } catch (e) {
-      error = _userMessage(e);
+      error = _userMessage(e, 'Word 生成失败，请重试。');
       _setPhase(ExportFlowPhase.failed);
     }
   }
@@ -550,7 +550,7 @@ class ExportFlowController extends ChangeNotifier {
           ExportCompletionRow(
             version: version,
             fileName: '',
-            generationError: outcome.error ?? '生成失败，请重试。',
+            generationError: outcome.error ?? 'PDF 生成失败，请重试。',
           ),
         );
         continue;
@@ -578,7 +578,7 @@ class ExportFlowController extends ChangeNotifier {
   /// 完整性报告摘要行（完成界面展示；按路线两张表，见 M1-DESIGN §12）。
   ///
   /// 返回空列表表示无报告可展示（如生成失败）。Word 格式时在末尾
-  /// 追加两行：文件实际大小 + 字体未嵌入提示（D-193；不编造页数）。
+  /// 追加一行：文件实际大小（D-193；不编造页数）。
   List<String> get reportSummaryLines {
     final word = wordResult;
     final report = word?.report ?? versionsResult?.report;
@@ -592,22 +592,33 @@ class ExportFlowController extends ChangeNotifier {
       final formulaOriginal = report.entries
           .where((e) => e.warnings.contains('公式为原图'))
           .length;
+      // P8：跳过 0 道时不拼「跳过 0 / N 道」数量段。
+      final skipPart = report.skippedCount > 0
+          ? '、跳过 ${report.skippedCount} / ${report.selectedCount} 道'
+          : '';
+      // P8 跟进：公式为原图 0 道时不拼该数量段（与跳过段同规则）。
+      final formulaPart = formulaOriginal > 0
+          ? '、公式为原图 $formulaOriginal 道'
+          : '';
       lines.add(
         '可印 ${report.completeCount + report.partialCount} / '
         '${report.selectedCount} 道'
-        '、跳过 ${report.skippedCount} / ${report.selectedCount} 道'
-        '、公式为原图 $formulaOriginal 道',
+        '$skipPart'
+        '$formulaPart',
       );
     } else {
       final fallback = report.entries
           .where((e) => e.warnings.contains('增强失败，已用原图'))
           .length;
       final lowDpi = inventory?.lowDpi.length ?? 0;
+      // P8 跟进：回退 / 低于阈值 0 道时不拼该数量段（与跳过段同规则）。
+      final fallbackPart = fallback > 0 ? '、回退原图 $fallback 道' : '';
+      final lowDpiPart = lowDpi > 0 ? '、低于清晰度阈值 $lowDpi 道' : '';
       lines.add(
         '增强后印出 ${report.completeCount + report.partialCount} / '
         '${report.selectedCount} 道'
-        '、回退原图 $fallback 道'
-        '、低于清晰度阈值 $lowDpi 道',
+        '$fallbackPart'
+        '$lowDpiPart',
       );
     }
     if (report.answersRecorded != null) {
@@ -619,8 +630,6 @@ class ExportFlowController extends ChangeNotifier {
     }
     if (word != null) {
       lines.add('文件大小：${_formatBytes(word.docxBytes.length)}');
-      lines.add('字体未嵌入：在未安装 Noto Sans SC 的电脑上打开时，'
-          'Word 会以替用字体显示。');
     }
     return lines;
   }
@@ -634,7 +643,7 @@ class ExportFlowController extends ChangeNotifier {
       if (entry.status == IntegrityStatus.skipped) {
         lines.add('${entry.title}：跳过（${entry.skipReason ?? '未印出'}）');
       } else if (entry.status == IntegrityStatus.broken) {
-        lines.add('${entry.title}：主图缺失，已印占位说明');
+        lines.add('${entry.title}：本题图片缺失，已印占位说明');
       } else if (entry.warnings.isNotEmpty) {
         lines.add('${entry.title}：${entry.warnings.join('；')}');
       }
@@ -695,12 +704,14 @@ class ExportFlowController extends ChangeNotifier {
     return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
   }
 
-  String _userMessage(Object e) {
+  /// 按调用模式区分兜底文案（P7）：盘点 / PDF 生成 / Word 生成
+  /// 共用同一映射时，未知异常不再都说「生成失败」。
+  String _userMessage(Object e, String fallback) {
     if (e is ExportNoPrintableException) return e.message;
     if (e is ExportGuardRejectException) return e.message;
     if (e is RouteResolutionException) return e.message;
     if (e is ArgumentError) return e.message ?? '参数错误';
     if (e is StateError) return e.message;
-    return '生成失败，请重试。';
+    return fallback;
   }
 }
