@@ -202,7 +202,7 @@ void main() {
   });
 
   tearDownAll(() async {
-    AppDatabase.testDataDirectory = null;
+    await AppDatabase.resetForTest();
     try {
       await fixtureTmp.delete(recursive: true);
     } catch (_) {}

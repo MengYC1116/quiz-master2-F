@@ -57,7 +57,7 @@ void main() {
     AppDatabase.testDataDirectory = tmp.path;
     db = await openTestDb();
     addTearDown(() async {
-      AppDatabase.testDataDirectory = null;
+      await AppDatabase.resetForTest();
       try {
         await db.close();
       } catch (_) {}

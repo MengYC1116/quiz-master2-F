@@ -18,7 +18,7 @@
 | `lib/state/report_provider.dart` | `reportProvider`：学习报告状态。页面独占，autoDispose。 | 学习报告 |
 | `lib/state/subjects_notifier.dart` | `subjectsProvider`：学科管理状态（学科 / 知识点树 / 标签 / 试卷）。页面独占，autoDispose。 | 学科管理 |
 | `lib/state/wrongbook_notifier.dart` | `wrongbookProvider` + `wrongbookInitialProvider`：错题本状态（书架 / 目录 / 列表、批量操作、文件夹拖动排序）。页面独占，autoDispose。 | 错题本 |
-| `lib/state/review_notifier.dart` | `reviewProvider` + `reviewInitialProvider`：复习状态（错因队列、四步会话、自查、复查）。页面独占，autoDispose。 | 复习 |
+| `lib/state/review_notifier.dart` | `reviewProvider` + `reviewInitialProvider`：复习状态（错因队列、三步会话、核对、FSRS 调度）。页面独占，autoDispose。 | 复习 |
 | `lib/state/organize_notifier.dart` | `organizeProvider`：整理工作台状态（队列、表单、批量操作）。页面独占，autoDispose。 | 整理工作台 |
 | `lib/state/detail_notifier.dart` | `detailProvider` + `detailInitialProvider`：题目详情状态（当前题、错因记录、解决记录、编辑表单、重新框选）。页面独占，autoDispose。 | 题目详情 |
 | `lib/state/collect_notifier.dart` | `collectProvider`：收集中心状态（任务列表、导入、拆题确认、删除任务）。页面独占，autoDispose；修框状态（框选 / 缩放 / 旋转）是纯 UI 临时状态，留在 `box_editor.dart` 本地，不进 Provider。 | 收集中心 |
@@ -148,12 +148,15 @@ import riverpod。`badgeCountsProvider`
 （`lib/state/badge_counts_provider.dart`，根节点常驻、绝不
 autoDispose）收到含 `badges` 的事件才重读角标计数；`homeProvider`
 （`lib/state/home_provider.dart`，D-94）收到含 `recentlyViewed`
-的事件才重读首页历史；其余 kind
-只供以后各页订阅（A 完成时各页仍自己 `load()`，不订阅事件——
-详情页复习记录订阅 `reviewRecords` 是方案的终态，A 收尾时未接线，
-已立为单独事项，见 §七，不在 A 内做）。FR-31（2026-11-17）明确：
+的事件才重读首页历史；`DetailNotifier`
+（`lib/state/detail_notifier.dart`，2026-11-26 收尾第 2 路接线）
+收到含 `reviewRecords` 且 `questionId` 等于当前题（或为空）的
+事件时只重读本题复习状态 + 错因记录 / 解决记录，不调全量 `load()`。
+其余三种 kind（questions / subjects / settings）目前没有任何订阅方。
+FR-31（2026-11-17）明确：
 截至本批，除 `badges` 与 `recentlyViewed` 外的四种 kind（questions /
-subjects / reviewRecords / settings）没有任何订阅方；将来加订阅方时把该页的
+subjects / reviewRecords / settings）没有任何订阅方；`reviewRecords`
+的订阅方是 2026-11-26 收尾第 2 路后加的。将来加订阅方时把该页的
 刷新时序纳入回归。
 事件只描述“什么变了”，不携带新数据——订阅方收到后自己重读
 SQLite。订阅在初始查询之前建立（先订阅、后首查），`ref.onDispose`
@@ -244,13 +247,4 @@ D-42 同款隐患（`Future.microtask(load)` + 方法内多次 `ref.read`，
   决定记在 `docs/decision-log.md` D-43 末尾。
 - **代码未推**：等 Meng 批准才推（由协调员统一报总账）。
   B 的任何阶段均未开始；B Stage 2 仍等 Win11 真机验证，永不跳过。
-- 未做事项（单独立项，不在 A 内）：详情页复习记录订阅
-  `reviewRecords` 事件——方案的终态，A 收尾时未接线。
-  方案见 D-44：详情页 `DetailNotifier` 在 `build()` 里先订阅
-  后首查，收到含 `reviewRecords` 且 `questionId` 等于当前题的
-  事件时只重读 `records` / `history`（不调全量 `load()`，
-  避免冲掉编辑中的表单值与触发切片自愈）；`ref.onDispose`
-  取消订阅。做之前先回答：当前单页导航下，详情页打开时没有
-  外部写入方会改这道题的复习记录（唯一的写入方就是详情页自己，
-  写完已调 `load()`），订阅的实际收益约等于零——是否值得为
-  “终态完整”冒编辑态竞态的风险，由 Meng 定。
+- 已做（2026-11-26 收尾第 2 路）：详情页复习记录订阅\n  `reviewRecords` 事件——方案的终态，A 收尾时未接线，收尾第 2 路\n  已按 D-44 方案接线，外加本题复习状态（`DetailReviewStatus`）\n  的重读。详情页 `DetailNotifier` 在 `build()` 里先订阅\n  后首查，收到含 `reviewRecords` 且 `questionId` 等于当前题\n  （或为空，批量 / 恢复）的事件时只重读复习状态 + `records` /\n  `history`（不调全量 `load()`，避免冲掉编辑中的表单值与触发\n  切片自愈）；`ref.onDispose` 取消订阅。另补一点 D-44 没写到的：\n  复习主路径 `submitCheck` 到期已判分的提交原来只发 `{badges}`\n  （无题 id），订阅收不到——现补发 `{badges, reviewRecords}` +\n  题 id（见 `review_notifier.dart` §1.6 注释）；专项练习 / 未判分\n  不推进 FSRS、不改复习状态，不发事件。

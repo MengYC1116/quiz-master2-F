@@ -2328,9 +2328,18 @@ class ReviewNotifier extends Notifier<ReviewState> {
       // 上面的 checkSubmitted 短路返回、到不了此处，且此处只在写库
       // 成功（await 未抛错）后发，两条件同时满足。专项练习 / 未判分
       // 不推进 FSRS、到期数不变，不发事件。
+      // 收尾第 2 路：到期已判分的提交同时是复习记录写入（attempts +
+      // FSRS 卡片），补发 reviewRecords + 题 id——详情页订阅该事件后
+      // 不重进即刷新本题复习状态；只发 badges 时详情页收不到。
       if (pushFsrs) {
         DataChangeBus.instance.emit(
-          const DataChangeEvent(kinds: {DataChangeKind.badges}),
+          DataChangeEvent(
+            kinds: const {
+              DataChangeKind.badges,
+              DataChangeKind.reviewRecords,
+            },
+            questionId: q.id,
+          ),
         );
       }
       final attemptId = submitted.attemptId;

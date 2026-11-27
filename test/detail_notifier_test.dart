@@ -436,7 +436,7 @@ void main() {
     // 二十五批：先清图片缓存（重框/自愈走 evictCachedFileImage，
     // FileImage mmap 占着页图/切片）+ 关掉 _refreshRelated 真开过
     // 的库连接，再删目录；否则 Windows 上删目录报 errno 32。
-    // resetForTest 也把 testDataDirectory 置 null。
+    // resetForTest 把 testDataDirectory 重指全新临时目录（D-260，不再置 null）。
     TestWidgetsFlutterBinding.instance.imageCache.clear();
     await AppDatabase.resetForTest();
     // Windows 上删目录时可能仍有句柄未释放（errno 32）：重试 5 次。

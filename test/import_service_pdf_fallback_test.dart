@@ -60,7 +60,7 @@ void main() {
   });
 
   tearDownAll(() async {
-    AppDatabase.testDataDirectory = null;
+    await AppDatabase.resetForTest();
     // Windows 上删目录时可能仍有句柄未释放（errno 32）：重试 5 次。
     for (var i = 0; i < 5; i++) {
       try {

@@ -119,7 +119,7 @@ void main() {
       final dir = Directory.systemTemp.createTempSync('fr05-widget');
       AppDatabase.testDataDirectory = dir.path;
       addTearDown(() {
-        AppDatabase.testDataDirectory = null;
+        AppDatabase.resetForTest();
       });
       final slicesDir = Directory('${dir.path}/slices');
       slicesDir.createSync(recursive: true);

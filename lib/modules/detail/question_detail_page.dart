@@ -6,12 +6,14 @@
 // 纠错／重新框选）→ 答案区（默认隐藏）→ 题目信息 panel → 复习记录
 // panel → 底部操作卡片（复制图片／保存图片／导出带答案版）。
 // 右栏：同错因／同知识点／同文件夹三组（取数见 DetailNotifier 的
-// _refreshRelated：现有 repo.all()＋内存筛选，不新开取数口）。
+// _refreshRelated：现有 repo.all()＋loadAllAttempts() 内存筛选，
+// 不新开取数口；状态文案只记正式复习对错事实）。
 //
 // 保留清单（板子 §4.1，8 条全在）：题目渲染（公式走现版切片渲染、
 // 原图兜底行保留）、纠错入口、答案解析（默认隐藏）、题目信息
 // （学科固定、文件夹必填、知识点、错因、标签、备注、来源）、
-// 复习记录（按错因的状态、自查记录、复查时间）、加入/取消加入复习、
+// 复习记录（FSRS 复习状态：下次到期＋正式复习对错；各错因名＋
+// 错因自身历史记录；解决记录）、加入/取消加入复习、
 // 收藏/归档/删除、上一题/下一题（已移页顶返回行）。
 //
 // 行为沿用现版，不改流程：编辑表单与底稿过期保护（stale＋SaveToken）、
@@ -1499,15 +1501,19 @@ class _DetailViewState extends ConsumerState<_DetailView> {
   Color _d1RelDivider() =>
       _isDark ? _d1Palette.line : const Color(0xFFEEF2F7);
 
-  /// 题目整体错因状态（与 Notifier 的 [overallCauseStatusLabel]
-  /// 同口径，转现版 [QmStatusPill.cause] 显示）。
-  QmCauseStatus _overallStatus(Question q) {
-    return switch (overallCauseStatusLabel(q, _st.records)) {
-      '待复查' => QmCauseStatus.recheck,
-      '已解决' => QmCauseStatus.solved,
-      '解决中' => QmCauseStatus.inProgress,
-      _ => QmCauseStatus.pending,
+  /// 题目整体状态 pill（FSRS 口径，见 [reviewStatusPillLabel]）：
+  /// 只记到期事实（未加入复习／未开始／已到期／未到期），不判定掌握
+  ///（D-259，方案 §5 第 3 项选 (A)）。复习状态未加载出来时不占位。
+  Widget _overallStatusPill() {
+    final rs = _st.reviewStatus;
+    if (rs == null) return const SizedBox.shrink();
+    final label = reviewStatusPillLabel(rs);
+    final tone = switch (label) {
+      '已到期' => QmTone.error,
+      '未到期' => QmTone.info,
+      _ => QmTone.warn,
     };
+    return QmStatusPill.tone(label: label, tone: tone);
   }
 
   /// D1 panel（题目信息 / 复习记录 / 右栏三组共用样式）：
@@ -1994,7 +2000,7 @@ class _DetailViewState extends ConsumerState<_DetailView> {
           SizedBox(width: 8 * scale),
           Padding(
             padding: EdgeInsets.only(top: 6 * scale),
-            child: QmStatusPill.cause(_overallStatus(q)),
+            child: _overallStatusPill(),
           ),
           SizedBox(width: 8 * scale),
           Tooltip(
@@ -3077,7 +3083,7 @@ class _DetailViewState extends ConsumerState<_DetailView> {
               ],
             ),
           ),
-        _kvRow('整体状态', QmStatusPill.cause(_overallStatus(q))),
+        _kvRow('整体状态', _overallStatusPill()),
         _kvRow(
           '错因状态',
           Column(
@@ -3160,17 +3166,20 @@ class _DetailViewState extends ConsumerState<_DetailView> {
 
   /// 加入 / 取消加入复习（HTML `detailJoinRevHTML`）。
   /// 十九批 D1：蓝底主按钮（板子 `.abtn`），放在复习记录 panel 底部。
+  /// 口径（FSRS，D-259）：已加入时 pill 只写加入事实 + 下次到期
+  ///（在池未开始 →「未开始」；卡还没建出来 / 状态未加载 → 只写
+  ///「已加入复习」）；不再写「还有 N 个错因未解决」「满 N 天自动
+  /// 回来复查」这类旧治愈口径。取消加入不删记录与 FSRS 卡片，
+  /// 再加入接着上次的到期安排。未加入时先补错因才能加入
+  ///（`toggleReviewJoined` 无错因返回 false）。
   Widget _buildJoinReview(Question q) {
     final palette = DesignTokens.of(Theme.of(context).brightness);
     final scale = qmScaleOf(context);
     if (q.reviewJoined) {
-      final pending = q.allCauses.where((c) {
-        final r = _st.records.where((x) => x.cause == c).firstOrNull;
-        return r == null || r.status != CauseStatus.solved;
-      }).length;
-      final stTxt = pending > 0
-          ? '已加入复习 · 还有 $pending 个错因未解决'
-          : '已加入复习 · 错因已全部解决，满 ${_st.recheckIntervalDays} 天自动回来复查';
+      final rs = _st.reviewStatus;
+      final stTxt = rs == null || !rs.inPool
+          ? '已加入复习'
+          : '已加入复习 · ${reviewDueLabel(rs)}';
       return Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -3183,7 +3192,7 @@ class _DetailViewState extends ConsumerState<_DetailView> {
           ),
           SizedBox(height: 4 * scale),
           Text(
-            '取消加入不会删解决记录，再加入时接着上次解决，不用从头来',
+            '取消加入不会删复习记录，再加入时接着上次的到期安排，不用从头来',
             style: TextStyle(fontSize: 12.5, color: palette.muted),
           ),
         ],
@@ -3200,8 +3209,8 @@ class _DetailViewState extends ConsumerState<_DetailView> {
         SizedBox(height: 4 * scale),
         Text(
           q.allCauses.isEmpty
-              ? '加入后，这道题的错因会按加入顺序出现在复习页的待解决列表里，按错因解决；这道题还没填错因，先在上面的编辑里补上错因，加入后才有可解决的错因'
-              : '加入后，这道题的错因会按加入顺序出现在复习页的待解决列表里，按错因解决',
+              ? '这道题还没填错因，先在上面的编辑里补上错因才能加入复习'
+              : '加入后，这道题会进复习页，按 FSRS 间隔安排到期复习；到期复习答对、答错都会记下来，下次到期时间跟着变',
           style: TextStyle(fontSize: 12.5, color: palette.muted),
         ),
       ],

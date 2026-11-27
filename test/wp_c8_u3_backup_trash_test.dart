@@ -146,7 +146,7 @@ void main() {
     AppDatabase.useDatabaseForTest(db);
     repo = QuestionRepository(AppDatabase.instance);
     addTearDown(() async {
-      AppDatabase.testDataDirectory = null;
+      await AppDatabase.resetForTest();
       try {
         await db.close();
       } catch (_) {}

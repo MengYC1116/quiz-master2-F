@@ -39,7 +39,9 @@
 // 不用改；测试里构造器传 FakeRepo 同样经这一层注入，不用再包
 // 一层 ProviderScope。本文件不认识任何 widget，不碰 `BuildContext`、
 // 不弹 Dialog、不调导航。角标走 `badgeCountsProvider`（第 4 阶段：
-// 订阅 `DataChangeBus`，见 `badge_counts_provider.dart`）。
+// 订阅 `DataChangeBus`，见 `badge_counts_provider.dart`）；复习记录
+// 走本 Notifier 在 `build()` 里的 `reviewRecords` 订阅（收尾第 2 路：
+// 复习记录变了，详情页不重进即重读本题复习状态，见 `build()`）。
 import 'dart:async';
 import 'dart:io';
 import 'dart:math' as math;
@@ -149,8 +151,8 @@ enum SaveEditOutcome {
 
 // ---------- 十九批 D1：右栏相关题 ----------
 
-/// 右栏相关题的一行：题目 + 按错因口径算出的状态文案 + 是否未解决
-///（排序用：未解决优先）。
+/// 右栏相关题的一行：题目 + 正式复习对错事实文案 + 是否答错过
+///（排序用：答错过优先）。
 class RelatedItem {
   const RelatedItem({
     required this.question,
@@ -160,11 +162,12 @@ class RelatedItem {
 
   final Question question;
 
-  /// 整体错因状态文案（见 [overallCauseStatusLabel]）：待解决 /
-  /// 解决中 / 已解决 / 待复查。
+  /// 正式复习对错事实文案（见 [formalAttemptsLabel]）：「正式复习
+  /// 答对 X 次 · 答错 Y 次」或「暂无正式复习记录」。只记对错事实，
+  /// 不判定掌握（D-259，方案 §5 第 3 项选 (A)）。
   final String statusLabel;
 
-  /// 未解决 = 状态不是“已解决”（待复查也算要关注的，排在前面）。
+  /// 答错过 = 正式复习答错 ≥ 1 次（要关注的，排在前面）。
   final bool unresolved;
 }
 
@@ -205,34 +208,25 @@ class DetailRelated {
   final RelatedFolderInfo? folder;
 }
 
-/// 题目整体错因状态文案（与详情页标题 pill、复习记录同口径）：
-/// 任一错因到了复查时间 → 待复查；全部错因都有已解决记录 → 已解决；
-/// 有错因解决中或已有已解决记录 → 解决中；其余（无记录/全待解决/
-/// 无错因）→ 待解决。
-String overallCauseStatusLabel(Question q, List<CauseRecord> records) {
-  final causes = q.allCauses;
-  if (causes.isEmpty) return '待解决';
-  var anySolved = false;
-  var anyProgress = false;
-  var allSolved = true;
-  for (final cause in causes) {
-    final r = records.where((x) => x.cause == cause).firstOrNull;
-    if (r == null) {
-      allSolved = false;
-      continue;
-    }
-    if (r.isRecheckDue) return '待复查';
-    if (r.status == CauseStatus.solved) {
-      anySolved = true;
-      continue;
-    }
-    allSolved = false;
-    if (r.status == CauseStatus.inProgress) anyProgress = true;
-  }
-  if (allSolved) return '已解决';
-  if (anyProgress || anySolved) return '解决中';
-  return '待解决';
+/// 题目级 FSRS 复习状态的标题 pill 文案（纯函数，可单测）：
+/// 不在池里 →「未加入复习」；在池里但未开始正式复习 →「未开始」；
+/// 已开始且到了下次到期时间 →「已到期」；已开始且未到 →「未到期」。
+/// 只记到期事实，不判定掌握（D-259，方案 §5 第 3 项选 (A)）。
+/// 与详情页「复习状态」行的 [reviewDueLabel] 同口径。
+String reviewStatusPillLabel(DetailReviewStatus s, {DateTime? now}) {
+  if (!s.inPool) return '未加入复习';
+  final due = s.nextDueAt;
+  if (due == null) return '未开始';
+  return due.isAfter(now ?? DateTime.now()) ? '未到期' : '已到期';
 }
+
+/// 正式复习对错事实文案（纯函数，可单测）：
+/// 有正式复习记录 →「正式复习答对 X 次 · 答错 Y 次」（按作答次数计）；
+/// 无正式复习记录 →「暂无正式复习记录」。
+String formalAttemptsLabel(int correct, int wrong) =>
+    correct + wrong > 0
+        ? '正式复习答对 $correct 次 · 答错 $wrong 次'
+        : '暂无正式复习记录';
 
 // ---------- FSRS 口径迁移（面 B：详情页） ----------
 
@@ -284,32 +278,33 @@ String reviewDueLabel(DetailReviewStatus s) {
 /// 题目级复习状态的「正式复习对错」文案（纯函数，可单测）：
 /// 有正式复习记录 →「正式复习答对 X 次 · 答错 Y 次」（按作答次数计）；
 /// 无正式复习记录 →「暂无正式复习记录」。
-String reviewFormalLabel(DetailReviewStatus s) => s.hasFormalAttempts
-    ? '正式复习答对 ${s.formalCorrect} 次 · 答错 ${s.formalWrong} 次'
-    : '暂无正式复习记录';
+String reviewFormalLabel(DetailReviewStatus s) =>
+    formalAttemptsLabel(s.formalCorrect, s.formalWrong);
 
 /// 十九批 D1：右栏三组取数（纯函数，可单测）。
 ///
 /// 匹配：同错因 = 任一错因相同；同知识点 = 任一知识点相同；
 /// 同文件夹 = 与当前题第一个文件夹相同。当前题与已归档题不进组。
-/// 排序（协调员决策）：未解决优先 → 同科次之 → 收集时间新→旧。
+/// 每行的状态文案只记正式复习对错事实（见 [formalAttemptsLabel]，
+/// 由 [formalAttemptsByQuestion] 供数：正式复习 `mode = 到期复习`
+/// 的作答按次计，`correct == null`（未判分）与专项练习不计）；
+/// 不再用已冻结的错因治愈记录推「已解决 / 待复查」结论（D-259）。
+/// 排序：答错过优先 → 同科次之 → 收集时间新→旧。
 /// 同文件夹计数含当前题；同错因「还有 N 道」的 N 含已展示的那道
 ///（即同错因组全量，见 B19-DECISIONS.md 第 13 项）。
 DetailRelated computeDetailRelated({
   required Question current,
   required List<Question> all,
-  required Map<String, List<CauseRecord>> recordsByQuestion,
+  Map<String, ({int correct, int wrong})> formalAttemptsByQuestion =
+      const {},
   String folderName = '',
 }) {
   RelatedItem item(Question c) {
-    final label = overallCauseStatusLabel(
-      c,
-      recordsByQuestion[c.id] ?? const [],
-    );
+    final a = formalAttemptsByQuestion[c.id] ?? (correct: 0, wrong: 0);
     return RelatedItem(
       question: c,
-      statusLabel: label,
-      unresolved: label != '已解决',
+      statusLabel: formalAttemptsLabel(a.correct, a.wrong),
+      unresolved: a.wrong > 0,
     );
   }
 
@@ -394,8 +389,9 @@ class DetailState {
     // Win11 反馈包 5：编辑表单里的选项文字（enterEdit 时从当前题读）。
     this.editOptionContents,
     this.formResetKey = 0,
-    // FR-09：复查间隔（设置 3 / 7 / 14 天，默认 7，D-05）；详情页
-    // “满 N 天自动回来复查”文案用它拼，不再写死 7 天。`load()` 读库。
+    // 复查间隔（设置 3 / 7 / 14 天，默认 7，D-05）；设置项已隐藏
+    //（面 3），详情页文案不再用它拼（到期改走 FSRS 下次到期）。
+    // 字段保留：`load()` 仍读库，供设置读回。
     this.recheckIntervalDays = 7,
     // 十三批 M5：当前题的 OCR 任务行与 key 有无（识别题干状态推导用）。
     this.ocrJobs = const [],
@@ -440,7 +436,8 @@ class DetailState {
   /// 不再回退预设三科；首帧与读库后都以真实列表为准，空就是空。
   final List<Subject> subjects;
 
-  /// 复查间隔天数（设置项，见构造函数注释；默认 7 天）。
+  /// 复查间隔天数（设置项，见构造函数注释；默认 7 天；设置项已隐藏，
+  /// 用户可见文案不再用它）。
   final int recheckIntervalDays;
 
   /// 十三批 M5：当前题的 OCR 任务行（最新在前）与设置里是否已存
@@ -645,6 +642,25 @@ class DetailNotifier extends Notifier<DetailState> {
   @override
   DetailState build() {
     ref.onDispose(() => _disposed = true);
+    // 详情页复习记录订阅（D-44 终态，收尾第 2 路接线）：先订阅、后首查
+    //（badgeCountsProvider 同款时序）——订阅建立后再 load，首查期间
+    // 的复习写入不会漏刷新。收到含 reviewRecords 的事件时只重读复习
+    // 相关状态（[_refreshReviewStatus] + [_refreshReviewRecords]），
+    // 不调全量 load()：load() 会重置编辑表单（editBase /
+    // formResetKey）、重触发切片自愈与记查看；编辑中的表单值不受复习
+    // 事件影响。questionId 为空（批量 / 恢复）时按可能影响当前题处理；
+    // 等于当前题以外的单题事件忽略。ref.onDispose 取消订阅。
+    final subscription = DataChangeBus.instance.stream.listen((event) {
+      if (_disposed) return;
+      if (!event.kinds.contains(DataChangeKind.reviewRecords)) return;
+      final currentId = state.currentId;
+      if (event.questionId != null && event.questionId != currentId) return;
+      final q = state.question;
+      if (q == null || q.id != currentId) return;
+      unawaited(_refreshReviewStatus(q));
+      unawaited(_refreshReviewRecords(q));
+    });
+    ref.onDispose(subscription.cancel);
     // 页面出现即读库（原 `initState` 的 `_load`）：不 await，
     // 读完后 state 一次性赋值，首帧先出加载圈。
     Future.microtask(load);
@@ -711,7 +727,7 @@ class DetailNotifier extends Notifier<DetailState> {
     // 详情加载的后续流程（记查看、自愈）；读到了再更新 state。
     unawaited(_refreshOcrStatus(q));
     // 十九批 D1：右栏三组相关题（同款 best-effort：取数用现有
-    // repo.all() + repo.causeRecords() 内存筛选，不新开取数口；
+    // repo.all() + repo.loadAllAttempts() 内存筛选，不新开取数口；
     // FakeRepo 未覆写这两口时会走真实库——fake async 里读不到结果
     // （挂起，见 D-88），但开库建库/迁移真实演示库的副作用照样发生
     // （FR-45，见 D-234）——因此不 await，只在读到后更新 state）。
@@ -934,20 +950,28 @@ class DetailNotifier extends Notifier<DetailState> {
   }
 
   /// 十九批 D1：右栏三组相关题（见 [computeDetailRelated]）。
-  /// 只重读全量题 + 全量错因记录、内存里分组排序，不新开取数口、
+  /// 只重读全量题 + 全量正式复习作答、内存里分组排序，不新开取数口、
   /// 不改 schema。失败/挂起时右栏留空，不抛、不挡详情加载；
   /// 读到后当前题已换（切题/删除）时丢弃本次结果。
+  /// 状态文案只记正式复习对错事实（[formalAttemptsLabel]），不再读
+  /// 已冻结的错因治愈记录（D-259）。
   Future<void> _refreshRelated(Question current) async {
     if (_disposed) return;
     try {
       final repo = _repo;
       final all = await repo.all();
-      final records = await repo.causeRecords();
+      final attempts = await repo.loadAllAttempts();
       if (_disposed) return;
       if (state.question?.id != current.id) return;
-      final recordsByQ = <String, List<CauseRecord>>{};
-      for (final r in records) {
-        (recordsByQ[r.questionId] ??= []).add(r);
+      final formalByQ = <String, ({int correct, int wrong})>{};
+      for (final a in attempts) {
+        if (a.mode != ReviewMode.due) continue;
+        final prev =
+            formalByQ[a.questionId] ?? (correct: 0, wrong: 0);
+        formalByQ[a.questionId] = (
+          correct: prev.correct + (a.correct == 1 ? 1 : 0),
+          wrong: prev.wrong + (a.correct == 0 ? 1 : 0),
+        );
       }
       var folderName = '';
       if (current.folderIds.isNotEmpty) {
@@ -961,7 +985,7 @@ class DetailNotifier extends Notifier<DetailState> {
       final related = computeDetailRelated(
         current: current,
         all: all,
-        recordsByQuestion: recordsByQ,
+        formalAttemptsByQuestion: formalByQ,
         folderName: folderName,
       );
       if (_disposed || state.question?.id != current.id) return;
@@ -1015,6 +1039,24 @@ class DetailNotifier extends Notifier<DetailState> {
       );
     } catch (_) {
       // FSRS 状态读不到：「复习状态」行不显示，不挡详情。
+    }
+  }
+
+  /// D-44：复习记录事件到达时只重读当前题的错因记录与解决记录
+  ///（与 [_refreshReviewStatus] 同款 best-effort：读不到保持旧值，
+  /// 不抛、不挡详情；读到后当前题已换（切题/删除）时丢弃本次结果；
+  /// 不碰编辑表单值与 formResetKey，不调全量 load()）。
+  Future<void> _refreshReviewRecords(Question current) async {
+    if (_disposed) return;
+    try {
+      final repo = _repo;
+      final records = await repo.causeRecordsFor(current.id);
+      final history = await repo.reviewHistory(current.id);
+      if (_disposed) return;
+      if (state.question?.id != current.id) return;
+      state = state.copyWith(records: records, history: history);
+    } catch (_) {
+      // 复习记录读不到：保持旧行，不挡详情。
     }
   }
 

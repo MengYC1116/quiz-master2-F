@@ -2501,3 +2501,11 @@ unavailable），kill -9 后新进程可取锁——与实现依据一致。
 - 旧会话兼容（运行时，不动迁移）：`review_state` 里停在旧流程的会话按有无 attempts 客观记录决定完成或重做——看题/作答阶段保留原阶段；核对未提交回到核对步不重复写；已写客观记录视为已完成不重计分；`selfCheck` 阶段映射回核对步再按有无客观记录决定；中途退出续接保留。
 - 会话切换：`review_state` 是单行表，正式复习与专项练习不能互相覆盖——页面已有二选一（继续上次/放弃重开），P2 在 `startSession`/`startPracticeSession` 入口再加兜底守卫：已有未完成会话时直接调用不开新会话、不覆盖断点。
 - 未动：列表的错因分组/已解决区仍按 `cause_records` 状态分流（那是列表模型，不是会话治愈判定）；`cause_records.solvedCount`/`recheckDate` 等字段与旧写入层保留，P5 迁移时再定去留；`settings.cureChecks`/`recheckIntervalDays` 设置项保留（旧写入层与历史数据用），新流程不读。
+
+## D-260 — D-88 残留：resetForTest() 改为重指全新临时目录，不再置 null（2026-11-26，收尾第 4 路）
+
+- 根因（D-234 FR-45 的系统性收口）：旧 `resetForTest()` 把 `testDataDirectory` / `testMarkerDirectory` 置 null，复位后到下一个测试重设之间的窗口里，任何未等待的异步工作读 `dataDirectoryPath()` 都会回落到真实默认数据目录，进而打开／迁移真实演示库；D-234 只堵了 7 个文件的 setUp，`resetForTest` 本身与 29 处直接置 null 的 tearDown 仍留着窗口。
+- 修法（只改测试钩子，产品代码行为不动）：`lib/data/database.dart` 的 `resetForTest()` 先同步 `Directory.systemTemp.createTempSync('qm2-reset-test-data-')` 建全新临时目录并把 `testDataDirectory` 与 `testMarkerDirectory` 同时重指过去，再关旧单例库、清 `_db` / `_dbFuture` / `dbPathUsed`；`startupDataDirectory` 仍置 null（生产启动态，测试钩子非空时 `dataDirectoryPath()` 走不到它）。同步建目录在关库的 await 之前就已生效，窗口不存在；旧临时目录不删——未等待的工作可能还在往里写，删目录会让它写失败；建新目录失败时保留旧的临时目录，绝不回落 null。
+- 扫荡：全仓 29 处 `testDataDirectory = null`（22 个文件，均为 tearDown/tearDownAll 清理，无一处是有意测默认路径）全部改为 `await AppDatabase.resetForTest()`（两处同步 `addTearDown` 内不 await 调用，重指部分同步生效）；`b14_m2` 的 tearDown 前一行已是 reset，直接删掉置 null 行（该文件 CRLF 换行符原样保留）。`b24_android_data_dir_test.dart` 新增 3 项回归测试：reset 后两目录非空且指向新建的不同目录、连续两次 reset 得两个不同目录、reset 后写盘落在新临时目录且真实数据目录无此文件；旧的 reset 测试同步改断言（reset 后 `testDataDirectory` 非空且不等于原值）。各处“reset 置 null”的注释改为历史口径（D-260 前），D-234 的 7 个文件 setUp 仍指自己的临时目录（按已知路径读写切片，行为不变）。
+- 验收：相关 35 文件 578/578（b24 16/16 含新 3 项；其余 34 文件逐文件串行 562 项，0 失败）；`flutter analyze` 0 错误，仅 2 个既有 asset 警告（`assets/models/question/` 目录与 Noto 字体文件本就不在仓库内，模型与字体是 gitignored 本地文件，测试前从父级 worktree 复制，未提交）；全量串行 **3324/3324**（`flutter test --concurrency=1`，33 分 16 秒，日志 `~/workspace/d88-full2.log`）；live 演示库全程未变（md5 `16a24f15f2c59ca5484c99efeaac3dc0`，真实 slices 仍 0）。
+- 环境插曲：首遍相关批量跑到 +138（0 失败）时被 OOM 杀掉（四路并行跑全量争用，D-240 同款）；首遍全量跑到 +2577（0 失败）时被服务重启 SIGTERM 中断；两遍均改逐文件串行／setsid 脱离会话重跑后通过。b14_m5_fix2 单独跑 21 秒即过，证实批量停滞是争用而非改动问题。

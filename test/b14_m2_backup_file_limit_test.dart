@@ -21,7 +21,6 @@ void main() {
 
   tearDown(() async {
     await AppDatabase.resetForTest();
-    AppDatabase.testDataDirectory = null;
     await tmp.delete(recursive: true);
   });
 
