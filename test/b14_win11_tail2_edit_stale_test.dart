@@ -70,7 +70,6 @@ class _Tail2Repo extends QuestionRepository {
   List<Question> questions;
   final List<Question> saved = [];
   SaveToken? lastToken;
-  int syncCauseRecordsCalls = 0;
 
   /// 置真时 save 一律抛 SaveTokenMismatch（模拟“预检通过后、落库前
   /// 底下又变了一次”，验证 saveEdit 的令牌兜底分支）。
@@ -152,11 +151,6 @@ class _Tail2Repo extends QuestionRepository {
     }
   }
 
-  @override
-  Future<void> syncCauseRecords(Question q) async {
-    syncCauseRecordsCalls++;
-  }
-
   /// 详情页自愈（_healSliceIfNeeded）读同页框：无框，不碰真实库（见 D-88）。
   @override
   Future<List<QuestionBox>> boxesForPageImage(String pageImagePath) async =>
@@ -216,7 +210,6 @@ void main() {
       // 非强制保存带版本令牌（期望版本 = 进编辑时看到的版本）。
       expect(repo.lastToken, isNotNull);
       expect(repo.lastToken!.expectedContentVersion, 0);
-      expect(repo.syncCauseRecordsCalls, 1);
     });
 
     test('重算触发过期：保存返回 stale，不写库、不清新内容', () async {
@@ -603,9 +596,6 @@ class _PageRepo extends QuestionRepository {
   Future<void> recordQuestionViewed(String questionId) async {}
 
   @override
-  Future<void> syncCauseRecords(Question q) async {}
-
-  @override
   Future<void> toggleFavorite(Question q) async {
     await save(q.copyWith(isFavorite: !q.isFavorite));
   }
@@ -622,8 +612,8 @@ class _PageRepo extends QuestionRepository {
   }
 
   @override
-  Future<bool> setReviewJoined(Question q, bool joined) async {
-    if (joined && q.allCauses.isEmpty) return false;
+  // FSRS 全量迁移包2：无错因的题也可翻标志（旧空错因守门已删）。
+  Future<bool> setReviewJoinedFlag(Question q, bool joined) async {
     await save(q.copyWith(reviewJoined: joined));
     return true;
   }

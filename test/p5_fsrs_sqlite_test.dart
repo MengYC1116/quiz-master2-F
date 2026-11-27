@@ -342,14 +342,28 @@ void main() {
         "SELECT value FROM settings WHERE key = 'schemaVersion'",
       );
       expect(settings.single['value'], '8');
-      // 全新库的迁移日志：attempts 为空，审计全零，只写一行 completed。
-      final logs = await _rows(dbPath, 'SELECT * FROM fsrs_migration_log');
-      expect(logs.length, 1);
-      expect(logs.single['status'], 'completed');
+      // 全新库的迁移日志：attempts 为空，审计全零；开库两步各写一行
+      // completed（v7→v8 迁移 + 跟进批第 1 项缺卡补建，后者本次无题可补）。
+      final logs = await _rows(
+        dbPath,
+        'SELECT * FROM fsrs_migration_log ORDER BY id ASC',
+      );
+      expect(logs.length, 2);
+      expect(
+        logs.map((r) => r['source']).toList(),
+        ['v7→v8', 'v8-backfill-missing-cards'],
+      );
+      expect(logs.map((r) => r['status']).toSet(), {'completed'});
       final audit =
-          jsonDecode(logs.single['audit_json'] as String) as Map<String, dynamic>;
+          jsonDecode(logs.first['audit_json'] as String)
+              as Map<String, dynamic>;
       expect(audit['attemptsFormalTotal'], 0);
       expect(audit['deterministicReplay'], isTrue);
+      final backfillAudit =
+          jsonDecode(logs.last['audit_json'] as String)
+              as Map<String, dynamic>;
+      expect(backfillAudit['backfilledCount'], 0);
+      expect(backfillAudit['skippedWithCardCount'], 0);
     });
 
     test('内存库建表即 v8：三张新表都在', () async {
@@ -390,13 +404,31 @@ void main() {
       addTearDown(() async => db.close());
       expect(await _count(dbPath, 'PRAGMA user_version'), 8);
 
-      // 审计日志：数字与种子场景逐项一致。
-      final logs = await _rows(dbPath, 'SELECT * FROM fsrs_migration_log');
-      expect(logs.length, 1);
-      expect(logs.single['replayed_count'], 8);
-      expect(logs.single['skipped_count'], 2);
+      // 审计日志：数字与种子场景逐项一致。开库写两行 completed：
+      // v7→v8 重放审计 + 跟进批第 1 项缺卡补建（q3/q5/q7/q9 无卡可重放，
+      // 补建各补一张未开始新卡；5 道重放出卡的题计入跳过）。
+      final logs = await _rows(
+        dbPath,
+        'SELECT * FROM fsrs_migration_log ORDER BY id ASC',
+      );
+      expect(logs.length, 2);
+      final v7v8Log = logs.firstWhere((r) => r['source'] == 'v7→v8');
+      expect(v7v8Log['replayed_count'], 8);
+      expect(v7v8Log['skipped_count'], 2);
       final audit =
-          jsonDecode(logs.single['audit_json'] as String) as Map<String, dynamic>;
+          jsonDecode(v7v8Log['audit_json'] as String) as Map<String, dynamic>;
+      final backfillLog = logs.firstWhere(
+        (r) => r['source'] == 'v8-backfill-missing-cards',
+      );
+      expect(backfillLog['replayed_count'], 4);
+      expect(backfillLog['skipped_count'], 5);
+      final backfillAudit =
+          jsonDecode(backfillLog['audit_json'] as String)
+              as Map<String, dynamic>;
+      expect(
+        (backfillAudit['backfilledQuestionIds'] as List).toSet(),
+        {'q3', 'q5', 'q7', 'q9'},
+      );
       expect(audit['attemptsFormalTotal'], 12);
       expect(audit['attemptsFormalNullCorrect'], 1);
       expect(audit['attemptsFormalVersionMismatch'], 1);
@@ -426,16 +458,21 @@ void main() {
         ..sort();
       expect(legacy, ['q5', 'q7']);
 
-      // 卡片：只建 5 张（q1/q4/q2/q8/q6），card_id 按首次重放顺序 1..5。
+      // 卡片：重放只建 5 张（q1/q4/q2/q8/q6），card_id 按首次重放顺序 1..5；
+      // 跟进批第 1 项补建再给无卡的 q3/q5/q7/q9 各补一张未开始新卡
+      // （card_id 6..9，按题 id 升序，first_reviewed_at 为空）。
       final cards = await _rows(
         dbPath,
         'SELECT question_id, card_id, content_version, first_reviewed_at, next_due_at FROM fsrs_cards ORDER BY card_id ASC',
       );
       expect(
         cards.map((r) => r['question_id']).toList(),
-        ['q1', 'q4', 'q2', 'q8', 'q6'],
+        ['q1', 'q4', 'q2', 'q8', 'q6', 'q3', 'q5', 'q7', 'q9'],
       );
-      expect(cards.map((r) => r['card_id']).toList(), [1, 2, 3, 4, 5]);
+      expect(
+        cards.map((r) => r['card_id']).toList(),
+        [1, 2, 3, 4, 5, 6, 7, 8, 9],
+      );
       final byQ = {for (final c in cards) c['question_id'] as String: c};
       expect(byQ['q1']!['first_reviewed_at'], _t1);
       expect(byQ['q1']!['content_version'], 1);
@@ -445,11 +482,12 @@ void main() {
       expect(byQ['q8']!['first_reviewed_at'], _tQ8);
       expect(byQ['q8']!['content_version'], 3);
       expect(byQ['q6']!['first_reviewed_at'], _tQ6);
-      // q3（版本不匹配）、q5/q7/q9（无可信正式历史）没有卡：不伪造历史。
-      expect(byQ.containsKey('q3'), isFalse);
-      expect(byQ.containsKey('q5'), isFalse);
-      expect(byQ.containsKey('q7'), isFalse);
-      expect(byQ.containsKey('q9'), isFalse);
+      // q3（版本不匹配）、q5/q7/q9（无可信正式历史）：重放不伪造历史，
+      // 没有重放出的卡；跟进批第 1 项补建给它们各补一张未开始新卡
+      // （first_reviewed_at 为空，不是重放出的历史状态）。
+      for (final id in ['q3', 'q5', 'q7', 'q9']) {
+        expect(byQ[id]!['first_reviewed_at'], isNull);
+      }
       // q4 单次 Good：间隔 2 天（P1 官方向量，全 Good 链首间隔）。
       final q4Due = byQ['q4']!['next_due_at'] as int;
       expect(
@@ -482,10 +520,17 @@ void main() {
       // 迁移可重复验证：再跑一次是 no-op，不重复建卡、不重复记日志。
       final second = await migrateFsrsV7ToV8IntoImpl(db);
       expect(second['status'], 'already_migrated');
-      expect(await _count(dbPath, 'SELECT COUNT(*) FROM fsrs_cards'), 5);
+      expect(await _count(dbPath, 'SELECT COUNT(*) FROM fsrs_cards'), 9);
       expect(
         await _count(dbPath, 'SELECT COUNT(*) FROM fsrs_migration_log'),
-        1,
+        2,
+      );
+      // 补建同样幂等：第二遍直接跳过，不写第二行日志。
+      final secondBackfill = await backfillMissingFsrsCardsIntoImpl(db);
+      expect(secondBackfill['status'], 'already_backfilled');
+      expect(
+        await _count(dbPath, 'SELECT COUNT(*) FROM fsrs_migration_log'),
+        2,
       );
       expect(await verifyFsrsConsistencyInto(db), isEmpty);
     });
@@ -505,15 +550,30 @@ void main() {
       final dbB = await AppDatabase.openAt(pathB);
       addTearDown(() async => dbA.close());
       addTearDown(() async => dbB.close());
+      // 确定性只针对重放出的卡：补建的新卡 due 取开库当时时间，
+      // 两次开库的毫秒不同，不逐字比较；只比补建题 id 与未开始状态一致。
       final cardsA = await _rows(
         pathA,
-        'SELECT question_id, card_state_json, next_due_at FROM fsrs_cards ORDER BY question_id',
+        'SELECT question_id, card_state_json, next_due_at FROM fsrs_cards WHERE first_reviewed_at IS NOT NULL ORDER BY question_id',
       );
       final cardsB = await _rows(
         pathB,
-        'SELECT question_id, card_state_json, next_due_at FROM fsrs_cards ORDER BY question_id',
+        'SELECT question_id, card_state_json, next_due_at FROM fsrs_cards WHERE first_reviewed_at IS NOT NULL ORDER BY question_id',
       );
       expect(cardsA, cardsB);
+      final freshA = await _rows(
+        pathA,
+        'SELECT question_id FROM fsrs_cards WHERE first_reviewed_at IS NULL ORDER BY question_id',
+      );
+      final freshB = await _rows(
+        pathB,
+        'SELECT question_id FROM fsrs_cards WHERE first_reviewed_at IS NULL ORDER BY question_id',
+      );
+      expect(
+        freshA.map((r) => r['question_id']).toList(),
+        ['q3', 'q5', 'q7', 'q9'],
+      );
+      expect(freshA, freshB);
     });
 
     test('真实演示库 v2 复制品：9 道题都在，链式升到 v8', () async {
@@ -538,9 +598,14 @@ void main() {
       addTearDown(() async => db.close());
       expect(await _count(dbPath, 'PRAGMA user_version'), 8);
       expect(await _count(dbPath, 'SELECT COUNT(*) FROM questions'), 9);
+      // 开库写两行 completed：v7→v8 重放 + 跟进批第 1 项缺卡补建。
       final logs = await _rows(dbPath, 'SELECT * FROM fsrs_migration_log');
-      expect(logs.length, 1);
-      expect(logs.single['status'], 'completed');
+      expect(logs.length, 2);
+      expect(logs.map((r) => r['status']).toSet(), {'completed'});
+      expect(
+        logs.map((r) => r['source']).toSet(),
+        {'v7→v8', 'v8-backfill-missing-cards'},
+      );
     });
   });
 
@@ -768,6 +833,49 @@ void main() {
             .then((r) => r.data['n']),
         0,
       );
+    });
+
+    test('包 5：submitReviewCheck 不写 review_history（旧行冻结）', () async {
+      // 旧行先有一条历史事实；新流程提交一次正式作答后，review_history
+      // 行数与内容都不变（新流程只写 attempts + FSRS 卡片 + 事件账本）。
+      await db.customInsert(
+        "INSERT INTO review_history (question_id, result, reviewed_at) "
+        "VALUES ('q1', 'solved', 1700000001000)",
+      );
+      final reviewedAt = DateTime.utc(2026, 11, 25, 10);
+      await repo.submitReviewCheck(
+        attempt: _attempt(
+          id: 'att-h1',
+          questionId: 'q1',
+          sessionId: 'sess-h1',
+          mode: '到期复习',
+          correct: 1,
+          contentVersion: 2,
+          submissionId: 'attsub-h1',
+          createdAt: reviewedAt.millisecondsSinceEpoch,
+        ),
+        result: ReviewResult.good,
+        reviewedAt: reviewedAt,
+        eventId: 'attsub-h1',
+        scheduler: scheduler,
+      );
+      expect(
+        await db
+            .customSelect('SELECT COUNT(*) AS n FROM review_history')
+            .getSingle()
+            .then((r) => r.data['n']),
+        1,
+      );
+      final row = (await db
+              .customSelect(
+                'SELECT result, reviewed_at FROM review_history WHERE question_id = ?',
+                variables: [Variable.withString('q1')],
+              )
+              .getSingle())
+          .data;
+      expect(row['result'], 'solved');
+      expect(row['reviewed_at'], 1700000001000);
+      expect(await verifyFsrsConsistencyInto(db), isEmpty);
     });
   });
 
@@ -1106,12 +1214,9 @@ void main() {
           contentVersion: 1,
         ),
       );
-      await AppDatabase.syncCauseRecordsInto(
-        db,
-        (await AppDatabase.allQuestionsFrom(db)).singleWhere(
-          (e) => e.id == 'q1',
-        ),
-      );
+      // FSRS 全量迁移包2：播种（syncCauseRecordsInto）已删；策略 A 的
+      // 恢复校验不读 cause_records，保存的错因只要在题身上就保留，
+      // 此处不再需要先种一条记录。
       final repo = QuestionRepository(AppDatabase.instance);
       await repo.saveReviewState(
         queue: const [ReviewQueueItem(questionId: 'q1', cause: '概念不清')],

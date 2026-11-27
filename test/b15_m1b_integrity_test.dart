@@ -80,7 +80,7 @@ void main() {
       );
     });
 
-    test('SKIPPED：无 OCR 结果 / 题干缺失 / 选项无法派生', () {
+    test('SKIPPED：无 OCR 结果 / 题干缺失 / 无法确定选项', () {
       expect(
         classifyC(printable: false),
         IntegrityStatus.skipped,

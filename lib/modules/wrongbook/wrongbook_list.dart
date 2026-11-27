@@ -41,7 +41,7 @@ String stripLatexForRow(String text) {
 extension _WrongbookListBuild on _WrongbookViewState {
   /// 十九批 A1：L1 列表页（命令面板式，一比一复刻板子 §1）。
   ///
-  /// 自上而下：页头（标题＋← 目录 / 合上 ✕，二十三批 D-250 从
+  /// 自上而下：页头（标题＋← 目录 / ← 书架＋合上 ✕，二十三批 D-250 从
   /// 十七批版恢复）→ 副标题 → 大搜索框 → 范围说明行 →
   /// 「我的查找」行 → 「最近搜过」行 → 结果头（标题＋计数＋
   /// 排序＋筛选＋批量）→ 导出模式入口 / 提示条 → 筛选面板
@@ -96,14 +96,12 @@ extension _WrongbookListBuild on _WrongbookViewState {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 _buildListHeader(title, scale),
-                _pageSubtitle('这一科的题目列表，点一道题进题目详情；筛选里没有文件夹，文件夹在目录页选。'),
                 _buildBigSearch(),
                 _buildSavedSearchRow(),
                 _buildRecentSearchRow(),
                 _buildResultHead(all.length),
                 _buildExportToggle(),
                 if (_s.filterOpen) _buildFilterPanel(),
-                if (!_s.inBookArchived) _buildMasteredNote(),
                 if (_s.inBookArchived) _buildArchBar(all.length),
                 if (_s.batchMode && !_s.inBookArchived) _buildBatchBar(all),
                 _buildListBody(items, orderIds),
@@ -123,15 +121,17 @@ extension _WrongbookListBuild on _WrongbookViewState {
     );
   }
 
-  /// 列表页头（标题 + 目录 / 合上按钮）：二十三批 D-250 从十七批版
-  /// （c086ca8）原样恢复。「← 目录」：有学科进目录、无学科回书架；
+  /// 列表页头（标题 + 目录 / 书架 / 合上按钮）：二十三批 D-250 从十七批版
+  /// （c086ca8）原样恢复，文案走查 P4 改标签随状态走：有学科时「← 目录」
+  /// 进目录，无学科（跨学科列表）时「← 书架」回书架；去向本身不
+  /// 变（b23 有覆盖：有学科回目录、无学科回书架）。
   /// 「合上 ✕」：回书架。
   Widget _buildListHeader(String title, double scale) {
     return Row(
       children: [
         Expanded(child: _pageTitle(title)),
         QmButton(
-          label: '← 目录',
+          label: _sr.subjectId != null ? '← 目录' : '← 书架',
           variant: QmButtonVariant.plain,
           onPressed: () {
             if (_sr.subjectId != null) {
@@ -457,37 +457,37 @@ extension _WrongbookListBuild on _WrongbookViewState {
     );
   }
 
-  /// 行状态 pill（板子 §1.4，四态配色；解决中带自查进度
-  /// `解决中 · ✓n/m`，m = 设置 cureChecks，n = 首个未治愈错因的
-  /// 已解决自查次数；待复查 pill 字重 600）。
+  /// 行状态 pill（FSRS 全量迁移包 4）：整颗换成 FSRS 状态，复用
+  /// 详情页的 [reviewStatusPillLabel] / [reviewDueLabel]——
+  /// 未加入复习 / 未开始 / 已到期·下次到期 M月M日 /
+  /// 未到期·下次到期 M月M日；配色与详情页整体状态 pill 同口径
+  ///（已到期红、未到期蓝、未开始黄、未加入复习灰）。
   Widget _statusPill(Question q) {
-    final status = _s.causeStatusOf(q);
-    final (bg, fg, label, bold) = switch (status) {
-      'inProgress' => (
-        const Color(0xFFFFF4D6),
-        const Color(0xFF8A6D00),
-        '解决中 · ✓${_inProgressCount(q)}/${_s.cureChecks}',
-        false,
-      ),
-      'solved' => (
-        const Color(0xFFE2F5EC),
-        const Color(0xFF0B7A55),
-        '已解决',
-        false,
-      ),
-      'recheck' => (
-        const Color(0xFFE1EDFF),
-        const Color(0xFF2E7CF6),
-        '待复查',
-        true,
-      ),
-      _ => (
+    final rs = _s.fsrsReviewStatusOf(q);
+    final label = reviewStatusPillLabel(rs);
+    final (bg, fg, bold) = switch (label) {
+      '已到期' => (
         const Color(0xFFFDECEC),
         const Color(0xFFC62828),
-        '待解决',
+        true,
+      ),
+      '未到期' => (
+        const Color(0xFFE1EDFF),
+        const Color(0xFF2E7CF6),
+        false,
+      ),
+      '未开始' => (
+        const Color(0xFFFFF4D6),
+        const Color(0xFF8A6D00),
+        false,
+      ),
+      _ => (
+        const Color(0xFFEEF2F7),
+        const Color(0xFF64748B),
         false,
       ),
     };
+    final text = rs.nextDueAt == null ? label : '$label · ${reviewDueLabel(rs)}';
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 9),
       height: 22,
@@ -497,7 +497,7 @@ extension _WrongbookListBuild on _WrongbookViewState {
         borderRadius: BorderRadius.circular(999),
       ),
       child: Text(
-        label,
+        text,
         style: TextStyle(
           fontSize: 12,
           color: fg,
@@ -508,34 +508,18 @@ extension _WrongbookListBuild on _WrongbookViewState {
     );
   }
 
-  /// 首个未治愈错因的已解决自查次数（状态 pill `✓n/m` 里的 n）。
-  int _inProgressCount(Question q) {
-    final rs = _s.recordsByQ[q.id];
-    if (rs == null) return 0;
-    for (final r in rs) {
-      if (r.status != CauseStatus.solved) return r.solvedCount;
-    }
-    return 0;
-  }
-
-  /// 逾期天数（0 = 未逾期）：到复查时间的错因里，复查日距今天最远的。
+  /// 逾期天数（0 = 未逾期）：FSRS 下次到期日距今天的日历天数；
+  /// 到期日在今天或未来不算逾期（与复习列表“逾期”桶同口径：
+  /// 到期日严格早于今天）。
   int _overdueDays(Question q) {
-    final rs = _s.recordsByQ[q.id];
-    if (rs == null) return 0;
+    final due = _s.fsrsNextDueAt(q);
+    if (due == null) return 0;
     final now = DateTime.now();
     final today = DateTime(now.year, now.month, now.day);
-    var max = 0;
-    for (final r in rs) {
-      if (!r.isRecheckDue || r.recheckDate == null) continue;
-      final d = DateTime(
-        r.recheckDate!.year,
-        r.recheckDate!.month,
-        r.recheckDate!.day,
-      );
-      final days = today.difference(d).inDays;
-      if (days > max) max = days;
-    }
-    return max;
+    final d = due.toLocal();
+    final dueDay = DateTime(d.year, d.month, d.day);
+    final days = today.difference(dueDay).inDays;
+    return days > 0 ? days : 0;
   }
 
   /// 命中高亮（板子 `.hl`：#FFF1B8 底、圆角 3）：在 [text] 里按
@@ -655,15 +639,16 @@ extension _WrongbookListBuild on _WrongbookViewState {
   /// - 已归档视图空 → 归档文案（旧文案不动）；
   /// - 范围本身没题（文件夹 / 学科是空的）→ 文件夹为空文案 + 去收集 /
   ///   去整理的引导，不再冒充搜索无结果；
-  /// - 范围有题、但无搜索无筛选还为空 → 只剩“全部已解决被默认隐藏”这
-  ///   一种可能，给看已解决的入口；
+  /// - 范围有题时无搜索无筛选列表必非空（FSRS 全量迁移包 4 取消
+  ///   默认隐藏后，不再有“范围有题但列表为空”的情形）；
   /// - 其余（搜不到 / 筛不到）→ 搜索无结果文案（旧文案不动）。
   ///
   /// D-32（Meng 2026-11-16 定：改按钮不改文案）：范围为空时，
   /// `onGoCollect` / `onGoOrganize` 都接通时动作位是“去收集”
   ///（主按钮，进 /collect）+“去整理”（次按钮，进 /organize）；
   /// 任一回调未接通（如测试里没传）时回落到旧的单按钮
-  /// “返回目录 / 返回书架”。页头已有“← 目录 / 合上 ✕”，
+  /// “返回目录 / 返回书架”（走查 P4：标签跟实际去向走，只有学科时
+  /// 才说“返回目录”）。页头已有“← 目录 / ← 书架 / 合上 ✕”，
   /// 返回入口不丢。
   ({
     String title,
@@ -685,16 +670,12 @@ extension _WrongbookListBuild on _WrongbookViewState {
       );
     }
     if (_s.scopeQuestionCount() == 0) {
-      final back = _s.folderId != null || _s.subjectId != null
+      // 走查 P4：标签跟实际去向走——只有学科时才说“返回目录”（回本科
+      // 目录）；只有文件夹、无学科时实际回书架，就说“返回书架”。
+      final back = _s.subjectId != null
           ? (
               label: '返回目录',
-              go: () {
-                if (_sr.subjectId != null) {
-                  _openDirectory(_sr.subjectId!);
-                } else {
-                  _openShelf();
-                }
-              },
+              go: () => _openDirectory(_sr.subjectId!),
             )
           : (label: '返回书架', go: _openShelf);
       // D-32：双入口齐全时用“去收集 / 去整理”替代返回按钮。
@@ -710,7 +691,7 @@ extension _WrongbookListBuild on _WrongbookViewState {
       if (_s.folderId != null) {
         return (
           title: '这个文件夹还是空的',
-          desc: '这里还没有整理进来的题。去收集中心拍一道题，或去整理工作台把待整理的题归到这个文件夹。',
+          desc: '这里还没有整理进来的题。去收集中心导入一道题，或去整理工作台把待整理的题归到这个文件夹。',
           action: collectGo?.action ?? back.label,
           onAction: collectGo?.onAction ?? back.go,
           secondaryAction: collectGo?.secondaryAction,
@@ -720,7 +701,7 @@ extension _WrongbookListBuild on _WrongbookViewState {
       if (_s.subjectId != null) {
         return (
           title: '这科里还没有错题',
-          desc: '这科里还没有整理进来的题。去收集中心拍一道题，或去整理工作台把待整理的题归进来。',
+          desc: '这科里还没有整理进来的题。去收集中心导入一道题，或去整理工作台把待整理的题归进来。',
           action: collectGo?.action ?? back.label,
           onAction: collectGo?.onAction ?? back.go,
           secondaryAction: collectGo?.secondaryAction,
@@ -729,25 +710,17 @@ extension _WrongbookListBuild on _WrongbookViewState {
       }
       return (
         title: '错题本里还没有题',
-        desc: '去收集中心拍第一道题吧。',
+        desc: '去收集中心导入第一道题吧。',
         action: collectGo?.action ?? back.label,
         onAction: collectGo?.onAction ?? back.go,
         secondaryAction: collectGo?.secondaryAction,
         onSecondaryAction: collectGo?.onSecondaryAction,
       );
     }
-    if (!_s.hasSearchOrFilter()) {
-      return (
-        title: '这里的题错因都已解决',
-        desc: '错因全部解决的题默认不显示，在「筛选」里把错因状态选成「已解决」就能看到它们。',
-        action: '看看已解决的题',
-        onAction: () => _n.update(
-          (st) => st.copyWith(filterCauseStatus: 'solved', page: 0),
-        ),
-        secondaryAction: null,
-        onSecondaryAction: null,
-      );
-    }
+    // FSRS 全量迁移包 4（V6）：旧“这里的题错因都已解决”分支已删——
+    // 默认隐藏规则取消后，无搜索无筛选时列表与范围同口径：范围有题
+    // 则列表必非空（空态到不了这里），范围无题已由上方的
+    // scopeQuestionCount() == 0 分支接住。
     return (
       title: '没找到这道题，换个词试试',
       desc: '这一科里没有符合当前搜索与筛选的题。',
@@ -829,58 +802,7 @@ extension _WrongbookListBuild on _WrongbookViewState {
             ],
           ),
         ),
-        // 范围说明行（板子 `.scope-note`，12.5px #64748B）：
-        // 板子原文还提到页面右下角的「试试命令面板」浮动按钮，
-        // 该按钮是演示用呼出方式、不进应用（协调员决策），这里
-        // 只保留“搜索范围 + 点 Ctrl+K 呼出面板”两层意思，
-        // Ctrl/K 浅色 kbd 可点（框内深色 kbd 二十一批已去掉）。
-        Padding(
-          padding: EdgeInsets.only(top: 8 * scale, left: 2 * scale),
-          child: Wrap(
-            crossAxisAlignment: WrapCrossAlignment.center,
-            children: [
-              Text(
-                '可搜标题、题干、选项、答案、解析、备注，也搜文件夹、标签、错因、知识点、试卷。点 ',
-                style: TextStyle(fontSize: 12.5, color: palette.muted),
-              ),
-              GestureDetector(
-                onTap: _openCommandPalette,
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    _kbd('Ctrl', light: true),
-                    SizedBox(width: 4 * scale),
-                    _kbd('K', light: true),
-                  ],
-                ),
-              ),
-              Text(
-                ' 呼出命令面板。',
-                style: TextStyle(fontSize: 12.5, color: palette.muted),
-              ),
-            ],
-          ),
-        ),
       ],
-    );
-  }
-
-  /// kbd（板子 §1.2）：深色版 #17233B 底白字；浅色版（`kbd.lt`）
-  /// #E8EDF3 底 #475569 字；圆角 5、内边距 1/6、字号 11.5。
-  Widget _kbd(String text, {bool light = false}) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
-      decoration: BoxDecoration(
-        color: light ? const Color(0xFFE8EDF3) : const Color(0xFF17233B),
-        borderRadius: BorderRadius.circular(5),
-      ),
-      child: Text(
-        text,
-        style: TextStyle(
-          fontSize: 11.5,
-          color: light ? const Color(0xFF475569) : Colors.white,
-        ),
-      ),
     );
   }
 
@@ -1103,8 +1025,8 @@ extension _WrongbookListBuild on _WrongbookViewState {
       'old' => '收集时间 旧 → 新',
       'subj-asc' || 'subject' => '学科首字母 A → Z',
       'subj-desc' => '学科首字母 Z → A',
-      'status-asc' => '错因状态 待解决 → 已解决',
-      'status-desc' => '错因状态 已解决 → 待解决',
+      'due-asc' => '到期时间 最近到期 → 最晚到期',
+      'due-desc' => '到期时间 最晚到期 → 最近到期',
       _ => '收集时间 新 → 旧',
     };
     return Padding(
@@ -1148,12 +1070,12 @@ extension _WrongbookListBuild on _WrongbookViewState {
                   child: Text('排序：学科首字母 Z → A'),
                 ),
                 DropdownMenuItem(
-                  value: 'status-asc',
-                  child: Text('排序：错因状态 待解决 → 已解决'),
+                  value: 'due-asc',
+                  child: Text('排序：到期时间 最近到期 → 最晚到期'),
                 ),
                 DropdownMenuItem(
-                  value: 'status-desc',
-                  child: Text('排序：错因状态 已解决 → 待解决'),
+                  value: 'due-desc',
+                  child: Text('排序：到期时间 最晚到期 → 最近到期'),
                 ),
               ],
               onChanged: (v) {
@@ -1249,10 +1171,10 @@ extension _WrongbookListBuild on _WrongbookViewState {
     if (causeStatus != null) {
       parts.add(
         switch (causeStatus) {
-          'pending' => '待解决',
-          'inProgress' => '解决中',
-          'solved' => '已解决',
-          'recheck' => '待复查',
+          'due' => '已到期',
+          'notDue' => '未到期',
+          'notStarted' => '未开始',
+          'notJoined' => '未加入复习',
           _ => causeStatus,
         },
       );
@@ -1307,7 +1229,7 @@ extension _WrongbookListBuild on _WrongbookViewState {
   /// searchContext（A6）：行点按时拼的查询描述——学科名 / 错因名 /
   /// 状态 / 搜索关键词，非空部分用 ` · ` 连接；全空为「全部题目」。
   /// 错因名取 filterCauseName（报告深链）或 filterErrorType
-  ///（错误类型筛选），状态取 filterCauseStatus 的中文。
+  ///（错误类型筛选），状态取 filterReviewStatus 的中文。
   String _searchContext() {
     final parts = <String>[];
     if (_s.subjectId != null) {
@@ -1315,14 +1237,14 @@ extension _WrongbookListBuild on _WrongbookViewState {
     }
     final cause = _s.filterCauseName ?? _s.filterErrorType;
     if (cause != null) parts.add(cause);
-    if (_s.filterCauseStatus != 'all') {
+    if (_s.filterReviewStatus != 'all') {
       parts.add(
-        switch (_s.filterCauseStatus) {
-          'pending' => '待解决',
-          'inProgress' => '解决中',
-          'solved' => '已解决',
-          'recheck' => '待复查',
-          _ => _s.filterCauseStatus,
+        switch (_s.filterReviewStatus) {
+          'due' => '已到期',
+          'notDue' => '未到期',
+          'notStarted' => '未开始',
+          'notJoined' => '未加入复习',
+          _ => _s.filterReviewStatus,
         },
       );
     }
@@ -1369,49 +1291,12 @@ extension _WrongbookListBuild on _WrongbookViewState {
               ),
             ],
           ),
-          Container(
-            key: const Key('export-mode-hint'),
-            margin: EdgeInsets.only(top: 10 * scale, bottom: 10 * scale),
-            padding: EdgeInsets.symmetric(
-              horizontal: 12 * scale,
-              vertical: 6 * scale,
-            ),
-            decoration: BoxDecoration(
-              color: const Color(0xFFFFF4D6),
-              borderRadius: BorderRadius.circular(8 * scale),
-            ),
-            child: const Text(
-              '导出模式中：点一行即选中（不会进详情），选中行蓝底、右端出现 ✓；再点一次取消。',
-              style: TextStyle(fontSize: 13, color: Color(0xFF8A6D00)),
-            ),
-          ),
         ],
       );
     }
     // 二十一批 D-243：入口已搬进结果头（「导出打印」chip），
     // 平时这里不画东西；模式里的取消/导出（n）+ 提示条见上。
     return const SizedBox.shrink();
-  }
-
-  /// 命令面板（十九批 A4）：本页内呼出（大搜索框 Ctrl+K kbd、
-  /// scope-note kbd）；选中后直接应用（已在错题本，不用走
-  /// app 层的 pending 机制），toast 用板子文案。
-  void _openCommandPalette() {
-    unawaited(
-      showDialog<void>(
-        context: context,
-        barrierColor: const Color.fromRGBO(15, 23, 42, 0.45),
-        barrierDismissible: true,
-        builder: (dctx) => CommandPalette(
-          repo: ref.read(repositoryProvider),
-          onApply: (conditions, label) => _applySearchConditions(
-            conditions,
-            label: label,
-            toast: '已用命令面板打开查找：$label',
-          ),
-        ),
-      ),
-    );
   }
 
   Widget _buildFilterPanel() {
@@ -1513,25 +1398,31 @@ extension _WrongbookListBuild on _WrongbookViewState {
                   ),
                 ),
                 cell(
-                  '错因状态',
+                  '复习状态',
                   _styledDropdown<String>(
-                    value: _s.filterCauseStatus,
+                    value: _s.filterReviewStatus,
                     items: const [
                       DropdownMenuItem(value: 'all', child: Text('全部')),
-                      DropdownMenuItem(value: 'pending', child: Text('待解决')),
-                      DropdownMenuItem(value: 'inProgress', child: Text('解决中')),
-                      DropdownMenuItem(value: 'solved', child: Text('已解决')),
-                      DropdownMenuItem(value: 'recheck', child: Text('复查')),
+                      DropdownMenuItem(value: 'due', child: Text('已到期')),
+                      DropdownMenuItem(value: 'notDue', child: Text('未到期')),
+                      DropdownMenuItem(
+                        value: 'notStarted',
+                        child: Text('未开始'),
+                      ),
+                      DropdownMenuItem(
+                        value: 'notJoined',
+                        child: Text('未加入复习'),
+                      ),
                     ],
                     onChanged: (v) {
-                      if (v != null) _n.setFilterCauseStatus(v);
+                      if (v != null) _n.setFilterReviewStatus(v);
                     },
                   ),
                 ),
                 // 十四批 M1：题型筛选（全部 + 待确认 + 17 个类型；
                 // 待确认筛 questionType == null，见 notifier 的 '' 口径）。
                 // 放面板末尾：既有测试按序号点下拉（.at(3) 收集时间、
-                // .at(4) 错因状态），插中间会移位，末尾不影响。
+                // .at(4) 复习状态），插中间会移位，末尾不影响。
                 cell(
                   '题型',
                   _styledDropdown<String>(
@@ -1686,38 +1577,6 @@ extension _WrongbookListBuild on _WrongbookViewState {
     );
   }
 
-  /// “错因全部已解决的题默认不显示”的提示（HTML `viewNotebook`）。
-  /// 计数与当前列表范围同口径（SR-P2-38 决定 (a)）：在文件夹列表里
-  /// 只数该文件夹子树里的已掌握题，不再用整科数。
-  Widget _buildMasteredNote() {
-    if (_s.filterCauseStatus == 'solved') return const SizedBox.shrink();
-    final folderIds = _s.folderId == null ? null : _s.subtreeIds(_s.folderId!);
-    final hidden = _s.questions
-        .where(
-          (q) =>
-              q.isOrganized &&
-              !q.isArchived &&
-              (_s.subjectId == null || q.subjectId == _s.subjectId) &&
-              (folderIds == null ||
-                  q.folderIds.any((id) => folderIds.contains(id))) &&
-              _s.isMastered(q),
-        )
-        .length;
-    if (hidden == 0) return const SizedBox.shrink();
-    final scale = qmScaleOf(context);
-    final palette = DesignTokens.of(Theme.of(context).brightness);
-    final scope = _s.folderId != null
-        ? '这个文件夹里'
-        : (_s.subjectId == null ? '' : '这科');
-    return Padding(
-      padding: EdgeInsets.only(bottom: 10 * scale),
-      child: Text(
-        '$scope错因已全部解决 $hidden 道默认不显示（在「筛选」里把错因状态选成「已解决」可看）',
-        style: TextStyle(fontSize: 12.5, color: palette.muted),
-      ),
-    );
-  }
-
   Widget _buildArchBar(int count) {
     final scale = qmScaleOf(context);
     final palette = DesignTokens.of(Theme.of(context).brightness);
@@ -1754,15 +1613,17 @@ extension _WrongbookListBuild on _WrongbookViewState {
 
   /// 方案 A 批量栏：单行工具条（替代旧三行平铺面板）。
   ///
-  /// 左：已选文案 +「选择 ▾」（全选当前结果 / 勾选当前页 /
-  /// 全选全部筛选结果 / 清除选择）；中：「整理 ▾」（移入文件夹 ▸ /
+  /// 左：已选文案 +「选择 ▾」（全选（整理、复习、删除） / 勾选当前页（仅复习） /
+  /// 全选（仅复习） / 清除选择）；中：「整理 ▾」（移入文件夹 ▸ /
   /// 移出当前文件夹 / 加标签 / 收藏 / 归档）、「复习 ▾」（加入复习 /
   /// 全部加入复习 / 立即专项练习 / 取消加入复习）；右：批量删除
   /// （两段确认）+ 退出批量。导出打印在标题行，不动。
   ///
-  /// 「全选当前结果」与「勾选当前页」不是同一动作（前者把全部筛
-  /// 选结果同时填进通用选择与加题选择、可 toggle；后者只把当页
-  /// 题加进加题选择），两个都保留。「全部加入复习」按 2026-11-25
+  /// 选择菜单三项按「范围 × 适用操作」区分（文案走查 P2）：「全选（整理、
+  /// 复习、删除）」把全部筛选结果同时填进通用选择与加题选择、可
+  /// toggle，整理 / 删除 / 复习都能用；「全选（仅复习）」同样是全部
+  /// 筛选结果、但只填加题选择；「勾选当前页（仅复习）」只把当页题加
+  /// 进加题选择。三项都保留。「全部加入复习」按 2026-11-25
   /// Meng 定“两按钮都加”放回：与“加入复习”不是同一动作（前者
   /// 作用域是全部筛选结果、不用先勾选，后者只作用于已勾选）。
   ///
@@ -1770,8 +1631,7 @@ extension _WrongbookListBuild on _WrongbookViewState {
   /// 复习读加题选择（reviewEffectiveIds），选择 / 退出始终可用。
   /// 0 选时整理 / 删除禁用；复习菜单保持可点，里面只有「全部加
   /// 入复习」可用（它只要筛选结果非空就启用，不需要勾选）。行内
-  /// 勾选与全选当前结果同步两套选择，选中后四项全启用。只用「勾
-  /// 选当前页」时复习启用、整理 / 删除仍禁用——旧栏原样行为（旧
+  /// 勾选与全选（整理、复习、删除）同步两套选择，选中后四项全启用。只用「勾选当前页（仅复习）」时复习启用、整理 / 删除仍禁用——旧栏原样行为（旧
   /// 栏整理按钮同样只认通用选择）。
   Widget _buildBatchBar(List<Question> all) {
     final scale = qmScaleOf(context);
@@ -1806,17 +1666,17 @@ extension _WrongbookListBuild on _WrongbookViewState {
             menuStyle: menuStyle,
             children: [
               _batchMenuItem(
-                label: '全选当前结果',
+                label: '全选（整理、复习、删除）',
                 style: itemStyle,
                 onPressed: () => _toggleSelectAll(all),
               ),
               _batchMenuItem(
-                label: '勾选当前页',
+                label: '勾选当前页（仅复习）',
                 style: itemStyle,
                 onPressed: () => _n.selectReviewPage(_reviewPageItems(all)),
               ),
               _batchMenuItem(
-                label: '全选全部筛选结果',
+                label: '全选（仅复习）',
                 style: itemStyle,
                 onPressed:
                     all.isNotEmpty ? _n.selectReviewAllFiltered : null,
@@ -2037,7 +1897,7 @@ extension _WrongbookListBuild on _WrongbookViewState {
     );
   }
 
-  /// P3 入口 1“勾选当前页”用的当页题（与 _buildList 的分页同口径）。
+  /// P3 入口 1“勾选当前页（仅复习）”用的当页题（与 _buildList 的分页同口径）。
   List<Question> _reviewPageItems(List<Question> all) {
     final totalPages = (all.length / _s.pageSize).ceil().clamp(1, 9999);
     final page = _s.page.clamp(0, totalPages - 1);

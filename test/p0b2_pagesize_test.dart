@@ -53,7 +53,6 @@ class FakeP0B2Repo extends QuestionRepository {
         questionId: 'p$i',
         cause: '分页错因 $i',
         subjectId: 'math',
-        status: CauseStatus.pending,
         joinedAt: DateTime(2026, 11, 10).add(Duration(minutes: i)),
       ),
   ];
@@ -250,10 +249,10 @@ void main() {
     testWidgets('复习页改 10→20：设置默认值不变，错题本首次打开仍是 10 条/页', (tester) async {
       final repo = FakeP0B2Repo();
       await pumpReviewP0B2(tester, repo: repo);
-      expect(find.text('共 15 条 · 第 1 / 2 页'), findsOneWidget);
+      expect(find.text('共 15 道 · 第 1 / 2 页'), findsOneWidget);
 
       await pickPageSize(tester, 20);
-      expect(find.text('共 15 条 · 第 1 / 1 页'), findsOneWidget);
+      expect(find.text('共 15 道 · 第 1 / 1 页'), findsOneWidget);
       // 本地行为：不写库、设置默认值仍是 10。
       expect(repo.settingsValue.pageSize, 10);
       expect(repo.saveSettingsCalls, 0);
@@ -302,7 +301,7 @@ void main() {
 
       // 复习页首次打开跟新默认 20。
       await pumpReviewP0B2(tester, repo: repo);
-      expect(find.text('共 15 条 · 第 1 / 1 页'), findsOneWidget);
+      expect(find.text('共 15 道 · 第 1 / 1 页'), findsOneWidget);
       expect(
         find.byWidgetPredicate(
           (w) => w is DropdownButton<int> && w.value == 20,

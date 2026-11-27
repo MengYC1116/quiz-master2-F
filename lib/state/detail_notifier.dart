@@ -268,9 +268,14 @@ class DetailReviewStatus {
 /// 题目级复习状态的「下次到期」文案（纯函数，可单测）：
 /// 有下次到期时间 →「下次到期 M月M日」；在池里但未开始正式复习 →
 ///「未开始」；不在池里 →「未加入复习」。
+/// 月日取本地时区（调度器内部仍用 UTC 存 due，显示前先 toLocal，
+/// 与列表 [fsrsCardStatusText] / [_overdueDays] 同口径，D-跟进⑦）。
 String reviewDueLabel(DetailReviewStatus s) {
   final due = s.nextDueAt;
-  if (due != null) return '下次到期 ${due.month}月${due.day}日';
+  if (due != null) {
+    final local = due.toLocal();
+    return '下次到期 ${local.month}月${local.day}日';
+  }
   if (s.inPool) return '未开始';
   return '未加入复习';
 }
@@ -389,10 +394,9 @@ class DetailState {
     // Win11 反馈包 5：编辑表单里的选项文字（enterEdit 时从当前题读）。
     this.editOptionContents,
     this.formResetKey = 0,
-    // 复查间隔（设置 3 / 7 / 14 天，默认 7，D-05）；设置项已隐藏
-    //（面 3），详情页文案不再用它拼（到期改走 FSRS 下次到期）。
-    // 字段保留：`load()` 仍读库，供设置读回。
-    this.recheckIntervalDays = 7,
+    // FSRS 全量迁移包 7：`recheckIntervalDays`（复查间隔）已随
+    // `AppSettings` 同名字段删除——详情页文案不再用它拼（到期改走
+    // FSRS 下次到期），`load()` 也不再读设置里的旧键。
     // 十三批 M5：当前题的 OCR 任务行与 key 有无（识别题干状态推导用）。
     this.ocrJobs = const [],
     this.hasOcrApiKey = false,
@@ -435,10 +439,6 @@ class DetailState {
   /// 新学科显示成“数学”）。B8-1 扫尾：空表是删光学科后的合法状态，
   /// 不再回退预设三科；首帧与读库后都以真实列表为准，空就是空。
   final List<Subject> subjects;
-
-  /// 复查间隔天数（设置项，见构造函数注释；默认 7 天；设置项已隐藏，
-  /// 用户可见文案不再用它）。
-  final int recheckIntervalDays;
 
   /// 十三批 M5：当前题的 OCR 任务行（最新在前）与设置里是否已存
   /// BigModel key。只供识别题干状态推导（[OcrStemSection]）用。
@@ -527,7 +527,6 @@ class DetailState {
     bool? editOptionLabelsJustConfirmed,
     Object? editOptionContents = _unset,
     int? formResetKey,
-    int? recheckIntervalDays,
     List<OcrJob>? ocrJobs,
     bool? hasOcrApiKey,
     bool? ocrEnqueueFailed,
@@ -574,7 +573,6 @@ class DetailState {
           ? this.editOptionContents
           : editOptionContents as Map<String, String>?,
       formResetKey: formResetKey ?? this.formResetKey,
-      recheckIntervalDays: recheckIntervalDays ?? this.recheckIntervalDays,
       ocrJobs: ocrJobs ?? this.ocrJobs,
       hasOcrApiKey: hasOcrApiKey ?? this.hasOcrApiKey,
       ocrEnqueueFailed: ocrEnqueueFailed ?? this.ocrEnqueueFailed,
@@ -693,8 +691,6 @@ class DetailNotifier extends Notifier<DetailState> {
     final tags = await repo.tags();
     final kps = await repo.knowledgePoints();
     final subjects = await repo.subjects();
-    // FR-09：复查间隔随详情页一起读库（与复习页 / 报告页同款读法）。
-    final settings = await repo.settings();
     if (_disposed) return;
     // 十三批 P1-2：load() 会重建 state——入队失败标志必须按题 id
     // 显式算出来再写进 copyWith，否则 load() 一跑标志就被刷掉，
@@ -712,7 +708,6 @@ class DetailNotifier extends Notifier<DetailState> {
       allTags: tags,
       kps: kps,
       subjects: subjects,
-      recheckIntervalDays: settings.recheckIntervalDays,
       loading: false,
       ocrEnqueueFailed: keepEnqueueFailed,
       // 十九批 D1：换题/重读先清空右栏，_refreshRelated 读到后再填
@@ -1571,9 +1566,10 @@ class DetailNotifier extends Notifier<DetailState> {
     final typed = state.editQuestionType == base.questionType
         ? updated
         : withManualQuestionType(updated, state.editQuestionType);
-    // FR-02：save 先发角标事件、syncCauseRecords 后写库时，角标重读
-    // 可能抢在同步提交前；与 joinReviewBatch 同款用 scope 包起来，
-    // 事件在同步提交后才合并发出一次。
+    // FR-02：save 先发角标事件，角标重读可能抢在提交前；与
+    // joinReviewBatch 同款用 scope 包起来，事件在提交后才合并发出一次。
+    // FSRS 全量迁移包2：cause_records 同步调用已删除（状态列冻结，
+    // 错因改动不再同步写 cause_records）。
     try {
       await DataChangeBus.instance.scope(() async {
         await repo.save(
@@ -1585,7 +1581,6 @@ class DetailNotifier extends Notifier<DetailState> {
                   expectedContentVersion: base.contentVersion,
                 ),
         );
-        await repo.syncCauseRecords(typed);
       });
     } on SaveTokenMismatch {
       // 预检与落库之间底下又变了：令牌在事务内拦下、零写入。
@@ -1646,14 +1641,15 @@ class DetailNotifier extends Notifier<DetailState> {
   }
 
   /// 加入 / 取消加入复习（原 `_toggleReviewJoined`）：
-  /// 返回 false 时页面弹“先补错误类型”（未加入且无错因，或写库
-  /// 返回 false）。成功后重读；写库已发变更事件。
+  /// 无题或写库返回 false 时返回 false；成功后重读；写库已发变更事件。
+  /// FSRS 全量迁移包2：只翻 `review_joined` 标志（不播种 cause_records），
+  /// 建卡仍走后台 best-effort initializeQuestion；无错因的题也可加入
+  ///（FSRS 按题，不按错因；与批量加入一致，详情页不再设“先补错因”门）。
   Future<bool> toggleReviewJoined() async {
     final q = state.question;
     if (q == null) return false;
     if (!q.reviewJoined) {
-      if (q.allCauses.isEmpty) return false;
-      final ok = await _repo.setReviewJoined(q, true);
+      final ok = await _repo.setReviewJoinedFlag(q, true);
       if (!ok) return false;
       // P3：三个入口 + 详情页“加入复习”共用同一 initializeQuestion()——
       // 已在池的题直接返回现有卡片，不建第二张。建卡是 best-effort 且
@@ -1669,7 +1665,7 @@ class DetailNotifier extends Notifier<DetailState> {
         }
       }());
     } else {
-      await _repo.setReviewJoined(q, false);
+      await _repo.setReviewJoinedFlag(q, false);
     }
     await load();
     return true;

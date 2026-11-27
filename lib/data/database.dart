@@ -290,8 +290,10 @@ class AppDatabase {
   /// 只写已知键，不会误删它；loadSettings 的 fromMap 忽略未知键。
   static const String lastRouteKey = 'lastRoute';
 
-  /// B4.1：今天是否已弹过复查提醒（`yyyy-MM-dd`，一天一次）。
+  /// B4.1：今天是否已弹过到期复习提醒（`yyyy-MM-dd`，一天一次）。
   /// 与 lastRoute 同一做法：复用 settings 表 key/value，不新开表。
+  /// 键名 `lastRecheckReminderDate` 保留不改（FSRS 全量迁移包 3：
+  /// 改名会导致迁移当天重复提醒）。
   static const String lastRecheckReminderKey = 'lastRecheckReminderDate';
 
   /// 待定3：手动备份失败标志（首页红色横幅用）。
@@ -409,8 +411,7 @@ class AppDatabase {
   @visibleForTesting
   static Future<void> resetForTest() async {
     try {
-      final fresh =
-          Directory.systemTemp.createTempSync('qm2-reset-test-data-');
+      final fresh = Directory.systemTemp.createTempSync('qm2-reset-test-data-');
       testDataDirectory = fresh.path;
       testMarkerDirectory = fresh.path;
     } catch (_) {
@@ -579,67 +580,14 @@ class AppDatabase {
   static Future<List<Question>> allQuestionsFrom(QuizDatabase db) =>
       allQuestionsFromImpl(db);
 
-  static Future<CauseRecord> recordSelfCheckInto(
-    QuizDatabase db, {
-    required CauseRecord updated,
-    required String questionId,
-    required String result,
-    int cureChecks = 2,
-    int recheckIntervalDays = 7,
-    bool isRecheck = false,
-  }) => recordSelfCheckIntoImpl(
-    db,
-    updated: updated,
-    questionId: questionId,
-    result: result,
-    cureChecks: cureChecks,
-    recheckIntervalDays: recheckIntervalDays,
-    isRecheck: isRecheck,
-  );
-
-  static Future<bool> setReviewJoinedInto(
+  /// FSRS 全量迁移包2：只翻 `review_joined` 标志位，不播种 cause_records。
+  static Future<bool> setReviewJoinedFlagInto(
     QuizDatabase db,
     Question q,
     bool joined,
-  ) => setReviewJoinedIntoImpl(db, q, joined);
+  ) => setReviewJoinedFlagIntoImpl(db, q, joined);
 
-  // -- 十四批 M3：verdict 提交 / attempts / 重新加入复习 --
-  // P2（2026-11-25）：submitCauseVerdictInto / hasSessionVerdictInto
-  // 的产品调用方已随 finishQuestion 删除；新流程不写 review_history
-  // 的 verdict / verification_* 字段（停止写入，不物理删除）。
-  // 两个入口仅供旧写入层测试保留。
-  // P5 决定（2026-11-25）：保留，不移除——理由见 db_questions.dart
-  // 的 recordSelfCheckIntoImpl 注释（旧治愈状态仍是线上状态，移除
-  // 归 P3/P4 队列替换时一并做）。
-  static Future<VerdictSubmitResult> submitCauseVerdictInto(
-    QuizDatabase db, {
-    required String questionId,
-    required CauseRecord record,
-    required String verdict,
-    required String verificationStatus,
-    required String verificationSource,
-    String? attemptId,
-    required String sessionId,
-    required String submissionId,
-    int cureChecks = 2,
-    int recheckIntervalDays = 7,
-    bool isRecheck = false,
-    DateTime? now,
-  }) => submitCauseVerdictIntoImpl(
-    db,
-    questionId: questionId,
-    record: record,
-    verdict: verdict,
-    verificationStatus: verificationStatus,
-    verificationSource: verificationSource,
-    attemptId: attemptId,
-    sessionId: sessionId,
-    submissionId: submissionId,
-    cureChecks: cureChecks,
-    recheckIntervalDays: recheckIntervalDays,
-    isRecheck: isRecheck,
-    now: now,
-  );
+  // -- 十四批 M3：attempts / 重新加入复习 --
 
   static Future<String> recordAttemptInto(
     QuizDatabase db, {
@@ -669,20 +617,6 @@ class AppDatabase {
     sessionId: sessionId,
   );
 
-  static Future<void> rejoinCauseInto(
-    QuizDatabase db, {
-    required String questionId,
-    required String cause,
-    required String subjectId,
-  }) => rejoinCauseIntoImpl(
-    db,
-    questionId: questionId,
-    cause: cause,
-    subjectId: subjectId,
-  );
-
-  static Future<void> syncCauseRecordsInto(QuizDatabase db, Question q) =>
-      syncCauseRecordsIntoImpl(db, q);
   // -- db_catalog.dart --
 
   static Future<void> deleteSubjectFrom(QuizDatabase db, String id) =>

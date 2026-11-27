@@ -442,8 +442,8 @@ void main() {
       expect(find.textContaining('删除学科「数学」，确定吗？'), findsOneWidget);
       expect(find.textContaining('这一科现在有 3 道题，会全部一起删掉'), findsOneWidget);
       expect(find.textContaining('这一科自己的文件夹也跟着一起删掉'), findsOneWidget);
-      expect(find.text('确认删除这一科和全部 3 道题'), findsOneWidget);
-      await tester.tap(find.text('确认删除这一科和全部 3 道题'));
+      expect(find.text('确认删除'), findsOneWidget);
+      await tester.tap(find.text('确认删除'));
       await tester.pumpAndSettle();
       expect(find.text('数学'), findsNothing);
       expect(repo.subjectsList.map((s) => s.id), isNot(contains('math')));

@@ -46,26 +46,13 @@ CauseRecord _rec(
   String questionId,
   String cause, {
   String subjectId = 'math',
-  CauseStatus status = CauseStatus.pending,
-  int solvedCount = 0,
-  DateTime? recheckDate,
   DateTime? joinedAt,
-  int? lastCountedSuccessAt,
-  String? lastCountedSessionId,
 }) =>
     CauseRecord(
       questionId: questionId,
       cause: cause,
       subjectId: subjectId,
-      status: status,
-      solvedCount: solvedCount,
-      lastCheck: status == CauseStatus.solved
-          ? DateTime(2026, 11, 10)
-          : null,
-      recheckDate: recheckDate,
       joinedAt: joinedAt ?? DateTime(2026, 11, 10),
-      lastCountedSuccessAt: lastCountedSuccessAt,
-      lastCountedSessionId: lastCountedSessionId,
     );
 
 class FakeReviewNotifierRepo extends QuestionRepository {
@@ -187,36 +174,31 @@ class FakeReviewNotifierRepo extends QuestionRepository {
           String sessionId) async =>
       attempts.values.where((a) => a.sessionId == sessionId).toList();
 
+  /// FSRS 全量迁移包2：假池（内存 Set）复刻 joinFsrsPool 的幂等语义——
+  /// 不在池建卡（计 added）、已在池跳过（计 skipped）、不重置状态、
+  /// 不碰 cause_records（状态列冻结）。旧 rejoinCause 桩已随方法删除。
+  final Set<String> pooledIds = {};
+
   @override
-  Future<void> rejoinCause({
-    required String questionId,
-    required String cause,
-    required String subjectId,
+  Future<({int added, int skipped, int failed})> joinFsrsPool({
+    required List<Question> questions,
+    required ReviewScheduler scheduler,
   }) async {
-    final qi = questions.indexWhere((q) => q.id == questionId);
-    if (qi >= 0) {
-      questions[qi] = questions[qi].copyWith(reviewJoined: true);
+    var added = 0;
+    var skipped = 0;
+    for (final q in questions) {
+      if (pooledIds.add(q.id)) {
+        added++;
+        final qi = this.questions.indexWhere((e) => e.id == q.id);
+        if (qi >= 0) {
+          this.questions[qi] =
+              this.questions[qi].copyWith(reviewJoined: true);
+        }
+      } else {
+        skipped++;
+      }
     }
-    final i = records.indexWhere(
-        (x) => x.questionId == questionId && x.cause == cause);
-    if (i < 0) {
-      records.add(CauseRecord(
-        questionId: questionId,
-        cause: cause,
-        subjectId: subjectId,
-        joinedAt: DateTime.now(),
-      ));
-      return;
-    }
-    if (records[i].status == CauseStatus.solved) {
-      records[i] = records[i].copyWith(
-        status: CauseStatus.inProgress,
-        solvedCount: 0,
-        lastCheck: DateTime.now(),
-        clearRecheckDate: true,
-        clearCountedAnchors: true,
-      );
-    }
+    return (added: added, skipped: skipped, failed: 0);
   }
 
   @override
@@ -265,15 +247,10 @@ FakeReviewNotifierRepo _reviewRepo({int pageSize = 10}) {
     records: [
       _rec('q1', '概念不清', joinedAt: now),
       _rec('q2', '方法不会',
-          status: CauseStatus.inProgress,
-          solvedCount: 1,
           joinedAt: now.add(const Duration(hours: 1))),
       _rec('q2', '计算错误', joinedAt: now.add(const Duration(hours: 1))),
       _rec('q3', '概念不清',
           subjectId: 'english',
-          status: CauseStatus.solved,
-          solvedCount: 2,
-          recheckDate: DateTime.now().add(const Duration(days: 7)),
           joinedAt: now.subtract(const Duration(hours: 1))),
       _rec('q5', '方法不会', joinedAt: now),
     ],
@@ -300,6 +277,25 @@ FsrsReviewScheduler _testScheduler() => FsrsReviewScheduler(
   config: const SchedulerConfig(enableFuzzing: false),
   store: InMemoryCardStore(),
 );
+
+/// FSRS 全量迁移包2：到期会话只走 FSRS——先给题建已到期的卡再 load，
+/// 否则池空、startSession 建不出队列（旧回落已删）。建卡 + 3 天前答对
+/// 一次（Good 首间隔 2 天，到期日在昨天）。
+Future<void> _seedDueCards(
+  ProviderContainer container,
+  List<String> ids,
+) async {
+  final scheduler = container.read(reviewSchedulerProvider);
+  for (final id in ids) {
+    await scheduler.initializeQuestion(id);
+    await scheduler.recordAnswer(
+      id,
+      ReviewResult.good,
+      DateTime.now().subtract(const Duration(days: 3)),
+      'evt-rn-$id',
+    );
+  }
+}
 
 ProviderContainer _container(
   FakeReviewNotifierRepo repo, {
@@ -345,7 +341,8 @@ Future<void> _walkAndCommit(ReviewNotifier notifier) async {
 
 void main() {
   group('ReviewNotifier load', () {
-    test('load()：分组 3 待治 + 1 已治愈，未加入盒只 1 道，未开始 3 道', () async {
+    test('load()：4 组全错因（已治愈 q3 不再分流），未加入盒只 1 道，未开始 3 道',
+        () async {
       final repo = _reviewRepo();
       final container = _container(repo);
       final notifier = container.read(reviewProvider.notifier);
@@ -354,11 +351,20 @@ void main() {
       expect(s.loading, isFalse);
       expect(s.loadError, isFalse);
       expect(s.hasLoaded, isTrue);
-      expect(s.groups.length, 3);
-      expect(s.curedGroups.length, 1);
+      // FSRS 全量迁移包2：分组不再按治愈状态拆两组；q3 已治愈的错因
+      // 仍在组内——math 3 组（q1 一因、q2 两因）+ english 1 组（q3）。
+      // 默认 joinTime 排序：q3 的记录加入最早（11/9 23:00），排最前。
+      expect(s.groups.length, 4);
+      expect(
+        s.groups.map((g) => '${g.subjectId}|${g.cause}').toList(),
+        [
+          'english|概念不清',
+          'math|概念不清',
+          'math|方法不会',
+          'math|计算错误',
+        ],
+      );
       expect(s.notJoined.map((q) => q.id), ['q4']);
-      expect(s.pendingByQ['q1']?.length, 1);
-      expect(s.pendingByQ['q2']?.length, 2);
       // 无 FSRS 卡：三道已列入的题全落「未开始」，未到期 0 道。
       expect(s.fsrsCardStatus, isEmpty);
       expect(s.fsrsFutureCounts, (0, 3));
@@ -371,7 +377,7 @@ void main() {
       container.read(reviewProvider);
       await _waitFor(container, (s) => s.hasLoaded);
       expect(container.read(reviewProvider).hasLoaded, isTrue);
-      expect(container.read(reviewProvider).groups.length, 3);
+      expect(container.read(reviewProvider).groups.length, 4);
     });
 
     test('初始学科筛选走 reviewInitialProvider：带 english 进来只留英语组',
@@ -381,8 +387,17 @@ void main() {
       await notifier.load();
       final s = container.read(reviewProvider);
       expect(s.subjectFilter, 'english');
-      expect(s.filtered, isEmpty);
-      expect(s.filterGroups(s.curedGroups).length, 1);
+      // FSRS 全量迁移包2：分组不再按治愈拆两组，英语组就在 groups 里，
+      // 筛选后 filtered 只剩 q3 所在的 english|概念不清一组（旧口径
+      // 里英语组在 curedGroups，filtered 为空）。
+      expect(s.filtered.length, 1);
+      // FSRS 全量迁移包2：curedGroups 已删；英语筛选后只剩 q3 所在的
+      // english|概念不清一组。
+      expect(s.filterGroups(s.groups).length, 1);
+      expect(
+        s.filterGroups(s.groups).single.items.single.question.id,
+        'q3',
+      );
     });
 
     test('读库失败：loadError，hasLoaded false；retry 成功后恢复', () async {
@@ -399,7 +414,8 @@ void main() {
       s = container.read(reviewProvider);
       expect(s.loadError, isFalse);
       expect(s.hasLoaded, isTrue);
-      expect(s.groups.length, 3);
+      // FSRS 全量迁移包2：分组不再按治愈拆两组，共 4 组。
+      expect(s.groups.length, 4);
     });
 
     test('筛选回第 1 页、每页条数只改本页：设置默认值不动', () async {
@@ -424,6 +440,7 @@ void main() {
       final repo = _singleRepo();
       final container = _container(repo);
       final notifier = container.read(reviewProvider.notifier);
+      await _seedDueCards(container, ['q1']);
       await notifier.load();
       await notifier.startSession();
       var s = container.read(reviewProvider);
@@ -454,14 +471,16 @@ void main() {
       expect(repo.attempts.values.single.status, '已完成作答');
       expect(repo.attempts.values.single.correct, isNull);
       // 错因记录本身不动（新流程不推进治愈）。
-      expect(repo.records.single.solvedCount, 0);
-      expect(repo.records.single.status, CauseStatus.pending);
+      // FSRS 全量迁移包 7：CauseRecord 已无状态列；冻结改为断言
+      // 记录仍在、补救历史未被改写。
+      expect(repo.records.single.remedyHistory, isEmpty);
     });
 
     test('核对提交失败：recordAttempt 抛错，出 saveError 并留在核对步', () async {
       final repo = _singleRepo()..throwOnCheck = true;
       final container = _container(repo);
       final notifier = container.read(reviewProvider.notifier);
+      await _seedDueCards(container, ['q1']);
       await notifier.load();
       await notifier.startSession();
       await _walkToCheck(notifier);
@@ -476,10 +495,11 @@ void main() {
       expect(repo.attempts, isEmpty);
     });
 
-    test('按组开始解决：只治该组的错因', () async {
+    test('按组开始：只进该组的题，题内仍是全部错因', () async {
       final repo = _reviewRepo();
       final container = _container(repo);
       final notifier = container.read(reviewProvider.notifier);
+      await _seedDueCards(container, ['q1', 'q2']);
       await notifier.load();
       final group = container
           .read(reviewProvider)
@@ -491,7 +511,10 @@ void main() {
       final s = container.read(reviewProvider);
       expect(s.sessionQuestions.length, 1);
       expect(s.currentSessionQuestion.questionId, 'q2');
-      expect(s.currentSessionQuestion.causes, ['计算错误']);
+      // FSRS 全量迁移包2：组筛选只决定哪道题进会话，题内快照仍是全部错因。
+      expect(s.currentSessionQuestion.causes, ['方法不会', '计算错误']);
+      // 组级标题：起会话时直接用进来的那个组的学科·错因，不从会话题
+      // 的错因并集推导（并集有 2 个错因时会退为「数学这一科」）。
       expect(s.scopeLabel, '数学 · 计算错误');
     });
 
@@ -499,6 +522,7 @@ void main() {
       final repo = _reviewRepo();
       final container = _container(repo);
       final notifier = container.read(reviewProvider.notifier);
+      await _seedDueCards(container, ['q1', 'q2']);
       await notifier.load();
       await notifier.startSession();
       // q1 走完，到 q2（双错因）。
@@ -524,6 +548,7 @@ void main() {
       final repo = _singleRepo();
       final container = _container(repo);
       final notifier = container.read(reviewProvider.notifier);
+      await _seedDueCards(container, ['q1']);
       await notifier.load();
       await notifier.startSession();
       await notifier.skipCurrent();
@@ -541,6 +566,7 @@ void main() {
       final repo = _reviewRepo();
       final container = _container(repo);
       final notifier = container.read(reviewProvider.notifier);
+      await _seedDueCards(container, ['q1', 'q2']);
       await notifier.load();
       await notifier.startSession();
       // 队列 [q1, q2]；跳过 q1 → [q2, q1]。
@@ -574,6 +600,7 @@ void main() {
       final repo = _reviewRepo();
       final container = _container(repo);
       final notifier = container.read(reviewProvider.notifier);
+      await _seedDueCards(container, ['q1', 'q2']);
       await notifier.load();
       await notifier.startSession();
       // q1 作答到核对步再跳过 → 队尾，状态保留（P2：attempt 只在
@@ -605,6 +632,7 @@ void main() {
       final repo = _reviewRepo();
       final container = _container(repo);
       final notifier = container.read(reviewProvider.notifier);
+      await _seedDueCards(container, ['q1', 'q2']);
       await notifier.load();
       await notifier.startSession();
       // q1 走完，到 q2 再暂停。
@@ -627,6 +655,7 @@ void main() {
       final repo = _reviewRepo();
       final container = _container(repo);
       final notifier = container.read(reviewProvider.notifier);
+      await _seedDueCards(container, ['q1', 'q2']);
       await notifier.load();
       await notifier.startSession();
       // q1 核对提交已写库（attempt 行已存在）。
@@ -668,10 +697,8 @@ void main() {
       // 恢复本身不重新提交、不重复计数。
       expect(repo.attempts.length, 1);
       expect(
-        repo.records
-            .firstWhere((r) => r.questionId == 'q1')
-            .solvedCount,
-        0,
+        repo.records.firstWhere((r) => r.questionId == 'q1').remedyHistory,
+        isEmpty,
       );
     });
 
@@ -679,6 +706,7 @@ void main() {
       final repo = _reviewRepo();
       final container = _container(repo);
       final notifier = container.read(reviewProvider.notifier);
+      await _seedDueCards(container, ['q1', 'q2']);
       await notifier.load();
       await notifier.startSession();
       await notifier.pauseSession();
@@ -699,6 +727,7 @@ void main() {
       final repo = _reviewRepo();
       final container = _container(repo);
       final notifier = container.read(reviewProvider.notifier);
+      await _seedDueCards(container, ['q1', 'q2']);
       await notifier.load();
       await notifier.startSession();
       // q1 核对提交完成（attempt 已建），已进 q2。
@@ -725,6 +754,7 @@ void main() {
       final repo = _reviewRepo();
       final container = _container(repo);
       final notifier = container.read(reviewProvider.notifier);
+      await _seedDueCards(container, ['q1', 'q2']);
       await notifier.load();
       await notifier.startSession();
       await notifier.pauseSession();
@@ -793,28 +823,27 @@ void main() {
       expect(s.sumNextDueDate, isNull);
       // 错因记录一点没动。
       expect(
-        repo.records
-            .where((r) => r.questionId == 'q1')
-            .single
-            .solvedCount,
-        0,
+        repo.records.where((r) => r.questionId == 'q1').single.remedyHistory,
+        isEmpty,
       );
       expect(repo.attempts.length, 4);
     });
 
-    test('专项练习重新加入复习：已治愈错因回到解决中', () async {
+    test('专项练习重新加入复习：按题入池，记录冻结不动；再点提示已在复习中', () async {
       final repo = _reviewRepo();
       final container = _container(repo);
       final notifier = container.read(reviewProvider.notifier);
       await notifier.load();
       notifier.openPracticePicker();
-      // 只练英语（q3，已治愈）。
+      // 只练英语（q3）。
       notifier.setPracticeSubjectFilter('english');
       await notifier.startPracticeSession();
       var s = container.read(reviewProvider);
       expect(s.sessionQuestions.length, 1);
       expect(s.currentSessionQuestion.questionId, 'q3');
-      await notifier.rejoinCauseFromPractice('概念不清');
+      // FSRS 全量迁移包2（V3）：按题重入池，不在池建卡；包 7：
+      // CauseRecord 已无状态列，冻结改为断言记录本身未被改写。
+      await notifier.rejoinCauseFromPractice();
       expect(
         container.read(reviewProvider).rejoinNotice,
         contains('已重新加入复习'),
@@ -822,8 +851,16 @@ void main() {
       final record = repo.records
           .where((r) => r.questionId == 'q3')
           .single;
-      expect(record.status, CauseStatus.inProgress);
-      expect(record.solvedCount, 0);
+      expect(record.cause, '概念不清');
+      expect(record.remedyHistory, isEmpty);
+      expect(repo.pooledIds, contains('q3'));
+      // 再点一次：已在池，不重复建卡，提示已在复习中。
+      await notifier.rejoinCauseFromPractice();
+      expect(
+        container.read(reviewProvider).rejoinNotice,
+        '这道题已在复习中',
+      );
+      expect(repo.pooledIds.length, 1);
     });
   });
 }

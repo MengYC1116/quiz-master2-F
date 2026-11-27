@@ -73,6 +73,11 @@ Future<QuizDatabase> openAtImpl(String dbPath) async {
       // 不留半张卡，下次启动重跑。每次开库都跑到这里：新库刚建完
       // 表时 attempts 为空，审计全零、只写一行日志，是空操作。
       await migrateFsrsV7ToV8IntoImpl(db);
+      // 跟进批第 1 项（2026-11-27）：V5 缺卡一次性补建（通用规则，
+      // 见 db_fsrs.dart 的 backfillMissingFsrsCardsIntoImpl）——
+      // 跑在 v7→v8 迁移之后：重放先建出有正式作答记录的题的卡，
+      // 补建只接手重放后仍无卡的已加入题；已跑过一次的库直接跳过。
+      await backfillMissingFsrsCardsIntoImpl(db);
     },
   );
   // B1-Drift：Drift 是懒打开——不发查询就不建文件、不跑 onCreate /
@@ -342,10 +347,9 @@ Future<void> createTablesImpl(QuizDatabase db) async {
   await db.customStatement(fsrsCardsDueIndexDDL);
 }
 
-/// B2 集成：`_seedCauseRecordsFor` 已删——全仓 grep 零产品调用方
-///（仅剩 p2_json_fields_test 的测试名提及，其本体走
-/// ensureCauseRecords → 类型化的 _seedCauseRecordsTyped）；错因
-/// 播种走 db_questions.dart 的 [_seedCauseRecordsTyped]。
+/// B2 集成：`_seedCauseRecordsFor` 已删；FSRS 全量迁移包2：
+/// 错因播种已删除（`ensureCauseRecords` / `_seedCauseRecordsTyped`
+/// 已删，入池不再播种 cause_records，状态列冻结为历史）。
 /// B3：以下播种全部走 Drift 类型化 insert（`db.into(...).insert`），
 /// 不再手写 customInsert SQL 字符串；settings.schemaVersion 走
 /// db_settings 的类型化 upsert（与备份恢复的写回同口径）。

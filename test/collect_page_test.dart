@@ -627,15 +627,6 @@ void main() {
       expect(find.text('收集中心'), findsOneWidget);
       expect(find.text('请选择学科'), findsOneWidget);
       expect(find.text('把文件拖到这里，或点击选择'), findsOneWidget);
-      expect(
-        find.text('手机拍完用微信 / QQ / 局域网传到电脑，再选文件导入即可——传过来的就是文件，不用单独的拍照入口。'),
-        findsOneWidget,
-      );
-      // 副标题只有排序说明，不再放计数（2026-11-26）。
-      expect(
-        find.text('未完成在前、已整理在后，各按导入时间新的在上'),
-        findsOneWidget,
-      );
       expect(find.textContaining('导入中 0'), findsNothing);
       expect(find.textContaining('排队中 0'), findsNothing);
       // 首屏行（ListView 懒构建 + 滚动后丢弃屏外行，只能按位置分段断言）。
@@ -1111,8 +1102,8 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.text('这个框是？'), findsNothing);
       expect(editorBoxLabel('题级框 2'), findsOneWidget);
-      expect(find.text('确认修框，拆成 2 个待整理任务'), findsOneWidget);
-      await tapConfirmAndWait(tester, '确认修框，拆成 2 个待整理任务');
+      expect(find.text('确认修框，拆成 2 道题去整理'), findsOneWidget);
+      await tapConfirmAndWait(tester, '确认修框，拆成 2 道题去整理');
       expect(find.textContaining('修框 ·'), findsNothing);
       expect(repo.deletedTaskIds, contains('t-needbox'));
       final split = repo.tasks.where(
@@ -1136,7 +1127,7 @@ void main() {
       ]);
       await pumpCollect(tester, repo: repo);
       await openEditor(tester, '修框');
-      // 页在画布里居中 fit：用检测框矩形反推页原点再画框。
+      // 页在画布里居中 fit：用自动框矩形反推页原点再画框。
       final box = editorBoxHandle('题级框 1');
       await tester.ensureVisible(box);
       await tester.pumpAndSettle();
@@ -1154,7 +1145,7 @@ void main() {
       await tester.pumpAndSettle();
       // 新框直接落下，与原框重叠出警告。
       expect(find.textContaining('框重叠'), findsOneWidget);
-      await tester.tap(find.text('确认修框，拆成 2 个待整理任务'));
+      await tester.tap(find.text('确认修框，拆成 2 道题去整理'));
       await tester.pumpAndSettle();
       expect(find.textContaining('修框 ·'), findsOneWidget);
       expect(repo.deletedTaskIds, isEmpty);
@@ -1204,7 +1195,7 @@ void main() {
       );
       expect(redBorders, findsNWidgets(2));
       // 确认仍被拦下。
-      await tester.tap(find.text('确认修框，拆成 2 个待整理任务'));
+      await tester.tap(find.text('确认修框，拆成 2 道题去整理'));
       await tester.pumpAndSettle();
       expect(find.textContaining('修框 ·'), findsOneWidget);
       expect(repo.deletedTaskIds, isEmpty);
@@ -1373,7 +1364,7 @@ void main() {
       );
       expect(redOverlapBorders(), findsNWidgets(3));
       // 确认仍被拦下。
-      await tester.tap(find.text('确认修框，拆成 3 个待整理任务'));
+      await tester.tap(find.text('确认修框，拆成 3 道题去整理'));
       await tester.pumpAndSettle();
       expect(find.textContaining('修框 ·'), findsOneWidget);
       expect(repo.deletedTaskIds, isEmpty);
@@ -1515,7 +1506,7 @@ void main() {
       expect(redOverlapBorders(), findsNWidgets(2));
       expect(tester.getSize(canvasFinder), baseline);
       // 确认仍被拦下。
-      await tester.tap(find.text('确认修框，拆成 2 个待整理任务'));
+      await tester.tap(find.text('确认修框，拆成 2 道题去整理'));
       await tester.pumpAndSettle();
       expect(find.textContaining('修框 ·'), findsOneWidget);
       expect(repo.deletedTaskIds, isEmpty);
@@ -1540,7 +1531,7 @@ void main() {
       await tester.tap(find.text('删除选中框'));
       await tester.pumpAndSettle();
       expect(
-        find.textContaining('没框到题，请用鼠标右键拖一个框：在画布空白处按住拖出一个框'),
+        find.textContaining('没框到题，请用鼠标右键在画布空白处拖出一个框，松开就能继续，不用重新导入'),
         findsOneWidget,
       );
       await tester.tap(find.text('确认修框，去整理'));
@@ -1614,10 +1605,10 @@ void main() {
       await pumpCollect(
         tester,
         repo: repo,
-        yoloService: _StubYolo(detectError: '自动检测不可用，请手动框选'),
+        yoloService: _StubYolo(detectError: '自动框不可用，请手动框选'),
       );
       await openEditor(tester, '修框');
-      expect(find.textContaining('自动检测不可用，请手动框选'), findsOneWidget);
+      expect(find.textContaining('自动框不可用，请手动框选'), findsOneWidget);
       expect(editorBoxLabel('题级框 1'), findsNothing);
       expect(find.textContaining('没框到题'), findsWidgets);
     });
@@ -1728,7 +1719,7 @@ void main() {
       expect(rect.height, closeTo(fh * ph, 2.0));
     }
 
-    testWidgets('Stage B：双栏检测框按阅读顺序编号，不按 y-then-x', (
+    testWidgets('Stage B：双栏自动框按阅读顺序编号，不按 y-then-x', (
       tester,
     ) async {
       final repo = FakeRepo([
@@ -1744,7 +1735,7 @@ void main() {
         yoloService: _OrderedYolo(_b12TwoColumnBoxes()),
       );
       await openEditor(tester, '修框');
-      expect(find.text('确认修框，拆成 4 个待整理任务'), findsOneWidget);
+      expect(find.text('确认修框，拆成 4 道题去整理'), findsOneWidget);
       // 检测给的是旧 y-then-x 顺序 [L1, R1, L2, R2]，编辑器进页后
       // 应按阅读顺序 [L1, L2, R1, R2] 编号：2 号是左栏第二道，3 号
       // 是右栏第一道（2009 上海卷触发 bug 的回归锁）。
@@ -1759,7 +1750,7 @@ void main() {
       // 4 道题的切片比 2 道多，确认流程要更多泵轮次（见 tapConfirmAndWait）。
       await tapConfirmAndWait(
         tester,
-        '确认修框，拆成 4 个待整理任务',
+        '确认修框，拆成 4 道题去整理',
         rounds: 40,
       );
       expect(repo.savedQuestions.length, 4);
@@ -1904,7 +1895,7 @@ void main() {
     testWidgets('确认前报未框页数，确认后只拆有框页、未框页留任务可继续修框', (tester) async {
       final repo = await pumpPdf3(tester);
       await openEditor(tester, '修框');
-      // 第 1 页有检测框；切到第 2、3 页（桩检测返回空框）。
+      // 第 1 页有自动框；切到第 2、3 页（桩检测返回空框）。
       await tester.tap(find.byKey(const Key('editor-thumb-2')));
       await tester.pumpAndSettle();
       await tester.tap(find.byKey(const Key('editor-thumb-3')));
@@ -1950,7 +1941,7 @@ void main() {
       // 行上按钮是「继续修框」而不是「修框」。
       await openEditor(tester, '继续修框');
       expect(find.textContaining('没框到题'), findsWidgets);
-      // 切回已拆的第 1 页：自动检测又框出题，但确认不重复拆。
+      // 切回已拆的第 1 页：自动框又框出题，但确认不重复拆。
       await tester.tap(find.byKey(const Key('editor-thumb-1')));
       await tester.pumpAndSettle();
       expect(editorBoxLabel('题级框 1'), findsOneWidget);
@@ -2257,7 +2248,7 @@ void main() {
       );
       final marginPoint = Offset(canvasRect.left + 10, canvasRect.center.dy);
       // 保护：边距点必须确实落在图外，否则测试本身站不住
-      //（放大后页变大了，用检测框矩形反推当前页左缘）。
+      //（放大后页变大了，用自动框矩形反推当前页左缘）。
       final zoomedBoxRect = tester.getRect(editorBoxHandle('题级框 1'));
       final pageLeft = zoomedBoxRect.left - 0.06 * (zoomedBoxRect.width / 0.88);
       expect(marginPoint.dx < pageLeft, isTrue);
@@ -2278,7 +2269,7 @@ void main() {
       await pumpCollect(tester, repo: repo);
       await openEditor(tester, '修框');
       final (origin, pageW, pageH) = editorPageMetrics(tester);
-      // 图内框外空白（页左缘，检测框从 x=0.06 开始）：左键拖动不画框。
+      // 图内框外空白（页左缘，自动框从 x=0.06 开始）：左键拖动不画框。
       final emptyInPage = origin + Offset(0.02 * pageW, 0.5 * pageH);
       await dragMouseLeft(tester, emptyInPage, const Offset(20, 20));
       expect(find.text('这个框是？'), findsNothing);

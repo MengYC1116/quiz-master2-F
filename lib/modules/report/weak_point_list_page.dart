@@ -161,12 +161,8 @@ class _WeakPointListPageState extends State<WeakPointListPage> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(
-              '${subject.name} · $title',
-              key: const Key('weak-list-title'),
-              style: Theme.of(context).textTheme.titleLarge,
-            ),
-            SizedBox(height: 8 * scale),
+            // F2：正文大标题与 AppBar 标题逐字重复（'${subject.name} · $title'），
+            // 只留 AppBar 标题；统计行升为正文首行。
             Text(
               stats.label,
               key: const Key('weak-sample-label'),
@@ -243,7 +239,7 @@ class _WeakPointListPageState extends State<WeakPointListPage> {
             if (_questions.isEmpty)
               const QmEmptyState(
                 title: '这组里没有题目',
-                description: '这组薄弱点下没有可练的题，换一组试试。',
+                description: '这组薄弱点里没有可练的题，换一组试试。',
               )
             else
               for (final q in pageItems)
@@ -331,7 +327,7 @@ class _WeakPointListPageState extends State<WeakPointListPage> {
             ),
             SizedBox(height: 8 * scale),
             Text(
-              '将练习 $_effectiveCount 道（共可选 $selectedCount 道）',
+              '将练习 $_effectiveCount 道（已选 $selectedCount 道）',
               key: const Key('weak-practice-count'),
               style: TextStyle(
                 fontSize: DesignTokens.bodySmallFontSize,

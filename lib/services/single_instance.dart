@@ -52,7 +52,7 @@ const String singleInstanceDuplicateTitle = 'quiz-master2 已在运行';
 /// 第二个实例的提示正文（中文，D-145 定稿；main.dart 的重复实例
 /// 窗口与 stderr 日志共用同一份文案，不各写一套）。
 const String singleInstanceDuplicateMessage =
-    '已有 quiz-master2 正在运行，请勿重复打开。\n请先关闭正在运行的 quiz-master2 窗口，再重新打开本程序。';
+    '已有 quiz-master2 正在运行，请勿重复打开。\n请先关闭正在运行的 quiz-master2 窗口，再打开本程序。';
 
 /// 单实例锁不可用时的启动失败提示（中文，M5 修复轮 2，P1-2 fail-open
 /// 修复）：锁文件无法创建/打开/加锁的非竞争 IO 错误，不能证明没有
@@ -61,7 +61,7 @@ const String singleInstanceDuplicateMessage =
 const String singleInstanceIoErrorTitle = 'quiz-master2 无法启动';
 
 const String singleInstanceIoErrorMessage =
-    '单实例锁文件无法创建或打开，为防止多个实例同时操作同一数据目录，程序已停止启动。\n请检查数据目录是否可写，然后重试。';
+    '启动锁文件无法创建或打开，为防止多个实例同时操作同一数据目录，程序已停止启动。\n请检查数据目录是否可写，然后重试。';
 
 /// OS 级单实例锁：持有数据目录下锁文件的独占锁。
 ///

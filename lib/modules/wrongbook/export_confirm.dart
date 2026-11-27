@@ -212,7 +212,7 @@ class _ExportConfirmDialogState extends State<ExportConfirmDialog> {
     if (inv.guard.isHardReject) {
       setState(
         () => _formError =
-            '本次导出内容过重，已停止生成。请减少题数，或去详情页重拍裁切。',
+            '本次导出内容过重，已停止生成。请减少题数，或去详情页重新框选。',
       );
       return;
     }
@@ -354,10 +354,6 @@ class _ExportConfirmDialogState extends State<ExportConfirmDialog> {
         ],
       );
     }
-    final routeNotice = ExportRouteDecision(
-      route: inv.route,
-      reason: inv.routeReason,
-    ).notice;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -368,11 +364,12 @@ class _ExportConfirmDialogState extends State<ExportConfirmDialog> {
         const SizedBox(height: 4),
         Text('范围：${_input.filterText}'),
         const SizedBox(height: 8),
-        Text('路线：$routeNotice', key: const Key('export-route-notice')),
-        const SizedBox(height: 12),
         if (inv.route == ExportRoute.c) ...[
           Text(
-            '可印 ${inv.printableCount} 题 / 将跳过 ${inv.skippedCount} 题',
+            // P8：跳过 0 题时不拼「将跳过 0 题」，只报可印数。
+            inv.skippedCount > 0
+                ? '可印 ${inv.printableCount} 题 / 将跳过 ${inv.skippedCount} 题'
+                : '可印 ${inv.printableCount} 题',
             key: const Key('export-printable-count'),
           ),
           if (inv.skipped.isNotEmpty)
@@ -380,10 +377,12 @@ class _ExportConfirmDialogState extends State<ExportConfirmDialog> {
           if (inv.suspicious.isNotEmpty)
             _suspiciousTile(inv),
         ] else ...[
-          Text(
-            '低于清晰度阈值 ${inv.lowDpi.length} 题',
-            key: const Key('export-lowdpi-count'),
-          ),
+          // P8 跟进：低于阈值 0 题时不显示该计数行（列表本就只在非空时出现）。
+          if (inv.lowDpi.isNotEmpty)
+            Text(
+              '低于清晰度阈值 ${inv.lowDpi.length} 题',
+              key: const Key('export-lowdpi-count'),
+            ),
           if (inv.lowDpi.isNotEmpty)
             ExpansionTile(
               key: const Key('export-lowdpi-list'),
@@ -412,7 +411,7 @@ class _ExportConfirmDialogState extends State<ExportConfirmDialog> {
                       for (final e in inv.lowDpi)
                         ExcludedQuestion(
                           id: e.questionId,
-                          reason: '清晰度门禁排除',
+                          reason: '低于清晰度阈值，已排除',
                         ),
                     ]
                   : const [];
@@ -449,23 +448,13 @@ class _ExportConfirmDialogState extends State<ExportConfirmDialog> {
             child: Text(
               '本次导出内容过重（栅格总量约 '
               '${inv.guard.totalRasterMpx.toStringAsFixed(1)} Mpx，'
-              '超过 150 Mpx 上限），已停止生成。请减少题数，或去详情页重拍裁切。',
+              '超过 150 Mpx 上限），已停止生成。请减少题数，或去详情页重新框选。',
               key: const Key('export-guard-hard'),
-            ),
-          ),
-        if (inv.needsSecondConfirmation)
-          Padding(
-            padding: const EdgeInsets.only(top: 8),
-            child: Text(
-              '将跳过 ${inv.skippedCount} / ${inv.selectedCount} 道题，'
-              '点「生成」后会再次确认。',
-              key: const Key('export-skip-second-confirm'),
             ),
           ),
         const SizedBox(height: 12),
         CheckboxListTile(
           title: const Text('练习版'),
-          subtitle: Text(ExportVersion.practice.difference),
           value: _versions.practice,
           controlAffinity: ListTileControlAffinity.leading,
           contentPadding: EdgeInsets.zero,
@@ -478,7 +467,6 @@ class _ExportConfirmDialogState extends State<ExportConfirmDialog> {
         ),
         CheckboxListTile(
           title: const Text('答案版'),
-          subtitle: Text(ExportVersion.answer.difference),
           value: _versions.answer,
           controlAffinity: ListTileControlAffinity.leading,
           contentPadding: EdgeInsets.zero,
@@ -514,8 +502,6 @@ class _ExportConfirmDialogState extends State<ExportConfirmDialog> {
             ],
           ),
         ),
-        const Text('纸张：A4 纵向（固定，不可选）'),
-        const SizedBox(height: 12),
         TextField(
           key: const Key('export-file-name'),
           controller: _fileNameCtrl,
@@ -642,8 +628,6 @@ class _ExportConfirmDialogState extends State<ExportConfirmDialog> {
             ),
           ],
         ),
-        const SizedBox(height: 12),
-        const Text('关闭后生成继续在后台跑，完成时将再次弹出。'),
       ],
     );
   }
@@ -721,7 +705,7 @@ class ExportCompletionView extends StatelessWidget {
                     e.status == IntegrityStatus.skipped
                         ? '跳过（${e.skipReason ?? '未印出'}）'
                         : e.status == IntegrityStatus.broken
-                        ? '主图缺失，已印占位说明'
+                        ? '本题图片缺失，已印占位说明'
                         : e.warnings.join('；'),
                   ),
                   onTap: onOpenQuestion == null

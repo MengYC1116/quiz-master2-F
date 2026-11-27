@@ -665,15 +665,6 @@ class _OrganizeViewState extends ConsumerState<_OrganizeView> {
             height: 1.25,
           ),
         ),
-        const SizedBox(height: 3),
-        Text(
-          '一道题一道题补完整，再归档进错题本',
-          style: TextStyle(
-            fontSize: DesignTokens.bodySmallFontSize,
-            color: palette.muted,
-            height: 1.65,
-          ),
-        ),
       ],
     );
   }
@@ -815,14 +806,6 @@ class _OrganizeViewState extends ConsumerState<_OrganizeView> {
                     fontSize: 14,
                     fontWeight: FontWeight.w700,
                     color: palette.ink,
-                    height: 1.65,
-                  ),
-                ),
-                TextSpan(
-                  text: '  平时只看左边的题图和右边的表单，要换题点「队列」',
-                  style: TextStyle(
-                    fontSize: 12.5,
-                    color: palette.muted,
                     height: 1.65,
                   ),
                 ),
@@ -1036,7 +1019,6 @@ class _OrganizeViewState extends ConsumerState<_OrganizeView> {
         SizedBox(height: DesignTokens.organizeSectionGap * scale),
         QmFoldSection(
           title: '来源（可选）',
-          subtitle: '试卷（来源）',
           expanded: _sourceOpen,
           onToggle: () => _toggleRightSection(_RightSection.source),
           variant: QmFoldVariant.form,
@@ -1045,7 +1027,6 @@ class _OrganizeViewState extends ConsumerState<_OrganizeView> {
         SizedBox(height: DesignTokens.organizeSectionGap * scale),
         QmFoldSection(
           title: '分类补充（可选）',
-          subtitle: '知识点 · 错因 · 标签',
           expanded: _classifyOpen,
           onToggle: () => _toggleRightSection(_RightSection.classify),
           variant: QmFoldVariant.form,
@@ -1054,7 +1035,6 @@ class _OrganizeViewState extends ConsumerState<_OrganizeView> {
         SizedBox(height: DesignTokens.organizeSectionGap * scale),
         QmFoldSection(
           title: '答案 · 解析 · 笔记（可选）',
-          subtitle: '答案在上、解析在下，笔记单独一栏',
           expanded: _answerOpen,
           onToggle: () => _toggleRightSection(_RightSection.answer),
           variant: QmFoldVariant.form,
@@ -1113,13 +1093,13 @@ class _OrganizeViewState extends ConsumerState<_OrganizeView> {
                       },
                   ),
                   const TextSpan(
-                    text: '（点一下跳到那一栏）——只有必填没齐才提示；答案、解析、知识点、错因、试卷、标签、笔记都是可选，填不填都不算、不提示',
+                    text: '（点一下跳到那一栏）——只有必填没齐才提示，其余都是可选',
                   ),
                 ],
               ),
             )
           : Text(
-              '本题必填已齐：文件夹（归类）已选好，可以确认整理；可选内容填不填都不提示',
+              '本题必填已齐：文件夹（归类）已选好，可以确认整理',
               style: TextStyle(
                 fontSize: DesignTokens.organizeFieldFontSize,
                 color: palette.warnInk,
@@ -1131,17 +1111,14 @@ class _OrganizeViewState extends ConsumerState<_OrganizeView> {
 
   /// 十四批 M1：题型行——chip 显示当前题型（待确认时未选中态），
   /// 点开选择器改；改后写 source=manual（保存时落盘）。
-  /// 题型为待确认且分类器提示多小问结构时，显示拆框提示。
   Widget _typeRow(Question q, OrganizeState st) {
-    final hint = st.questionType == null ? _splitHint(q) : null;
-    final splitReason = st.questionType == null ? _splitReason(q) : null;
     final showReclassify =
         q.questionTypeSource != 'manual' &&
         GlmOcrRawData.tryParse(q.ocrRaw) != null;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        _fieldLabel('题型', hint: '点一下可改 · 改后不再自动分类'),
+        _fieldLabel('题型'),
         Row(
           children: [
             questionTypeChip(
@@ -1157,18 +1134,8 @@ class _OrganizeViewState extends ConsumerState<_OrganizeView> {
             ],
           ],
         ),
-        if (hint != null) _helperText(hint),
-        if (splitReason != null) _helperText(splitReason),
       ],
     );
-  }
-
-  /// Win11 包 4：切分诊断——题型待确认时，把 splitStem 的 reason
-  /// 以小字显示（为什么没自动定型）。纯函数，不持久化。
-  String? _splitReason(Question q) {
-    final raw = GlmOcrRawData.tryParse(q.ocrRaw);
-    if (raw == null) return null;
-    return '切分：${splitStem(raw.mdResults).reason}';
   }
 
   /// Win11 包 4：点“重新分类”——强制重算当前题的题型（人工指定
@@ -1186,15 +1153,6 @@ class _OrganizeViewState extends ConsumerState<_OrganizeView> {
       _ => '仍无法自动分类，请人工指定',
     };
     _snack(message);
-  }
-
-  /// 多小问提示：按当前 OCR 原文重算分类（纯函数），只有分类器
-  /// 提示拆框时才显示；不持久化、不进 UI 之外的任何地方。
-  String? _splitHint(Question q) {
-    final raw = GlmOcrRawData.tryParse(q.ocrRaw);
-    if (raw == null) return null;
-    final c = classifyQuestion(raw: raw, split: splitStem(raw.mdResults));
-    return c.suggestSplit ? '本题含多种作答形式，请拆框或人工指定' : null;
   }
 
   /// WP-A #1 收尾：切分器检测到的选项字母序列（见
@@ -1240,7 +1198,7 @@ class _OrganizeViewState extends ConsumerState<_OrganizeView> {
     _notifier.setQuestionType(picked.isEmpty ? null : picked);
   }
 
-  Widget _fieldLabel(String label, {bool required = false, String? hint}) {
+  Widget _fieldLabel(String label, {bool required = false}) {
     final palette = DesignTokens.of(Theme.of(context).brightness);
     return Padding(
       padding: const EdgeInsets.only(bottom: 5),
@@ -1263,16 +1221,6 @@ class _OrganizeViewState extends ConsumerState<_OrganizeView> {
                   fontSize: DesignTokens.organizeFieldFontSize,
                   fontWeight: FontWeight.w700,
                   color: palette.errInk,
-                  height: 1.2,
-                ),
-              ),
-            if (hint != null)
-              TextSpan(
-                text: ' $hint',
-                style: TextStyle(
-                  fontSize: DesignTokens.organizeFieldFontSize,
-                  fontWeight: FontWeight.w600,
-                  color: palette.muted,
                   height: 1.2,
                 ),
               ),
@@ -1313,11 +1261,10 @@ class _OrganizeViewState extends ConsumerState<_OrganizeView> {
   }
 
   Widget _folderSection(Question q, OrganizeState st) {
-    final subject = st.subjectOf(q.subjectId);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        _fieldLabel('文件夹（归类）', required: true, hint: '可多选 · 一道题可进多个文件夹，题只存一份'),
+        _fieldLabel('文件夹（归类）', required: true),
         Wrap(
           spacing: 6,
           runSpacing: 6,
@@ -1376,13 +1323,9 @@ class _OrganizeViewState extends ConsumerState<_OrganizeView> {
                     ),
                   ],
                 ),
-                _helperText('填文件夹名就能新建，建完直接选上这道题'),
               ],
             ),
           ),
-        _helperText(
-          '只列「${subject.name}」自己的文件夹（预置：试卷 / 平时作业 / 模拟卷），在这一科新建的文件夹只出现在这一科，不会出现在其他学科；改名 / 建子文件夹在错题本目录页里做。',
-        ),
       ],
     );
   }
@@ -1391,7 +1334,7 @@ class _OrganizeViewState extends ConsumerState<_OrganizeView> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        _fieldLabel('试卷（来源）', hint: '可选 · 独立试卷实体'),
+        _fieldLabel('试卷'),
         DropdownButton<String>(
           value: st.examId,
           hint: const Text('选择试卷（可选）'),
@@ -1482,13 +1425,8 @@ class _OrganizeViewState extends ConsumerState<_OrganizeView> {
                     ),
                   ],
                 ),
-                _helperText('填试卷名 + 日期就行，添加后自动归属到这道题，之后也能在下拉里选到它'),
               ],
             ),
-          ),
-        if (!_addingExam)
-          _helperText(
-            '这是来源：这道题出自哪份卷子。点开选已有试卷，或在下拉最上面点「＋ 添加新试卷…」填试卷名 + 日期添加；来源也由你自定义，一份试卷可归属多道题。和上面的「文件夹（归类）」不是一回事',
           ),
       ],
     );
@@ -1522,13 +1460,13 @@ class _OrganizeViewState extends ConsumerState<_OrganizeView> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        _fieldLabel('知识点', hint: '可选 · 多选不限个数'),
+        _fieldLabel('知识点'),
         _kpTree(q, subjectKps, chapters, selectedKpNames, st),
         Padding(
           padding: const EdgeInsets.symmetric(vertical: 12),
           child: QmRowLine(kind: QmRowLineKind.line),
         ),
-        _fieldLabel('错因', hint: '可选 · 多选不限个数'),
+        _fieldLabel('错因'),
         Row(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -1608,14 +1546,11 @@ class _OrganizeViewState extends ConsumerState<_OrganizeView> {
             ),
           ],
         ),
-        _helperText(
-          '固定错因：审题失误 / 概念不清 / 计算错误 / 方法不会 / 其他。自定义错因只跟这道题留着，下次整理还能再选到它，不进全局错因；报告仍按固定错因归因',
-        ),
         Padding(
           padding: const EdgeInsets.symmetric(vertical: 12),
           child: QmRowLine(kind: QmRowLineKind.line),
         ),
-        _fieldLabel('标签', hint: '可选 · 多选不限个数'),
+        _fieldLabel('标签'),
         Wrap(
           spacing: 6,
           runSpacing: 6,
@@ -1682,13 +1617,8 @@ class _OrganizeViewState extends ConsumerState<_OrganizeView> {
                     ),
                   ],
                 ),
-                _helperText('填个名就能建，建完直接选上这道题'),
               ],
             ),
-          ),
-        if (!_addingTag)
-          _helperText(
-            '预置标签易错 / 常考 / 需重做直接点就能打，想打几个打几个；点标签栏最后的「＋ 新建标签」填个名就能新建，建完直接选上',
           ),
       ],
     );
@@ -1740,17 +1670,6 @@ class _OrganizeViewState extends ConsumerState<_OrganizeView> {
             ),
             _kpChapterRow(q, subject, chapters[ci], subjectKps, st),
           ],
-          Padding(
-            padding: EdgeInsets.only(top: 8 * scale),
-            child: Text(
-              '三级树：学科 → 章节 → 知识点。点章节名展开，再点知识点选上（选中的打 ✓），多选、不限个数。树里没有的知识点不能在这里新建——去学科管理里加进树，回来再选。',
-              style: TextStyle(
-                fontSize: 12.5,
-                color: palette.muted,
-                height: 1.55,
-              ),
-            ),
-          ),
         ],
       ),
     );
@@ -1892,11 +1811,13 @@ class _OrganizeViewState extends ConsumerState<_OrganizeView> {
       children: [
         // 十四批 M3：待重新核对时答案区不再把旧文本当有效答案展示
         //（旧答案若还在文本框里，那是 P1-A 的待核对草稿，见题型区提示）。
+        // 2026-11-27 GPT 评审后跟进（§3-①）：只在待核对态显示一句
+        // 短提示——改标签后未确认就保存会清空旧答案，事先必须告知。
         if (q.answerPendingRecheck)
           Padding(
             padding: const EdgeInsets.only(bottom: 8),
             child: _helperText(
-              '标准答案/解析待重新核对：改过选项标签后需重新确认——多选请重新点选字母并勾选确认（改标签后未确认就保存会清空旧答案）；单选请在下方重新选定正确答案。',
+              '改过选项标签，需重新确认答案再保存，否则旧答案会被清空。',
             ),
           ),
         if (isChoice) ...[
@@ -1912,36 +1833,36 @@ class _OrganizeViewState extends ConsumerState<_OrganizeView> {
                 final retained = _answerCtrl.text.trim();
                 if (retained.isEmpty) return const SizedBox.shrink();
                 return _helperText(
-                  '文字答案“$retained”已保留：当前题型答案以字母按钮为准，改回其他题型可继续用。',
+                  '文字答案“$retained”已保留，改回其他题型可继续用。',
                 );
               },
             ),
         ] else ...[
-          _fieldLabel('答案', hint: '可选 · 与解析分开 · 固定在上'),
+          _fieldLabel('答案'),
           TextField(
             controller: _answerCtrl,
             maxLines: 5,
             minLines: 1,
             decoration: const InputDecoration(hintText: '还没想好可留空'),
           ),
-          _optionalEmptyNote(_answerCtrl),
           // 非选择题/待确认：表单里若还有之前选定的正确答案，保留
           // 并提示——改回单选/判断可恢复，保存后按新题型处理。
+          // 2026-11-27 GPT 评审后跟进（§3-②）：只在题型切换后
+          // 显示一句短提示，不作常驻说明。
           if (st.correctOption != null && st.correctOption!.isNotEmpty)
             _helperText(
-              '题型已改：之前选定的正确答案（${st.correctOption}）已保留在本次编辑中，改回单选/判断可恢复；保存后按新题型处理。',
+              '原答案已保留，改回原题型可恢复；保存后按当前题型处理。',
             ),
         ],
         const SizedBox(height: 12),
-        _fieldLabel('解析', hint: '可选 · 可以空，与答案分开 · 固定在答案下方'),
+        _fieldLabel('解析'),
         TextField(
           controller: _explanationCtrl,
           maxLines: 3,
           decoration: const InputDecoration(hintText: '还没补可留空'),
         ),
-        _optionalEmptyNote(_explanationCtrl),
         const SizedBox(height: 12),
-        _fieldLabel('笔记', hint: '可选 · 单独一栏，与答案、解析分开'),
+        _fieldLabel('笔记'),
         TextField(
           controller: _notesCtrl,
           maxLines: 4,
@@ -1949,21 +1870,7 @@ class _OrganizeViewState extends ConsumerState<_OrganizeView> {
             hintText: '自己的错因、心得、提醒都写这里，写多少都行，不必填',
           ),
         ),
-        _helperText('笔记只记你自己的话，和上面的答案、解析是三回事：答案是标准答案，解析是解题过程，笔记是你写给自己的'),
       ],
-    );
-  }
-
-  /// 空字段下的「（可选，还没填）」提示（跟随输入实时变）。
-  Widget _optionalEmptyNote(TextEditingController controller) {
-    return ListenableBuilder(
-      listenable: controller,
-      builder: (context, _) {
-        if (controller.text.trim().isNotEmpty) {
-          return const SizedBox.shrink();
-        }
-        return _helperText('（可选，还没填）');
-      },
     );
   }
 
@@ -1988,17 +1895,6 @@ class _OrganizeViewState extends ConsumerState<_OrganizeView> {
                 label: '保存草稿',
                 variant: QmButtonVariant.plain,
                 onPressed: _saveDraft,
-              ),
-              SizedBox(width: 10 * scale),
-              Expanded(
-                child: Text(
-                  '整理到一半切到别的题，这里填的全都自动保存、不会丢，切回来接着填 · 确认整理后这道题进错题本，在题目详情里点「加入复习」才会进复习列表，按三步（看题、作答、核对）复习这道题',
-                  style: TextStyle(
-                    fontSize: 12.5,
-                    color: palette.muted,
-                    height: 1.55,
-                  ),
-                ),
               ),
             ],
           ),
@@ -2051,16 +1947,6 @@ class _OrganizeViewState extends ConsumerState<_OrganizeView> {
             size: QmButtonSize.large,
             block: true,
             onPressed: _confirmCurrent,
-          ),
-          SizedBox(height: 8 * scale),
-          Text(
-            '点完自动跳下一道待整理题，这道题归档到错题本；在题目详情里点「加入复习」后，按三步（看题、作答、核对）复习这道题',
-            textAlign: TextAlign.center,
-            style: TextStyle(
-              fontSize: 12.5,
-              color: palette.muted,
-              height: 1.55,
-            ),
           ),
         ],
       ),
@@ -2543,7 +2429,7 @@ class _QueuePopupState extends State<_QueuePopup> {
   }
 
   String _detailLine(Question q) {
-    final exam = q.examId == null ? '未归属' : (_examNames[q.examId] ?? '未知试卷');
+    final exam = q.examId == null ? '未归属试卷' : (_examNames[q.examId] ?? '未知试卷');
     final missing = q.folderIds.isEmpty ? '待补充 1 项：文件夹（归类）' : '必填已齐';
     return '${_subjectOf(q.subjectId).name} · ${sliceKindLabel(q.sliceKind)} · ${_dateText(q.createdAt)} · 试卷（来源）：$exam · $missing';
   }
@@ -2592,7 +2478,7 @@ class _QueuePopupState extends State<_QueuePopup> {
     final ok = await _askConfirm(
       title: '删了就没了，确定吗？',
       detail:
-          '「${_subjectOf(q.subjectId).name} · ${sliceKindLabel(q.sliceKind)}｜${q.title}」删了就没了，不可恢复。',
+          '「${_subjectOf(q.subjectId).name} · ${sliceKindLabel(q.sliceKind)}｜${q.title}」删掉后不可恢复。',
     );
     if (ok && mounted) await _deleteOne(q);
   }
@@ -2816,21 +2702,6 @@ class _QueuePopupState extends State<_QueuePopup> {
                             onPressed: widget.onClose,
                           ),
                         ],
-                      ),
-                      Padding(
-                        padding: EdgeInsets.only(
-                          top: 2 * scale,
-                          bottom: 10 * scale,
-                        ),
-                        child: Text(
-                          '点中一道题，下面展开它的一行详情 · 全选勾上当前列表，底部出现批量条',
-                          style: TextStyle(
-                            fontSize: 12,
-                            color: palette.muted,
-                            height: 1.5,
-                          ),
-                          overflow: TextOverflow.ellipsis,
-                        ),
                       ),
                       Row(
                         crossAxisAlignment: CrossAxisAlignment.start,

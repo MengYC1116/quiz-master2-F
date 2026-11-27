@@ -23,9 +23,10 @@ void main() {
     testWidgets('已收藏画 ★、未收藏画 ☆，星在题干后 pill 前', (tester) async {
       await pumpWrongbook(tester);
       await openMathList(tester);
-      // threeSubjectRepo：数学列表里只有 q1（函数极限）已收藏。
+      // threeSubjectRepo：数学列表里只有 q1（函数极限）已收藏；
+      // 包 4 默认隐藏取消后 q7 也显示，未收藏 ☆ 共 3 个（q2/q3/q7）。
       expect(find.text('★'), findsOneWidget);
-      expect(find.text('☆'), findsNWidgets(2));
+      expect(find.text('☆'), findsNWidgets(3));
       expect(find.byKey(const ValueKey('favorite-star-q1')), findsOneWidget);
       expect(find.byKey(const ValueKey('favorite-star-q2')), findsOneWidget);
       expect(find.byKey(const ValueKey('favorite-star-q3')), findsOneWidget);
@@ -56,7 +57,7 @@ void main() {
       expect(find.text('已选 0 道'), findsOneWidget);
       expect(find.byKey(const ValueKey('favorite-star-q1')), findsOneWidget);
       expect(find.text('★'), findsOneWidget);
-      expect(find.text('☆'), findsNWidgets(2));
+      expect(find.text('☆'), findsNWidgets(3));
     });
 
     testWidgets('点带星的行照常进详情，星不拦截点击', (tester) async {

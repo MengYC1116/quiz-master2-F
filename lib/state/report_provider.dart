@@ -124,7 +124,7 @@ class WeakSampleStats {
     final rate = errorRate == null
         ? '—'
         : '${(errorRate! * 100).round()}%';
-    return '共 $questionCount 道 · 作答 $attemptCount 次 · 答错 $wrongCount 次 · 近期错误率 $rate · $rangeLabel';
+    return '共 $questionCount 道 · 作答 $attemptCount 次 · 答错 $wrongCount 次 · 错误率 $rate · $rangeLabel';
   }
 
   String get sourceLabel => '正式 $formalCount 次 / 专项 $practiceCount 次';
@@ -137,7 +137,6 @@ class ReportState {
     this.range = 'week',
     this.loading = true,
     this.loadError = false,
-    this.records = const [],
     this.questions = const [],
     this.knowledgePoints = const [],
     this.subjects = const [],
@@ -155,9 +154,6 @@ class ReportState {
 
   /// 读库失败（原 `_loadError`；失败留住上次成功加载的内容，只出横幅）。
   final bool loadError;
-
-  /// 全部错因记录（原 `_records`）。
-  final List<CauseRecord> records;
 
   /// 全部题目（含已归档；原 `_questions`）。
   final List<Question> questions;
@@ -177,6 +173,35 @@ class ReportState {
 
   /// P3 入口 3：已在 FSRS 复习池里的题 id（列表行内标“已在复习”用）。
   final Set<String> fsrsPoolIds;
+
+  // ---------- 空态守门（四态，V11 → 跟进批 5 收紧）----------
+  //
+  // 旧守门 `records.isEmpty`（cause_records）已随治愈机退役删除；
+  // 空态只看题目与正式作答事实，与范围无关（范围只过滤展示的数字，
+  // 不决定空态）：
+  // - hasQuestions：库里有“已整理且未归档”的题（可复习的题；与弱点 /
+  //   分布的题目集合口径同款，见 report_stats.dart）。“空库”② 指
+  //   hasAnyQuestions 为假，即一道题都没有。
+  // - hasAnyQuestions：库里有题（全部题目，含未整理与已归档）。
+  // - hasFormalAttempts：有过正式作答（mode == 到期复习；未判分也算
+  //   一次正式作答；专项练习不计——核心数只按正式作答算）。
+  // - 空态当且仅当零正式作答；有正式作答即按有数据展示，哪怕题已删
+  //   （attempts 孤儿：核心数照算，见 report_stats.dart 头注）。
+  // 页面按 hasQuestions / hasAnyQuestions 分三支文案/按钮：
+  // ① 有可复习的题→去复习；④ 库里有题但无一可复习→去错题本
+  // （整理 / 取消归档）；② 空库→去收集；loadError 时不进空态
+  // （留住上次内容 + 横幅，旧行为不变）。
+
+  /// 库里有“已整理且未归档”的题（可复习的题）。
+  bool get hasQuestions =>
+      questions.any((q) => q.isOrganized && !q.isArchived);
+
+  /// 库里有题（全部题目，含未整理与已归档；“空库”即此为假）。
+  bool get hasAnyQuestions => questions.isNotEmpty;
+
+  /// 有过正式作答（mode == 到期复习；未判分也算一次正式作答）。
+  bool get hasFormalAttempts =>
+      attempts.any((a) => a.mode == ReviewMode.due);
 
   // ---------- 范围 ----------
 
@@ -206,7 +231,7 @@ class ReportState {
       'week' => '本周 · ${_md(rangeStart!)} ~ ${_md(today)}',
       _ => '全部时间',
     };
-    return '$label · 数字按这个时间段算';
+    return label;
   }
 
   // ---------- 查找 ----------
@@ -347,7 +372,6 @@ class ReportState {
     String? range,
     bool? loading,
     bool? loadError,
-    List<CauseRecord>? records,
     List<Question>? questions,
     List<KnowledgePoint>? knowledgePoints,
     List<Subject>? subjects,
@@ -359,7 +383,6 @@ class ReportState {
       range: range ?? this.range,
       loading: loading ?? this.loading,
       loadError: loadError ?? this.loadError,
-      records: records ?? this.records,
       questions: questions ?? this.questions,
       knowledgePoints: knowledgePoints ?? this.knowledgePoints,
       subjects: subjects ?? this.subjects,
@@ -389,10 +412,12 @@ class ReportNotifier extends Notifier<ReportState> {
     return const ReportState();
   }
 
-  /// 读库（原 `_load` 原样搬移：读错因记录、题目（含已归档）、知识点、
+  /// 读库（原 `_load` 原样搬移：题目（含已归档）、知识点、
   /// 学科、设置、全部 attempts 与 FSRS 池内标记）。报告不再读
   /// review_history（FSRS 口径迁移：通过率改由 attempts 派生，
-  /// load 里逐题 reviewHistory 的循环已删）。成功时整份 state
+  /// load 里逐题 reviewHistory 的循环已删），包 6 起也不再读
+  /// causeRecords（空态守门改看题目与正式作答，见 [ReportState.hasQuestions]
+  /// / [ReportState.hasFormalAttempts]）。成功时整份 state
   /// 一次性替换（范围保持当前值，不重置）；失败时只翻 `loadError`，
   /// 旧内容留住。
   Future<void> load() async {
@@ -401,7 +426,6 @@ class ReportNotifier extends Notifier<ReportState> {
     if (_disposed) return;
     final repo = _repo;
     try {
-      final records = await repo.causeRecords();
       final questions = await repo.all(includeArchived: true);
       final kps = await repo.knowledgePoints();
       final subjects = await repo.subjects();
@@ -425,7 +449,6 @@ class ReportNotifier extends Notifier<ReportState> {
         range: state.range,
         loading: false,
         loadError: false,
-        records: records,
         questions: questions,
         knowledgePoints: kps,
         subjects: subjects,

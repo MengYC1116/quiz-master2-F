@@ -78,23 +78,18 @@ class FakeOwnerRepo extends QuestionRepository {
       questionId: 'q1',
       cause: '概念不清',
       subjectId: 'math',
-      status: CauseStatus.pending,
       joinedAt: DateTime(2026, 11, 10),
     ),
     CauseRecord(
       questionId: 'q2',
       cause: '方法不会',
       subjectId: 'math',
-      status: CauseStatus.inProgress,
-      solvedCount: 1,
-      lastCheck: DateTime(2026, 11, 10),
       joinedAt: DateTime(2026, 11, 10, 1),
     ),
     CauseRecord(
       questionId: 'q2',
       cause: '计算错误',
       subjectId: 'math',
-      status: CauseStatus.pending,
       joinedAt: DateTime(2026, 11, 10, 1),
     ),
     // M3 D-138：扁平分页按题行计（不是按错因记录计）。3 道题 =
@@ -103,7 +98,6 @@ class FakeOwnerRepo extends QuestionRepository {
       questionId: 'q3',
       cause: '审题失误',
       subjectId: 'math',
-      status: CauseStatus.pending,
       joinedAt: DateTime(2026, 11, 10, 2),
     ),
   ];
@@ -263,10 +257,10 @@ void main() {
         settings: AppSettings.defaults.copyWith(pageSize: 2),
       );
       await pumpReview(tester, repo: repo);
-      expect(find.text('共 3 条 · 第 1 / 2 页'), findsOneWidget);
+      expect(find.text('共 3 道 · 第 1 / 2 页'), findsOneWidget);
 
       await pickMenuItem<int>(tester, find.byType(DropdownButton<int>), 20);
-      expect(find.text('共 3 条 · 第 1 / 1 页'), findsOneWidget);
+      expect(find.text('共 3 道 · 第 1 / 1 页'), findsOneWidget);
 
       // 本地行为：库不写、设置默认值仍是 2。
       expect(repo.settingsValue.pageSize, 2);
@@ -305,13 +299,13 @@ void main() {
       );
       await pumpReview(tester, repo: repo);
       await pickMenuItem<int>(tester, find.byType(DropdownButton<int>), 20);
-      expect(find.text('共 3 条 · 第 1 / 1 页'), findsOneWidget);
+      expect(find.text('共 3 道 · 第 1 / 1 页'), findsOneWidget);
       expect(repo.settingsValue.pageSize, 2);
       expect(repo.saveSettingsCalls, 0);
 
       // 本地改动不持久化：重开一页仍是默认值 2（2 页）。
       await pumpReview(tester, repo: repo);
-      expect(find.text('共 3 条 · 第 1 / 2 页'), findsOneWidget);
+      expect(find.text('共 3 道 · 第 1 / 2 页'), findsOneWidget);
     });
   });
 }

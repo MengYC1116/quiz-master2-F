@@ -148,7 +148,6 @@ class FakeDetailNotifierRepo extends QuestionRepository {
 
   final List<Question> saved = [];
   final List<String> deletedIds = [];
-  int syncCauseRecordsCalls = 0;
 
   /// 最近一次 replaceQuestionBoxesAndSlice 收到的框（按题 id）。
   final Map<String, List<QuestionBox>> replacedBoxes = {};
@@ -213,11 +212,6 @@ class FakeDetailNotifierRepo extends QuestionRepository {
   }
 
   @override
-  Future<void> syncCauseRecords(Question q) async {
-    syncCauseRecordsCalls++;
-  }
-
-  @override
   Future<void> toggleFavorite(Question q) async {
     await save(q.copyWith(isFavorite: !q.isFavorite));
   }
@@ -234,8 +228,7 @@ class FakeDetailNotifierRepo extends QuestionRepository {
   }
 
   @override
-  Future<bool> setReviewJoined(Question q, bool joined) async {
-    if (joined && q.allCauses.isEmpty) return false;
+  Future<bool> setReviewJoinedFlag(Question q, bool joined) async {
     await save(q.copyWith(reviewJoined: joined));
     return true;
   }
@@ -343,8 +336,6 @@ FakeDetailNotifierRepo _repo() {
         questionId: 'q1',
         cause: '概念不清',
         subjectId: 'math',
-        status: CauseStatus.inProgress,
-        solvedCount: 1,
         joinedAt: now.subtract(const Duration(days: 2)),
       ),
     ],
@@ -597,7 +588,43 @@ void main() {
       final due = await scheduler.nextDueAt('q1');
       expect(due, isNotNull);
       expect(s.nextDueAt, due);
-      expect(reviewDueLabel(s), '下次到期 ${due!.month}月${due.day}日');
+      // 月日取本地时区（跟进⑦）：调度器返回 UTC，label 先 toLocal。
+      final local = due!.toLocal();
+      expect(reviewDueLabel(s), '下次到期 ${local.month}月${local.day}日');
+    });
+
+    test('下次到期月日取本地时区：UTC 23:30、本地已是次日 → 显示本地日期', () {
+      // 跟进⑦午夜边界：UTC 11 月 27 日 23:30，东八区本地已是 11 月 28 日。
+      final dueUtc = DateTime.utc(2026, 11, 27, 23, 30);
+      final local = dueUtc.toLocal();
+      final status = DetailReviewStatus(
+        inPool: true,
+        nextDueAt: dueUtc,
+        formalCorrect: 0,
+        formalWrong: 0,
+      );
+      expect(reviewDueLabel(status), '下次到期 ${local.month}月${local.day}日');
+      // 跨日时绝不能显示 UTC 日期（修前行为）；同日时此断言退化为空。
+      if (local.day != dueUtc.day) {
+        expect(
+          reviewDueLabel(status),
+          isNot('下次到期 ${dueUtc.month}月${dueUtc.day}日'),
+        );
+      }
+    });
+
+    test('下次到期月日取本地时区：本地与 UTC 同日 → 显示同一日期', () {
+      // 对照：UTC 06:00，绝大多数时区本地仍为同日。
+      final dueUtc = DateTime.utc(2026, 11, 27, 6);
+      final local = dueUtc.toLocal();
+      expect(local.day, dueUtc.day, reason: '本用例前提：本地与 UTC 同日');
+      final s = DetailReviewStatus(
+        inPool: true,
+        nextDueAt: dueUtc,
+        formalCorrect: 0,
+        formalWrong: 0,
+      );
+      expect(reviewDueLabel(s), '下次到期 ${local.month}月${local.day}日');
     });
 
     test('正式对错按作答次数计：专项与未判分不计，他题不计', () async {
@@ -688,7 +715,6 @@ void main() {
       expect(savedQ.pageImagePath, _pagePngRel);
       expect(savedQ.slicePath, 'slices/q1.png');
       expect(savedQ.sliceWidth, 100);
-      expect(repo.syncCauseRecordsCalls, 1);
       expect(container.read(detailProvider).question?.title, '函数极限（改）');
     });
 
@@ -746,13 +772,14 @@ void main() {
       expect(container.read(detailProvider).question?.isArchived, isTrue);
     });
 
-    test('toggleReviewJoined：无错因题返回 false，不写库', () async {
+    test('toggleReviewJoined：无错因题也可加入复习', () async {
       final repo = _repo();
       final container = _container(repo, questionId: 'q5');
       final notifier = _notifier(container);
       await notifier.load();
-      expect(await notifier.toggleReviewJoined(), isFalse);
-      expect(repo.saved, isEmpty);
+      expect(await notifier.toggleReviewJoined(), isTrue);
+      expect(container.read(detailProvider).question?.reviewJoined, isTrue);
+      expect(repo.saved.last.reviewJoined, isTrue);
     });
 
     test('toggleReviewJoined：有错因题加入成功，再点取消加入', () async {

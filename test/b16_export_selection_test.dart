@@ -107,6 +107,13 @@ class B16FakeRepo extends QuestionRepository {
   // pumpAndSettle 超时）。
   @override
   Future<Set<String>> fsrsPoolQuestionIds() async => const {};
+
+  // FSRS 全量迁移包 4：load() 读下次到期表（同款 D-225：不覆写
+  // 会走真实库）。
+  @override
+  Future<Map<String, DateTime>> fsrsNextDueByQuestion({
+    required ReviewScheduler scheduler,
+  }) async => const {};
 }
 
 Future<(B16FakeRepo, WrongbookNotifier, ProviderContainer)> _setUp({

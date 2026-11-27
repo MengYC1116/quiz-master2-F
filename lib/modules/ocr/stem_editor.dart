@@ -544,7 +544,7 @@ class _StemEditorState extends State<StemEditor> {
               const SizedBox(width: 6),
               Expanded(
                 child: Text(
-                  '配图 ${figure.id}',
+                  '配图 ${figure.sequenceIndex + 1}',
                   overflow: TextOverflow.ellipsis,
                   style: const TextStyle(fontSize: 13),
                 ),
@@ -948,14 +948,6 @@ class _StemEditorState extends State<StemEditor> {
               displayMode: displayMode,
               fallbackImage: _sliceImageWidget(),
             ),
-          if (formula.restoredAsImage)
-            const Padding(
-              padding: EdgeInsets.only(top: 4),
-              child: Text(
-                '已恢复为原图：保存后该公式以原图显示，可重新识别恢复',
-                style: TextStyle(fontSize: 12, color: Colors.grey),
-              ),
-            ),
           const SizedBox(height: 6),
           Row(
             children: [
@@ -1092,14 +1084,6 @@ class _StemEditorState extends State<StemEditor> {
               latex: latex,
               displayMode: displayMode,
               fallbackImage: _sliceImageWidget(),
-            ),
-          if (formula.restoredAsImage)
-            const Padding(
-              padding: EdgeInsets.only(top: 4),
-              child: Text(
-                '已恢复为原图：保存后该公式以原图显示，可重新识别恢复',
-                style: TextStyle(fontSize: 12, color: Colors.grey),
-              ),
             ),
           const SizedBox(height: 6),
           Row(

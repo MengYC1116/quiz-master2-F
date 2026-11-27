@@ -325,6 +325,16 @@ void main() {
       expect(initial.nextDueAt, isNull);
       expect(initial.formalCorrect, 0);
       expect(initial.formalWrong, 0);
+      // FSRS 全量迁移包 2 遗留同步（包 7 补）：legacy 回落已删，池空
+      // 即无到期；复习页要建出会话，须先给 q1 一张到期卡（建卡 + 3
+      // 天前答对一次，Good 首间隔 2 天，到期日在昨天）。
+      await scheduler.initializeQuestion('q1');
+      await scheduler.recordAnswer(
+        'q1',
+        ReviewResult.good,
+        DateTime.now().subtract(const Duration(days: 3)),
+        'evt-drs-seed-q1',
+      );
 
       // 复习页真实走完一道题：选错（A，正确答案 B）→ 核对提交。
       final reviewNotifier = reviewContainer.read(reviewProvider.notifier);
@@ -355,6 +365,16 @@ void main() {
       final detailNotifier = detailContainer.read(detailProvider.notifier);
       await detailNotifier.load();
       await _waitReviewStatus(detailNotifier);
+      // FSRS 全量迁移包 2 遗留同步（包 7 补）：legacy 回落已删，池空
+      // 即无到期；复习页要建出会话，须先给 q1 一张到期卡（建卡 + 3
+      // 天前答对一次，Good 首间隔 2 天，到期日在昨天）。
+      await scheduler.initializeQuestion('q1');
+      await scheduler.recordAnswer(
+        'q1',
+        ReviewResult.good,
+        DateTime.now().subtract(const Duration(days: 3)),
+        'evt-drs-seed-q1',
+      );
 
       // 第一轮：复习页真实提交，答错。
       final reviewNotifier = reviewContainer.read(reviewProvider.notifier);
@@ -457,14 +477,14 @@ void main() {
       final detailNotifier = detailContainer.read(detailProvider.notifier);
       await detailNotifier.load();
       await _waitReviewStatus(detailNotifier);
-      expect(detailNotifier.state.records.first.status, CauseStatus.pending);
+      expect(detailNotifier.state.records.first.remedyHistory, isEmpty);
       expect(detailNotifier.state.history, isEmpty);
 
-      // 模拟他处写入：错因已解决 + 一条解决记录，再发本题事件。
+      // 模拟他处写入：补救历史新增一条 + 一条解决记录，再发本题事件。
+      // FSRS 全量迁移包 7：CauseRecord 已无状态列，刷新断言改走
+      // 仍存活的补救历史字段。
       repo.records[0] = repo.records[0].copyWith(
-        status: CauseStatus.solved,
-        solvedCount: 1,
-        lastCheck: DateTime.now(),
+        remedyHistory: ['2026-11-27：新补救'],
       );
       repo.historyMap['q1'] = [
         (result: 'solved', reviewedAt: DateTime.now()),
@@ -479,8 +499,8 @@ void main() {
         detailNotifier,
         (s) => s.history.length == 1,
       );
-      expect(detailNotifier.state.records.first.status, CauseStatus.solved);
-      expect(detailNotifier.state.records.first.solvedCount, 1);
+      expect(detailNotifier.state.records.first.remedyHistory,
+          ['2026-11-27：新补救']);
       // 刷新只动复习相关字段：编辑表单值与当前题不受影响。
       expect(detailNotifier.state.question?.id, 'q1');
       expect(detailNotifier.state.editBase, isNull);

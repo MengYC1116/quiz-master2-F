@@ -1,5 +1,5 @@
 // PDF 多页修框 widget 测试：修框编辑器打开 → 点第 2 页缩略图换底图
-// 并自动检测 → 确认拆出两页的题（sourceKind pdf、sourcePage 1/2）。
+// 并自动框 → 确认拆出两页的题（sourceKind pdf、sourcePage 1/2）。
 // 页图在 setUpAll 用真实 PdfRenderService（PDFium）从手写最小 PDF
 // 渲出（真实 zone）；编辑器流程走 test/collect_page_test.dart 的
 // FakeRepo（内存草稿，与既有收集测试同模式），不碰真实数据库。
@@ -134,7 +134,7 @@ void main() {
     }
   });
 
-  testWidgets('PDF 多页：修框切页换底图、自动检测、确认拆出两页的题',
+  testWidgets('PDF 多页：修框切页换底图、自动框、确认拆出两页的题',
       (tester) async {
     final repo = collect_test.FakeRepo([
       collect_test.task(
@@ -162,7 +162,7 @@ void main() {
       isTrue,
     );
 
-    // 点第 2 页缩略图：底图换成 page-002.png，空页自动检测也用第 2 页图。
+    // 点第 2 页缩略图：底图换成 page-002.png，空页自动框也用第 2 页图。
     await tester.tap(find.byKey(const Key('editor-thumb-2')));
     await tester.pumpAndSettle();
     expect(find.textContaining('第2页'), findsWidgets);
@@ -188,7 +188,7 @@ void main() {
     // 改为轮询 savedQuestions（上限 ~30 秒），不等死。
     var sawUnboxedDialog = false;
     await tester.runAsync(() async {
-      await tester.tap(find.text('确认修框，拆成 2 个待整理任务'));
+      await tester.tap(find.text('确认修框，拆成 2 道题去整理'));
       // 等确认框出现（上限 ~9 秒），记下它、点确认拆题。
       for (var i = 0; i < 30; i++) {
         await tester.pump();

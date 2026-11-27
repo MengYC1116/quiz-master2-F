@@ -541,46 +541,11 @@ void main() {
   });
 
   group('QmStatusPill', () {
-    testWidgets('错因四态文案与颜色（亮色）', (tester) async {
-      await pumpUi(
-        tester,
-        Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            QmStatusPill.cause(QmCauseStatus.pending),
-            QmStatusPill.cause(QmCauseStatus.inProgress),
-            QmStatusPill.cause(QmCauseStatus.solved),
-            QmStatusPill.cause(QmCauseStatus.recheck),
-          ],
-        ),
-      );
-      expect(bodyDecoration(tester, '待解决').color, const Color(0xFFFFF3D1));
-      expect(bodyDecoration(tester, '解决中').color, const Color(0xFFE1EDFF));
-      expect(bodyDecoration(tester, '已解决').color, const Color(0xFFE1EDFF));
-      expect(bodyDecoration(tester, '复查').color, const Color(0xFFFFE9E5));
-      expect(
-        tester.widget<Text>(find.text('待解决')).style?.color,
-        const Color(0xFF8A5A00),
-      );
-      expect(
-        tester.widget<Text>(find.text('复查')).style?.color,
-        const Color(0xFFB42318),
-      );
-    });
-
-    testWidgets('错因四态深色', (tester) async {
-      await pumpUi(
-        tester,
-        QmStatusPill.cause(QmCauseStatus.recheck),
-        brightness: Brightness.dark,
-      );
-      expect(bodyDecoration(tester, '复查').color, const Color(0xFF352C31));
-      expect(
-        tester.widget<Text>(find.text('复查')).style?.color,
-        const Color(0xFFD2A3AC),
-      );
-    });
-
+    // FSRS 全量迁移包 7：已删 2 个测试——'错因四态文案与颜色（亮色）'
+    // 与 '错因四态深色'（覆盖 `QmStatusPill.cause` 四态文案与颜色；
+    // 工厂随旧治愈状态机删除，无替代——同一 err 红色系由下面的
+    // tone 测试覆盖，复习列表已逾期行的「已到期」pill 由
+    // review_page_test 的 FSRS 四组测试覆盖）。
     testWidgets('warn / err / info 三色提示', (tester) async {
       await pumpUi(
         tester,
@@ -819,7 +784,7 @@ void main() {
               onPressed: () {},
             ),
             const QmChip(label: '标签', selected: true),
-            QmStatusPill.cause(QmCauseStatus.pending),
+            QmStatusPill.tone(label: '提示', tone: QmTone.warn),
             const QmBanner(tone: QmBannerTone.warning, message: '提示'),
             const QmEmptyState(title: '空'),
             QmFoldSection(

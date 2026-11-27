@@ -332,7 +332,7 @@ void main() {
         [f1.path, f2.path],
         onNotice: notices.add,
       );
-      expect(notices.single, contains('只导一份'));
+      expect(notices.single, contains('只导入了一份'));
       final s = container.read(collectProvider);
       // 第二份内容相同被丢掉，只留第一份进待确认（文件名重复）。
       expect(s.pendingImport, isNotNull);
@@ -404,7 +404,7 @@ void main() {
       expect(repo.savedTasks.length, 1);
       final failed = repo.savedTasks.single;
       expect(failed.status, CollectStatus.failed);
-      expect(failed.error, '文件损坏：找不到这个文件');
+      expect(failed.error, '找不到这个文件');
       expect(failed.subjectId, 'math');
       final s = container.read(collectProvider);
       expect(s.selectedSubjectId, isNull);

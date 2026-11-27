@@ -52,7 +52,7 @@ import 'question_classifier.dart';
 /// - `no_candidate`：没有待处理的识别结果（raw 缺失或状态为 none）；
 /// - `not_pending`：候选已被接受/忽略/标 stale，不能重复接受；
 /// - `hash_mismatch`：候选来自旧切片（已重新框选），已标 stale；
-/// - `slice_missing`：切片文件不存在，无法核对候选来源。
+/// - `slice_missing`：这道题的切片图不存在，无法核对识别结果。
 class CandidateRejection implements Exception {
   CandidateRejection(this.reason, this.message);
 
@@ -157,7 +157,7 @@ Future<AcceptedCandidate> acceptCandidateStem(
       d.questions,
     )..where((t) => t.id.equals(question.id))).getSingleOrNull();
     if (row == null) {
-      rejection = CandidateRejection('question_deleted', '题目已被删除，候选无法接受');
+      rejection = CandidateRejection('question_deleted', '题目已被删除，识别结果无法接受');
       return;
     }
     final fresh = _questionFromRow(row);
@@ -187,7 +187,7 @@ Future<AcceptedCandidate> acceptCandidateStem(
       if (currentHash == null) {
         rejection = CandidateRejection(
           'slice_missing',
-          '切片文件不存在，无法核对候选来源',
+          '这道题的切片图不存在，无法核对识别结果',
         );
         return;
       }
@@ -210,7 +210,7 @@ Future<AcceptedCandidate> acceptCandidateStem(
         if (marked == 1) wrote = true;
         rejection = CandidateRejection(
           'hash_mismatch',
-          '识别结果来自旧切片（已重新框选），已标记为过期，不能接受',
+          '识别结果来自重新框选前的切片图，已过期，不能接受',
         );
         return;
       }

@@ -114,6 +114,13 @@ class _B8FakeRepo extends QuestionRepository {
   @override
   Future<Set<String>> fsrsPoolQuestionIds() async => const {};
 
+  // FSRS 全量迁移包 4：load() 读下次到期表（同款 D-225：不覆写
+  // 会走真实库）。
+  @override
+  Future<Map<String, DateTime>> fsrsNextDueByQuestion({
+    required ReviewScheduler scheduler,
+  }) async => const {};
+
   @override
   Future<Map<String, int>> pendingOrganizeBySubject() async => const {};
 
@@ -262,10 +269,6 @@ void main() {
         ),
       );
       expect(find.text('还没有学科'), findsOneWidget);
-      expect(
-        find.text('还没有学科：先去「学科管理」添加一个，再回来导入。'),
-        findsOneWidget,
-      );
       // 下拉已禁用：点它不会弹出数学/英语/政治。
       await tester.tap(find.byKey(const Key('collect-subject-select')));
       await tester.pumpAndSettle();

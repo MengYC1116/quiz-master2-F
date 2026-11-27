@@ -39,22 +39,10 @@ Question _q(
       sliceText: '题：$title',
     );
 
-CauseRecord _rec(
-  String questionId,
-  String cause, {
-  CauseStatus status = CauseStatus.pending,
-  int solvedCount = 0,
-  DateTime? recheckDate,
-}) =>
-    CauseRecord(
+CauseRecord _rec(String questionId, String cause) => CauseRecord(
       questionId: questionId,
       cause: cause,
       subjectId: 'math',
-      status: status,
-      solvedCount: solvedCount,
-      lastCheck:
-          status == CauseStatus.solved ? DateTime(2026, 11, 10) : null,
-      recheckDate: recheckDate,
       joinedAt: DateTime(2026, 11, 10),
     );
 
@@ -194,10 +182,10 @@ void main() {
     expect(find.text('未开始'), findsOneWidget);
     expect(find.text('第一题'), findsOneWidget);
     expect(find.text('第二题'), findsOneWidget);
-    // 池空时会话走旧错因队列（两题待治），开始复习仍可用。
+    // FSRS 全量迁移包2：池空即无到期（旧回落已删），开始复习禁用。
     expect(
       tester.widget<QmButton>(find.widgetWithText(QmButton, '开始复习')).onPressed,
-      isNotNull,
+      isNull,
     );
     expect(tester.takeException(), isNull);
   });
@@ -211,14 +199,8 @@ void main() {
       records: [
         // 两条都已解决；只有“概念不清”到了复查时间，旧口径整题落
         // recheck 桶；新口径不看错因记录，无卡即未开始。
-        _rec('q1', '概念不清',
-            status: CauseStatus.solved,
-            solvedCount: 2,
-            recheckDate: DateTime.now().subtract(const Duration(days: 1))),
-        _rec('q1', '计算错误',
-            status: CauseStatus.solved,
-            solvedCount: 2,
-            recheckDate: DateTime.now().add(const Duration(days: 7))),
+        _rec('q1', '概念不清'),
+        _rec('q1', '计算错误'),
       ],
     );
     await _pumpReview(tester, repo);
@@ -228,10 +210,10 @@ void main() {
     expect(find.text('已解决 0 道'), findsNothing);
     expect(find.text('未开始'), findsOneWidget);
     expect(find.text('第一题'), findsOneWidget);
-    // 池空时会话走旧错因队列（1 条错因到复查时间），开始复习仍可用。
+    // FSRS 全量迁移包2：池空即无到期（旧回落已删），开始复习禁用。
     expect(
       tester.widget<QmButton>(find.widgetWithText(QmButton, '开始复习')).onPressed,
-      isNotNull,
+      isNull,
     );
     expect(tester.takeException(), isNull);
   });
@@ -276,14 +258,8 @@ void main() {
       records: [
         // 两条都已解决、复查日都未到，旧口径整题落 solved 桶；
         // 新口径无卡即未开始。
-        _rec('q1', '概念不清',
-            status: CauseStatus.solved,
-            solvedCount: 2,
-            recheckDate: DateTime.now().add(const Duration(days: 7))),
-        _rec('q1', '计算错误',
-            status: CauseStatus.solved,
-            solvedCount: 2,
-            recheckDate: DateTime.now().add(const Duration(days: 7))),
+        _rec('q1', '概念不清'),
+        _rec('q1', '计算错误'),
       ],
     );
     await _pumpReview(tester, repo);
