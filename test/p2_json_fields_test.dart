@@ -257,7 +257,7 @@ void main() {
   });
 
   group('cause records', () {
-    test('_seedCauseRecordsFor 写 []：新种错因记录 remedyHistory 为空', () async {
+    test('updateCauseRemedy INSERT 写 []：新行 remedyHistory 为空', () async {
       final db = await openMemoryDb();
       await seedBase(db);
       final question = q(
@@ -265,7 +265,25 @@ void main() {
         customErrorTypes: const ['手滑'],
       );
       await AppDatabase.instance.upsertQuestion(question);
-      await AppDatabase.instance.ensureCauseRecords(question);
+      // FSRS 全量迁移包2：播种（ensureCauseRecords）已删；改走
+      // updateCauseRemedy 的缺行 INSERT 路径（唯一写 cause_records
+      // 行的入口），仍须保证 remedy_history 存 '[]' 不是 ''。
+      await AppDatabase.instance.updateCauseRemedy(
+        CauseRecord(
+          questionId: 'q1',
+          cause: '计算错误',
+          subjectId: 'math',
+          joinedAt: DateTime(2026, 11, 1),
+        ),
+      );
+      await AppDatabase.instance.updateCauseRemedy(
+        CauseRecord(
+          questionId: 'q1',
+          cause: '手滑',
+          subjectId: 'math',
+          joinedAt: DateTime(2026, 11, 1),
+        ),
+      );
       final records = await AppDatabase.instance.causeRecordsForQuestion('q1');
       expect(records.length, 2);
       for (final r in records) {

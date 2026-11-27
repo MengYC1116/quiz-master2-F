@@ -39,7 +39,6 @@
 //   交替，等到目标文案出现）。
 import 'dart:io';
 
-import 'package:drift/drift.dart' hide isNull, isNotNull;
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:image/image.dart' as img;
@@ -365,21 +364,29 @@ Future<void> _pumpWrongbook(WidgetTester tester) async {
       ),
     ),
   );
+  // 二十三批 D-250：/wrongbook 默认落点是书架，不再是列表；
+  // 进列表要先点学科封面进目录，再点「全部题目」。
   await _pumpUntil(
     tester,
-    () => find.text('全部题目').evaluate().isNotEmpty,
-    reason: '错题本 L1 列表未出现全部题目',
+    () => find.text('错 题 本').evaluate().isNotEmpty,
+    reason: '错题本书架未出现',
   );
 }
 
 Future<void> _openMathList(WidgetTester tester) async {
-  // 十九批 L1：错题本默认落点就是列表（板子行，标题为 RichText），
-  // 大卡片 / 紧凑行已去掉；种子全是数学题，列表即数学列表。
+  // 书架 → 点数学封面进目录 → 点「全部题目」进列表。
+  await tester.tap(find.text('数学'));
+  await _pumpUntil(
+    tester,
+    () => find.text('全部题目').evaluate().isNotEmpty,
+    reason: '数学目录未出现全部题目行',
+  );
+  await tester.tap(find.text('全部题目'));
   await _pumpUntil(
     tester,
     () =>
         find
-            .textContaining('单选示例题', findRichText: true)
+            .textContaining('下列说法正确的是', findRichText: true)
             .evaluate()
             .isNotEmpty,
     reason: '错题本列表未出现题目',
@@ -405,7 +412,7 @@ Future<void> _pumpReport(WidgetTester tester) async {
   );
   await _pumpUntil(
     tester,
-    () => find.text('已解决错因').evaluate().isNotEmpty,
+    () => find.text('正式复习答对').evaluate().isNotEmpty,
     reason: '学习报告核心数未出现',
   );
 }
@@ -523,7 +530,7 @@ void main() {
   });
 
   group('B-#3 材料混合小题记待确认', () {
-    testWidgets('同一框单选 + 判断 + 简答 → 待确认 + 拆框提示 + 材料标签',
+    testWidgets('同一框单选 + 判断 + 简答 → 待确认 + 材料标签（拆框提示文案已删）',
         (tester) async {
       await _initDb(tester);
       await _seedAndClassify(
@@ -536,15 +543,18 @@ void main() {
       expect(after.questionType, isNull);
       expect(after.questionTypeSource, 'unclassified');
       expect(after.questionBackgroundTags, '材料');
+      // 拆框提示文案「本题含多种作答形式，请拆框或人工指定」已随文案
+      // 走查批删除（final-report §2 04-#7：说明类灰色小字），整理页
+      // 不再渲染它；只断言 chip 仍为待确认。
       await _pumpOrganize(
         tester,
-        ready: find.text('本题含多种作答形式，请拆框或人工指定'),
-        readyReason: '整理页拆框提示未出现',
+        ready: find.text('待确认'),
+        readyReason: '整理页 chip 未显示待确认',
       );
       expect(find.text('待确认'), findsOneWidget);
       expect(
         find.text('本题含多种作答形式，请拆框或人工指定'),
-        findsOneWidget,
+        findsNothing,
       );
       await _drain(tester);
       expect(tester.takeException(), isNull);
@@ -802,17 +812,18 @@ void main() {
       expect((await _dbQuestion(tester, 'q-unconf')).questionType, isNull);
       await _pumpWrongbook(tester);
       await _openMathList(tester);
-      // 板子行标题是 RichText，用 findRichText 找题名。
+      // 板子行标题是 RichText，显示题干（D-250：优先 ocrStem，
+      // 无题干才回退标题），用 findRichText 找题干。
       expect(
-        find.textContaining('单选示例题', findRichText: true),
+        find.textContaining('下列说法正确的是', findRichText: true),
         findsOneWidget,
       );
       expect(
-        find.textContaining('计算示例题', findRichText: true),
+        find.textContaining('求 2 + 3 × 4 的值', findRichText: true),
         findsOneWidget,
       );
       expect(
-        find.textContaining('未定型示例题', findRichText: true),
+        find.textContaining('这是一段没有明显特征的文字', findRichText: true),
         findsOneWidget,
       );
       // 打开筛选面板：题型下拉是面板里最后一个 String 下拉。
@@ -828,41 +839,41 @@ void main() {
 
       await selectType('单项选择');
       expect(
-        find.textContaining('单选示例题', findRichText: true),
+        find.textContaining('下列说法正确的是', findRichText: true),
         findsOneWidget,
       );
       expect(
-        find.textContaining('计算示例题', findRichText: true),
+        find.textContaining('求 2 + 3 × 4 的值', findRichText: true),
         findsNothing,
       );
       expect(
-        find.textContaining('未定型示例题', findRichText: true),
+        find.textContaining('这是一段没有明显特征的文字', findRichText: true),
         findsNothing,
       );
       await selectType('待确认');
       expect(
-        find.textContaining('单选示例题', findRichText: true),
+        find.textContaining('下列说法正确的是', findRichText: true),
         findsNothing,
       );
       expect(
-        find.textContaining('计算示例题', findRichText: true),
+        find.textContaining('求 2 + 3 × 4 的值', findRichText: true),
         findsNothing,
       );
       expect(
-        find.textContaining('未定型示例题', findRichText: true),
+        find.textContaining('这是一段没有明显特征的文字', findRichText: true),
         findsOneWidget,
       );
       await selectType('全部');
       expect(
-        find.textContaining('单选示例题', findRichText: true),
+        find.textContaining('下列说法正确的是', findRichText: true),
         findsOneWidget,
       );
       expect(
-        find.textContaining('计算示例题', findRichText: true),
+        find.textContaining('求 2 + 3 × 4 的值', findRichText: true),
         findsOneWidget,
       );
       expect(
-        find.textContaining('未定型示例题', findRichText: true),
+        find.textContaining('这是一段没有明显特征的文字', findRichText: true),
         findsOneWidget,
       );
       await _drain(tester);
@@ -917,30 +928,61 @@ void main() {
                 joinedAt: nowMs,
               ),
             );
-        await _db.customUpdate(
-          'INSERT INTO review_history (question_id, result, reviewed_at) VALUES (?, ?, ?)',
-          variables: [
-            Variable.withString('q1'),
-            Variable.withString('solved'),
-            Variable.withInt(nowMs),
-          ],
+        // 报告只读正式作答（attempts，mode == 到期复习；包 6 守门：
+        // 无正式作答进空态，不出数据视图）。旧的 review_history 行
+        // 是冻结历史，报告已不再读它，不再播种。
+        await _db.customStatement(
+          "INSERT INTO attempts (id, question_id, session_id, mode, "
+          "selected, correct, confidence, answer_version, content_version, "
+          "status, cause_ids, duration_ms, submission_id, created_at) "
+          "VALUES ('att-rep-1', 'q1', 's-rep', '到期复习', '[\"A\"]', 1, '确定', 1, 1, "
+          "'已提交', '[\"概念不清\"]', 12000, 'sub-rep-1', $nowMs)",
         );
-        await _db.customUpdate(
-          'INSERT INTO review_history (question_id, result, reviewed_at) VALUES (?, ?, ?)',
-          variables: [
-            Variable.withString('q2'),
-            Variable.withString('unsolved'),
-            Variable.withInt(nowMs),
-          ],
+        await _db.customStatement(
+          "INSERT INTO attempts (id, question_id, session_id, mode, "
+          "selected, correct, confidence, answer_version, content_version, "
+          "status, cause_ids, duration_ms, submission_id, created_at) "
+          "VALUES ('att-rep-2', 'q2', 's-rep', '到期复习', NULL, 0, NULL, 1, 1, "
+          "'已提交', '[\"计算错误\"]', 12000, 'sub-rep-2', $nowMs)",
         );
       });
       await _pumpReport(tester);
       expect(find.text('学习报告'), findsOneWidget);
-      // 三个问题都在：核心数 + 接下来练什么。
-      expect(find.text('已解决错因'), findsOneWidget);
-      expect(find.text('待解决错因'), findsOneWidget);
-      expect(find.text('复查通过率'), findsOneWidget);
+      // 三个问题都在（FSRS 口径的核心数 + 接下来练什么 + 薄弱点）：
+      // 旧文案「已解决错因 / 待解决错因 / 复查通过率」是已退役的
+      // 治愈状态机口径，报告现为「正式复习答对 / 答错 / 答对率」。
+      expect(find.text('正式复习答对'), findsOneWidget);
+      expect(find.text('正式复习答错'), findsOneWidget);
+      expect(find.text('正式复习答对率'), findsOneWidget);
+      expect(
+        (tester.widget(
+              find.byKey(const ValueKey('report-core-formal-correct')),
+            )
+            as Text)
+            .data,
+        '1',
+        reason: 'q1 正式答对 1 次',
+      );
+      expect(
+        (tester.widget(
+              find.byKey(const ValueKey('report-core-formal-wrong')),
+            )
+            as Text)
+            .data,
+        '1',
+        reason: 'q2 正式答错，1 道题',
+      );
+      expect(
+        (tester.widget(
+              find.byKey(const ValueKey('report-core-formal-rate')),
+            )
+            as Text)
+            .data,
+        '50%',
+        reason: '已判分 2 次、答对 1 次',
+      );
       expect(find.text('接下来练什么'), findsOneWidget);
+      expect(find.text('最常错的 5 个原因'), findsOneWidget);
       // 没有任何题型维度：全文搜不到“题型”二字。
       expect(find.text('题型'), findsNothing);
       expect(find.textContaining('题型'), findsNothing);

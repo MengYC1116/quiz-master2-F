@@ -21,6 +21,7 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:drift/drift.dart' hide isNotNull, isNull;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -105,7 +106,19 @@ Future<void> _seedDue(
 }) async {
   final q = _joinedQuestion(id, errorTypes: errorTypes);
   await repo.save(q);
-  expect(await repo.setReviewJoined(q, true), isTrue);
+  expect(await repo.setReviewJoinedFlag(q, true), isTrue);
+  // FSRS 全量迁移包2：翻标志不再播种错因记录；测试直接写行
+  //（S4-6 要一条记录来模拟“错因已治愈”）。
+  for (final cause in errorTypes) {
+    await repo.saveCauseRecord(
+      CauseRecord(
+        questionId: id,
+        cause: cause,
+        subjectId: 'math',
+        joinedAt: DateTime(2026, 11, 14),
+      ),
+    );
+  }
   await _seedDueCard(id);
 }
 
@@ -196,21 +209,6 @@ Future<QuestionRepository> _seedWidgetRepo({
   return repo;
 }
 
-/// 把一条错因记录自查“已解决”到治愈（默认 cureChecks=2，需两次；
-/// 复查日顺延到今天 +7 天，不到复查时间，桶落 solved）。
-/// Drift 同步调用，直接 await（见文件头）。
-Future<CauseRecord> _cureCause(
-  QuestionRepository repo,
-  CauseRecord rec,
-) async {
-  var cur = rec;
-  for (var i = 0; i < 2; i++) {
-    cur = await repo.recordSelfCheck(cur, 'solved');
-  }
-  expect(cur.status, CauseStatus.solved);
-  return cur;
-}
-
 // ---------- A 组：总线 + 仓储事件 ----------
 
 void main() {
@@ -238,36 +236,15 @@ void main() {
       expect(events.single.questionId, 'q1');
     });
 
-    test('recordSelfCheck 判 unsure 不发事件（不计一次自查）', () async {
-      await _seedDue(repo, 'q1');
-      final recs = await repo.causeRecordsFor('q1');
-      expect(recs, isNotEmpty);
-      events.clear();
-      final out = await repo.recordSelfCheck(recs.first, 'unsure');
-      expect(out, isNotNull);
-      await _flushEvents();
-      expect(events, isEmpty);
-    });
-
     test('写失败不发事件：同名文件夹保存抛 StateError', () async {
-      const f1 = Folder(
-        id: 'f1',
-        name: '试卷',
-        subjectId: 'math',
-        sortOrder: 0,
-      );
+      const f1 = Folder(id: 'f1', name: '试卷', subjectId: 'math', sortOrder: 0);
       await repo.saveFolder(f1);
       await _flushEvents();
       expect(events.length, 1);
       expect(events.single.kinds, {DataChangeKind.subjects});
       expect(
         () => repo.saveFolder(
-          const Folder(
-            id: 'f2',
-            name: '试卷',
-            subjectId: 'math',
-            sortOrder: 1,
-          ),
+          const Folder(id: 'f2', name: '试卷', subjectId: 'math', sortOrder: 1),
         ),
         throwsStateError,
       );
@@ -275,25 +252,31 @@ void main() {
       expect(events.length, 1, reason: '失败的写不追加事件');
     });
 
-    test('joinReviewBatch 两题只发一个事件，kinds={badges, reviewRecords}，questionId 为空', () async {
-      final q1 = _joinedQuestion('q1', errorTypes: ['概念不清']);
-      final q2 = _joinedQuestion('q2', errorTypes: ['审题失误']);
-      await repo.save(q1);
-      await repo.save(q2);
-      // 广播投递比 await 慢一拍：先等在途事件落定再清计数，
-      // 否则上一笔写事件会迟到、污染本轮计数。
-      await _flushEvents();
-      events.clear();
-      final result = await repo.joinReviewBatch([q1, q2]);
-      expect(result.joined, 2);
-      await _flushEvents();
-      expect(events.length, 1);
-      expect(events.single.kinds, {
-        DataChangeKind.badges,
-        DataChangeKind.reviewRecords,
-      });
-      expect(events.single.questionId, isNull);
-    });
+    test(
+      'joinReviewBatch 两题只发一个事件，kinds={badges, reviewRecords}，questionId 为空',
+      () async {
+        final q1 = _joinedQuestion('q1', errorTypes: ['概念不清']);
+        final q2 = _joinedQuestion('q2', errorTypes: ['审题失误']);
+        await repo.save(q1);
+        await repo.save(q2);
+        // 广播投递比 await 慢一拍：先等在途事件落定再清计数，
+        // 否则上一笔写事件会迟到、污染本轮计数。
+        await _flushEvents();
+        events.clear();
+        final result = await repo.joinReviewBatch(
+          [q1, q2],
+          scheduler: _testScheduler(),
+        );
+        expect(result.joined, 2);
+        await _flushEvents();
+        expect(events.length, 1);
+        expect(events.single.kinds, {
+          DataChangeKind.badges,
+          DataChangeKind.reviewRecords,
+        });
+        expect(events.single.questionId, isNull);
+      },
+    );
 
     test('cancelReviewBatch 全跳过（都未加入）不发事件', () async {
       final q1 = _joinedQuestion('q1', errorTypes: ['概念不清']);
@@ -315,9 +298,7 @@ void main() {
       // 同上：先等在途事件落定再清计数。
       await _flushEvents();
       events.clear();
-      await repo.importBackupJson(
-        jsonDecode(json) as Map<String, dynamic>,
-      );
+      await repo.importBackupJson(jsonDecode(json) as Map<String, dynamic>);
       await _flushEvents();
       expect(events.length, 1);
       expect(events.single.kinds, DataChangeKind.values.toSet());
@@ -337,13 +318,9 @@ void main() {
     test('scope：嵌套 emit 合并成一个事件；体内抛错后仍 flush 且异常外传', () async {
       final bus = DataChangeBus.instance;
       await bus.scope(() async {
-        bus.emit(
-          const DataChangeEvent(kinds: {DataChangeKind.badges}),
-        );
+        bus.emit(const DataChangeEvent(kinds: {DataChangeKind.badges}));
         await bus.scope(() async {
-          bus.emit(
-            const DataChangeEvent(kinds: {DataChangeKind.questions}),
-          );
+          bus.emit(const DataChangeEvent(kinds: {DataChangeKind.questions}));
         });
       });
       await _flushEvents();
@@ -356,9 +333,7 @@ void main() {
       events.clear();
       expect(
         () => bus.scope(() async {
-          bus.emit(
-            const DataChangeEvent(kinds: {DataChangeKind.badges}),
-          );
+          bus.emit(const DataChangeEvent(kinds: {DataChangeKind.badges}));
           throw StateError('boom');
         }),
         throwsStateError,
@@ -371,9 +346,7 @@ void main() {
   // ---------- B 组：badgeCountsProvider ----------
 
   group('B：badgeCountsProvider 按 kind 订阅刷新', () {
-    Future<ProviderContainer> containerWith(
-      QuestionRepository repo,
-    ) async {
+    Future<ProviderContainer> containerWith(QuestionRepository repo) async {
       final container = ProviderContainer.test(
         overrides: [repositoryProvider.overrideWithValue(repo)],
       );
@@ -411,8 +384,7 @@ void main() {
       container.listen(homeProvider, (_, __) {});
       container.listen(reviewProvider, (_, __) {});
       await _waitFor(
-        () =>
-            container.read(badgeCountsProvider).value?.reviewBadge == 2,
+        () => container.read(badgeCountsProvider).value?.reviewBadge == 2,
         reason: '角标首查完成',
       );
       await container.read(homeProvider.notifier).load();
@@ -420,14 +392,8 @@ void main() {
       expect(container.read(badgeCountsProvider).value?.reviewBadge, 2);
       expect(container.read(homeProvider).totalDue, 2);
       expect(container.read(homeProvider).dueCount, 2);
-      expect(
-        container.read(reviewProvider).fsrsDueIds,
-        {'q1', 'q2'},
-      );
-      expect(
-        await repo.fsrsDueTotal(scheduler: _testScheduler()),
-        2,
-      );
+      expect(container.read(reviewProvider).fsrsDueIds, {'q1', 'q2'});
+      expect(await repo.fsrsDueTotal(scheduler: _testScheduler()), 2);
     });
 
     test('核对提交后发 badges 事件：角标 1→0，不切导航（§1.6 缺口）', () async {
@@ -446,7 +412,7 @@ void main() {
         correctOption: 'B',
       );
       await repo.save(q);
-      expect(await repo.setReviewJoined(q, true), isTrue);
+      expect(await repo.setReviewJoinedFlag(q, true), isTrue);
       await _seedDueCard('q1');
       final scheduler = _testScheduler();
       final container = ProviderContainer.test(
@@ -573,12 +539,7 @@ void main() {
     test('OrganizeNotifier.batchConfirmQuestions 三题只发一个事件', () async {
       final repo = await _seedMemoryRepo();
       await repo.saveFolder(
-        const Folder(
-          id: 'f1',
-          name: '试卷',
-          subjectId: 'math',
-          sortOrder: 0,
-        ),
+        const Folder(id: 'f1', name: '试卷', subjectId: 'math', sortOrder: 0),
       );
       final qs = [
         _unorganized('q1').copyWith(folderIds: const ['f1']),
@@ -629,7 +590,7 @@ void main() {
 
     testWidgets('S4-2 整理完一道：整理角标 1→0', (tester) async {
       final repo = await _seedWidgetRepo(
-                seed: (repo) async => repo.save(_unorganized('q1')),
+        seed: (repo) async => repo.save(_unorganized('q1')),
       );
       await _pumpApp(tester);
       await _pumpUntil(
@@ -648,7 +609,7 @@ void main() {
 
     testWidgets('S4-3 批量整理三道：整理角标 3→0', (tester) async {
       final repo = await _seedWidgetRepo(
-                seed: (repo) async {
+        seed: (repo) async {
           for (final id in ['q1', 'q2', 'q3']) {
             await repo.save(_unorganized(id));
           }
@@ -661,9 +622,7 @@ void main() {
         reason: '整理角标出现 3',
       );
       for (final id in ['q1', 'q2', 'q3']) {
-        await repo.save(
-          _unorganized(id).copyWith(isOrganized: true),
-        );
+        await repo.save(_unorganized(id).copyWith(isOrganized: true));
       }
       await _pumpUntil(
         tester,
@@ -687,7 +646,7 @@ void main() {
         reason: '初始复习角标为空',
       );
       final q = (await repo.questionById('q1'))!;
-      await repo.setReviewJoined(q, true);
+      await repo.setReviewJoinedFlag(q, true);
       // 只加入复习不够：FSRS 卡未开始不算到期，角标仍为空；
       // 建一张已到期的卡、再由一次写库发 badges 事件触发重算后才出现 1。
       await _seedDueCard('q1');
@@ -701,9 +660,7 @@ void main() {
     });
 
     testWidgets('S4-5 取消加入复习：FSRS 卡片保留，复习角标不变', (tester) async {
-      final repo = await _seedWidgetRepo(
-        seed: (repo) => _seedDue(repo, 'q1'),
-      );
+      final repo = await _seedWidgetRepo(seed: (repo) => _seedDue(repo, 'q1'));
       await _pumpApp(tester);
       await _pumpUntil(
         tester,
@@ -711,7 +668,7 @@ void main() {
         reason: '复习角标出现 1',
       );
       final q = (await repo.questionById('q1'))!;
-      await repo.setReviewJoined(q, false);
+      await repo.setReviewJoinedFlag(q, false);
       // 旧口径下取消加入即减；新口径只认 FSRS 到期卡，取消加入不删卡，
       // 角标仍为 1。等一轮事件重算后再断言，避免旧值未刷新造成假通过。
       await tester.runAsync(
@@ -723,9 +680,7 @@ void main() {
     });
 
     testWidgets('S4-6 自查治愈：旧口径已断，复习角标不变', (tester) async {
-      final repo = await _seedWidgetRepo(
-        seed: (repo) => _seedDue(repo, 'q1'),
-      );
+      final repo = await _seedWidgetRepo(seed: (repo) => _seedDue(repo, 'q1'));
       await _pumpApp(tester);
       await _pumpUntil(
         tester,
@@ -734,7 +689,19 @@ void main() {
       );
       final recs = await repo.causeRecordsFor('q1');
       expect(recs, hasLength(1));
-      await _cureCause(repo, recs.first);
+      // 旧自查写入层已随 FSRS 全量迁移（包1）退役：直接改库内状态列
+      // 模拟“错因已治愈”，再由一次写库发 badges 事件触发重算；
+      // 角标只认 FSRS 到期卡，错因状态不再影响它。
+      await (await AppDatabase.instance.db).customUpdate(
+        'UPDATE cause_records SET status = ?, solved_count = ? '
+        'WHERE question_id = ?',
+        variables: [
+          Variable.withString('solved'),
+          Variable.withInt(2),
+          Variable.withString('q1'),
+        ],
+      );
+      await repo.save((await repo.questionById('q1'))!);
       // 旧口径下治愈即减；新口径只认 FSRS 到期卡，错因治愈不再影响角标。
       await tester.runAsync(
         () => Future.delayed(const Duration(milliseconds: 300)),
@@ -745,9 +712,7 @@ void main() {
     });
 
     testWidgets('S4-7 归档待复习题：复习角标 1→0', (tester) async {
-      final repo = await _seedWidgetRepo(
-                seed: (repo) => _seedDue(repo, 'q1'),
-      );
+      final repo = await _seedWidgetRepo(seed: (repo) => _seedDue(repo, 'q1'));
       await _pumpApp(tester);
       await _pumpUntil(
         tester,
@@ -766,10 +731,10 @@ void main() {
 
     testWidgets('S4-8 恢复归档：复习角标 0→1', (tester) async {
       final repo = await _seedWidgetRepo(
-                seed: (repo) async {
+        seed: (repo) async {
           final q = _joinedQuestion('q1', errorTypes: ['概念不清']);
           await repo.save(q);
-          await repo.setReviewJoined(q, true);
+          await repo.setReviewJoinedFlag(q, true);
           // FSRS 卡已到期，但题已归档 → 角标不计；恢复归档后才计入。
           await _seedDueCard('q1');
           // 归档须用库里刚读回的题：q 仍是 setReviewJoined 之前
@@ -796,9 +761,7 @@ void main() {
     });
 
     testWidgets('S4-9 删除待复习题：复习角标 1→0', (tester) async {
-      final repo = await _seedWidgetRepo(
-                seed: (repo) => _seedDue(repo, 'q1'),
-      );
+      final repo = await _seedWidgetRepo(seed: (repo) => _seedDue(repo, 'q1'));
       await _pumpApp(tester);
       await _pumpUntil(
         tester,
@@ -816,9 +779,7 @@ void main() {
     });
 
     testWidgets('S4-10 备份恢复：删题后角标 0，恢复后角标回 1', (tester) async {
-      final repo = await _seedWidgetRepo(
-                seed: (repo) => _seedDue(repo, 'q1'),
-      );
+      final repo = await _seedWidgetRepo(seed: (repo) => _seedDue(repo, 'q1'));
       final json = await repo.exportBackupJson();
       await _pumpApp(tester);
       await _pumpUntil(
@@ -833,9 +794,7 @@ void main() {
         () => !_navBadgeIs(tester, '复习', '1'),
         reason: '删除后复习角标消失',
       );
-      await repo.importBackupJson(
-        jsonDecode(json) as Map<String, dynamic>,
-      );
+      await repo.importBackupJson(jsonDecode(json) as Map<String, dynamic>);
       await _pumpUntil(
         tester,
         () => _navBadgeIs(tester, '复习', '1'),

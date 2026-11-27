@@ -196,7 +196,7 @@ class SliceSnapshot {
     }
     if (tempHash != sourceHash) {
       throw SnapshotIntegrityException(
-        '快照副本哈希不一致（临时副本与源切片不符），本次导出中止。',
+        '临时副本与源切片不一致，本次导出中止，请重试。',
       );
     }
     return SliceCopyResult(

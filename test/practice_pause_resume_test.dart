@@ -354,7 +354,7 @@ void main() {
       await pumpReview(tester, repo: repo);
       await tapButton(tester, '专项练习');
       await tapButton(tester, '开始练习');
-      expect(find.textContaining('本轮共 2 道题、2 个错因'), findsOneWidget);
+      expect(find.textContaining('本轮共 2 个错因'), findsOneWidget);
       // 走完第 1 道，到第 2 道再暂停。
       await tapButton(tester, '开始作答');
       await tapButton(tester, '我已完成作答');
@@ -362,7 +362,7 @@ void main() {
       expect(find.textContaining('第 2 / 2 道题'), findsOneWidget);
       await tapButton(tester, '暂停');
       expect(find.textContaining('继续上次会话'), findsNWidgets(2)); // 恢复条文案 + 按钮
-      expect(find.text('放弃重开'), findsOneWidget);
+      expect(find.text('放弃上次会话'), findsOneWidget);
       await tapButton(tester, '继续上次会话');
       expect(find.textContaining('第 2 / 2 道题'), findsOneWidget);
       expect(find.text('① 看题'), findsOneWidget);
@@ -379,7 +379,7 @@ void main() {
       await pumpReview(tester, repo: repo);
       await tapButton(tester, '专项练习');
       await tapButton(tester, '开始练习');
-      expect(find.textContaining('本轮共 2 道题、0 个错因'), findsOneWidget);
+      expect(find.textContaining('本轮共 0 个错因'), findsOneWidget);
       // 走完第 1 道，到第 2 道再暂停。
       await tapButton(tester, '开始作答');
       await tapButton(tester, '我已完成作答');
@@ -387,7 +387,7 @@ void main() {
       expect(find.textContaining('第 2 / 2 道题'), findsOneWidget);
       await tapButton(tester, '暂停');
       expect(find.textContaining('继续上次会话'), findsNWidgets(2)); // 恢复条文案 + 按钮
-      expect(find.text('放弃重开'), findsOneWidget);
+      expect(find.text('放弃上次会话'), findsOneWidget);
       await tapButton(tester, '继续上次会话');
       expect(find.textContaining('第 2 / 2 道题'), findsOneWidget);
       expect(find.text('① 看题'), findsOneWidget);

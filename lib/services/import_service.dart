@@ -696,7 +696,7 @@ class ImportService {
                   null) {
             // 镜像方向（2/4/5/7）：暂不支持，不可静默按旋转处理。
             decodeError =
-                '这张照片是镜像方向（EXIF ${normalized.orientation}），暂不支持，请先转存为正向照片再导入';
+                '这张照片是镜像方向，暂不支持，请先转存为正向照片再导入';
           } else if (normalized.wasNormalized) {
             final normAbs = AppDatabase.resolveDataPath(
               normalizedPageRelative(id),

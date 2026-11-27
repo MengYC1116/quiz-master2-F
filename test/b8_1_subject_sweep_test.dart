@@ -60,13 +60,10 @@ CauseRecord _rec(
   String questionId,
   String cause, {
   String subjectId = 'math',
-  CauseStatus status = CauseStatus.pending,
 }) => CauseRecord(
   questionId: questionId,
   cause: cause,
   subjectId: subjectId,
-  status: status,
-  solvedCount: 0,
   joinedAt: _today,
 );
 
@@ -198,9 +195,6 @@ class _SweepOrganizeRepo extends QuestionRepository {
 
   @override
   Future<void> save(Question question, {SaveToken? token}) async {}
-
-  @override
-  Future<void> syncCauseRecords(Question question) async {}
 
   @override
   Future<void> saveRecentTask({
@@ -450,6 +444,8 @@ void main() {
   group('B8-1 扫尾：报告页——学科删空后分布不再摆预设三科', () {
     testWidgets('学科表为空：有复习记录时分布零行（修好前是三行 0 道）',
         (tester) async {
+      // 包 6：报告空态守门改看正式作答——本用例要进数据视图（不是空态），
+      // 须给一条正式作答（旧守门只看错因记录，现已删除）。
       await _pumpPage(
         tester,
         ReportPage(
@@ -457,6 +453,7 @@ void main() {
             questions: [_q('q1', '函数极限', errorTypes: ['概念不清'])],
             records: [_rec('q1', '概念不清')],
             subjects: const [],
+            attempts: [_reportAttempt('q1', correct: 0)],
           ),
           onGoReview: () {},
           onOpenWrongbookFiltered: ({subjectId, cause, knowledgePointId}) {},

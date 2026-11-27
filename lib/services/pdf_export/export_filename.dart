@@ -61,7 +61,7 @@ String? validateExportFileName(String fileName, {ExportFormat? format}) {
     return '文件名不能包含 \\ / : * ? " < > |';
   }
   if (stem.endsWith('.') || stem.endsWith(' ')) {
-    return '文件名不能以圆点或空格结尾';
+    return '文件名不能以 . 或空格结尾';
   }
   if (stem == '.' || stem == '..') return '文件名无效';
   if (stem.runes.length > kMaxExportFileNameStemLength) {

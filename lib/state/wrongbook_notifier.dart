@@ -32,6 +32,7 @@ import '../data/p3_review_entries.dart';
 import '../data/repository.dart';
 import '../models/models.dart';
 import '../services/pdf_export/export_route.dart';
+import 'detail_notifier.dart';
 import 'repository_provider.dart';
 import 'review_notifier.dart';
 import 'subject_sort.dart';
@@ -142,7 +143,7 @@ class WrongbookState {
     // 十四批 M1：题型筛选。null = 全部；'' = 只看待确认；其余 = 该题型值。
     this.filterQuestionType,
     this.filterTimeRange = 'all',
-    this.filterCauseStatus = 'all',
+    this.filterReviewStatus = 'all',
     this.filterCauseName,
     this.filterFavorite = false,
     this.filterOverdue = false,
@@ -169,16 +170,16 @@ class WrongbookState {
     this.reviewFilterKey,
     // P3 入口 1：已在 FSRS 复习池里的题 id（load() 时读库；未知时为空集）。
     this.fsrsPoolIds = const {},
+    // FSRS 全量迁移包 4：池里已开始正式复习的题 → 下次到期时间
+    //（调度器 nextDueAt 同口径：未开始的卡无下次到期日，不进 map；
+    // 未加入复习的题也不进 map）。pill / 筛选 / 排序共用这份数据。
+    this.fsrsNextDueByQuestion = const {},
     this.batchFolderId,
     this.inBookArchived = false,
     // 十九批 A3：存下来的查找（saved_searches 表）与本会话的最近搜过
     //（只放内存，不入库；最近 4 条）。
     this.savedSearches = const [],
     this.recentSearches = const [],
-    // 十九批 A1：治愈需自查「已解决」次数（设置 cureChecks，默认 2）：
-    // 列表行「解决中 · ✓n/m」里的 m 用它。设置页可改，load() 每次
-    // 重读（本页不改它，不用 pageSize/sort 那套首次守门）。
-    this.cureChecks = 2,
   });
 
   final bool loading;
@@ -229,8 +230,9 @@ class WrongbookState {
   /// 十四批 M1：题型筛选。null = 全部；'' = 只看待确认；其余 = 该题型值。
   final String? filterQuestionType;
   final String filterTimeRange; // all / week / month
-  final String
-  filterCauseStatus; // all / pending / inProgress / solved / recheck
+  /// FSRS 全量迁移包 4：复习状态筛选（all / due 已到期 /
+  /// notDue 未到期 / notStarted 未开始 / notJoined 未加入复习）。
+  final String filterReviewStatus;
   final String? filterCauseName;
   final bool filterFavorite;
   final bool filterOverdue;
@@ -238,7 +240,7 @@ class WrongbookState {
   final Set<String> filterKpIds;
   final bool filterOpen;
   final String
-  sort; // new / old / subj-asc / subj-desc / status-asc / status-desc
+  sort; // new / old / subj-asc / subj-desc / due-asc / due-desc
   final int pageSize;
   final int page;
   final String viewMode; // large / compact
@@ -260,19 +262,24 @@ class WrongbookState {
   /// P3 入口 1：加入复习的勾选（独立于 [selected] 与 [exportSelected]）。
   final Set<String> reviewSelected;
 
-  /// P3 入口 1：全选口径——true = “全选全部筛选结果”（选择范围是
+  /// P3 入口 1：全选口径——true = “全选（仅复习）”（选择范围是
   /// 当前筛选的全部题，不限当前页；点确认时按当时筛选重算，不用
   /// [reviewSelected] 里的快照）；false = 只勾选 [reviewSelected]
-  /// 里的题（“勾选当前页”把当页 id 加进来）。
+  /// 里的题（“勾选当前页（仅复习）”把当页 id 加进来）。
   final bool reviewSelectAllFiltered;
 
-  /// P3 入口 1：点“全选全部筛选结果”时的筛选条件键（见
+  /// P3 入口 1：点“全选（仅复习）”时的筛选条件键（见
   /// [conditionsKey]）。筛选变了（键对不上）就清空旧选择，不隐式
   /// 扩大范围。
   final String? reviewFilterKey;
 
   /// P3 入口 1：已在 FSRS 复习池里的题 id（行内标“已在复习”用）。
   final Set<String> fsrsPoolIds;
+
+  /// FSRS 全量迁移包 4：池里已开始正式复习的题 → 下次到期时间
+  ///（调度器 nextDueAt 同口径：未开始的卡无下次到期日，不进 map；
+  /// 未加入复习的题也不进 map）。pill / 筛选 / 排序共用这份数据。
+  final Map<String, DateTime> fsrsNextDueByQuestion;
 
   final String? batchFolderId;
   final bool inBookArchived;
@@ -283,9 +290,6 @@ class WrongbookState {
   /// 十九批 A3：本会话最近搜过（只放内存，不入库；最新在前，最多 4 条）。
   /// 一条 = 显示名 + 条件（与 SavedSearch 同一形状，id 为 'recent:$label'）。
   final List<SavedSearch> recentSearches;
-
-  /// 十九批 A1：治愈需自查「已解决」次数（设置 cureChecks，默认 2）。
-  final int cureChecks;
 
   WrongbookState copyWith({
     bool? loading,
@@ -318,7 +322,7 @@ class WrongbookState {
     Object? filterErrorType = _unset,
     Object? filterQuestionType = _unset,
     String? filterTimeRange,
-    String? filterCauseStatus,
+    String? filterReviewStatus,
     Object? filterCauseName = _unset,
     bool? filterFavorite,
     bool? filterOverdue,
@@ -340,11 +344,11 @@ class WrongbookState {
     bool? reviewSelectAllFiltered,
     Object? reviewFilterKey = _unset,
     Set<String>? fsrsPoolIds,
+    Map<String, DateTime>? fsrsNextDueByQuestion,
     Object? batchFolderId = _unset,
     bool? inBookArchived,
     List<SavedSearch>? savedSearches,
     List<SavedSearch>? recentSearches,
-    int? cureChecks,
   }) {
     return WrongbookState(
       loading: loading ?? this.loading,
@@ -390,7 +394,7 @@ class WrongbookState {
           ? this.filterQuestionType
           : filterQuestionType as String?,
       filterTimeRange: filterTimeRange ?? this.filterTimeRange,
-      filterCauseStatus: filterCauseStatus ?? this.filterCauseStatus,
+      filterReviewStatus: filterReviewStatus ?? this.filterReviewStatus,
       filterCauseName: filterCauseName == _unset
           ? this.filterCauseName
           : filterCauseName as String?,
@@ -419,13 +423,14 @@ class WrongbookState {
           ? this.reviewFilterKey
           : reviewFilterKey as String?,
       fsrsPoolIds: fsrsPoolIds ?? this.fsrsPoolIds,
+      fsrsNextDueByQuestion:
+          fsrsNextDueByQuestion ?? this.fsrsNextDueByQuestion,
       batchFolderId: batchFolderId == _unset
           ? this.batchFolderId
           : batchFolderId as String?,
       inBookArchived: inBookArchived ?? this.inBookArchived,
       savedSearches: savedSearches ?? this.savedSearches,
       recentSearches: recentSearches ?? this.recentSearches,
-      cureChecks: cureChecks ?? this.cureChecks,
     );
   }
 
@@ -457,7 +462,8 @@ class WrongbookState {
   }
 
   /// 目录文件夹行计数：与题目列表默认视图同一收录口径（SR-P2-38
-  /// 决定 (a)）：只收已整理、未归档、未掌握的题。
+  /// 决定 (a)）：只收已整理、未归档的题。FSRS 全量迁移包 4：
+  /// 默认隐藏规则取消后，已解决的题也不再排除，与列表一致。
   int folderCount(String folderId) {
     final ids = subtreeIds(folderId);
     return questions
@@ -465,7 +471,6 @@ class WrongbookState {
           (q) =>
               q.isOrganized &&
               !q.isArchived &&
-              !isMastered(q) &&
               q.folderIds.any((id) => ids.contains(id)),
         )
         .length;
@@ -495,57 +500,39 @@ class WrongbookState {
         .length;
   }
 
-  bool isMastered(Question q) {
-    final rs = recordsByQ[q.id];
-    if (rs == null || rs.isEmpty) return false;
-    return rs.every((r) => r.status == CauseStatus.solved) &&
-        !rs.any((r) => r.isRecheckDue);
-  }
+  /// 一题的 FSRS 复习状态（详情页同口径，见 [DetailReviewStatus]）：
+  /// pill 只用 [DetailReviewStatus.inPool] 与
+  /// [DetailReviewStatus.nextDueAt]（正式复习对错次数不进错题本
+  /// pill，这里填 0）。
+  DetailReviewStatus fsrsReviewStatusOf(Question q) =>
+      DetailReviewStatus(
+        inPool: fsrsPoolIds.contains(q.id),
+        nextDueAt: fsrsNextDueByQuestion[q.id],
+        formalCorrect: 0,
+        formalWrong: 0,
+      );
 
-  /// 一题的错因汇总状态（HTML `nbCauseStatus`）：有错因到了复查时间 →
-  /// 复查；全部已解决 → 已解决；有解决中或已有自查进展 → 解决中；
-  /// 否则待解决；无错因 → 待解决。
-  String causeStatusOf(Question q) {
-    final rs = recordsByQ[q.id];
-    if (rs == null || rs.isEmpty) return 'pending';
-    if (rs.any((r) => r.isRecheckDue)) return 'recheck';
-    if (rs.every((r) => r.status == CauseStatus.solved)) return 'solved';
-    if (rs.any(
-      (r) => r.status == CauseStatus.inProgress || r.solvedCount > 0,
-    )) {
-      return 'inProgress';
+  /// 一题的 FSRS 状态键（筛选 / 排序用）：due 已到期 / notDue 未到期 /
+  /// notStarted 未开始 / notJoined 未加入复习；与
+  /// [reviewStatusPillLabel] 同口径（未加入复习 → 未开始 →
+  /// 已到期 / 未到期按 nextDueAt 与 now 比）。
+  String fsrsStatusKeyOf(Question q, {DateTime? now}) {
+    final due = fsrsNextDueByQuestion[q.id];
+    if (due == null) {
+      return fsrsPoolIds.contains(q.id) ? 'notStarted' : 'notJoined';
     }
-    return 'pending';
+    return due.isAfter(now ?? DateTime.now()) ? 'notDue' : 'due';
   }
 
-  /// 各错因的状态（紧凑行按错因出 pill 用）：(错因名, 状态)。
-  List<(String, String)> causeStatusesOf(Question q) {
-    final rs = recordsByQ[q.id];
-    if (rs == null || rs.isEmpty) {
-      return [for (final c in q.allCauses) (c, 'pending')];
-    }
-    return [
-      for (final r in rs) (r.cause, r.isRecheckDue ? 'recheck' : r.status.name),
-    ];
-  }
+  /// 一题的下次到期时间（已开始正式复习的卡才有值；未开始 /
+  /// 未加入复习返回 null）。
+  DateTime? fsrsNextDueAt(Question q) => fsrsNextDueByQuestion[q.id];
 
+  /// 是否已到期（FSRS 口径：有下次到期日且已到时间；「仅逾期」
+  /// 筛选与行内「逾期 N 天」共用此判定）。
   bool isOverdue(Question q) {
-    final rs = recordsByQ[q.id];
-    if (rs == null) return false;
-    return rs.any((r) => r.isRecheckDue);
-  }
-
-  DateTime? nextRecheckOf(Question q) {
-    final rs = recordsByQ[q.id];
-    if (rs == null) return null;
-    DateTime? next;
-    for (final r in rs) {
-      if (r.recheckDate == null) continue;
-      if (next == null || r.recheckDate!.isBefore(next)) {
-        next = r.recheckDate;
-      }
-    }
-    return next;
+    final due = fsrsNextDueByQuestion[q.id];
+    return due != null && !due.isAfter(DateTime.now());
   }
 
   /// 内容搜索（D-241）：元数据＋题干内容——题名 / 学科 / 文件夹 /
@@ -621,6 +608,8 @@ class WrongbookState {
           .toList();
     } else {
       // 错题本只收已整理过的题；未整理的题在整理工作台排队，不进错题本。
+      // FSRS 全量迁移包 4：默认隐藏规则取消——错因全部已解决的题
+      // 不再默认隐藏，全部显示。
       list = list.where((q) => q.isOrganized && !q.isArchived).toList();
       if (subjectId != null) {
         list = list.where((q) => q.subjectId == subjectId).toList();
@@ -630,10 +619,6 @@ class WrongbookState {
         list = list
             .where((q) => q.folderIds.any((id) => ids.contains(id)))
             .toList();
-      }
-      // 错因全部已解决的题默认不显示（错因状态筛到已解决时才显示）。
-      if (filterCauseStatus != 'solved') {
-        list = list.where((q) => !isMastered(q)).toList();
       }
     }
     if (search.trim().isNotEmpty) {
@@ -694,26 +679,42 @@ class WrongbookState {
       }).toList();
     }
     if (view != WrongbookView.archived && !inBookArchived) {
-      switch (filterCauseStatus) {
-        case 'pending':
-          list = list.where((q) => causeStatusOf(q) == 'pending').toList();
-        case 'inProgress':
-          list = list.where((q) => causeStatusOf(q) == 'inProgress').toList();
-        case 'solved':
-          list = list.where((q) => causeStatusOf(q) == 'solved').toList();
-        case 'recheck':
-          list = list.where((q) => causeStatusOf(q) == 'recheck').toList();
+      // FSRS 全量迁移包 4：复习状态筛选（FSRS 卡状态，不再按错因状态）。
+      switch (filterReviewStatus) {
+        case 'due':
+          list = list.where((q) => fsrsStatusKeyOf(q) == 'due').toList();
+        case 'notDue':
+          list = list.where((q) => fsrsStatusKeyOf(q) == 'notDue').toList();
+        case 'notStarted':
+          list =
+              list.where((q) => fsrsStatusKeyOf(q) == 'notStarted').toList();
+        case 'notJoined':
+          list =
+              list.where((q) => fsrsStatusKeyOf(q) == 'notJoined').toList();
       }
     }
     // 学科首字母（SR-P2-37：按学科名首字算，见 [subjectInitial]，
-    // 不再写死数学/英语/其他三档）。错因状态排序：待解决 0 / 解决中 1 /
-    // 复查 2 / 已解决 3（HTML `NB_STATUS_RANK`）。
-    int statusRank(Question q) => switch (causeStatusOf(q)) {
-      'pending' => 0,
-      'inProgress' => 1,
-      'recheck' => 2,
-      _ => 3,
-    };
+    // 不再写死数学/英语/其他三档）。
+    // FSRS 全量迁移包 4：按 FSRS 下次到期时间排——正序最近到期在前
+    //（已到期优先、越逾期越前），倒序最晚到期在前；无下次到期日的题
+    //（未加入复习 / 未开始）两个方向都排末尾。
+    int dueAsc(Question a, Question b) {
+      final da = fsrsNextDueByQuestion[a.id];
+      final db = fsrsNextDueByQuestion[b.id];
+      if (da == null && db == null) return 0;
+      if (da == null) return 1;
+      if (db == null) return -1;
+      return da.compareTo(db);
+    }
+
+    int dueDesc(Question a, Question b) {
+      final da = fsrsNextDueByQuestion[a.id];
+      final db = fsrsNextDueByQuestion[b.id];
+      if (da == null && db == null) return 0;
+      if (da == null) return 1;
+      if (db == null) return -1;
+      return db.compareTo(da);
+    }
     switch (sort) {
       case 'old':
         list.sort((a, b) => a.createdAt.compareTo(b.createdAt));
@@ -730,14 +731,14 @@ class WrongbookState {
           final c = subjectKeyCompare(b, a);
           return c != 0 ? c : b.createdAt.compareTo(a.createdAt);
         });
-      case 'status-asc':
+      case 'due-asc':
         list.sort((a, b) {
-          final c = statusRank(a).compareTo(statusRank(b));
+          final c = dueAsc(a, b);
           return c != 0 ? c : b.createdAt.compareTo(a.createdAt);
         });
-      case 'status-desc':
+      case 'due-desc':
         list.sort((a, b) {
-          final c = statusRank(b).compareTo(statusRank(a));
+          final c = dueDesc(a, b);
           return c != 0 ? c : b.createdAt.compareTo(a.createdAt);
         });
       default:
@@ -752,7 +753,7 @@ class WrongbookState {
     if (filterErrorType != null) n++;
     if (filterQuestionType != null) n++;
     if (filterTimeRange != 'all') n++;
-    if (filterCauseStatus != 'all') n++;
+    if (filterReviewStatus != 'all') n++;
     if (filterCauseName != null) n++;
     if (filterFavorite) n++;
     if (filterOverdue) n++;
@@ -762,7 +763,7 @@ class WrongbookState {
   }
 
   /// 当前范围（学科 / 文件夹子树）里已整理、未归档的题数——不含
-  /// 搜索 / 筛选与“已掌握默认隐藏”的影响：为 0 才说明范围本身是空的。
+  /// 搜索 / 筛选的影响：为 0 才说明范围本身是空的。
   int scopeQuestionCount() {
     final folderIds = folderId == null ? null : subtreeIds(folderId!);
     return questions
@@ -777,9 +778,6 @@ class WrongbookState {
         .length;
   }
 
-  bool hasSearchOrFilter() =>
-      search.trim().isNotEmpty || activeFilterCount() > 0;
-
   /// 十九批 A3：当前查找条件（只存非默认值；键见 models.dart 的
   /// SavedSearch 注释）。「＋ 存当前条件」存的就是这份；与某条
   /// 已存查找相等时它的 chip 显示选中态（见 [conditionsEqual]）。
@@ -788,8 +786,8 @@ class WrongbookState {
     if (subjectId != null) out['subjectId'] = subjectId;
     if (folderId != null) out['folderId'] = folderId;
     if (filterCauseName != null) out['cause'] = filterCauseName;
-    if (filterCauseStatus != 'all') {
-      out['causeStatus'] = filterCauseStatus;
+    if (filterReviewStatus != 'all') {
+      out['causeStatus'] = filterReviewStatus;
     }
     if (filterExamId != null) out['examId'] = filterExamId;
     if (filterErrorType != null) out['errorType'] = filterErrorType;
@@ -843,7 +841,7 @@ class WrongbookState {
   /// P3 入口 1：这道题是否已在 FSRS 复习池里（行内标“已在复习”用）。
   bool isInReviewPool(Question q) => fsrsPoolIds.contains(q.id);
 
-  /// P3 入口 1：当前加题选择实际覆盖的题 id（按“全选全部筛选结果”
+  /// P3 入口 1：当前加题选择实际覆盖的题 id（按“全选（仅复习）”
   /// 时的实时筛选重算；显式勾选时只留仍在库里的题）。
   /// 全选口径下筛选变了（键对不上）返回空集——调用方须先经
   /// [reviewSelectionStale] 判断并清空，不隐式扩大范围。
@@ -908,9 +906,9 @@ String batchResultMessage(
   return parts.isEmpty ? '没有题被$action' : parts.join('；');
 }
 
-/// 加入复习的结果反馈（B11-6）：加入 N 道、跳过 M 道；M > 0 时
-/// 写明原因是一题已无未解决错因。`showReviewAction` 为真时页面给
-/// “开始复习”入口，点它跳复习页 /review。
+/// 加入复习的结果反馈（B11-6，FSRS 全量迁移包2）：加入 N 道、跳过 M 道；
+/// M > 0 时写明原因是题已在复习中（在池，不重复建卡）。
+/// `showReviewAction` 为真时页面给“开始复习”入口，点它跳复习页 /review。
 ({String message, bool showReviewAction}) joinReviewResultMessage(
   int joined,
   int skipped,
@@ -919,7 +917,7 @@ String batchResultMessage(
 ) {
   final parts = <String>[];
   if (joined > 0) parts.add('已加入复习 $joined 道');
-  if (skipped > 0) parts.add('$skipped 道已无未解决错因，跳过');
+  if (skipped > 0) parts.add('$skipped 道已在复习中，跳过');
   if (missing > 0) parts.add('$missing 道已不在列表里，跳过');
   if (failed > 0) parts.add('$failed 道保存失败，请重试');
   return (
@@ -948,7 +946,10 @@ String cancelReviewResultMessage(
 // 条件 JSON 的键（只存非默认值，见 WrongbookState.currentConditions）：
 // subjectId / folderId / cause / causeStatus / examId / errorType /
 // questionType / timeRange / favorite / overdue / tags / kpIds / search。
-// 其中 causeStatus ∈ pending / inProgress / solved / recheck，
+// 其中 causeStatus 是 FSRS 状态键 ∈ due / notDue / notStarted /
+// notJoined；旧值 pending / inProgress / solved / recheck 加载时
+// 丢弃为全部，不硬映射——旧“已解决”没有 FSRS 等价物；丢弃动作
+// 属一次性影响，见终版报告。
 // timeRange ∈ week / month（其余值视为未设），tags / kpIds 是
 // 字符串列表。未知键丢弃，不抛错（旧版本存的条件也能读）。
 
@@ -975,7 +976,7 @@ Map<String, dynamic> normalizeConditions(Map<String, dynamic> raw) {
   putStr('search');
   final causeStatus = str('causeStatus');
   if (causeStatus != null &&
-      const {'pending', 'inProgress', 'solved', 'recheck'}.contains(
+      const {'due', 'notDue', 'notStarted', 'notJoined'}.contains(
         causeStatus,
       )) {
     out['causeStatus'] = causeStatus;
@@ -1044,7 +1045,7 @@ WrongbookState stateWithConditions(
     filterErrorType: c['errorType'] as String?,
     filterQuestionType: c['questionType'] as String?,
     filterTimeRange: (c['timeRange'] as String?) ?? 'all',
-    filterCauseStatus: (c['causeStatus'] as String?) ?? 'all',
+    filterReviewStatus: (c['causeStatus'] as String?) ?? 'all',
     filterCauseName: c['cause'] as String?,
     filterFavorite: (c['favorite'] as bool?) ?? false,
     filterOverdue: (c['overdue'] as bool?) ?? false,
@@ -1060,8 +1061,9 @@ WrongbookState stateWithConditions(
 }
 
 /// 按一份条件对给定数据计题（命令面板各条目的 hint 计数用）：
-/// 用给定数据拼一个临时列表态，走同一份 filteredAll()（含“已掌握
-/// 默认隐藏”口径），计数与点进去看到的结果数一致。
+/// 用给定数据拼一个临时列表态，走同一份 filteredAll()，计数与
+/// 点进去看到的结果数一致。FSRS 状态筛选要 FSRS 数据：调用方
+/// 把池内 id 与下次到期表一起传进来（不传按全部未加入复习计）。
 int countQuestionsForConditions({
   required List<Question> questions,
   required List<Subject> subjects,
@@ -1070,6 +1072,8 @@ int countQuestionsForConditions({
   required List<KnowledgePoint> kps,
   required Map<String, List<CauseRecord>> recordsByQ,
   required Map<String, dynamic> conditions,
+  Set<String> fsrsPoolIds = const {},
+  Map<String, DateTime> fsrsNextDueByQuestion = const {},
 }) {
   final base = WrongbookState(
     questions: questions,
@@ -1078,6 +1082,8 @@ int countQuestionsForConditions({
     exams: exams,
     kps: kps,
     recordsByQ: recordsByQ,
+    fsrsPoolIds: fsrsPoolIds,
+    fsrsNextDueByQuestion: fsrsNextDueByQuestion,
     view: WrongbookView.list,
   );
   return stateWithConditions(base, conditions).filteredAll().length;
@@ -1181,6 +1187,15 @@ class WrongbookNotifier extends Notifier<WrongbookState> {
       } catch (_) {
         poolIds = const {};
       }
+      // FSRS 全量迁移包 4：读已开始正式复习的题 → 下次到期时间
+      //（pill / 筛选 / 排序用；读不到按空表，状态回落为未加入复习 /
+      // 未开始，不拖垮列表加载）。
+      Map<String, DateTime> nextDueByQ;
+      try {
+        nextDueByQ = await repo.fsrsNextDueByQuestion(scheduler: scheduler);
+      } catch (_) {
+        nextDueByQ = const {};
+      }
       final existingIds = questions.map((q) => q.id).toSet();
       final prunedReview = state.reviewSelectAllFiltered
           ? state.reviewSelected
@@ -1220,6 +1235,7 @@ class WrongbookNotifier extends Notifier<WrongbookState> {
         ),
         reviewSelected: prunedReview,
         fsrsPoolIds: poolIds,
+        fsrsNextDueByQuestion: nextDueByQ,
         pageSize: state.pageSizeInitialized
             ? state.pageSize
             : settings.pageSize,
@@ -1231,7 +1247,6 @@ class WrongbookNotifier extends Notifier<WrongbookState> {
         sort: state.sortInitialized ? state.sort : sort,
         sortInitialized: true,
         savedSearches: saved,
-        cureChecks: settings.cureChecks,
         loading: false,
         loadError: false,
         hasLoaded: true,
@@ -1267,7 +1282,7 @@ class WrongbookNotifier extends Notifier<WrongbookState> {
       filterErrorType: null,
       filterQuestionType: null,
       filterTimeRange: 'all',
-      filterCauseStatus: 'all',
+      filterReviewStatus: 'all',
       filterCauseName: null,
       filterFavorite: false,
       filterOverdue: false,
@@ -1351,7 +1366,7 @@ class WrongbookNotifier extends Notifier<WrongbookState> {
   }
 
   /// P3 入口 1：筛选/搜索变化后收敛加题选择——显式勾选只留仍在
-  /// 当前筛选结果里的题；“全选全部筛选结果”口径下筛选键变了就
+  /// 当前筛选结果里的题；“全选（仅复习）”口径下筛选键变了就
   /// 清空旧选择（不隐式扩大范围），键没变则保留。
   void _pruneReviewSelection() {
     if (state.reviewSelectAllFiltered) {
@@ -1401,8 +1416,8 @@ class WrongbookNotifier extends Notifier<WrongbookState> {
     applyFilterChange();
   }
 
-  void setFilterCauseStatus(String v) {
-    state = state.copyWith(filterCauseStatus: v);
+  void setFilterReviewStatus(String v) {
+    state = state.copyWith(filterReviewStatus: v);
     applyFilterChange();
   }
 
@@ -1546,11 +1561,11 @@ class WrongbookNotifier extends Notifier<WrongbookState> {
 
   // ---------- 选择与批量模式 ----------
 
-  /// 批量全选 / 全不选（复选框与「全选当前结果」文案共用）。
+  /// 批量全选 / 全不选（复选框与「全选（整理、复习、删除）」文案共用）。
   /// P3 入口 1：行内勾选是通用批量选择与加题选择的共同入口——
   /// 两套选择在此同步（勾选即“当前选择范围”，两处按钮都作用于它），
   /// 与导出选择（exportSelected）始终分开、互斥。
-  /// “全选全部筛选结果”口径（[selectReviewAllFiltered]）是加题
+  /// “全选（仅复习）”口径（[selectReviewAllFiltered]）是加题
   /// 专用的，不动通用批量选择；显式点选任一复选框即退回显式口径。
   void toggleSelectAll(List<Question> all) {
     final selInList = all.where((q) => state.selected.contains(q.id)).length;
@@ -1597,7 +1612,7 @@ class WrongbookNotifier extends Notifier<WrongbookState> {
   // ---------- P3 入口 1：加入复习的独立选择与批量动作 ----------
 
   /// 行首 Checkbox 切换（加题选择，与批量 selected / 导出互斥，
-  /// 不动另两套）。显式勾选时“全选全部筛选结果”口径自动退回
+  /// 不动另两套）。显式勾选时“全选（仅复习）”口径自动退回
   /// 显式口径（两者不能同时成立）。
   void toggleReviewSelected(String id, bool selected) {
     final next = {...state.reviewSelected};
@@ -1613,7 +1628,7 @@ class WrongbookNotifier extends Notifier<WrongbookState> {
     );
   }
 
-  /// “勾选当前页”：把当页题 id 加进显式勾选（已勾的不重复计）。
+  /// “勾选当前页（仅复习）”：把当页题 id 加进显式勾选（已勾的不重复计）。
   void selectReviewPage(List<Question> pageItems) {
     state = state.copyWith(
       reviewSelected: {...state.reviewSelected, ...pageItems.map((q) => q.id)},
@@ -1622,7 +1637,7 @@ class WrongbookNotifier extends Notifier<WrongbookState> {
     );
   }
 
-  /// “全选全部筛选结果”：选择范围 = 当前筛选的全部题（不限当前页），
+  /// “全选（仅复习）”：选择范围 = 当前筛选的全部题（不限当前页），
   /// 数量按当时筛选实时算；确认时重验（见 [joinReviewFsrs]）。
   /// 记下当时的筛选键，筛选变了即过期清空（见 [_pruneReviewSelection]）。
   void selectReviewAllFiltered() {
@@ -1696,7 +1711,7 @@ class WrongbookNotifier extends Notifier<WrongbookState> {
 
   /// P3 入口 1“全部加入复习”：作用域 = 当前筛选出的全部题（与
   /// 旧“全部加入复习”同口径，不限当前页、不用先勾选），先记为
-  /// “全选全部筛选结果”口径再入池（确认时重验当时筛选）。
+  /// “全选（仅复习）”口径再入池（确认时重验当时筛选）。
   Future<({String message, bool showReviewAction})>
   joinReviewFsrsAll() async {
     selectReviewAllFiltered();
@@ -2194,9 +2209,10 @@ class WrongbookNotifier extends Notifier<WrongbookState> {
     return batchResultMessage('归档', okN, missing, failed);
   }
 
-  /// 批量加入复习（B11-6，勾选版）：只加未解决的错因——判定与计数
-  /// 在 [QuestionRepository.joinReviewBatch] 里（无未解决错因的题
-  /// 跳过）；加完给“开始复习”入口，点它跳复习页 /review。
+  /// 批量加入复习（B11-6，勾选版，FSRS 全量迁移包2）：判定与计数
+  /// 在 [QuestionRepository.joinReviewBatch] 里（已在池的题跳过，
+  /// 不在池的入池建卡；无错因的题也可加）；加完给“开始复习”入口，
+  /// 点它跳复习页 /review。
   Future<({String message, bool showReviewAction})>
   batchJoinReviewSelected() async {
     final qs = <Question>[];
@@ -2209,7 +2225,10 @@ class WrongbookNotifier extends Notifier<WrongbookState> {
         qs.add(q);
       }
     }
-    final result = await _repo.joinReviewBatch(qs);
+    final result = await _repo.joinReviewBatch(
+      qs,
+      scheduler: ref.read(reviewSchedulerProvider),
+    );
     state = state.copyWith(selected: const {});
     await load();
     return joinReviewResultMessage(
@@ -2221,12 +2240,15 @@ class WrongbookNotifier extends Notifier<WrongbookState> {
   }
 
   /// 全部加入（B11-6）：作用域 = 当前筛选出的全部题（`all` 是
-  /// [WrongbookState.filteredAll] 的结果，与“全选当前结果”同口径），
+  /// [WrongbookState.filteredAll] 的结果，与“全选（整理、复习、删除）”同口径），
   /// 不是全库，也不限当前页；不用先勾选。
   Future<({String message, bool showReviewAction})> batchJoinReviewAll(
     List<Question> all,
   ) async {
-    final result = await _repo.joinReviewBatch(all);
+    final result = await _repo.joinReviewBatch(
+      all,
+      scheduler: ref.read(reviewSchedulerProvider),
+    );
     state = state.copyWith(selected: const {});
     await load();
     return joinReviewResultMessage(

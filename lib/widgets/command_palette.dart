@@ -21,6 +21,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../data/repository.dart';
+import '../data/review_scheduler.dart';
 import '../models/models.dart';
 import '../state/wrongbook_notifier.dart';
 
@@ -30,6 +31,7 @@ class CommandPalette extends StatefulWidget {
     super.key,
     required this.repo,
     required this.onApply,
+    this.scheduler,
   });
 
   /// 面板打开时为 true（State 的 initState/dispose 维护）。
@@ -39,6 +41,10 @@ class CommandPalette extends StatefulWidget {
 
   /// 选中一条后的回调（条件 + 显示名，如「洛必达法则」/「概念不清 · 未解决」）。
   final void Function(Map<String, dynamic> conditions, String label) onApply;
+
+  /// FSRS 全量迁移包 4：hint 计数要 FSRS 数据（复习状态筛选的
+  /// 条目与点进去看到的结果数同一口径）；不传时按无 FSRS 数据计。
+  final ReviewScheduler? scheduler;
 
   @override
   State<CommandPalette> createState() => _CommandPaletteState();
@@ -174,6 +180,19 @@ class _CommandPaletteState extends State<CommandPalette> {
           .where((s) => s.id == id)
           .map((s) => s.name)
           .firstOrNull ?? '';
+      // FSRS 全量迁移包 4：hint 计数要 FSRS 数据（复习状态筛选的
+      // 条目与点进去看到的结果数同一口径）；读不到按空表。
+      final poolIds = await repo.fsrsPoolQuestionIds();
+      var nextDueByQ = const <String, DateTime>{};
+      if (widget.scheduler != null) {
+        try {
+          nextDueByQ = await repo.fsrsNextDueByQuestion(
+            scheduler: widget.scheduler!,
+          );
+        } catch (_) {
+          // 读不到按空表。
+        }
+      }
       int count(Map<String, dynamic> conditions) =>
           countQuestionsForConditions(
             questions: questions,
@@ -183,6 +202,8 @@ class _CommandPaletteState extends State<CommandPalette> {
             kps: kps,
             recordsByQ: byQ,
             conditions: conditions,
+            fsrsPoolIds: poolIds,
+            fsrsNextDueByQuestion: nextDueByQ,
           );
       final built = <_PaletteGroup>[];
       if (saved.isNotEmpty) {
@@ -266,7 +287,7 @@ class _CommandPaletteState extends State<CommandPalette> {
               for (final t in tags)
                 _PaletteItem(
                   icon: '＃',
-                  name: '标签：$t',
+                  name: t,
                   conditions: {
                     'tags': [t],
                   },
@@ -464,11 +485,6 @@ class _CommandPaletteState extends State<CommandPalette> {
                   Text('Enter 打开', style: TextStyle(fontSize: 12, color: hintGrey)),
                   SizedBox(width: 14),
                   Text('Esc 关闭', style: TextStyle(fontSize: 12, color: hintGrey)),
-                  Spacer(),
-                  Text(
-                    '不搜题干文字',
-                    style: TextStyle(fontSize: 12, color: hintGrey),
-                  ),
                 ],
               ),
             ),

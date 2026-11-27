@@ -101,7 +101,7 @@ class QuestionSlice extends StatelessWidget {
                 ),
                 const SizedBox(height: 4),
                 Text(
-                  '整题图加载失败，先显示学科图标和题型，不留空白',
+                  '整题图加载失败，显示学科图标和题型',
                   style: Theme.of(context).textTheme.bodySmall,
                   textAlign: TextAlign.center,
                 ),

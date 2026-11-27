@@ -41,13 +41,10 @@ Question _q(String id, List<String> causes) => Question(
       sliceText: '题：$id',
     );
 
-CauseRecord _r(String qid, String cause, CauseStatus status) => CauseRecord(
+CauseRecord _r(String qid, String cause) => CauseRecord(
       questionId: qid,
       cause: cause,
       subjectId: 'math',
-      status: status,
-      solvedCount: status == CauseStatus.solved ? 2 : 0,
-      lastCheck: _today,
       joinedAt: _today,
     );
 
@@ -183,7 +180,7 @@ void main() {
       final attempts = [_attempt('q1', correct: 1)];
       final repo = _StaleRepo(
         questions: questions,
-        records: [_r('q1', '计算错误', CauseStatus.solved)],
+        records: [_r('q1', '计算错误')],
         attempts: attempts,
       );
       await _pumpReport(tester, repo);
@@ -208,8 +205,8 @@ void main() {
       final repo = _StaleRepo(
         questions: questions,
         records: [
-          _r('q1', '计算错误', CauseStatus.solved),
-          _r('q1', '概念不清', CauseStatus.pending),
+          _r('q1', '计算错误'),
+          _r('q1', '概念不清'),
         ],
         attempts: attempts,
       );

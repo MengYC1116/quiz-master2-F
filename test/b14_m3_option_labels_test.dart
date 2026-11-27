@@ -231,7 +231,6 @@ void main() {
           };
         },
       );
-      expect(find.textContaining('判断题选项固定'), findsOneWidget);
       expect(find.byType(TextField), findsNothing);
       expect(find.widgetWithText(QmButton, '确认选项'), findsNothing);
       await tester.tap(find.widgetWithText(QmChip, '正确'));
@@ -290,6 +289,20 @@ void main() {
         answerPendingRecheck: true,
       );
       expect(find.textContaining('正确答案待重新核对'), findsOneWidget);
+    });
+
+    testWidgets('多选标签未改但挂着待核对标记：横幅写明保存后清除标记（P11）', (tester) async {
+      await pumpEditor(
+        tester,
+        questionType: 'choice_multi',
+        optionLabels: const ['A', 'B', 'C', 'D'],
+        answerPendingRecheck: true,
+      );
+      expect(
+        find.text('标准答案待重新核对：请在答案区重新填写或确认，保存后清除该标记。'),
+        findsOneWidget,
+      );
+      expect(find.textContaining('保存后恢复'), findsNothing);
     });
 
     testWidgets('填空题：不渲染编辑器', (tester) async {
@@ -582,7 +595,6 @@ class _FakeOrgRepo extends QuestionRepository {
 
   List<Question> questions;
   final List<Question> saved = [];
-  int syncCauseRecordsCalls = 0;
 
   @override
   Future<List<Question>> all({bool includeArchived = false}) async =>
@@ -621,11 +633,6 @@ class _FakeOrgRepo extends QuestionRepository {
     }
   }
 
-  @override
-  Future<void> syncCauseRecords(Question q) async {
-    syncCauseRecordsCalls++;
-  }
-
   /// B11-10：OrganizeNotifier 只在队列已空且库里有题时读这两个数
   /// （今日小结行用）；返回 0 / 空，不碰真实库（见 D-88）。
   @override
@@ -649,7 +656,6 @@ class _FakeDetailRepo extends QuestionRepository {
 
   List<Question> questions;
   final List<Question> saved = [];
-  int syncCauseRecordsCalls = 0;
 
   @override
   Future<AppSettings> settings() async => AppSettings.defaults;
@@ -701,11 +707,6 @@ class _FakeDetailRepo extends QuestionRepository {
     } else {
       questions.add(question);
     }
-  }
-
-  @override
-  Future<void> syncCauseRecords(Question q) async {
-    syncCauseRecordsCalls++;
   }
 
   /// 详情页自愈（_healSliceIfNeeded）读同页框：无框，不碰真实库（见 D-88）。

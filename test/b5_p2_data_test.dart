@@ -538,7 +538,7 @@ void main() {
     });
   });
 
-  group('SR-P2-8 加入/同步复习同事务', () {
+  group('SR-P2-8 加入复习只翻标志（FSRS 全量迁移包2：播种/同步已删）', () {
     Question joinedQ() => Question(
       id: 'q1',
       title: 't',
@@ -549,11 +549,11 @@ void main() {
       createdAt: DateTime.fromMillisecondsSinceEpoch(1000),
     );
 
-    test('setReviewJoinedInto：题行 + 错因记录一次建出', () async {
+    test('setReviewJoinedFlagInto：只翻 review_joined，不播种错因记录', () async {
       final db = await openTestDb();
       addTearDown(() async => db.close());
       await insertQuestion(db, 'q1', isOrganized: 1);
-      final ok = await AppDatabase.setReviewJoinedInto(db, joinedQ(), true);
+      final ok = await AppDatabase.setReviewJoinedFlagInto(db, joinedQ(), true);
       expect(ok, isTrue);
       final q =
           (await db
@@ -566,32 +566,19 @@ void main() {
               .toList()
               .single;
       expect(q['review_joined'], 1);
+      // FSRS 全量迁移包2：入池不再播种 cause_records。
       final records =
           (await db.customSelect('SELECT * FROM cause_records').get())
               .map((r) => r.data)
               .toList();
-      expect(records.map((r) => r['cause']).toList(), ['计算错误', '概念不清']);
+      expect(records, isEmpty);
     });
 
-    test('setReviewJoinedInto 中途失败：题行一起回滚', () async {
-      final db = await openTestDb();
-      addTearDown(() async => db.close());
-      await db.customStatement(
-        "CREATE TRIGGER trg_fail_cause BEFORE INSERT ON cause_records "
-        "BEGIN SELECT RAISE(ABORT, 'boom'); END;",
-      );
-      await expectLater(
-        () => AppDatabase.setReviewJoinedInto(db, joinedQ(), true),
-        throwsA(anything),
-      );
-      expect(await db.customSelect('SELECT * FROM questions').get(), isEmpty);
-      expect(
-        await db.customSelect('SELECT * FROM cause_records').get(),
-        isEmpty,
-      );
-    });
+    // 已删（FSRS 全量迁移包2）：'setReviewJoinedInto 中途失败：题行一起回滚'
+    // ——旧方法题行 + 播种同事务，触发器拦播种可验证回滚；新方法只做
+    // 单列 UPDATE，无第二写可回滚，该行为已删除，无替代测试。
 
-    test('错因是空的题加不进复习，返回 false、不写库', () async {
+    test('错因是空的题也可翻标志（FSRS 全量迁移包2）：返回 true、写库', () async {
       final db = await openTestDb();
       addTearDown(() async => db.close());
       await insertQuestion(db, 'q1', isOrganized: 1);
@@ -602,7 +589,7 @@ void main() {
         isOrganized: true,
         createdAt: DateTime.fromMillisecondsSinceEpoch(1000),
       );
-      expect(await AppDatabase.setReviewJoinedInto(db, q, true), isFalse);
+      expect(await AppDatabase.setReviewJoinedFlagInto(db, q, true), isTrue);
       expect(
         (await db
                 .customSelect(
@@ -613,46 +600,25 @@ void main() {
             .map((r) => r.data)
             .toList()
             .single['review_joined'],
-        0,
+        1,
       );
     });
 
-    test('syncCauseRecordsInto：删旧错因、补新错因同事务', () async {
-      final db = await openTestDb();
-      addTearDown(() async => db.close());
-      await insertQuestion(db, 'q1', isOrganized: 1, reviewJoined: 1);
-      await insertCauseRecord(db, 'q1', '计算错误');
-      await insertCauseRecord(db, 'q1', '概念不清');
-      final q = joinedQ().copyWith(errorTypes: ['计算错误', '审题失误']);
-      await AppDatabase.syncCauseRecordsInto(db, q);
-      final records =
-          (await db
-                  .customSelect(
-                    'SELECT * FROM cause_records ORDER BY cause ASC',
-                  )
-                  .get())
-              .map((r) => r.data)
-              .toList();
-      expect(records.map((r) => r['cause']).toList(), ['审题失误', '计算错误']);
-    });
+    // 已删（FSRS 全量迁移包2）：'syncCauseRecordsInto：删旧错因、补新错因同事务'
+    // ——错因同步已删除（状态列冻结，错因改动不再同步写 cause_records），
+    // 无替代测试。
   });
 
   group('SR2-14 全行 REPLACE 快照覆盖库内新值', () {
-    test('旧快照 setReviewJoinedInto 不把 review_count 打回旧值', () async {
+    test('旧快照 setReviewJoinedFlagInto 不把 review_count 打回旧值', () async {
       final db = await openTestDb();
       addTearDown(() async => db.close());
       await insertQuestion(db, 'q1', isOrganized: 1, reviewCount: 5);
-      // 自查一次：库内 review_count 5 → 6（SQL +1）。
-      await AppDatabase.recordSelfCheckInto(
-        db,
-        updated: CauseRecord(
-          questionId: 'q1',
-          cause: '计算错误',
-          subjectId: 'math',
-          joinedAt: DateTime.fromMillisecondsSinceEpoch(1000),
-        ),
-        questionId: 'q1',
-        result: 'solved',
+      // 直接 SQL +1：库内 review_count 5 → 6（旧自查写入层已退役，
+      // 本测试只关心“库内值已变”，不关心谁加的）。
+      await db.customUpdate(
+        'UPDATE questions SET review_count = review_count + 1 WHERE id = ?',
+        variables: [Variable.withString('q1')],
       );
       expect(
         (await db
@@ -666,7 +632,7 @@ void main() {
             .single['review_count'],
         6,
       );
-      // 持 reviewCount: 5 的旧快照调 setReviewJoinedInto。
+      // 持 reviewCount: 5 的旧快照调 setReviewJoinedFlagInto。
       final stale = Question(
         id: 'q1',
         title: 't',
@@ -677,7 +643,7 @@ void main() {
         reviewCount: 5,
         createdAt: DateTime.fromMillisecondsSinceEpoch(1000),
       );
-      expect(await AppDatabase.setReviewJoinedInto(db, stale, true), isTrue);
+      expect(await AppDatabase.setReviewJoinedFlagInto(db, stale, true), isTrue);
       final q =
           (await db
                   .customSelect(
@@ -737,8 +703,6 @@ void main() {
         questionId: 'q1',
         cause: '计算错误',
         subjectId: 'math',
-        status: CauseStatus.pending,
-        solvedCount: 0,
         remedyHistory: ['2026-11-15：先列错因再算'],
         joinedAt: DateTime.fromMillisecondsSinceEpoch(1000),
       );
@@ -755,7 +719,7 @@ void main() {
       ]);
     });
 
-    test('SR3-4：经 saveCauseRecord 改已存在行的 status 被丢弃（按设计），新行才整行写入', () async {
+    test('SR3-4：经 saveCauseRecord 改已存在行的状态列按设计冻结，新行 INSERT 只允许默认值', () async {
       final db = await openTestDb();
       AppDatabase.useDatabaseForTest(db);
       addTearDown(() async => db.close());
@@ -769,14 +733,12 @@ void main() {
         solvedCount: 2,
         recheckDate: recheck.millisecondsSinceEpoch,
       );
-      // 已存在行：status / solvedCount 改动被丢弃，remedy_history 写入。
+      // 已存在行：只写 remedy_history，状态列原值不动。
       await repo.saveCauseRecord(
         CauseRecord(
           questionId: 'q1',
           cause: '计算错误',
           subjectId: 'math',
-          status: CauseStatus.pending,
-          solvedCount: 0,
           remedyHistory: ['2026-11-15：先列错因再算'],
           joinedAt: DateTime.fromMillisecondsSinceEpoch(1000),
         ),
@@ -800,15 +762,16 @@ void main() {
       expect(AppDatabase.decodeRemedyList(row['remedy_history']), [
         '2026-11-15：先列错因再算',
       ]);
-      // 不存在行：整行 INSERT，全列按传入值写（播种路径）。
+      // 不存在行：INSERT 只允许冻结默认值（status='pending'、
+      // solvedCount=0、复查日与锚点为空），不信任传入值——
+      // FSRS 全量迁移包 7（R1）：`CauseRecord` 已无状态字段，
+      // 缺行 INSERT 不得复活一条活状态行；补救历史照写。
       await repo.saveCauseRecord(
         CauseRecord(
           questionId: 'q2',
           cause: '概念不清',
           subjectId: 'math',
-          status: CauseStatus.inProgress,
-          solvedCount: 1,
-          remedyHistory: const [],
+          remedyHistory: const ['2026-11-15：先看概念再做题'],
           joinedAt: DateTime.fromMillisecondsSinceEpoch(1000),
         ),
       );
@@ -825,8 +788,15 @@ void main() {
               .map((r) => r.data)
               .toList()
               .single;
-      expect(inserted['status'], 'inProgress');
-      expect(inserted['solved_count'], 1);
+      expect(inserted['status'], 'pending');
+      expect(inserted['solved_count'], 0);
+      expect(inserted['recheck_date'], isNull);
+      expect(inserted['last_check'], isNull);
+      expect(inserted['last_counted_success_at'], isNull);
+      expect(inserted['last_counted_session_id'], isNull);
+      expect(AppDatabase.decodeRemedyList(inserted['remedy_history']), [
+        '2026-11-15：先看概念再做题',
+      ]);
     });
   });
 
@@ -1427,206 +1397,6 @@ void main() {
       // '%' 不在 _safeTaskIdPattern 里：_deleteTaskDirIfUnreferenced
       // 直接返回，目录保留（LIKE 里的 % 通配符到不了查询）。
       expect(await dir.exists(), isTrue);
-    });
-  });
-
-  group('SR-P2-16 自查按库内值重算', () {
-    CauseRecord snapshot() => CauseRecord(
-      questionId: 'q1',
-      cause: '计算错误',
-      subjectId: 'math',
-      status: CauseStatus.pending,
-      solvedCount: 0,
-      joinedAt: DateTime.fromMillisecondsSinceEpoch(1000),
-    );
-
-    test('两次基于同一旧快照的“已解决”：计数 +2，不是 +1', () async {
-      final db = await openTestDb();
-      addTearDown(() async => db.close());
-      await insertQuestion(db, 'q1', reviewCount: 0);
-      await insertCauseRecord(db, 'q1', '计算错误');
-      final stale = snapshot();
-      await AppDatabase.recordSelfCheckInto(
-        db,
-        updated: stale.copyWith(status: CauseStatus.inProgress, solvedCount: 1),
-        questionId: 'q1',
-        result: 'solved',
-      );
-      // 第二次仍拿同一份旧快照（solvedCount 0）：库内值是 1，
-      // 重算后应为 2 且已解决，而不是按快照写回 1。
-      final written = await AppDatabase.recordSelfCheckInto(
-        db,
-        updated: stale.copyWith(status: CauseStatus.inProgress, solvedCount: 1),
-        questionId: 'q1',
-        result: 'solved',
-      );
-      expect(written.solvedCount, 2);
-      expect(written.status, CauseStatus.solved);
-      final row = (await db.customSelect('SELECT * FROM cause_records').get())
-          .map((r) => r.data)
-          .toList()
-          .single;
-      expect(row['solved_count'], 2);
-      expect(row['status'], 'solved');
-      expect(
-        await db.customSelect('SELECT * FROM review_history').get(),
-        hasLength(2),
-      );
-      final q = (await db.customSelect('SELECT * FROM questions').get())
-          .map((r) => r.data)
-          .toList()
-          .single;
-      expect(q['review_count'], 2);
-    });
-
-    test('复查通过不加计数：库内 solvedCount 不动，只顺延复查日', () async {
-      final db = await openTestDb();
-      addTearDown(() async => db.close());
-      await insertQuestion(db, 'q1', reviewCount: 0);
-      final yesterday = DateTime.now().subtract(const Duration(days: 1));
-      await insertCauseRecord(
-        db,
-        'q1',
-        '计算错误',
-        status: 'solved',
-        solvedCount: 2,
-        recheckDate: yesterday.millisecondsSinceEpoch,
-      );
-      final written = await AppDatabase.recordSelfCheckInto(
-        db,
-        updated: snapshot(),
-        questionId: 'q1',
-        result: 'solved',
-        isRecheck: true,
-      );
-      expect(written.solvedCount, 2);
-      expect(written.status, CauseStatus.solved);
-      expect(written.recheckDate, isNotNull);
-      expect(written.recheckDate!.isAfter(DateTime.now()), isTrue);
-    });
-
-    test('unsure 不写库：无行时返回传入值，有行时返回库内值', () async {
-      final db = await openTestDb();
-      addTearDown(() async => db.close());
-      await insertQuestion(db, 'q1', reviewCount: 0);
-      // 无行：返回传入值，不写库（无记录、无历史、次数不动）。
-      final passed = snapshot().copyWith(
-        status: CauseStatus.inProgress,
-        solvedCount: 1,
-      );
-      final noRow = await AppDatabase.recordSelfCheckInto(
-        db,
-        updated: passed,
-        questionId: 'q1',
-        result: 'unsure',
-      );
-      expect(noRow.solvedCount, 1);
-      expect(
-        await db.customSelect('SELECT * FROM cause_records').get(),
-        isEmpty,
-      );
-      expect(
-        await db.customSelect('SELECT * FROM review_history').get(),
-        isEmpty,
-      );
-      expect(
-        (await db.customSelect('SELECT * FROM questions').get())
-            .map((r) => r.data)
-            .toList()
-            .single['review_count'],
-        0,
-      );
-      // 有行：返回库内值，库内行原样不动。
-      await insertCauseRecord(
-        db,
-        'q1',
-        '计算错误',
-        status: 'inProgress',
-        solvedCount: 1,
-      );
-      final withRow = await AppDatabase.recordSelfCheckInto(
-        db,
-        updated: snapshot(),
-        questionId: 'q1',
-        result: 'unsure',
-      );
-      expect(withRow.solvedCount, 1);
-      expect(withRow.status, CauseStatus.inProgress);
-      final row = (await db.customSelect('SELECT * FROM cause_records').get())
-          .map((r) => r.data)
-          .toList()
-          .single;
-      expect(row['solved_count'], 1);
-      expect(row['status'], 'inProgress');
-      expect(
-        await db.customSelect('SELECT * FROM review_history').get(),
-        isEmpty,
-      );
-    });
-
-    test('未解决：solvedCount 清 0，状态回解决中、复查日清掉', () async {
-      final db = await openTestDb();
-      addTearDown(() async => db.close());
-      await insertQuestion(db, 'q1', reviewCount: 0);
-      final recheck = DateTime.now().add(const Duration(days: 7));
-      await insertCauseRecord(
-        db,
-        'q1',
-        '计算错误',
-        status: 'solved',
-        solvedCount: 2,
-        recheckDate: recheck.millisecondsSinceEpoch,
-      );
-      final written = await AppDatabase.recordSelfCheckInto(
-        db,
-        updated: snapshot(),
-        questionId: 'q1',
-        result: 'unsolved',
-      );
-      expect(written.solvedCount, 0);
-      expect(written.status, CauseStatus.inProgress);
-      expect(written.recheckDate, isNull);
-      final row = (await db.customSelect('SELECT * FROM cause_records').get())
-          .map((r) => r.data)
-          .toList()
-          .single;
-      expect(row['solved_count'], 0);
-      expect(row['status'], 'inProgress');
-      expect(row['recheck_date'], isNull);
-    });
-
-    test('无行时按传入值写库（已解决）', () async {
-      final db = await openTestDb();
-      addTearDown(() async => db.close());
-      await insertQuestion(db, 'q1', reviewCount: 0);
-      final written = await AppDatabase.recordSelfCheckInto(
-        db,
-        updated: snapshot().copyWith(
-          status: CauseStatus.inProgress,
-          solvedCount: 1,
-        ),
-        questionId: 'q1',
-        result: 'solved',
-      );
-      expect(written.solvedCount, 1);
-      expect(written.status, CauseStatus.inProgress);
-      final row = (await db.customSelect('SELECT * FROM cause_records').get())
-          .map((r) => r.data)
-          .toList()
-          .single;
-      expect(row['solved_count'], 1);
-      expect(row['status'], 'inProgress');
-      expect(
-        await db.customSelect('SELECT * FROM review_history').get(),
-        hasLength(1),
-      );
-      expect(
-        (await db.customSelect('SELECT * FROM questions').get())
-            .map((r) => r.data)
-            .toList()
-            .single['review_count'],
-        1,
-      );
     });
   });
 

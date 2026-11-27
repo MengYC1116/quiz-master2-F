@@ -162,7 +162,7 @@ Future<void> _openEditorDialog(
   await tester.tap(find.text('打开修框'));
   await tester.pumpAndSettle();
   // 确认按钮文案随模式变（FR-34 / D-87）：草稿模式随 1 层框总数变，
-  // 1 个是“确认修框，去整理”，多个是“确认修框，拆成 N 个待整理任务”；
+  // 1 个是“确认修框，去整理”，多个是“确认修框，拆成 N 道题去整理”；
   // 重框模式固定是“确认重新框选”。只断言按钮在。
   expect(_confirmFinder(mode), findsOneWidget);
 }
@@ -330,8 +330,8 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.text('用自动框替换当前页的手动框？'), findsNothing);
       expect(yolo.calls, [1]);
-      // 两页共 2 个 1 层框，确认按钮是“拆成 2 个待整理任务”。
-      expect(find.text('确认修框，拆成 2 个待整理任务'), findsOneWidget);
+      // 两页共 2 个 1 层框，确认按钮是“拆成 2 道题去整理”。
+      expect(find.text('确认修框，拆成 2 道题去整理'), findsOneWidget);
     });
   });
 
@@ -357,7 +357,7 @@ void main() {
       await tester.pumpAndSettle();
       await _tapConfirm(tester, BoxEditorMode.rework);
       final result = _capturedResult!;
-      // 1 层框换成检测框。
+      // 1 层框换成自动框。
       final layer1 = result.boxesByPage[2]!.firstWhere((b) => b.layer == 1);
       expect(layer1.x, closeTo(0.2, 1e-9));
       expect(layer1.y, closeTo(0.2, 1e-9));
@@ -405,13 +405,13 @@ void main() {
       );
       await tester.tap(find.text('恢复自动框'));
       await tester.pumpAndSettle();
-      // 两道框都找到了对应的检测框，不弹“没找到对应的题”。
+      // 两道框都找到了对应的自动框，不弹“没找到对应的题”。
       expect(find.textContaining('没找到对应的题'), findsNothing);
       await _tapConfirm(tester, BoxEditorMode.rework);
       final result = _capturedResult!;
       final layer1 = result.boxesByPage[2]!.where((b) => b.layer == 1).toList();
       expect(layer1, hasLength(2));
-      // 两道框各就其位（不是都挪到第一道检测框的位置上）。
+      // 两道框各就其位（不是都挪到第一道自动框的位置上）。
       final first = layer1.firstWhere((b) => b.id == 'b1');
       expect(first.x, closeTo(0.1, 1e-9));
       expect(first.y, closeTo(0.1, 1e-9));
@@ -421,10 +421,10 @@ void main() {
     });
   });
 
-  group('SR3-13 重框恢复不认邻题检测框', () {
-    testWidgets('阈值 0.3：与目标框 IoU 0.23 的检测框不再认领，目标框不动',
+  group('SR3-13 重框恢复不认邻题自动框', () {
+    testWidgets('阈值 0.3：与目标框 IoU 0.23 的自动框不再认领，目标框不动',
         (tester) async {
-      // 检测框与目标框 IoU ≈ 0.231（> 旧阈值 0.05、< 新阈值 0.3）：
+      // 自动框与目标框 IoU ≈ 0.231（> 旧阈值 0.05、< 新阈值 0.3）：
       // 旧逻辑会把它认领、把目标框拽到 0.30 处；新逻辑不认领。
       final yolo = _CountingYolo(
         boxes: [
@@ -444,7 +444,7 @@ void main() {
       );
       await tester.tap(find.text('恢复自动框'));
       await tester.pumpAndSettle();
-      expect(find.textContaining('没找到对应的检测框'), findsOneWidget);
+      expect(find.textContaining('没找到对应的自动框'), findsOneWidget);
       // SnackBar 默认 4 秒后消失：等它走完再点确认，否则会被盖住。
       await tester.pump(const Duration(seconds: 5));
       await tester.pumpAndSettle();
@@ -456,9 +456,9 @@ void main() {
       expect(tester.takeException(), isNull);
     });
 
-    testWidgets('候选池过滤：中心落在邻题只读框内的检测框不参与认领',
+    testWidgets('候选池过滤：中心落在邻题只读框内的自动框不参与认领',
         (tester) async {
-      // 检测框与目标框 IoU ≈ 0.389（> 0.3，单看阈值会被认领），
+      // 自动框与目标框 IoU ≈ 0.389（> 0.3，单看阈值会被认领），
       // 但它的中心 (0.47, 0.20) 落在邻题只读框（0.46–0.86）内——
       // 那是邻题的框，不在候选池里，目标框应原地不动。
       // 只读框与目标框留 0.01 缝隙（不重叠，确认不被拦下）。
@@ -484,7 +484,7 @@ void main() {
       );
       await tester.tap(find.text('恢复自动框'));
       await tester.pumpAndSettle();
-      expect(find.textContaining('没找到对应的检测框'), findsOneWidget);
+      expect(find.textContaining('没找到对应的自动框'), findsOneWidget);
       // SnackBar 默认 4 秒后消失：等它走完再点确认，否则会被盖住。
       await tester.pump(const Duration(seconds: 5));
       await tester.pumpAndSettle();
@@ -498,7 +498,7 @@ void main() {
   });
 
   group('SR-P2-30 _donePages 只是本页装饰态：文案说清', () {
-    testWidgets('打勾按钮与说明文案讲明只是本次打开的标记', (tester) async {
+    testWidgets('打勾按钮只是本次打开的标记', (tester) async {
       await _openEditorDialog(
         tester,
         page: 1,
@@ -509,7 +509,6 @@ void main() {
         },
       );
       expect(find.text('标记本页修完'), findsOneWidget);
-      expect(find.textContaining('打勾只是本次打开的标记'), findsOneWidget);
       await tester.tap(find.text('标记本页修完'));
       await tester.pumpAndSettle();
       expect(find.text('已标记修完（点击取消）'), findsOneWidget);
@@ -983,11 +982,11 @@ void main() {
       await tester.tap(find.text('修框'));
       await tester.pumpAndSettle();
       expect(find.textContaining('修框 ·'), findsOneWidget);
-      // 2 个题级框 → 确认按钮是“拆成 2 个待整理任务”；只剩 1 个框时
+      // 2 个题级框 → 确认按钮是“拆成 2 道题去整理”；只剩 1 个框时
       // 是“确认修框，去整理”。未框页确认框出现时点“确认拆题”。
       final confirmLabel = leavePage2Unboxed
           ? '确认修框，去整理'
-          : '确认修框，拆成 2 个待整理任务';
+          : '确认修框，拆成 2 道题去整理';
       // _confirmSplit 的图片 IO（旋转烘焙 + 裁剪）是真异步、偏慢：
       // 轮询等失败提示条出现，最多 8 秒；不要定死循环次数（太短则
       // 流程还没跑完、太长则提示条 4 秒过期）。成功提示条出现也可停。
@@ -1447,9 +1446,6 @@ class _DetailFakeRepo extends QuestionRepository {
   }
 
   @override
-  Future<void> syncCauseRecords(Question q) async {}
-
-  @override
   Future<void> saveFolder(Folder folder) async {
     final i = folderList.indexWhere((x) => x.id == folder.id);
     if (i >= 0) {
@@ -1469,7 +1465,7 @@ class _DetailFakeRepo extends QuestionRepository {
   Future<void> addTag(String name) async {}
 
   @override
-  Future<bool> setReviewJoined(Question q, bool joined) async => false;
+  Future<bool> setReviewJoinedFlag(Question q, bool joined) async => false;
 
   @override
   Future<void> toggleFavorite(Question q) async {}
@@ -1631,9 +1627,6 @@ class _OrganizeFakeRepo extends QuestionRepository {
   Future<void> addTag(String name) async {
     if (!tagList.contains(name)) tagList.add(name);
   }
-
-  @override
-  Future<void> syncCauseRecords(Question question) async {}
 
   @override
   Future<void> saveRecentTask({

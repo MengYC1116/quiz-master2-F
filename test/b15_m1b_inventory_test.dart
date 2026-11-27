@@ -72,7 +72,7 @@ void main() {
       expect(inv.conservationError(), isNull);
     });
 
-    test('跳过清单：无 OCR 结果 / 题干缺失 / 选项无法派生各记原因', () async {
+    test('跳过清单：无 OCR 结果 / 题干缺失 / 无法确定选项各记原因', () async {
       source.records['q1'] = choiceRecord(id: 'q1', ocrRaw: null);
       source.records['q2'] = choiceRecord(id: 'q2', ocrStem: '  ');
       source.records['q3'] = choiceRecord(
@@ -93,7 +93,7 @@ void main() {
       expect(inv.skippedCount, 3);
       expect(
         inv.skipped.map((s) => s.reason),
-        ['无 OCR 结果', '题干缺失', '选项无法派生'],
+        ['无 OCR 结果', '题干缺失', '无法确定选项'],
       );
       expect(inv.skipped.map((s) => s.questionId), ['q1', 'q2', 'q3']);
     });

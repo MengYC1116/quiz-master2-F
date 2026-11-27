@@ -145,9 +145,6 @@ class _P4OrgRepo extends QuestionRepository {
       questions.where((x) => x.id == id).firstOrNull;
 
   @override
-  Future<void> syncCauseRecords(Question question) async {}
-
-  @override
   Future<void> saveRecentTask({
     required String kind,
     required String subjectId,
@@ -224,9 +221,6 @@ class _P4DetailRepo extends QuestionRepository {
       questions.add(question);
     }
   }
-
-  @override
-  Future<void> syncCauseRecords(Question question) async {}
 
   /// 详情页自愈（_healSliceIfNeeded）读同页框：无框，不碰真实库（见 D-88）。
   @override
@@ -796,13 +790,8 @@ void main() {
         folderList: const [Folder(id: 'f1', name: '试卷', subjectId: 'math')],
       );
       await _pumpOrganize(tester, repo);
-      // 待确认 chip + 切分诊断（splitStem 的 reason；注意题干区另有
-      // 一处既有的“切分：未切分”状态文案，故按完整诊断文本断言）。
+      // 待确认 chip（切分诊断小字已删）。
       expect(find.widgetWithText(QmChip, '待确认'), findsOneWidget);
-      expect(
-        find.text('切分：未发现选项标记，整段保留为题干'),
-        findsOneWidget,
-      );
       expect(find.text('重新分类'), findsOneWidget);
     });
 
@@ -870,13 +859,8 @@ void main() {
       await _pumpDetail(tester, repo);
       // 十九批 C：题目信息 panel 默认展开（D1），不用再点标题展开；
       // 旧布局默认折叠，点标题会把它合上、chip 反而找不到了。
-      // 待确认 chip + 切分诊断（同整理页：按完整诊断文本断言，
-      // 避开题干区既有的“切分：未切分”状态文案）。
+      // 待确认 chip（切分诊断小字已删）。
       expect(find.widgetWithText(QmChip, '待确认'), findsOneWidget);
-      expect(
-        find.text('切分：未发现选项标记，整段保留为题干'),
-        findsOneWidget,
-      );
       expect(find.text('重新分类'), findsOneWidget);
     });
 

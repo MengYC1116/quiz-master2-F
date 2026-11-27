@@ -280,13 +280,6 @@ void main() {
       expect(find.text('确认导出'), findsOneWidget);
       expect(find.text('已选 3 道（当前列表共 3 道）'), findsOneWidget);
       expect(find.text('范围：全部题目'), findsOneWidget);
-      expect(
-        find.text(
-          '路线：本次走图片增强路线（未配置 OCR key）。'
-          '去设置页配置 OCR key 可改走 OCR 重排路线（只提示，不强制跳转）。',
-        ),
-        findsOneWidget,
-      );
       final field = tester.widget<TextField>(
         find.byKey(const Key('export-file-name')),
       );
@@ -331,16 +324,29 @@ void main() {
         controller: controller,
       );
       expect(find.text('可印 2 题 / 将跳过 1 题'), findsOneWidget);
-      expect(
-        find.text(
-          '路线：本次走 OCR 重排路线（已配置 OCR key）。'
-          '本次不会自动补跑 OCR；没有 OCR 结果的题将被跳过，'
-          '可去详情页重新触发 OCR。',
-        ),
-        findsOneWidget,
-      );
       await tapVisible(tester, find.text('跳过清单（1）'));
       expect(find.text('无 OCR 结果'), findsOneWidget);
+    });
+
+    testWidgets('C 路线：跳过 0 题时只显示可印数，不拼“将跳过 0 题”（P8）', (
+      tester,
+    ) async {
+      final controller = confirmController(
+        inventory: confirmInventory(
+          route: ExportRoute.c,
+          selectedCount: 3,
+          printableCount: 3,
+          skippedCount: 0,
+          skipped: const [],
+        ),
+      );
+      await pumpConfirm(
+        tester,
+        input: confirmInput(),
+        controller: controller,
+      );
+      expect(find.text('可印 3 题'), findsOneWidget);
+      expect(find.textContaining('将跳过'), findsNothing);
     });
 
     testWidgets('A 路线：低于阈值数 + 排除勾选会重新盘点', (tester) async {
@@ -443,7 +449,7 @@ void main() {
       await tester.tap(find.byKey(const Key('export-generate')));
       await tester.pump();
       expect(
-        find.text('本次导出内容过重，已停止生成。请减少题数，或去详情页重拍裁切。'),
+        find.text('本次导出内容过重，已停止生成。请减少题数，或去详情页重新框选。'),
         findsOneWidget,
       );
     });
@@ -465,10 +471,6 @@ void main() {
         tester,
         input: confirmInput(count: 30),
         controller: controller,
-      );
-      expect(
-        find.text('将跳过 21 / 30 道题，点「生成」后会再次确认。'),
-        findsOneWidget,
       );
       await tester.tap(find.byKey(const Key('export-generate')));
       await tester.pumpAndSettle();

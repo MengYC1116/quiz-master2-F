@@ -75,7 +75,6 @@ class FakeOrganizeNotifierRepo extends QuestionRepository {
   final List<String> deletedIds = [];
   final List<Folder> savedFolders = [];
   final Set<String> failSaveIds = {};
-  int syncCauseRecordsCalls = 0;
   String? lastRecentKind;
 
   int organizedTodayValue = 0;
@@ -166,11 +165,6 @@ class FakeOrganizeNotifierRepo extends QuestionRepository {
   @override
   Future<void> addTag(String name) async {
     if (!tagList.contains(name)) tagList.add(name);
-  }
-
-  @override
-  Future<void> syncCauseRecords(Question question) async {
-    syncCauseRecordsCalls++;
   }
 
   @override
@@ -454,7 +448,7 @@ void main() {
   });
 
   group('OrganizeNotifier 保存 / 切题 / 确认', () {
-    test('saveCurrent：保存表单行 + 同步错因记录 + 写回队列（SR2-6）', () async {
+    test('saveCurrent：保存表单行 + 写回队列（SR2-6）', () async {
       final repo = _threeRepo();
       final container = _container(repo);
       final notifier = container.read(organizeProvider.notifier);
@@ -468,7 +462,6 @@ void main() {
         notes: '注意定义域',
       );
       expect(ok, isTrue);
-      expect(repo.syncCauseRecordsCalls, 1);
       final saved = repo.saved.single;
       expect(saved.id, 'q1');
       expect(saved.folderIds, ['f1']);
@@ -612,7 +605,7 @@ void main() {
   });
 
   group('OrganizeNotifier 队列批量操作', () {
-    test('batchConfirmQuestions：只确认已选文件夹的题，返回拦下数，不同步错因记录', () async {
+    test('batchConfirmQuestions：只确认已选文件夹的题，返回拦下数', () async {
       final repo = _threeRepo();
       final container = _container(repo);
       final notifier = container.read(organizeProvider.notifier);
@@ -622,8 +615,7 @@ void main() {
       expect(blocked, 2);
       expect(repo.saved.map((q) => q.id), ['q2']);
       expect(repo.saved.single.isOrganized, isTrue);
-      // 批量确认不同步错因记录（与单题确认不同，原代码同款）。
-      expect(repo.syncCauseRecordsCalls, 0);
+      // FSRS 全量迁移包2：错因同步已删，单题与批量确认都不再同步。
     });
 
     test('batchTagQuestions：打上标签并返回已保存 id；中途失败只返回已保存子集', () async {

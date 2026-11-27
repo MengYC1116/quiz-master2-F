@@ -116,9 +116,16 @@ class B17FakeRepo extends QuestionRepository {
   // pumpAndSettle 超时）。
   @override
   Future<Set<String>> fsrsPoolQuestionIds() async => const {};
+
+  // FSRS 全量迁移包 4：load() 读下次到期表（同款 D-225：不覆写
+  // 会走真实库）。
+  @override
+  Future<Map<String, DateTime>> fsrsNextDueByQuestion({
+    required ReviewScheduler scheduler,
+  }) async => const {};
 }
 
-/// 桩控制器：盘点全部可印、无跳过；生成与交付全部成功。
+ /// 桩控制器：盘点全部可印、无跳过；生成与交付全部成功。
 ExportFlowController b17StubController() {
   ExportInventory defaultInventory(List<String> ids) => ExportInventory(
     route: ExportRoute.a,
@@ -263,12 +270,12 @@ Future<void> openMathListCompact(WidgetTester tester) async {
   await openMathList(tester);
 }
 
-/// 方案 A 批量栏：开选择菜单点「全选当前结果」（旧批量条全选
+/// 方案 A 批量栏：开选择菜单点「全选（整理、复习、删除）」（旧批量条全选
 /// 复选框已删）；菜单在 Overlay 里，点选项即执行并关菜单。
 Future<void> tapBatchSelectAll(WidgetTester tester) async {
   await tester.tap(find.byKey(const Key('batch-select-menu')));
   await tester.pumpAndSettle();
-  await tester.tap(find.text('全选当前结果'));
+  await tester.tap(find.text('全选（整理、复习、删除）'));
   await tester.pumpAndSettle();
 }
 
@@ -336,15 +343,9 @@ void main() {
       // 平时：入口是结果头里的「导出打印」chip，没有「取消」。
       expect(toolbarExportLabel(tester), '导出打印');
       expect(find.byKey(const Key('export-mode-cancel')), findsNothing);
-      expect(find.byKey(const Key('export-mode-hint')), findsNothing);
 
       await enterExportMode(tester);
       expect(find.byKey(const Key('export-mode-cancel')), findsOneWidget);
-      expect(find.byKey(const Key('export-mode-hint')), findsOneWidget);
-      expect(
-        find.text('导出模式中：点一行即选中（不会进详情），选中行蓝底、右端出现 ✓；再点一次取消。'),
-        findsOneWidget,
-      );
       // n = 0 时模式里的「导出」置灰。
       final btn = tester.widget<QmButton>(
         find.byKey(const Key('export-selected-toolbar')),
@@ -366,7 +367,6 @@ void main() {
       await tester.tap(find.byKey(const Key('export-mode-cancel')));
       await tester.pump();
       expect(find.byKey(const Key('export-mode-cancel')), findsNothing);
-      expect(find.byKey(const Key('export-mode-hint')), findsNothing);
       expect(toolbarExportLabel(tester), '导出打印');
     });
 

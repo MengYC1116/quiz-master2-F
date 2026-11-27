@@ -13,8 +13,9 @@ import '../services/ocr_key_store.dart';
 /// `ReviewBucket` / `reviewBucketOf` / `isReviewDue` 已删除——lib 内
 /// 调用方已全部迁走（复习列表分组迁 FSRS 四组、元信息行已取消、
 /// `dueToday`/`homeRevCounts`/`subjectCounts` 已删）；仅剩的
-/// b5 纯函数断言组随之删除。`CauseRecord.isRecheckDue` 本身保留
-/// （错题本筛选与详情页错因 pill 仍读它作历史状态）。
+/// b5 纯函数断言组随之删除。FSRS 全量迁移包 7：`CauseStatus` /
+/// `CauseRecord.isRecheckDue` 已删除（旧治愈状态机退役，
+/// `CauseRecord` 只剩冻结历史载体）。
 
 /// 仓库：各页面模块共用的查询口径（首页计数、错题本筛选、整理队列、复习）。
 /// 不直接读其他模块的状态，只读数据层。
@@ -74,76 +75,36 @@ class QuestionRepository {
       _db.causeRecordsForQuestion(questionId);
 
   /// SR3-4：只写补救历史（见 [_db.updateCauseRemedy]）。行已存在
-  /// 时 `status` / `solvedCount` / `recheckDate` / `lastCheck`
-  /// 的改动按设计丢弃、不写入——改状态走 [recordSelfCheck]；
-  /// 行不存在时整行 INSERT，全列按传入值写。
+  /// 时只 UPDATE `remedy_history` 列，状态列已冻结、无改状态入口
+  /// （旧 recordSelfCheck 已随 FSRS 全量迁移包1退役）；
+  /// 行不存在时 INSERT 只允许冻结默认值（`status='pending'`、
+  /// `solvedCount=0`、复查日与锚点为空），不信任传入记录的状态
+  /// （FSRS 全量迁移包 7，R1；`CauseRecord` 已无状态字段）。
   Future<void> saveCauseRecord(CauseRecord r) => _db.updateCauseRemedy(r);
 
-  /// 手动加入 / 取消加入复习：加入时给这道题建解决记录（每个错因一条）；
-  /// 取消后记录保留，再加入时接着治。错因是空的题加不进复习，返回 false。
-  /// SR-P2-8：题行 + 错因记录同事务（见 [AppDatabase.setReviewJoined]），
-  /// 不再两步写——中间失败不留“已标加入、却无记录”的题。
-  Future<bool> setReviewJoined(Question q, bool joined) =>
-      _db.setReviewJoined(q, joined);
+  /// 只翻某题的 `review_joined` 标志位（FSRS 全量迁移包2）：
+  /// 不再播种 cause_records；空错因的题也可翻标志（FSRS 按题，
+  /// 不按错因）。入池建卡走 [joinFsrsPool]，不要只翻标志就当入池。
+  Future<bool> setReviewJoinedFlag(Question q, bool joined) =>
+      _db.setReviewJoinedFlag(q, joined);
 
-  /// 批量加入复习时这道题还有没有可加的错因（B11-6 判定口径）：
-  /// - 错因是空的 → 没有（[setReviewJoined] 也会返回 false）；
-  /// - 某个错因还没有解决记录 → 它还没治过，可加；
-  /// - 某条记录未解决（待解决 / 解决中）→ 可加；
-  /// - 某条记录已解决但到了复查时间 → 仍要复查，可加；
-  /// - 全部错因已解决且未到复查时间 → 已无未解决错因，不可加（跳过）。
-  /// 只看传入的 `records`（该题的错因记录），不读库，便于单测覆盖。
-  static bool hasJoinableCause(Question q, List<CauseRecord> records) {
-    if (q.allCauses.isEmpty) return false;
-    final byCause = {for (final r in records) r.cause: r};
-    for (final cause in q.allCauses) {
-      final r = byCause[cause];
-      if (r == null) return true;
-      if (r.status != CauseStatus.solved) return true;
-      if (r.isRecheckDue) return true;
-    }
-    return false;
-  }
-
-  /// 批量加入复习（B11-6）：逐题按 [hasJoinableCause] 判定，只加
-  /// 未解决的错因——已治愈错因的记录已在库里，[setReviewJoined] 的
-  /// 播种用 ConflictAlgorithm.ignore，不动它（状态 / 计数 / 复查日
-  /// 都保留）；一道题没有任何未解决错因时跳过，计入 `skipped`。
+  /// 批量加入复习（B11-6，FSRS 全量迁移包2 新规则）：
+  /// 题不在 FSRS 池 → 入池（建卡 + 翻 `review_joined` 标志）；
+  /// 题已在池 → 跳过（不重复建卡、不重置现有 FSRS 状态）；
+  /// 无错因的题也可加（FSRS 按题，不按错因）。
+  /// 实现即 [joinFsrsPool]（一题一卡幂等）；返回 (joined, skipped, failed)，
+  /// 字段含义与旧版同名返回一致（joined = 新增入池数）。
   /// 作用域由调用方定（错题本里是勾选题或当前筛选结果），本方法
-  /// 不做筛选；单题保存失败计入 `failed`，不中断整批。
+  /// 不做筛选；单题失败计入 `failed`，不中断整批。
+  /// Stage 4：批量提交只发一个事件——逐题翻标志各发一个事件时
+  /// 由 scope 合并成一个发出去；全跳过时一个事件都不发。
   Future<({int joined, int skipped, int failed})> joinReviewBatch(
-    List<Question> questions,
-  ) async {
-    final records = await causeRecords();
-    final byQ = <String, List<CauseRecord>>{};
-    for (final r in records) {
-      (byQ[r.questionId] ??= []).add(r);
-    }
-    // Stage 4：批量提交只发一个事件（方案 §四）——逐题 setReviewJoined
-    // 各发一个事件时由 scope 合并成一个发出去；全跳过时一个事件都不发。
-    // 仍调虚方法 setReviewJoined（单测 FakeRepo 靠覆写它，见
-    // test/b11_6_batch_review_test.dart），不直接调 db 静态方法。
+    List<Question> questions, {
+    required ReviewScheduler scheduler,
+  }) async {
     return DataChangeBus.instance.scope(() async {
-      var joined = 0;
-      var skipped = 0;
-      var failed = 0;
-      for (final q in questions) {
-        if (!hasJoinableCause(q, byQ[q.id] ?? const [])) {
-          skipped++;
-          continue;
-        }
-        try {
-          final ok = await setReviewJoined(q, true);
-          if (ok) {
-            joined++;
-          } else {
-            skipped++;
-          }
-        } catch (_) {
-          failed++;
-        }
-      }
-      return (joined: joined, skipped: skipped, failed: failed);
+      final r = await joinFsrsPool(questions: questions, scheduler: scheduler);
+      return (joined: r.added, skipped: r.skipped, failed: r.failed);
     });
   }
 
@@ -153,6 +114,25 @@ class QuestionRepository {
   Future<Set<String>> fsrsPoolQuestionIds() async {
     try {
       return (await _db.fsrsCardQuestionIds()).toSet();
+    } catch (_) {
+      return const {};
+    }
+  }
+
+  /// 错题本 pill / 筛选 / 排序用：池里已开始正式复习的题 → 下次到期
+  /// 时间（调度器 `nextDueAt` 同口径：未开始的卡 firstReviewedAt
+  /// 为空，不算有下次到期日，不进 map）。只读；读不到时返回空
+  /// map，不抛错——调用方把“未知”当成“都没有下次到期日”，
+  /// 不拖垮列表加载。
+  Future<Map<String, DateTime>> fsrsNextDueByQuestion({
+    required ReviewScheduler scheduler,
+  }) async {
+    try {
+      final cards = await scheduler.loadAllCards();
+      return {
+        for (final c in cards)
+          if (c.firstReviewedAt != null) c.questionId: c.card.due,
+      };
     } catch (_) {
       return const {};
     }
@@ -172,10 +152,10 @@ class QuestionRepository {
   ///
   /// 逐题走同一 [ReviewScheduler.initializeQuestion]：已在池的题
   /// 直接返回现有卡片，不建第二张（去重，一题一卡）；不在池的建新卡。
-  /// 入池同时调 [setReviewJoined]（q, true）播种错因记录——到期复习
-  /// 的现有队列（buildDueQueue）仍以 reviewJoined +
-  /// cause_records 为准，FSRS 卡片与旧队列必须同进同出；播种失败
-  /// （如无错因返回 false）不影响入池计数，卡片已建即算新增。
+  /// 入池同时把 `review_joined` 标志翻成 true（FSRS 全量迁移包2：
+  /// 只翻标志，不再播种 cause_records；旧注释“FSRS 卡片与旧队列
+  /// 必须同进同出”已随 buildDueQueue 删除失效）。标志翻失败
+  /// 不影响入池计数，卡片已建即算新增。
   /// 单题 initialize 失败计入 `failed`，不中断整批；输入重复 id 只
   /// 算一次（按首次出现顺序去重）。
   /// 返回 (added 新增，skipped 已在池跳过，failed 失败）。
@@ -200,9 +180,9 @@ class QuestionRepository {
         await scheduler.initializeQuestion(q.id);
         pooled.add(q.id);
         try {
-          await setReviewJoined(q, true);
+          await setReviewJoinedFlag(q, true);
         } catch (_) {
-          // 播种错因记录失败不影响入池：卡片已建，题已在池。
+          // 标志翻失败不影响入池：卡片已建，题已在池。
         }
         added++;
       } catch (_) {
@@ -213,9 +193,9 @@ class QuestionRepository {
   }
 
   /// 批量取消加入复习（B11-6）：与详情页单个取消同语义——只把
-  /// review_joined 置回 false，错因记录保留，重加入可恢复
-  /// （[setReviewJoined] 取消时不删记录）。本来就没加入的题计入
-  /// `skipped`；单题保存失败计入 `failed`，不中断整批。
+  /// review_joined 置回 false，FSRS 卡片保留（重加入时直接返回原卡，
+  /// 不重置状态）。本来就没加入的题计入 `skipped`；单题保存失败计入
+  /// `failed`，不中断整批。
   Future<({int cancelled, int skipped, int failed})> cancelReviewBatch(
     List<Question> questions,
   ) async {
@@ -230,7 +210,7 @@ class QuestionRepository {
           continue;
         }
         try {
-          await setReviewJoined(q, false);
+          await setReviewJoinedFlag(q, false);
           cancelled++;
         } catch (_) {
           failed++;
@@ -240,11 +220,6 @@ class QuestionRepository {
     });
   }
 
-  /// 同步某题的解决记录与它当前的错因：删掉已不在错因里的记录，
-  /// 给新加的错因补一条待解决记录（仅已加入复习的题）。
-  /// SR-P2-8：删旧 + 补新同事务（见 [AppDatabase.syncCauseRecords]）。
-  Future<void> syncCauseRecords(Question q) => _db.syncCauseRecords(q);
-
   /// 2026-11-26 口径迁移面 C：`dueToday()` / `homeRevCounts()` /
   /// `subjectCounts()` 已删除——全仓 grep 确认 lib 内只剩
   /// `organize_notifier.dart` 一处调用方，已迁到 FSRS 口径
@@ -252,72 +227,8 @@ class QuestionRepository {
   /// 分别迁到 `fsrsDueCountsBySubject` / `fsrsDueTotal`。
   /// 2026-11-26 第二批清理：旧口径互斥拆分 `reviewBucketOf` /
   /// `isReviewDue` 也已删除（调用方随复习列表分组与元信息行迁移
-  /// 而归零）；`buildDueQueue` 保留（到期复习建队回落兜底仍在用）。
+  /// 而归零）；`buildDueQueue` 已随 FSRS 全量迁移包2删除（到期复习只走 FSRS）。
 
-  /// 自查一个错因：result 是 'solved' / 'unsolved' / 'unsure'。
-  /// - 已解决：solvedCount + 1；满 cureChecks 次 → 已解决，复查日 =
-  ///   今天 + recheckIntervalDays 天；不满 → 解决中（复查日清掉）。
-  /// - 未解决：solvedCount 清 0 → 解决中，复查日清掉（复查不过，
-  ///   回到解决中重新治，旧复查日作废）。
-  /// - 不确定：不算，不改记录。
-  /// - 复查（[isRecheck] 为 true，即这条记录已是已解决且到了复查
-  ///   时间）：复查通过不加计数（HTML 口径）——solvedCount 已满
-  ///   治愈次数，只顺延复查日；否则一次复查通过会把它加到
-  ///   cureChecks + 1。复查不过仍按“未解决”走（清 0 打回解决中）。
-  /// 报告的复查通过率另外按 review_history 算，不读 solvedCount，
-  ///   不受影响。
-  Future<CauseRecord> recordSelfCheck(
-    CauseRecord r,
-    String result, {
-    int cureChecks = 2,
-    int recheckIntervalDays = 7,
-    bool isRecheck = false,
-  }) async {
-    if (result == 'unsure') return r;
-    final now = DateTime.now();
-    final today = DateTime(now.year, now.month, now.day);
-    late CauseRecord updated;
-    if (result == 'solved') {
-      final count = isRecheck ? r.solvedCount : r.solvedCount + 1;
-      if (isRecheck || count >= cureChecks) {
-        updated = r.copyWith(
-          status: CauseStatus.solved,
-          solvedCount: count,
-          lastCheck: now,
-          recheckDate: today.add(Duration(days: recheckIntervalDays)),
-        );
-      } else {
-        updated = r.copyWith(
-          status: CauseStatus.inProgress,
-          solvedCount: count,
-          lastCheck: now,
-          clearRecheckDate: true,
-        );
-      }
-    } else {
-      updated = r.copyWith(
-        status: CauseStatus.inProgress,
-        solvedCount: 0,
-        lastCheck: now,
-        clearRecheckDate: true,
-      );
-    }
-    // §4.2：三步同事务（改错因记录 → 记自查历史 → 题目自查次数 +1），
-    // 中间失败整体回滚，不留半截记录。
-    // SR-P2-16：`updated` 是按传入快照算的 provisional 值——事务内
-    // 按库内当前行重算后才写库（见 [AppDatabase.recordSelfCheckInto]），
-    // 返回实际写库的记录；两次基于同一旧快照的自查不再互相覆盖计数。
-    return _db.recordSelfCheckTxn(
-      updated: updated,
-      questionId: r.questionId,
-      result: result,
-      cureChecks: cureChecks,
-      recheckIntervalDays: recheckIntervalDays,
-      isRecheck: isRecheck,
-    );
-  }
-
-  /// 写补救：内容保存进该错因的补救历史（带日期），下次复习可见。
   /// 空内容不保存。
   Future<CauseRecord> saveRemedy(CauseRecord r, String text) async {
     final trimmed = text.trim();
@@ -328,44 +239,6 @@ class QuestionRepository {
     await _db.updateCauseRemedy(updated);
     return updated;
   }
-
-  /// 十四批 M3：单条错因 verdict 提交（M3-7 治愈规则 + M3-8 核验字段 +
-  /// M3-10 幂等）。每错因一次独立事务；调用方按题循环，跨错因部分
-  /// 失败时已写错因保留、只补未写成的。
-  ///
-  /// P2（2026-11-25）：产品流程不再调用本方法——新流程不写
-  /// review_history 的 verdict / verification_* 字段（停止写入，
-  /// 不物理删除，历史查询能力保留）。本方法仅供旧写入层测试
-  /// （b14_m3_verdict_test）保留；P5 决定保留（理由见
-  /// db_questions.dart 的 recordSelfCheckIntoImpl 注释；移除归
-  /// P3/P4 队列替换时一并做）。
-  Future<VerdictSubmitResult> submitCauseVerdict({
-    required String questionId,
-    required CauseRecord record,
-    required String verdict,
-    required String verificationStatus,
-    required String verificationSource,
-    String? attemptId,
-    required String sessionId,
-    required String submissionId,
-    int cureChecks = 2,
-    int recheckIntervalDays = 7,
-    bool isRecheck = false,
-    DateTime? now,
-  }) => _db.submitCauseVerdictTxn(
-    questionId: questionId,
-    record: record,
-    verdict: verdict,
-    verificationStatus: verificationStatus,
-    verificationSource: verificationSource,
-    attemptId: attemptId,
-    sessionId: sessionId,
-    submissionId: submissionId,
-    cureChecks: cureChecks,
-    recheckIntervalDays: recheckIntervalDays,
-    isRecheck: isRecheck,
-    now: now,
-  );
 
   /// 十四批 M3：attempt 写入（一次会话每题一条；跳过后重遇更新同一条）。
   Future<String> recordAttempt(AttemptData attempt) =>
@@ -517,6 +390,7 @@ class QuestionRepository {
     }
     return map;
   }
+
   ///
   /// 只在到期复习会话里、题目第一次进入“看题”步时调（专项练习不调，
   /// 不耗新题额度）；同一内容版本已有记录时 recordFirstPresented
@@ -552,27 +426,14 @@ class QuestionRepository {
   /// 十四批 M3（M3-10 断点恢复重建用）：本会话里该错因是否已有 verdict 事件。
   ///
   /// P2（2026-11-25）：产品流程不再调用本方法——会话恢复只认
-  /// attempts 行（见 _validateSavedSession）。仅供旧写入层保留，
-  /// P5 决定保留（理由见 db_questions.dart 的 recordSelfCheckIntoImpl
-  /// 注释；移除归 P3/P4 队列替换时一并做）。
+  /// attempts 行（见 _validateSavedSession）。旧写入层已随 FSRS
+  /// 全量迁移（包1）退役；本读方法保留，供断点恢复重建时查
+  /// review_history 的实际写入。
   Future<bool> hasSessionVerdict({
     required String causeStableId,
     required String sessionId,
-  }) => _db.hasSessionVerdict(
-    causeStableId: causeStableId,
-    sessionId: sessionId,
-  );
-
-  /// 十四批 M3：专项练习“将此错因重新加入复习”（用户主动操作）。
-  Future<void> rejoinCause({
-    required String questionId,
-    required String cause,
-    required String subjectId,
-  }) => _db.rejoinCauseTxn(
-    questionId: questionId,
-    cause: cause,
-    subjectId: subjectId,
-  );
+  }) =>
+      _db.hasSessionVerdict(causeStableId: causeStableId, sessionId: sessionId);
 
   Future<ReviewSessionState?> reviewState() => _db.loadReviewState();
 
@@ -706,8 +567,7 @@ class QuestionRepository {
 
   /// 删除一场考试（只删事件本身，不动任何题目/试卷）。FR-38/FR-39：
   /// 与 [saveExamEvent] 同款原子入口，原始 JSON 里的其余行原样保留。
-  Future<void> deleteExamEvent(String id) async =>
-      _db.deleteExamEvent(id);
+  Future<void> deleteExamEvent(String id) async => _db.deleteExamEvent(id);
 
   Future<List<KnowledgePoint>> knowledgePoints() => _db.allKnowledgePoints();
 
@@ -868,22 +728,7 @@ class QuestionRepository {
   Future<({int importsBytes, int slicesBytes})> storageUsageBreakdown() =>
       ImportService.storageUsageBreakdown();
 
-  /// B4.1：到了复查时间的错因数（已解决且复查日 ≤ 今天，数错因
-  /// 不数题）。口径与已删的旧口径 dueToday 一致：只算已加入复习、已整理的题，
-  /// 已归档的题不算（取消归档后重新计入）。
-  Future<int> recheckDueCauseCount({bool includeArchived = false}) async {
-    final questions = await all(includeArchived: includeArchived);
-    final joined = {
-      for (final q in questions)
-        if (q.reviewJoined && q.isOrganized) q.id,
-    };
-    final records = await causeRecords();
-    return records
-        .where((r) => joined.contains(r.questionId) && r.isRecheckDue)
-        .length;
-  }
-
-  /// B4.1：今天是否已弹过复查提醒（settings 表 key，见 database.dart）。
+  /// B4.1：今天是否已弹过到期复习提醒（settings 表 key，见 database.dart）。
   Future<String?> lastRecheckReminderDate() =>
       _db.loadLastRecheckReminderDate();
 

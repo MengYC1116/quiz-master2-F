@@ -135,7 +135,7 @@ void main() {
       final skipped = result.report.entries
           .singleWhere((e) => e.questionId == 'q1');
       expect(skipped.status, IntegrityStatus.skipped);
-      expect(skipped.skipReason, '公式栅格化与原图裁剪均失败');
+      expect(skipped.skipReason, '公式无法呈现');
       final doc = UnpackedDocx(result.docxBytes);
       expect(doc.documentXml, contains('第 1 题'));
       expect(doc.documentXml, isNot(contains('第 2 题')));

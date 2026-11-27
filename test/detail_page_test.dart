@@ -205,9 +205,6 @@ class FakeDetailRepo extends QuestionRepository {
   Future<bool> hasOcrApiKey() async => false;
 
   @override
-  Future<void> syncCauseRecords(Question q) async {}
-
-  @override
   Future<void> toggleFavorite(Question q) async {
     await save(q.copyWith(isFavorite: !q.isFavorite));
   }
@@ -224,8 +221,7 @@ class FakeDetailRepo extends QuestionRepository {
   }
 
   @override
-  Future<bool> setReviewJoined(Question q, bool joined) async {
-    if (joined && q.allCauses.isEmpty) return false;
+  Future<bool> setReviewJoinedFlag(Question q, bool joined) async {
     await save(q.copyWith(reviewJoined: joined));
     return true;
   }
@@ -394,8 +390,6 @@ FakeDetailRepo detailRepo() {
         questionId: 'q1',
         cause: '概念不清',
         subjectId: 'math',
-        status: CauseStatus.inProgress,
-        solvedCount: 1,
         joinedAt: now.subtract(const Duration(days: 2)),
       ),
     ],
@@ -618,9 +612,12 @@ void main() {
       await pumpDetail(tester);
       expect(find.text('概念不清'), findsNWidgets(2)); // 信息错因行 + 复习错因行
       // FSRS 口径：标题 pill + 整体状态 pill 都是「未加入复习」，
-      // 复习状态行里还有一处同文案；「解决中」只剩错因自身历史记录的 pill。
+      // 复习状态行里还有一处同文案。FSRS 全量迁移包 5：错因行只留
+      // 错因名，状态 pill 已删，「解决中 / 待解决 / 复查」都不再出现。
       expect(find.text('未加入复习'), findsNWidgets(3));
-      expect(find.text('解决中'), findsNWidgets(1)); // 仅错因 pill
+      expect(find.text('解决中'), findsNothing); // 错因 pill 已删
+      expect(find.text('待解决'), findsNothing);
+      expect(find.text('复查'), findsNothing);
     });
   });
 
@@ -643,14 +640,14 @@ void main() {
       expect(find.text('待补充 · 点这里补'), findsNWidgets(3));
       await tapText(tester, '待补充 · 点这里补', first: true);
       expect(find.text('保存'), findsOneWidget); // 左列底部（编辑态）
-      expect(find.textContaining('正在编辑这道题'), findsOneWidget);
+      expect(find.text('正在编辑：改动点「保存」后才生效。'), findsOneWidget);
     });
 
     testWidgets('编辑态答案解析段只留提示，不直接改答案', (tester) async {
       await pumpDetail(tester);
       await tapText(tester, '编辑');
       expect(
-        find.text('正在编辑：答案和解析在下方「题目信息」的编辑表单里改，改完点「保存」才生效。'),
+        find.text('正在编辑：答案和解析在下方「题目信息」里改，点「保存」后才生效。'),
         findsOneWidget,
       );
       expect(find.text('看答案'), findsNothing);
@@ -699,10 +696,10 @@ void main() {
       expect(find.text('取消加入复习'), findsOneWidget);
       // FSRS 口径：默认夹具不在 FSRS 池里，加入 pill 只写「已加入复习」。
       expect(find.text('已加入复习'), findsOneWidget);
-      expect(find.text('取消加入不会删复习记录，再加入时接着上次的到期安排，不用从头来'), findsOneWidget);
       expect(find.text('错因状态'), findsOneWidget);
       expect(find.text('概念不清'), findsNWidgets(2)); // 信息错因行 + 复习错因行
-      expect(find.text('解决中'), findsNWidgets(1)); // 仅错因 pill
+      // 包 5：错因行只留错因名，状态 pill 已删。
+      expect(find.text('解决中'), findsNothing);
       expect(find.text('未加入复习'), findsNWidgets(3)); // 标题 + 整体状态 + 复习状态行
       // FSRS 口径迁移（面 B）：每行旧口径「解决次数 N」与 kv 行
       // 「解决次数」（自查计数）已删，改为题目级「复习状态」行；
@@ -713,8 +710,43 @@ void main() {
       // 「未加入复习」共 3 处：标题 pill + 整体状态 pill + 复习状态行。
       expect(find.text('暂无正式复习记录'), findsOneWidget);
       expect(find.text('解决记录'), findsOneWidget);
-      expect(find.textContaining('已解决'), findsWidgets);
-      expect(find.textContaining('未解决'), findsWidgets);
+      // 包 5：解决记录行冻结为旧口径——「自查：」前缀 + 「（旧记录）」
+      // 标注；旧的裸「已解决 / 未解决」文案不再出现。
+      expect(find.textContaining('自查：已解决（旧记录）'), findsOneWidget);
+      expect(find.textContaining('自查：未解决（旧记录）'), findsOneWidget);
+      expect(find.textContaining('旧记录'), findsNWidgets(2));
+      expect(find.text('已解决'), findsNothing);
+      expect(find.text('未解决'), findsNothing);
+    });
+
+    testWidgets('包 5：解决记录行冻结标注旧口径，行数恒等于历史行数', (tester) async {
+      // 默认夹具 2 条旧 history 行（solved 1 天前、unsolved 2 天前），
+      // 无 attempts。新流程不写 review_history（不产生新行），见
+      // p5 的 submitReviewCheck 不写 review_history 测试；这里只
+      // 断言 UI 只展示既有历史行。
+      await pumpDetail(tester);
+      expect(find.text('解决记录'), findsOneWidget);
+      expect(find.textContaining('旧记录'), findsNWidgets(2));
+      // 视觉区分：旧行用弱化（muted）色，与正式作答事实行的正常色不同。
+      final oldStyle =
+          tester.widget<Text>(find.textContaining('自查：已解决（旧记录）')).style;
+      final formalStyle =
+          tester.widget<Text>(find.text('暂无正式复习记录')).style;
+      expect(oldStyle?.color, isNotNull);
+      expect(oldStyle?.color, isNot(formalStyle?.color));
+    });
+
+    testWidgets('包 5：正式作答事实与旧记录分开两行展示', (tester) async {
+      final repo = detailRepo()
+        ..attemptsValue = [
+          _attempt('q1', correct: 1, session: 's1'),
+          _attempt('q1', correct: 0, session: 's2'),
+        ];
+      await pumpDetail(tester, repo: repo);
+      // 正式作答事实一行，旧记录另起行；两行文案不混在同一 Text 里。
+      expect(find.text('正式复习答对 1 次 · 答错 1 次'), findsOneWidget);
+      expect(find.textContaining('自查：已解决（旧记录）'), findsOneWidget);
+      expect(find.textContaining('自查：未解决（旧记录）'), findsOneWidget);
     });
 
     testWidgets('FSRS：在池未开始 → 复习状态行显示未开始', (tester) async {
@@ -741,7 +773,9 @@ void main() {
       final due = await scheduler.nextDueAt('q1');
       await pumpDetail(tester, repo: repo, scheduler: scheduler);
       expect(find.text('复习状态'), findsOneWidget);
-      expect(find.text('下次到期 ${due!.month}月${due.day}日'), findsOneWidget);
+      // 月日取本地时区（跟进⑦）：调度器返回 UTC，label 先 toLocal。
+      final local = due!.toLocal();
+      expect(find.text('下次到期 ${local.month}月${local.day}日'), findsOneWidget);
     });
 
     testWidgets('FSRS：正式对错按次计，专项与未判分不计', (tester) async {
@@ -784,7 +818,9 @@ void main() {
       );
       final due = await scheduler.nextDueAt('q1');
       await pumpDetail(tester, repo: repo, scheduler: scheduler);
-      expect(find.text('已加入复习 · 下次到期 ${due!.month}月${due.day}日'), findsOneWidget);
+      // 月日取本地时区（跟进⑦）：调度器返回 UTC，label 先 toLocal。
+      final local = due!.toLocal();
+      expect(find.text('已加入复习 · 下次到期 ${local.month}月${local.day}日'), findsOneWidget);
     });
 
     testWidgets('未加入题：加入复习，点后变取消加入复习', (tester) async {
@@ -800,15 +836,16 @@ void main() {
       await pumpDetail(tester, questionId: 'q3');
       expect(find.text('加入复习'), findsNothing);
       expect(find.text('取消加入复习'), findsNothing);
-      expect(find.text('未整理的题不能加入复习'), findsOneWidget);
     });
 
-    testWidgets('无错因题加入时提示先补错误类型', (tester) async {
-      await pumpDetail(tester, questionId: 'q5');
+    testWidgets('无错因题加入复习：点后变取消加入复习，不弹先补错因', (tester) async {
+      final repo = detailRepo();
+      await pumpDetail(tester, repo: repo, questionId: 'q5');
       expect(find.text('加入复习'), findsOneWidget);
       await tapText(tester, '加入复习');
-      await tester.pump();
-      expect(find.text('先补错因'), findsOneWidget);
+      expect(find.text('取消加入复习'), findsOneWidget);
+      expect(find.text('先补错因'), findsNothing);
+      expect(repo.saved.last.reviewJoined, isTrue);
     });
   });
 
@@ -817,7 +854,7 @@ void main() {
       final repo = detailRepo();
       await pumpDetail(tester, repo: repo);
       await tapText(tester, '编辑');
-      expect(find.textContaining('正在编辑这道题'), findsOneWidget);
+      expect(find.text('正在编辑：改动点「保存」后才生效。'), findsOneWidget);
       await tester.enterText(find.byType(TextField).first, '函数极限改');
       await tapText(tester, '保存', first: true);
       expect(find.text('函数极限改'), findsOneWidget);
@@ -903,7 +940,7 @@ void main() {
       await tapText(tester, '编辑');
       await tester.enterText(find.byType(TextField).first, '函数极限改');
       await tapText(tester, '取消', first: true);
-      expect(find.text('有还没保存的改动，要保存吗？'), findsOneWidget);
+      expect(find.text('有未保存的改动，要保存吗？'), findsOneWidget);
       expect(find.text('保存并退出'), findsOneWidget);
       expect(find.text('不保存，丢弃改动'), findsOneWidget);
       expect(find.text('继续编辑'), findsOneWidget);
@@ -952,7 +989,6 @@ void main() {
       // 错因 / 标签。'试卷'出现两次：文件夹 chip + 右列标签。
       expect(find.text('学科'), findsOneWidget);
       expect(find.text('数学'), findsOneWidget);
-      expect(find.text('不可改'), findsOneWidget);
       expect(find.text('试卷'), findsNWidgets(2));
       expect(find.textContaining('高等数学期末试卷'), findsOneWidget);
       expect(find.text('待确认'), findsOneWidget);
@@ -1020,8 +1056,8 @@ void main() {
         viewport: const Size(500, 800),
       );
       await tapText(tester, '编辑');
-      // q3 未关联试卷，下拉显示「未关联试卷」；未选知识点显示「还没选」。
-      expect(find.text('未关联试卷'), findsOneWidget);
+      // q3 未归属试卷，下拉显示「未归属试卷」；未选知识点显示「还没选」。
+      expect(find.text('未归属试卷'), findsOneWidget);
       expect(find.text('还没选'), findsOneWidget);
       // 几何：右列（学科行）在左列（备注行）下方，且与左列同一起点。
       final folderRect = tester.getRect(find.text('文件夹 *'));
@@ -1253,7 +1289,7 @@ void main() {
       );
       await tester.tap(find.text('重新入队'));
       await tester.pumpAndSettle();
-      expect(find.text('已重新加入识别队列'), findsOneWidget);
+      expect(find.text('已重新入队'), findsOneWidget);
       expect(
         find.byKey(const Key('ocr-enqueue-failed-banner')),
         findsNothing,
@@ -1610,6 +1646,228 @@ void main() {
       expect(replaced, isNotNull);
       expect(replaced!.where((b) => b.layer == 1).length, 1);
     });
+
+    // P6(b)：重框空框时放开手动框选（FR-04(a) 的空框例外）。
+    // 页内几何：画布 key 'box-editor-canvas' 的 rect 是滚动视口，
+    // 页图（560×700）按 fit 居中放里面，据此把归一化页坐标换算成屏幕坐标。
+    Offset pagePoint(WidgetTester tester, double fx, double fy) {
+      final rect = tester.getRect(find.byKey(const Key('box-editor-canvas')));
+      final wFit = rect.width / 560;
+      final hFit = rect.height / 700;
+      final fit = wFit < hFit ? wFit : hFit;
+      final pw = 560 * fit;
+      final ph = 700 * fit;
+      final origin = Offset(
+        rect.left + (rect.width - pw) / 2,
+        rect.top + (rect.height - ph) / 2,
+      );
+      return origin + Offset(fx * pw, fy * ph);
+    }
+
+    Future<void> rightDragBox(
+      WidgetTester tester,
+      Offset from,
+      Offset by,
+    ) async {
+      final gesture = await tester.startGesture(
+        from,
+        kind: ui.PointerDeviceKind.mouse,
+        buttons: kSecondaryMouseButton,
+      );
+      await gesture.moveBy(by / 2);
+      await gesture.moveBy(by / 2);
+      await tester.pumpAndSettle();
+      await gesture.up();
+      await tester.pumpAndSettle();
+    }
+
+    Future<void> rightDragOnPage(
+      WidgetTester tester,
+      double x0,
+      double y0,
+      double x1,
+      double y1,
+    ) async {
+      final from = pagePoint(tester, x0, y0);
+      final to = pagePoint(tester, x1, y1);
+      await rightDragBox(tester, from, to - from);
+    }
+
+    Future<FakeDetailRepo> openEmptyRework(WidgetTester tester) async {
+      final repo = detailRepo();
+      repo.questions[0] = repo.questions[0].copyWith(
+        pageImagePath: _pagePngRel,
+        sourcePath: _pagePngRel,
+        slicePath: 'slices/q1.png',
+        sliceWidth: 200,
+        sliceHeight: 100,
+      );
+      repo.pageBoxes = [];
+      await pumpDetail(tester, repo: repo);
+      await tapText(tester, '重新框选');
+      expect(find.textContaining('修框 ·'), findsOneWidget);
+      return repo;
+    }
+
+    Future<void> openOneBoxRework(WidgetTester tester) async {
+      final repo = detailRepo();
+      repo.questions[0] = repo.questions[0].copyWith(
+        pageImagePath: _pagePngRel,
+        sourcePath: _pagePngRel,
+        slicePath: 'slices/q1.png',
+        sliceWidth: 200,
+        sliceHeight: 100,
+      );
+      repo.pageBoxes = [
+        QuestionBox(
+          id: 'q1-box',
+          layer: 1,
+          type: 'question',
+          x: 0.06,
+          y: 0.05,
+          w: 0.88,
+          h: 0.4,
+          page: 1,
+          questionId: 'q1',
+        ),
+      ];
+      await pumpDetail(tester, repo: repo);
+      await tapText(tester, '重新框选');
+      expect(find.textContaining('修框 ·'), findsOneWidget);
+    }
+
+    Future<void> confirmRework(WidgetTester tester) async {
+      await tester.runAsync(() async {
+        await tester.tap(find.text('确认重新框选'));
+        for (var i = 0; i < 50; i++) {
+          await tester.pump();
+          await Future<void>.delayed(const Duration(milliseconds: 200));
+          if (find.text('已重新框选，切片已更新').evaluate().isNotEmpty ||
+              find.textContaining('修框 ·').evaluate().isEmpty) {
+            break;
+          }
+        }
+        await tester.pumpAndSettle();
+      });
+      await tester.pumpAndSettle();
+    }
+
+    testWidgets('P6(b)：重框删光后空框可右键画新框，横幅消失、本页 1 道题', (tester) async {
+      await openOneBoxRework(tester);
+      expect(find.textContaining('本页 1 道题'), findsOneWidget);
+      expect(find.textContaining('没框到题'), findsNothing);
+      // 删掉唯一框：用户报的死胡同入口。
+      await tester.tap(find.byKey(const Key('editor-box-q1-box')));
+      await tester.pumpAndSettle();
+      await tapText(tester, '删除选中框');
+      // 空框横幅 + 底部提示都含“没框到题”；工具条改指右键画框。
+      expect(find.textContaining('没框到题'), findsWidgets);
+      expect(
+        find.textContaining('还没有框，用鼠标右键在图上拖出一个框'),
+        findsOneWidget,
+      );
+      await rightDragOnPage(tester, 0.2, 0.2, 0.5, 0.45);
+      expect(find.textContaining('没框到题'), findsNothing);
+      expect(find.textContaining('本页 1 道题'), findsOneWidget);
+      expect(find.textContaining('题级框 1'), findsWidgets);
+    });
+
+    testWidgets('P6(b)：空框画出框后确认可用，库里 1 个 1 层框', (tester) async {
+      final repo = await openEmptyRework(tester);
+      expect(find.textContaining('没框到题'), findsWidgets);
+      await rightDragOnPage(tester, 0.2, 0.2, 0.5, 0.45);
+      expect(find.textContaining('本页 1 道题'), findsOneWidget);
+      await confirmRework(tester);
+      expect(find.textContaining('修框 ·'), findsNothing);
+      expect(find.text('已重新框选，切片已更新'), findsOneWidget);
+      final replaced = repo.replacedBoxes['q1'];
+      expect(replaced, isNotNull);
+      final layer1 = replaced!.where((b) => b.layer == 1).toList();
+      expect(layer1.length, 1);
+      expect(layer1.first.x, moreOrLessEquals(0.2, epsilon: 0.05));
+      expect(layer1.first.y, moreOrLessEquals(0.2, epsilon: 0.05));
+      expect(layer1.first.w, moreOrLessEquals(0.3, epsilon: 0.05));
+      expect(layer1.first.h, moreOrLessEquals(0.25, epsilon: 0.05));
+    });
+
+    testWidgets('P6(b)：空框画出一框后仍禁第二框，确认后库里仍 1 框', (tester) async {
+      final repo = await openEmptyRework(tester);
+      await rightDragOnPage(tester, 0.2, 0.2, 0.5, 0.45);
+      expect(find.textContaining('本页 1 道题'), findsOneWidget);
+      // 右键再画第二框：gate 已自闭合。
+      await rightDragOnPage(tester, 0.65, 0.6, 0.9, 0.85);
+      expect(find.textContaining('本页 1 道题'), findsOneWidget);
+      expect(find.textContaining('题级框 2'), findsNothing);
+      // 触摸再画同样禁。
+      final from = pagePoint(tester, 0.65, 0.6);
+      final to = pagePoint(tester, 0.9, 0.85);
+      await tester.dragFrom(from, to - from);
+      await tester.pumpAndSettle();
+      expect(find.textContaining('本页 1 道题'), findsOneWidget);
+      expect(find.textContaining('题级框 2'), findsNothing);
+      await confirmRework(tester);
+      final replaced = repo.replacedBoxes['q1'];
+      expect(replaced, isNotNull);
+      expect(replaced!.where((b) => b.layer == 1).length, 1);
+    });
+
+    testWidgets('P6(b)：空框触摸可画新框', (tester) async {
+      await openEmptyRework(tester);
+      final from = pagePoint(tester, 0.2, 0.2);
+      final to = pagePoint(tester, 0.5, 0.45);
+      await tester.dragFrom(from, to - from);
+      await tester.pumpAndSettle();
+      expect(find.textContaining('没框到题'), findsNothing);
+      expect(find.textContaining('本页 1 道题'), findsOneWidget);
+    });
+
+    testWidgets('P6(b)：多指防护：绘制中第二笔不覆盖第一笔的框，最终仍 1 框', (tester) async {
+      final repo = await openEmptyRework(tester);
+      // 第一笔：右键按下并拖一半，按住不放。
+      final firstFrom = pagePoint(tester, 0.2, 0.2);
+      final firstTo = pagePoint(tester, 0.5, 0.45);
+      final first = await tester.startGesture(
+        firstFrom,
+        kind: ui.PointerDeviceKind.mouse,
+        buttons: kSecondaryMouseButton,
+      );
+      await first.moveBy((firstTo - firstFrom) / 2);
+      await tester.pumpAndSettle();
+      expect(find.textContaining('正在画框'), findsOneWidget);
+      // 第二笔：另一位置右键按下并拖动、抬起——不得覆盖第一笔。
+      final second = await tester.startGesture(
+        pagePoint(tester, 0.6, 0.6),
+        kind: ui.PointerDeviceKind.mouse,
+        buttons: kSecondaryMouseButton,
+      );
+      await second.moveBy(
+        pagePoint(tester, 0.9, 0.85) - pagePoint(tester, 0.6, 0.6),
+      );
+      await tester.pumpAndSettle();
+      await second.up();
+      await tester.pumpAndSettle();
+      // 第一笔收尾：仍只有 1 个框（第二笔没顶掉第一笔、也没多画一框）。
+      await first.moveBy((firstTo - firstFrom) / 2);
+      await tester.pumpAndSettle();
+      await first.up();
+      await tester.pumpAndSettle();
+      expect(find.textContaining('本页 1 道题'), findsOneWidget);
+      await confirmRework(tester);
+      final replaced = repo.replacedBoxes['q1'];
+      expect(replaced, isNotNull);
+      expect(replaced!.where((b) => b.layer == 1).length, 1);
+    });
+
+    testWidgets('P6(b)：空框点「恢复自动框」不崩且仍可画', (tester) async {
+      await openEmptyRework(tester);
+      await tapText(tester, '恢复自动框');
+      // early-return 的右键拖框指引出现（横幅/工具条/提示里也有同款措辞），
+      // 编辑器仍开着。
+      expect(find.textContaining('用鼠标右键在图上拖出一个框'), findsWidgets);
+      expect(find.textContaining('修框 ·'), findsOneWidget);
+      await rightDragOnPage(tester, 0.2, 0.2, 0.5, 0.45);
+      expect(find.textContaining('本页 1 道题'), findsOneWidget);
+    });
   });
 
   group('SR3-10/SR3-11 重框崩溃窗口与读图失败', () {
@@ -1739,7 +1997,7 @@ void main() {
       });
       await tester.pumpAndSettle();
       expect(find.textContaining('修框 ·'), findsNothing);
-      expect(find.text('重新框选失败：页图读不出来/切片裁不出来，请重试'), findsOneWidget);
+      expect(find.text('重新框选失败：页图无法读取或切片无法裁出，请重试'), findsOneWidget);
       expect(repo.replaceCalled, isFalse);
       expect(tester.takeException(), isNull);
     });
@@ -1763,7 +2021,7 @@ void main() {
         for (final scale in [1.0, 1.15, 1.3]) {
           await pumpDetail(tester, brightness: brightness, scale: scale);
           await tapText(tester, '编辑');
-          expect(find.textContaining('正在编辑这道题'), findsOneWidget);
+          expect(find.text('正在编辑：改动点「保存」后才生效。'), findsOneWidget);
           expect(tester.takeException(), isNull);
         }
       }

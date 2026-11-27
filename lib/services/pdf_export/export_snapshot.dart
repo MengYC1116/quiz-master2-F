@@ -44,7 +44,7 @@ class ExcludedQuestion {
   /// 题目 ID。
   final String id;
 
-  /// 排除原因（如“用户主动排除”“清晰度门禁排除”）。
+  /// 排除原因（如“用户主动排除”“低于清晰度阈值，已排除”）。
   final String reason;
 }
 
@@ -236,7 +236,7 @@ class ExportSnapshot {
     Map<String, ExportQuestionRecord?>? recordsById,
   }) async {
     if (ids.isEmpty) {
-      throw ArgumentError('至少选择 1 道题');
+      throw ArgumentError('请至少选择 1 道题');
     }
     if (ids.length > kExportMaxQuestions) {
       throw ArgumentError('单次最多导出 50 道题');

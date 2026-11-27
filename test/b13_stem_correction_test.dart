@@ -750,7 +750,6 @@ void _sectionTests() {
       await tester.pumpAndSettle();
       await tester.tap(find.text('恢复为原图'));
       await tester.pumpAndSettle();
-      expect(find.textContaining('已恢复为原图'), findsOneWidget);
       expect(find.byType(Image), findsWidgets);
       await tester.tap(find.text('保存修改'));
       await tester.pumpAndSettle();
@@ -903,9 +902,6 @@ class _FakeOrganizeRepo extends QuestionRepository {
       questions.where((x) => x.id == id).firstOrNull;
 
   @override
-  Future<void> syncCauseRecords(Question question) async {}
-
-  @override
   Future<void> saveRecentTask({
     required String kind,
     required String subjectId,
@@ -992,9 +988,6 @@ class _FakeDetailRepo extends QuestionRepository {
   Future<void> recordQuestionViewed(String questionId) async {
     recordedViews.add(questionId);
   }
-
-  @override
-  Future<void> syncCauseRecords(Question q) async {}
 
   @override
   Future<List<OcrJob>> ocrJobsForQuestion(String questionId) async =>

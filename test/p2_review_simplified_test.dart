@@ -51,8 +51,6 @@ class _FakeP2Repo extends QuestionRepository {
   List<CauseRecord> records;
   ReviewSessionState? savedState;
   final Map<String, AttemptData> attempts = {};
-  var verdictCalls = 0;
-  var selfCheckCalls = 0;
 
   @override
   Future<List<Subject>> subjects() async => Subject.all;
@@ -93,16 +91,15 @@ class _FakeP2Repo extends QuestionRepository {
     String? mode,
     Map<String, int>? skips,
     Map<String, Map<String, Object?>>? perQuestionState,
-  }) async =>
-      savedState = ReviewSessionState(
-        queue: queue,
-        position: position,
-        updatedAt: DateTime.now(),
-        sessionId: sessionId,
-        mode: mode,
-        skips: skips ?? const {},
-        perQuestionState: perQuestionState ?? const {},
-      );
+  }) async => savedState = ReviewSessionState(
+    queue: queue,
+    position: position,
+    updatedAt: DateTime.now(),
+    sessionId: sessionId,
+    mode: mode,
+    skips: skips ?? const {},
+    perQuestionState: perQuestionState ?? const {},
+  );
 
   @override
   Future<void> clearReviewState() async {
@@ -149,46 +146,6 @@ class _FakeP2Repo extends QuestionRepository {
   @override
   Future<List<AttemptData>> loadAttemptsForSession(String sessionId) async =>
       attempts.values.where((a) => a.sessionId == sessionId).toList();
-
-  // P2 停止写入的两个旧入口：只计数，不写库——产品流程不应再调它们。
-  @override
-  Future<VerdictSubmitResult> submitCauseVerdict({
-    required String questionId,
-    required CauseRecord record,
-    required String verdict,
-    required String verificationStatus,
-    required String verificationSource,
-    String? attemptId,
-    required String sessionId,
-    required String submissionId,
-    int cureChecks = 2,
-    int recheckIntervalDays = 7,
-    bool isRecheck = false,
-    DateTime? now,
-  }) async {
-    verdictCalls++;
-    return VerdictSubmitResult(
-      record: record,
-      counted: false,
-      alreadySubmitted: false,
-      historyId: -1,
-      cured: false,
-      isRecheckPassed: false,
-      isRecheckFailed: false,
-    );
-  }
-
-  @override
-  Future<CauseRecord> recordSelfCheck(
-    CauseRecord r,
-    String result, {
-    int cureChecks = 2,
-    int recheckIntervalDays = 7,
-    bool isRecheck = false,
-  }) async {
-    selfCheckCalls++;
-    return r;
-  }
 }
 
 _FakeP2Repo _choiceRepo() => _FakeP2Repo(
@@ -219,10 +176,8 @@ _FakeP2Repo _tfRepo() => _FakeP2Repo(
   records: [_rec('q1')],
 );
 
-_FakeP2Repo _paperRepo() => _FakeP2Repo(
-  questions: [_rq('q1', '求极限')],
-  records: [_rec('q1')],
-);
+_FakeP2Repo _paperRepo() =>
+    _FakeP2Repo(questions: [_rq('q1', '求极限')], records: [_rec('q1')]);
 
 _FakeP2Repo _twoRepo() => _FakeP2Repo(
   questions: [
@@ -243,6 +198,22 @@ FsrsReviewScheduler _testScheduler() => FsrsReviewScheduler(
   config: const SchedulerConfig(enableFuzzing: false),
   store: InMemoryCardStore(),
 );
+
+/// FSRS 全量迁移包 2 遗留同步（包 7 补 detail_review_subscribe_test
+/// 同款办法）：legacy 回落已删，池空即无到期；复习页要建出到期会话，
+/// 须先给每道题建一张 FSRS 卡。只建卡、不预答一次——建卡后即进今日
+/// 新题释放，当天可练；若预答一次再建到期卡，nextDueAt 在“无法判分
+/// （纸上作答）→ 不调 FSRS”测试里不再是 null。必须在 load() 之前调
+/// （load() 快照 fsrsPoolIds / fsrsTodaysNewIds 进 state，建队读快照）。
+Future<void> _seedNewCards(
+  ProviderContainer container,
+  _FakeP2Repo repo,
+) async {
+  final scheduler = container.read(reviewSchedulerProvider);
+  for (final q in repo.questions) {
+    await scheduler.initializeQuestion(q.id);
+  }
+}
 
 ProviderContainer _container(_FakeP2Repo repo) {
   final container = ProviderContainer.test(
@@ -266,10 +237,7 @@ Future<void> _waitFor(
 }
 
 /// 单选/判断：点选 → 提交答案 → 核对步。
-Future<void> _walkObjective(
-  ReviewNotifier notifier,
-  String option,
-) async {
+Future<void> _walkObjective(ReviewNotifier notifier, String option) async {
   notifier.beginAnswer();
   notifier.selectOption(option);
   await notifier.submitObjectiveAnswer();
@@ -296,6 +264,7 @@ void main() {
     test('三步走完单题：作答不写库，核对提交写一条 attempt 后出小结', () async {
       final repo = _paperRepo();
       final container = _container(repo);
+      await _seedNewCards(container, repo);
       final notifier = container.read(reviewProvider.notifier);
       await notifier.load();
       await notifier.startSession();
@@ -330,6 +299,7 @@ void main() {
     test('单选答对 → Good：卡 due 在未来，attempt correct=1', () async {
       final repo = _choiceRepo();
       final container = _container(repo);
+      await _seedNewCards(container, repo);
       final notifier = container.read(reviewProvider.notifier);
       await notifier.load();
       await notifier.startSession();
@@ -354,6 +324,7 @@ void main() {
       // 答错一路。
       final wrongRepo = _choiceRepo();
       final wrongContainer = _container(wrongRepo);
+      await _seedNewCards(wrongContainer, wrongRepo);
       final wrongNotifier = wrongContainer.read(reviewProvider.notifier);
       await wrongNotifier.load();
       await wrongNotifier.startSession();
@@ -366,6 +337,7 @@ void main() {
       // 答对一路（全新调度器，同一题）。
       final rightRepo = _choiceRepo();
       final rightContainer = _container(rightRepo);
+      await _seedNewCards(rightContainer, rightRepo);
       final rightNotifier = rightContainer.read(reviewProvider.notifier);
       await rightNotifier.load();
       await rightNotifier.startSession();
@@ -381,15 +353,14 @@ void main() {
     test('判断答对 → 调 FSRS：due 在未来，attempt correct=1', () async {
       final repo = _tfRepo();
       final container = _container(repo);
+      await _seedNewCards(container, repo);
       final notifier = container.read(reviewProvider.notifier);
       await notifier.load();
       await notifier.startSession();
       await _walkObjective(notifier, '正确');
       expect(container.read(reviewProvider).currentSessionQuestion.correct, 1);
       expect(await notifier.submitCheck(), isTrue);
-      final due = await container
-          .read(reviewSchedulerProvider)
-          .nextDueAt('q1');
+      final due = await container.read(reviewSchedulerProvider).nextDueAt('q1');
       expect(due, isNotNull);
       expect(due!.isAfter(DateTime.now()), isTrue);
       expect(repo.attempts.values.single.correct, 1);
@@ -398,6 +369,7 @@ void main() {
     test('无法判分（纸上作答）→ 不调 FSRS：nextDueAt 为 null', () async {
       final repo = _paperRepo();
       final container = _container(repo);
+      await _seedNewCards(container, repo);
       final notifier = container.read(reviewProvider.notifier);
       await notifier.load();
       await notifier.startSession();
@@ -431,89 +403,89 @@ void main() {
         now.add(const Duration(days: 1)),
         'evt-2',
       );
-      expect(
-        (await scheduler.nextDueAt('q1'))!.isAfter(firstDue!),
-        isTrue,
-      );
+      expect((await scheduler.nextDueAt('q1'))!.isAfter(firstDue!), isTrue);
     });
 
-    test('核对提交的 eventId 稳定：attempt.submissionId 就是建队时的 attemptSubmissionId',
-        () async {
-      final repo = _choiceRepo();
-      final container = _container(repo);
-      final notifier = container.read(reviewProvider.notifier);
-      await notifier.load();
-      await notifier.startSession();
-      final eventId = container
-          .read(reviewProvider)
-          .currentSessionQuestion
-          .attemptSubmissionId;
-      expect(eventId, isNotEmpty);
-      await _walkObjective(notifier, 'B');
-      expect(
-        container
+    test(
+      '核对提交的 eventId 稳定：attempt.submissionId 就是建队时的 attemptSubmissionId',
+      () async {
+        final repo = _choiceRepo();
+        final container = _container(repo);
+        await _seedNewCards(container, repo);
+        final notifier = container.read(reviewProvider.notifier);
+        await notifier.load();
+        await notifier.startSession();
+        final eventId = container
             .read(reviewProvider)
             .currentSessionQuestion
-            .attemptSubmissionId,
-        eventId,
-      );
-      expect(await notifier.submitCheck(), isTrue);
-      expect(repo.attempts.values.single.submissionId, eventId);
-    });
+            .attemptSubmissionId;
+        expect(eventId, isNotEmpty);
+        await _walkObjective(notifier, 'B');
+        expect(
+          container
+              .read(reviewProvider)
+              .currentSessionQuestion
+              .attemptSubmissionId,
+          eventId,
+        );
+        expect(await notifier.submitCheck(), isTrue);
+        expect(repo.attempts.values.single.submissionId, eventId);
+      },
+    );
 
-    test('崩溃恢复重放：review_state 标记丢失但 attempt 已写，按 attempt 重建已提交态，不重写不重计分',
-        () async {
-      final repo = _twoRepo();
-      final container = _container(repo);
-      final notifier = container.read(reviewProvider.notifier);
-      await notifier.load();
-      await notifier.startSession();
-      await _walkObjective(notifier, 'B');
-      expect(await notifier.submitCheck(), isTrue);
-      expect(repo.attempts.length, 1);
-      final dueBefore = await container
-          .read(reviewSchedulerProvider)
-          .nextDueAt('q1');
-      await notifier.pauseSession();
-      // 模拟崩溃窗口：review_state 没来得及更新已提交标记。
-      final stale = repo.savedState!;
-      repo.savedState = ReviewSessionState(
-        queue: stale.queue,
-        position: stale.position,
-        updatedAt: DateTime.now(),
-        sessionId: stale.sessionId,
-        mode: stale.mode,
-        skips: stale.skips,
-        perQuestionState: {
-          for (final e in stale.perQuestionState.entries)
-            e.key: {
-              ...e.value,
-              'check_submitted': false,
-              'attempt_id': null,
-            },
-        },
-      );
-      await notifier.load();
-      final s = container.read(reviewProvider);
-      expect(s.resume, isNotNull);
-      final resumed = s.resume!.sessionQuestions.firstWhere(
-        (sq) => sq.questionId == 'q1',
-      );
-      expect(resumed.checkSubmitted, isTrue);
-      expect(resumed.stage, SessionStage.done);
-      expect(resumed.attemptId, repo.attempts.values.single.id);
-      expect(repo.attempts.length, 1);
-      expect(
-        await container.read(reviewSchedulerProvider).nextDueAt('q1'),
-        dueBefore,
-      );
-    });
+    test(
+      '崩溃恢复重放：review_state 标记丢失但 attempt 已写，按 attempt 重建已提交态，不重写不重计分',
+      () async {
+        final repo = _twoRepo();
+        final container = _container(repo);
+        await _seedNewCards(container, repo);
+        final notifier = container.read(reviewProvider.notifier);
+        await notifier.load();
+        await notifier.startSession();
+        await _walkObjective(notifier, 'B');
+        expect(await notifier.submitCheck(), isTrue);
+        expect(repo.attempts.length, 1);
+        final dueBefore = await container
+            .read(reviewSchedulerProvider)
+            .nextDueAt('q1');
+        await notifier.pauseSession();
+        // 模拟崩溃窗口：review_state 没来得及更新已提交标记。
+        final stale = repo.savedState!;
+        repo.savedState = ReviewSessionState(
+          queue: stale.queue,
+          position: stale.position,
+          updatedAt: DateTime.now(),
+          sessionId: stale.sessionId,
+          mode: stale.mode,
+          skips: stale.skips,
+          perQuestionState: {
+            for (final e in stale.perQuestionState.entries)
+              e.key: {...e.value, 'check_submitted': false, 'attempt_id': null},
+          },
+        );
+        await notifier.load();
+        final s = container.read(reviewProvider);
+        expect(s.resume, isNotNull);
+        final resumed = s.resume!.sessionQuestions.firstWhere(
+          (sq) => sq.questionId == 'q1',
+        );
+        expect(resumed.checkSubmitted, isTrue);
+        expect(resumed.stage, SessionStage.done);
+        expect(resumed.attemptId, repo.attempts.values.single.id);
+        expect(repo.attempts.length, 1);
+        expect(
+          await container.read(reviewSchedulerProvider).nextDueAt('q1'),
+          dueBefore,
+        );
+      },
+    );
   });
 
   group('P2 旧会话兼容', () {
     test('selfCheck + 有客观记录 → 恢复为 done，不重计分', () async {
       final repo = _paperRepo();
       final container = _container(repo);
+      await _seedNewCards(container, repo);
       final notifier = container.read(reviewProvider.notifier);
       await notifier.load();
       await notifier.startSession();
@@ -547,6 +519,7 @@ void main() {
     test('selfCheck + 无客观记录 → 回到安全核对步，不重复写', () async {
       final repo = _paperRepo();
       final container = _container(repo);
+      await _seedNewCards(container, repo);
       final notifier = container.read(reviewProvider.notifier);
       await notifier.load();
       await notifier.startSession();
@@ -581,25 +554,20 @@ void main() {
     test('看题 / 作答阶段保留当前题恢复原阶段', () async {
       final repo = _twoRepo();
       final container = _container(repo);
+      await _seedNewCards(container, repo);
       final notifier = container.read(reviewProvider.notifier);
       await notifier.load();
       await notifier.startSession();
       await notifier.pauseSession();
       await notifier.load();
       var s = container.read(reviewProvider);
-      expect(
-        s.resume!.sessionQuestions.first.stage,
-        SessionStage.view,
-      );
+      expect(s.resume!.sessionQuestions.first.stage, SessionStage.view);
       await notifier.startSession(resume: true);
       notifier.beginAnswer();
       await notifier.pauseSession();
       await notifier.load();
       s = container.read(reviewProvider);
-      expect(
-        s.resume!.sessionQuestions.first.stage,
-        SessionStage.answer,
-      );
+      expect(s.resume!.sessionQuestions.first.stage, SessionStage.answer);
       expect(repo.attempts, isEmpty);
     });
   });
@@ -608,6 +576,7 @@ void main() {
     test('小结只报对错数/用时/弱点/下次时间：答错进弱点，下次时间取 FSRS 最早', () async {
       final repo = _twoRepo();
       final container = _container(repo);
+      await _seedNewCards(container, repo);
       final notifier = container.read(reviewProvider.notifier);
       await notifier.load();
       await notifier.startSession();
@@ -638,6 +607,7 @@ void main() {
     test('有未完成正式复习时直接开专项练习不覆盖断点', () async {
       final repo = _twoRepo();
       final container = _container(repo);
+      await _seedNewCards(container, repo);
       final notifier = container.read(reviewProvider.notifier);
       await notifier.load();
       await notifier.startSession();
@@ -660,9 +630,10 @@ void main() {
   });
 
   group('P2 review_history 停止写入', () {
-    test('走完一轮到期复习：不调 submitCauseVerdict / recordSelfCheck', () async {
+    test('走完一轮到期复习：只写 attempts，不写 review_history', () async {
       final repo = _twoRepo();
       final container = _container(repo);
+      await _seedNewCards(container, repo);
       final notifier = container.read(reviewProvider.notifier);
       await notifier.load();
       await notifier.startSession();
@@ -671,8 +642,8 @@ void main() {
       await _walkPaper(notifier);
       expect(await notifier.submitCheck(), isTrue);
       await _waitFor(container, (s) => s.showSummary);
-      expect(repo.verdictCalls, 0);
-      expect(repo.selfCheckCalls, 0);
+      // 旧写入层（submitCauseVerdict / recordSelfCheck）已随 FSRS
+      // 全量迁移（包1）退役删除：Fake 上不再有这两个入口可调。
       expect(repo.attempts.length, 2);
     });
   });

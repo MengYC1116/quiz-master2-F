@@ -3,7 +3,7 @@
 // 只写测试 + 夹具，绝不改 lib/ 下任何产品代码。
 //
 // 夹具来源（直接拷贝，未手抄数字）：
-// - test/fixtures/b12_stage_a/detect/：Stage A 检测框（37 页，生产 YOLO 第 1 层）
+// - test/fixtures/b12_stage_a/detect/：Stage A 自动框（37 页，生产 YOLO 第 1 层）
 // - test/fixtures/b12_stage_a/truth/：Stage A 真值（37 页，order 只含题内容框）
 // - test/fixtures/b12_stage_a/out/：Stage A Python 脚本输出（37 页 + summary.json）
 // 原始位置：~/workspace/batch12-work/stage-a/{detect,truth,out}/。
@@ -92,7 +92,7 @@ QuestionBox _box({
 Map<String, dynamic> _loadJson(String path) =>
     jsonDecode(File(path).readAsStringSync()) as Map<String, dynamic>;
 
-/// 一页的全部夹具：检测框 + 真值 + Python 输出。
+/// 一页的全部夹具：自动框 + 真值 + Python 输出。
 class _PageFixture {
   _PageFixture(this.page)
     : detect = _loadJson('test/fixtures/b12_stage_a/detect/$page.json'),

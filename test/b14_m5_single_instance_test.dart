@@ -374,7 +374,7 @@ void main() {
         reason: '锁不可用的非竞争 IO 错误必须终止启动，退出码 3；实际输出：$out',
       );
       expect(out, contains('STARTUP_FAILED'));
-      expect(out, contains('单实例锁文件无法创建或打开'));
+      expect(out, contains('启动锁文件无法创建或打开'));
       expect(out, isNot(contains('ACQUIRED')));
       expect(out, isNot(contains('DENIED')));
       expect(out, isNot(contains('已有 quiz-master2 正在运行')));

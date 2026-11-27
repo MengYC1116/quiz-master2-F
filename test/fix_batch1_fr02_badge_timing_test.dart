@@ -1,14 +1,14 @@
-// FR-02 时序回归：save 先发角标事件、syncCauseRecords 后写库时，
-// 复习角标重读可能抢在同步提交前（错因同步改变题目复习归属时角标
-// 滞后一次）。修法：三处调用点（organize saveCurrent / confirmCurrent、
-// detail saveEdit）用 DataChangeBus.instance.scope() 包起来，事件在
-// 同步提交后才合并发出一次（与 joinReviewBatch 同款）。
-//
-// FakeRepo 模拟真实写路径的时序：save() 写库后立即发含 badges 的
-// 事件（与 db_questions.upsertQuestion 同款）；syncCauseRecords()
-// 改变题的复习归属（全解决的题改出一个新错因 → 重新计入“要复习”）。
-// 断言：监听方收到事件那一刻，归属已是同步后的新状态；修法前（无
-// scope）事件在 save 时立即发出，归属还是同步前的旧状态，测试失败。
+// FR-02 时序回归：save 先发角标事件、后一步写库改变归属时，复习
+// 角标重读可能抢在提交前（归属改动时角标滞后一次）。修法：三处调用点
+//（organize saveCurrent / confirmCurrent、detail saveEdit）用
+// DataChangeBus.instance.scope() 包起来，事件在提交后才合并发出一次
+//（与 joinReviewBatch 同款）。
+// FSRS 全量迁移包2：第二步写（syncCauseRecords）已删，save 是现在
+// 唯一的写，归属翻转随 save 一起写；scope 仍在，事件仍在 save 提交
+// 后才发出。FakeRepo 模拟真实写路径的时序：save() 写库（含归属翻转）
+// 后立即发含 badges 的事件（与 db_questions.upsertQuestion 同款）。
+// 断言：监听方收到事件那一刻，归属已是提交后的新状态；修法前（无
+// scope）事件在 save 时立即发出，归属还是提交前的旧状态，测试失败。
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:quiz_master2/data/data_change_events.dart';
@@ -29,7 +29,7 @@ Question _q(String id, {bool isOrganized = false}) => Question(
   sliceText: '题',
 );
 
-/// 模拟真实写路径时序的 FakeRepo：save 立即发事件，sync 改归属。
+/// 模拟真实写路径时序的 FakeRepo：save 写库（含归属翻转）后立即发事件。
 class TimingFakeRepo extends QuestionRepository {
   TimingFakeRepo() : super(AppDatabase.instance);
 
@@ -38,7 +38,6 @@ class TimingFakeRepo extends QuestionRepository {
   /// 题目是否计入“要复习”（角标/首页数的读侧口径简化版）。
   final Map<String, bool> reviewMembership = {'q1': false};
 
-  int syncCauseRecordsCalls = 0;
   int saveRecentTaskCalls = 0;
 
   @override
@@ -83,19 +82,15 @@ class TimingFakeRepo extends QuestionRepository {
     } else {
       questions.add(question);
     }
-    // 与真实 upsertQuestion 同款：写库成功后立即发含 badges 的事件。
+    // FSRS 全量迁移包2：归属翻转随 save 一起写（旧 syncCauseRecords
+    // 已删）；写库成功后立即发含 badges 的事件（与真实 upsertQuestion
+    // 同款），调用方的 scope 会把它合并到提交后才发出。
+    reviewMembership[question.id] = true;
     DataChangeBus.instance.emit(
       const DataChangeEvent(
         kinds: {DataChangeKind.badges, DataChangeKind.questions},
       ),
     );
-  }
-
-  @override
-  Future<void> syncCauseRecords(Question question) async {
-    syncCauseRecordsCalls++;
-    // 模拟错因同步改变归属：全解决的题改出一个新错因，重新计入要复习。
-    reviewMembership[question.id] = true;
   }
 
   @override
@@ -131,8 +126,8 @@ class TimingFakeRepo extends QuestionRepository {
 }
 
 void main() {
-  group('FR-02 角标事件在错因同步提交后才发出', () {
-    test('organize saveCurrent：事件发出时归属已是同步后的新状态', () async {
+  group('FR-02 角标事件在保存提交后才发出', () {
+    test('organize saveCurrent：事件发出时归属已是提交后的新状态', () async {
       final repo = TimingFakeRepo();
       final container = ProviderContainer.test(
         overrides: [repositoryProvider.overrideWithValue(repo)],
@@ -157,13 +152,12 @@ void main() {
       expect(ok, isTrue);
       // broadcast 流异步投递：等一个 microtask 再断言。
       await Future<void>.delayed(Duration.zero);
-      expect(repo.syncCauseRecordsCalls, 1);
       expect(seenAtEvent, isNotEmpty);
-      // 关键断言：事件发出那一刻，同步已提交、归属已是新状态。
+      // 关键断言：事件发出那一刻，保存已提交、归属已是新状态。
       expect(seenAtEvent.first['q1'], isTrue);
     });
 
-    test('organize confirmCurrent：save+同步+记最近任务同一事件，发出时同步已提交', () async {
+    test('organize confirmCurrent：save+记最近任务同一事件，发出时保存已提交', () async {
       final repo = TimingFakeRepo();
       final container = ProviderContainer.test(
         overrides: [repositoryProvider.overrideWithValue(repo)],
@@ -180,13 +174,12 @@ void main() {
       addTearDown(sub.cancel);
       await notifier.confirmCurrent(answer: '', explanation: '', notes: '');
       await Future<void>.delayed(Duration.zero);
-      expect(repo.syncCauseRecordsCalls, 1);
       expect(repo.saveRecentTaskCalls, 1);
       expect(seenAtEvent, isNotEmpty);
       expect(seenAtEvent.first['q1'], isTrue);
     });
 
-    test('detail saveEdit：事件发出时归属已是同步后的新状态', () async {
+    test('detail saveEdit：事件发出时归属已是提交后的新状态', () async {
       final repo = TimingFakeRepo();
       repo.questions = [_q('q1', isOrganized: true)];
       final container = ProviderContainer.test(
@@ -216,7 +209,6 @@ void main() {
         notes: '',
       );
       await Future<void>.delayed(Duration.zero);
-      expect(repo.syncCauseRecordsCalls, 1);
       expect(seenAtEvent, isNotEmpty);
       expect(seenAtEvent.first['q1'], isTrue);
     });

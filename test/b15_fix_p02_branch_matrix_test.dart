@@ -3,7 +3,7 @@
 // 只补测试，不改生产代码。覆盖 GPT 终审 P0-2 指出的 5 处缺口：
 // - 快照后公式全失败变 0 可印（T1）；
 // - BROKEN + PARTIAL + SKIPPED 混合的计数守恒（T2，两路线）；
-// - 清晰度门禁排除（T3，勾选与默认对照）；
+// - 清晰度阈值排除（T3，勾选与默认对照）；
 // - 50 道中含 SKIPPED：占名额、不回填第 51 道（T4）。
 //
 // 本文件不含任何公式源码；测试串只用最简占位形式。
@@ -88,7 +88,7 @@ void main() {
   /// A 路线记录：切片 + 尺寸（无 OCR 字段）。
   ///
   /// 默认切片 2126×530（内容区宽显示时有效分辨率约 300 DPI → COMPLETE；
-  /// 800 px 宽切片在全宽显示时仅约 113 DPI → PARTIAL，勾选门禁排除时
+  /// 800 px 宽切片在全宽显示时仅约 113 DPI → PARTIAL，勾选排除时
   /// 跳过）。
   void addARecords(
     FakeExportQuestionSource source,
@@ -266,7 +266,7 @@ void main() {
       expect(_leftoverExportDirs(tempRoot), isEmpty);
     });
 
-    test('T3 清晰度门禁排除：勾选时低清晰度题跳过，不回退、不静默印', () async {
+    test('T3 清晰度阈值排除：勾选时低清晰度题跳过，不回退、不静默印', () async {
       final source = FakeExportQuestionSource();
       addARecords(source, const ['q0']);
       addARecords(source, const ['q1'], sliceW: 800, sliceH: 200);
@@ -290,7 +290,7 @@ void main() {
       expect(result.questionPages.single.displayNumber, 1);
       expect(
         result.report.skippedList.single.skipReason,
-        contains('清晰度低于门禁'),
+        contains('清晰度低于阈值'),
       );
       expect(_leftoverExportDirs(tempRoot), isEmpty);
     });
