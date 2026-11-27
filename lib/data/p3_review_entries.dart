@@ -95,7 +95,7 @@ List<Question> pickPracticeQuestions({
 ///
 /// FSRS 卡片不删（[poolIds] 原样保留历史）；只在“取当日可练/可释放
 /// 的池子”时把归档题滤掉。P4 的释放队列取数时须走这里；P2 的旧队列
-/// （buildDueQueue）本来就排除归档题。
+/// （buildDueQueue，已随 FSRS 全量迁移包2删除）本来就排除归档题。
 Set<String> activePoolIds({
   required Set<String> poolIds,
   required Set<String> archivedIds,

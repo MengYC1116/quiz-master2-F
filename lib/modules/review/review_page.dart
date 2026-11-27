@@ -28,6 +28,7 @@ import '../../data/repository.dart';
 import '../../data/review_engine.dart';
 import '../../models/models.dart';
 import '../../modules/ocr/question_classifier.dart';
+import '../../state/detail_notifier.dart';
 import '../../state/repository_provider.dart';
 import '../../state/review_notifier.dart';
 import '../../theme/app_theme.dart';
@@ -197,30 +198,33 @@ class _QuestionRowData {
   /// 本题的 FSRS 卡片状态（null = 无卡，按「未开始」处理）。
   final FsrsCardStatus? fsrsCard;
 
-  /// 是否已逾期（行内复查角标用）。
+  /// 是否已逾期（行内已到期角标用）。
   bool get isOverdue =>
       fsrsListBucketFor(fsrsCard) == FsrsListBucket.overdue;
 
   /// 行状态文案（FSRS 口径，与分组同源）：
   /// 已逾期 N 天 / 今日到期 / 未到期 · M月M日 / 未开始。
-  String get statusText {
-    final card = fsrsCard;
-    if (card == null) return '未开始';
-    switch (fsrsListBucketFor(card)) {
-      case FsrsListBucket.notStarted:
-        return '未开始';
-      case FsrsListBucket.overdue:
-        final now = DateTime.now();
-        final todayDay = DateTime(now.year, now.month, now.day);
-        final dueLocal = card.nextDueAt.toLocal();
-        final dueDay = DateTime(dueLocal.year, dueLocal.month, dueLocal.day);
-        return '已逾期 ${todayDay.difference(dueDay).inDays} 天';
-      case FsrsListBucket.dueToday:
-        return '今日到期';
-      case FsrsListBucket.notDue:
-        final dueLocal = card.nextDueAt.toLocal();
-        return '未到期 · ${dueLocal.month}月${dueLocal.day}日';
-    }
+  String get statusText => fsrsCardStatusText(fsrsCard);
+}
+
+/// 一题的 FSRS 状态文案（列表行与会话内错因行共用）：
+/// 已逾期 N 天 / 今日到期 / 未到期 · M月M日 / 未开始。
+String fsrsCardStatusText(FsrsCardStatus? card) {
+  if (card == null) return '未开始';
+  switch (fsrsListBucketFor(card)) {
+    case FsrsListBucket.notStarted:
+      return '未开始';
+    case FsrsListBucket.overdue:
+      final now = DateTime.now();
+      final todayDay = DateTime(now.year, now.month, now.day);
+      final dueLocal = card.nextDueAt.toLocal();
+      final dueDay = DateTime(dueLocal.year, dueLocal.month, dueLocal.day);
+      return '已逾期 ${todayDay.difference(dueDay).inDays} 天';
+    case FsrsListBucket.dueToday:
+      return '今日到期';
+    case FsrsListBucket.notDue:
+      final dueLocal = card.nextDueAt.toLocal();
+      return '未到期 · ${dueLocal.month}月${dueLocal.day}日';
   }
 }
 
@@ -232,7 +236,7 @@ class _QuestionRowData {
 (List<_QuestionRowData>, List<_QuestionRowData>, List<_QuestionRowData>,
     List<_QuestionRowData>) groupQuestionsByStatus(ReviewState st) {
   final byQ = <String, List<CauseRecord>>{};
-  for (final g in [...st.groups, ...st.curedGroups]) {
+  for (final g in st.groups) {
     for (final it in g.items) {
       (byQ[it.question.id] ??= []).add(it.record);
     }
@@ -305,7 +309,7 @@ class _ListViewState extends ConsumerState<_ListView> {
     final dueCount = st.fsrsDueIds.length;
     final todayNewCount = st.fsrsTodaysNewIds.length;
     final (notDueCount, notStartedCount) = st.fsrsFutureCounts;
-    final hasData = st.groups.isNotEmpty || st.curedGroups.isNotEmpty;
+    final hasData = st.groups.isNotEmpty;
     final (overdue, dueToday, notDue, notStarted) =
         groupQuestionsByStatus(st);
     return _centered(
@@ -410,7 +414,7 @@ class _ListViewState extends ConsumerState<_ListView> {
           if (!hasData && st.resume == null) ...[
             QmEmptyState(
               title: '复习列表还是空的',
-              description: '在题目详情的「复习记录」里点「加入复习」，这道题的错因才会到这里来解决。',
+              description: '在题目详情的「复习记录」里点「加入复习」，这道题才会出现在这里。',
               actionLabel: '去错题本选题',
               onAction: widget.onGoWrongbook,
             ),
@@ -453,7 +457,6 @@ class _ListViewState extends ConsumerState<_ListView> {
               ),
               SizedBox(height: 14 * scale),
             ],
-            _buildMetaRow(context, st),
             _buildToolbar(context, st),
             _buildPagedRows(context, st, overdue, dueToday, notDue, notStarted),
           ],
@@ -520,7 +523,7 @@ class _ListViewState extends ConsumerState<_ListView> {
     );
   }
 
-  /// “继续上次会话（第 X/Y 题）”+“放弃重开”恢复条。
+  /// “继续上次会话（第 X/Y 题）”+“放弃上次会话”恢复条。
   Widget _buildResumeBar(BuildContext context, ReviewState st) {
     final scale = qmScaleOf(context);
     final notifier = ref.read(reviewProvider.notifier);
@@ -559,7 +562,7 @@ class _ListViewState extends ConsumerState<_ListView> {
                   onPressed: () => notifier.startSession(resume: true),
                 ),
                 QmButton(
-                  label: '放弃重开',
+                  label: '放弃上次会话',
                   variant: QmButtonVariant.secondary,
                   onPressed: notifier.startOver,
                 ),
@@ -575,11 +578,8 @@ class _ListViewState extends ConsumerState<_ListView> {
   ///
   /// 数字来自 load() 时的预览（不写库）：到期是真正到期的 FSRS 卡，
   /// 今日新题是已释放可练的新题（含昨日遗留续接），待开始是未释放、
-  /// 排队中的新题。括号里一行写清当日规则：每天最多呈现几道新题
-  /// （设置里的每日新增）、待完成新题满 10 道暂停释放。
+  /// 排队中的新题。
   Widget _buildFsrsBox(BuildContext context, ReviewState st) {
-    final scale = qmScaleOf(context);
-    final palette = DesignTokens.of(Theme.of(context).brightness);
     return _DetailBox(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -606,48 +606,6 @@ class _ListViewState extends ConsumerState<_ListView> {
                 const TextSpan(text: ' 道'),
               ],
             ),
-          ),
-          SizedBox(height: 6 * scale),
-          Text(
-            '新题每天最多呈现 ${st.settings.dailyNewQuestions} 道（设置里可改）；'
-            '已释放未完成的先续接，待完成新题满 10 道暂停释放；'
-            '待开始的题今天不进复习队列。',
-            style: TextStyle(
-              fontSize: DesignTokens.bodySmallFontSize,
-              color: palette.muted,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  /// 列表排序说明行（面 A：旧三数已取消，只留排序文案）。
-  Widget _buildMetaRow(BuildContext context, ReviewState st) {
-    final scale = qmScaleOf(context);
-    final palette = DesignTokens.of(Theme.of(context).brightness);
-    final metaStyle = TextStyle(
-      fontSize: DesignTokens.reviewMetaFontSize,
-      color: palette.muted,
-    );
-    // FR-10：括号里的学科名由 `st.subjects` 现拼（前 3 科，多了加“等”），
-    // 不再写死“数学 / 英语 / 政治”；无学科时不带括号。
-    final subjectNames = st.subjects.map((s) => s.name).toList();
-    final subjectHint = subjectNames.isEmpty
-        ? ''
-        : '（${subjectNames.take(3).join('、')}${subjectNames.length > 3 ? '等' : ''}）';
-    return Padding(
-      padding: EdgeInsets.only(bottom: 12 * scale),
-      child: Wrap(
-        spacing: 8 * scale,
-        runSpacing: 4 * scale,
-        crossAxisAlignment: WrapCrossAlignment.center,
-        children: [
-          Text(
-            st.settings.reviewSort == 'subject'
-                ? '列表按学科排$subjectHint'
-                : '列表按加入时间排',
-            style: metaStyle,
           ),
         ],
       ),
@@ -793,7 +751,7 @@ class _ListViewState extends ConsumerState<_ListView> {
         child: Row(
           children: [
             Text(
-              '共 ${flat.length} 条 · 第 $page / $totalPages 页',
+              '共 ${flat.length} 道 · 第 $page / $totalPages 页',
               style: TextStyle(
                 fontSize: DesignTokens.pagerFontSize,
                 color: palette.muted,
@@ -949,8 +907,15 @@ class _ListViewState extends ConsumerState<_ListView> {
                 ],
               ),
             ),
+            // FSRS 全量迁移包 7（包 5 移交）：全库最后一个活的「复查」
+            // pill 已迁到 FSRS 口径——文案复用详情页既有
+            // `reviewStatusPillLabel` 的「已到期」（不另发明文案）；
+            // 红色 err 系保留（与旧复查 pill 同色）；行副标题已是
+            // `fsrsCardStatusText` 的「已逾期 N 天」细化文案，两处
+            // 不重复。旧 `QmStatusPill.cause(QmCauseStatus.recheck)`
+            // 随 `QmCauseStatus` 一起删除。
             if (row.isOverdue) ...[
-              QmStatusPill.cause(QmCauseStatus.recheck),
+              QmStatusPill.tone(label: '已到期', tone: QmTone.error),
               SizedBox(width: 6 * scale),
             ],
           ],
@@ -1004,14 +969,6 @@ class _ListViewState extends ConsumerState<_ListView> {
                   ref.read(reviewProvider.notifier).toggleNotJoinedExpanded(),
             ),
           ],
-          SizedBox(height: 6 * qmScaleOf(context)),
-          Text(
-            '到这些题的题目详情「复习记录」里点「加入复习」才会进来；归档的题不出现在复习列表里；加入复习后按 FSRS 间隔安排，到期了会回到上面的到期列表里。',
-            style: TextStyle(
-              fontSize: DesignTokens.bodySmallFontSize,
-              color: DesignTokens.of(Theme.of(context).brightness).muted,
-            ),
-          ),
         ],
       ),
     );
@@ -1042,14 +999,6 @@ class _PracticePickerView extends ConsumerWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text('专项练习', style: Theme.of(context).textTheme.titleLarge),
-          SizedBox(height: 6 * scale),
-          Text(
-            '只练，不排：本次练习不改变到期时间、不参与 FSRS 调度。',
-            style: TextStyle(
-              fontSize: DesignTokens.bodySmallFontSize,
-              color: palette.muted,
-            ),
-          ),
           SizedBox(height: 14 * scale),
           if (st.practiceEmpty) ...[
             _DetailBox(
@@ -1058,10 +1007,10 @@ class _PracticePickerView extends ConsumerWidget {
                 children: [
                   CompanionWidget(size: 72 * scale, message: '该范围内没有可练的题'),
                   SizedBox(height: 8 * scale),
-                  const Text('该范围内没有可练的题，换个范围试试。'),
+                  const Text('换个范围试试。'),
                   SizedBox(height: 10 * scale),
                   QmButton(
-                    label: '返回选题页',
+                    label: '改范围',
                     variant: QmButtonVariant.secondary,
                     onPressed: () =>
                         ref.read(reviewProvider.notifier).dismissPracticeEmpty(),
@@ -1315,7 +1264,7 @@ class _SessionMeta extends ConsumerWidget {
           s.scopeLabel,
           q,
           s.subjectOf(q.subjectId).name,
-          s.settings.causesPerSession,
+          s.settings.questionsPerSession,
           s.sessionMode,
         );
       }),
@@ -1329,7 +1278,7 @@ class _SessionMeta extends ConsumerWidget {
       scopeLabel,
       question,
       subjectName,
-      causesPerSession,
+      questionsPerSession,
       mode,
     ) = meta;
     final scale = qmScaleOf(context);
@@ -1338,8 +1287,6 @@ class _SessionMeta extends ConsumerWidget {
       fontSize: DesignTokens.reviewMetaFontSize,
       color: palette.muted,
     );
-    final overLimit =
-        causesPerSession > 0 && totalCauses > causesPerSession;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -1349,7 +1296,7 @@ class _SessionMeta extends ConsumerWidget {
           crossAxisAlignment: WrapCrossAlignment.center,
           children: [
             Text(
-              '第 ${index + 1} / $total 道题 · 本轮共 $totalQuestions 道题、$totalCauses 个错因 · $scopeLabel',
+              '第 ${index + 1} / $total 道题 · 本轮共 $totalCauses 个错因 · $scopeLabel',
               style: metaStyle,
             ),
             Text(
@@ -1378,26 +1325,6 @@ class _SessionMeta extends ConsumerWidget {
             ),
           ],
         ),
-        if (overLimit) ...[
-          SizedBox(height: 6 * scale),
-          Text(
-            '本轮共 $totalCauses 个错因，超出了每会话 $causesPerSession 个的设置（同一题的错因不拆散），是否仍继续？',
-            style: TextStyle(
-              fontSize: DesignTokens.reviewMetaFontSize,
-              color: palette.muted,
-            ),
-          ),
-        ],
-        if (mode == ReviewMode.practice) ...[
-          SizedBox(height: 6 * scale),
-          Text(
-            '专项练习：本次练习不改变到期时间。',
-            style: TextStyle(
-              fontSize: DesignTokens.reviewMetaFontSize,
-              color: palette.muted,
-            ),
-          ),
-        ],
       ],
     );
   }
@@ -1475,6 +1402,9 @@ class _StepView extends ConsumerWidget {
     final (question, sq, subject, isPractice) = m;
     final scale = qmScaleOf(context);
     final palette = DesignTokens.of(Theme.of(context).brightness);
+    // F1：笔记正文就是题上的 notes（整理页/详情页可写）；复习页之前
+    // 只画提示条、从未渲染它，点「显示笔记」后用户看不到正文。
+    final notes = (question.notes ?? '').trim();
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -1492,7 +1422,7 @@ class _StepView extends ConsumerWidget {
             children: [
               Text(
                 isPractice
-                    ? '本轮练习本题'
+                    ? '本轮练这道题'
                     : '本轮 ${sq.causes.length} 项错因',
                 style: const TextStyle(fontWeight: FontWeight.w700),
               ),
@@ -1500,19 +1430,8 @@ class _StepView extends ConsumerWidget {
               for (final cause in sq.causes)
                 _KvRow(
                   label: cause,
-                  value: _causeStatusText(ref, sq.questionId, cause),
+                  value: _causeStatusText(ref, sq.questionId),
                 ),
-              if (sq.nonRoundCauses.isNotEmpty) ...[
-                SizedBox(height: 6 * scale),
-                for (final cause in sq.nonRoundCauses)
-                  Text(
-                    '$cause：${_nonRoundNote(ref, sq.questionId, cause)}',
-                    style: TextStyle(
-                      fontSize: DesignTokens.captionFontSize,
-                      color: palette.muted,
-                    ),
-                  ),
-              ],
             ],
           ),
         ),
@@ -1539,13 +1458,26 @@ class _StepView extends ConsumerWidget {
               border: Border.all(color: palette.accent),
               borderRadius: BorderRadius.circular(10 * scale),
             ),
-            child: Text(
-              '已显示笔记（含你自己的提示）',
-              style: TextStyle(
-                fontSize: DesignTokens.bodySmallFontSize,
-                fontWeight: FontWeight.w700,
-                color: palette.ink,
-              ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  '已显示笔记（含你自己的提示）',
+                  style: TextStyle(
+                    fontSize: DesignTokens.bodySmallFontSize,
+                    fontWeight: FontWeight.w700,
+                    color: palette.ink,
+                  ),
+                ),
+                SizedBox(height: 6 * scale),
+                Text(
+                  notes.isEmpty ? '这道题还没有笔记。' : notes,
+                  style: TextStyle(
+                    fontSize: DesignTokens.bodySmallFontSize,
+                    color: palette.ink,
+                  ),
+                ),
+              ],
             ),
           ),
         ],
@@ -1563,22 +1495,33 @@ class _StepView extends ConsumerWidget {
     );
   }
 
-  String _causeStatusText(WidgetRef ref, String qid, String cause) {
+  /// 错因行状态（FSRS 全量迁移包 5：与详情页「复习状态」行同口径，
+  /// 复用 [reviewDueLabel] / [reviewStatusPillLabel]：
+  /// 已到期 / 未到期，下次到期 M月M日 / 未开始。
+  /// 同一道题的全部错因共用题级 FSRS 状态，不再按错因贴治愈状态，
+  /// 「下次复查」字样已删。列表行的「已逾期 N 天 / 今日到期」细化
+  /// 文案（[fsrsCardStatusText]）不在此复用，只作列表分组展示。
+  String _causeStatusText(WidgetRef ref, String qid) {
     final st = ref.read(reviewProvider);
-    final record = st.recordOf(qid, cause);
-    if (record == null) return '待补充';
-    if (record.isRecheckDue) return '待复查';
-    return record.status.label;
-  }
-
-  String _nonRoundNote(WidgetRef ref, String qid, String cause) {
-    final st = ref.read(reviewProvider);
-    final record = st.recordOf(qid, cause);
-    if (record == null) return '不在本次范围';
-    if (record.status == CauseStatus.solved && record.recheckDate != null) {
-      return '未到期，下次复查 ${formatReviewDate(record.recheckDate!)}';
-    }
-    return '不在本次范围';
+    final card = st.fsrsCardStatus[qid];
+    // 已开始正式复习的卡才有下次到期日；未开始（firstReviewedAt 为空）
+    // 或无卡时按下次到期日为空处理。会话内的题都在 FSRS 池里。
+    // nextDueAt 直接取卡片原始值，与详情页 reviewDueLabel 的入参同源
+    // （同一张卡两处文案一致）；正式对错不属于本行，formalCorrect /
+    // formalWrong 传 0（两标签函数不读它们）。
+    final due = card != null && card.firstReviewedAt != null
+        ? card.nextDueAt
+        : null;
+    final status = DetailReviewStatus(
+      inPool: true,
+      nextDueAt: due,
+      formalCorrect: 0,
+      formalWrong: 0,
+    );
+    if (due == null) return reviewDueLabel(status); // 未开始
+    final now = DateTime.now();
+    if (!due.isAfter(now)) return reviewStatusPillLabel(status, now: now);
+    return '${reviewStatusPillLabel(status, now: now)}，${reviewDueLabel(status)}';
   }
 }
 
@@ -1676,14 +1619,6 @@ class _StepAnswer extends ConsumerWidget {
             ),
         ] else if (isMulti && hasMultiLabels) ...[
           _OptionButtons(question: question, sq: sq, multi: true),
-          SizedBox(height: 12 * scale),
-          Text(
-            '多选/不定项本批不自动判分，只记录你的选择；正确答案在核对区对照。',
-            style: TextStyle(
-              fontSize: DesignTokens.captionFontSize,
-              color: palette.muted,
-            ),
-          ),
           SizedBox(height: DesignTokens.reviewActsMarginTop * scale),
           _SessionActions(
             primaryLabel: '提交答案',
@@ -1702,7 +1637,7 @@ class _StepAnswer extends ConsumerWidget {
               children: [
                 Text(
                   isSingle
-                      ? '未配置有效答案，不显示选项按钮。请在纸上作答，或先补全答案。'
+                      ? '这道题暂无可用答案，不显示选项按钮。请在纸上作答，或先补全答案。'
                       : isMulti
                       ? '选项不足两个，不显示选项按钮。请在纸上作答，或先补全答案。'
                       : '请在纸上演算/作答，完成后点“我已完成作答”。',
@@ -1896,18 +1831,6 @@ class _StepCheck extends ConsumerWidget {
             ),
           ),
         ],
-        // 待重新核对时 KvRow 已显示“标准答案待重新核对”，这里不再
-        // 说“暂无标准答案/解析”，避免两处文案互相矛盾。
-        if (!hasAnswer && !graded && !question.answerPendingRecheck) ...[
-          SizedBox(height: 12 * scale),
-          Text(
-            '暂无标准答案/解析，可用手边教材、讲义自行核对。',
-            style: TextStyle(
-              fontSize: DesignTokens.captionFontSize,
-              color: palette.muted,
-            ),
-          ),
-        ],
         SizedBox(height: DesignTokens.reviewActsMarginTop * scale),
         if (isPractice) ...[
           _SessionActions(
@@ -1940,11 +1863,11 @@ class _StepCheck extends ConsumerWidget {
     if (q.questionType == 'choice_single' ||
         q.questionType == 'true_false') {
       final correct = q.effectiveCorrectOption;
-      if (correct == null || correct.isEmpty) return '标准答案：待补充';
+      if (correct == null || correct.isEmpty) return '待补充';
       return correct;
     }
     final answer = q.effectiveAnswer;
-    if (answer == null || answer.trim().isEmpty) return '标准答案：待补充';
+    if (answer == null || answer.trim().isEmpty) return '待补充';
     return answer;
   }
 
@@ -1952,7 +1875,7 @@ class _StepCheck extends ConsumerWidget {
     if (q.answerPendingRecheck) return '解析待重新核对';
     final explanation = q.effectiveExplanation;
     if (explanation == null || explanation.trim().isEmpty) {
-      return '解析：待补充';
+      return '待补充';
     }
     return explanation;
   }
@@ -1999,24 +1922,16 @@ class _PracticeRejoinRow extends ConsumerWidget {
                     ),
                   ),
                   QmButton(
-                    label: '将此错因重新加入复习',
+                    label: '将这道题重新加入复习',
                     size: QmButtonSize.small,
                     variant: QmButtonVariant.secondary,
                     onPressed: () => ref
                         .read(reviewProvider.notifier)
-                        .rejoinCauseFromPractice(cause),
+                        .rejoinCauseFromPractice(),
                   ),
                 ],
               ),
             ),
-          SizedBox(height: 4 * scale),
-          Text(
-            '只影响后续会话，不改变本次练习记录。',
-            style: TextStyle(
-              fontSize: DesignTokens.captionFontSize,
-              color: palette.muted,
-            ),
-          ),
         ],
       ),
     );
@@ -2049,7 +1964,7 @@ class _StepDone extends ConsumerWidget {
 
 /// 本轮复习总结（M3-15；只订阅总结要的数）。
 ///
-/// P3 入口 2：专项练习小结末尾加“本次答错的题”收题块（见
+/// P3 入口 2：专项练习小结末尾加“本次答错和未判分的题”收题块（见
 /// [_SummaryCollectSection]）。中途退出（暂停/返回列表）不产生小结、
 /// 不自动收题；已核对过的前几道练习事实已在 submitCheck 里写进
 /// attempts，不自动改正式复习日期；恢复完成后再出完整小结。
@@ -2092,7 +2007,7 @@ class _SummaryViewState extends ConsumerState<_SummaryView> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  isPractice ? '本次专项练习小结' : '本轮复习总结',
+                  isPractice ? '本轮专项练习小结' : '本轮复习总结',
                   style: const TextStyle(fontWeight: FontWeight.w700),
                 ),
                 SizedBox(height: 6 * scale),
@@ -2102,8 +2017,6 @@ class _SummaryViewState extends ConsumerState<_SummaryView> {
                   ),
                   SizedBox(height: 6 * scale),
                   Text('用时 ${_formatDuration(st.sumElapsedSeconds)}'),
-                  SizedBox(height: 6 * scale),
-                  const Text('本次练习不改变到期时间。'),
                 ] else ...[
                   Text(
                     '完成 ${st.sumCompleted} 道题 · 答对 ${st.sumObjCorrect} 道 · 答错 ${st.sumObjWrong} 道 · 未判分 ${st.sumUngraded} 道',
@@ -2124,7 +2037,7 @@ class _SummaryViewState extends ConsumerState<_SummaryView> {
                 SizedBox(height: 8 * scale),
                 if (st.sumWeakKp.isEmpty)
                   Text(
-                    '本次没有按知识点排出的薄弱点。',
+                    '本次没有按知识点汇总的薄弱点。',
                     style: TextStyle(
                       fontSize: DesignTokens.bodySmallFontSize,
                       color: DesignTokens.of(Theme.of(context).brightness)
@@ -2174,7 +2087,7 @@ class _SummaryViewState extends ConsumerState<_SummaryView> {
   }
 }
 
-/// P3 入口 2：专项练习小结末尾的“本次答错的题”收题块。
+/// P3 入口 2：专项练习小结末尾的“本次答错和未判分的题”收题块。
 ///
 /// - 系统确认答错的题默认全勾、可取消；未判分的题另列一行、可勾；
 /// - 已在复习的题标“已在复习”并默认不勾（不可勾）；
@@ -2265,7 +2178,7 @@ class _SummaryCollectSection extends ConsumerWidget {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         const Text(
-          '本次答错的题',
+          '本次答错和未判分的题',
           style: TextStyle(fontWeight: FontWeight.w700),
         ),
         SizedBox(height: 4 * scale),
@@ -2292,8 +2205,10 @@ class _SummaryCollectSection extends ConsumerWidget {
             for (final id in ungradedIds) row(id, isWrong: false),
           ],
           SizedBox(height: 8 * scale),
+          // 2026-11-27 GPT 评审后跟进（§3-④）：只在有可加入的题时
+          // 显示一句短提示——专项练习的错不记成正式复习记录。
           Text(
-            '只建新卡，不把本次练习的错当作正式复习记录；下次正式复习才产生第一次 Again/Good。',
+            '加入后从下一次正式复习开始记录。',
             style: TextStyle(
               fontSize: DesignTokens.captionFontSize,
               color: palette.muted,

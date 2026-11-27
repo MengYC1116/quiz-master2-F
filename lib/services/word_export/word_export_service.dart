@@ -247,7 +247,7 @@ class WordExportService {
       throw ExportGuardRejectException(
         '本次导出内容过重（栅格总量约 '
         '${inventory.guard.totalRasterMpx.toStringAsFixed(1)} Mpx，'
-        '超过 150 Mpx 上限），已停止生成。请减少题数，或去详情页重拍裁切。',
+        '超过 150 Mpx 上限），已停止生成。请减少题数，或去详情页重新框选。',
         inventory.guard,
       );
     }
@@ -307,7 +307,7 @@ class WordExportService {
     void Function(int done, int total, String label)? onProgress,
   }) async {
     if (ids.isEmpty) {
-      throw ArgumentError('至少选择 1 道题');
+      throw ArgumentError('请至少选择 1 道题');
     }
     if (ids.length > kExportMaxQuestions) {
       throw ArgumentError('单次最多导出 50 道题');
@@ -351,7 +351,7 @@ class WordExportService {
       throw ExportGuardRejectException(
         '本次导出内容过重（栅格总量约 '
         '${inventory.guard.totalRasterMpx.toStringAsFixed(1)} Mpx，'
-        '超过 150 Mpx 上限），已停止生成。请减少题数，或去详情页重拍裁切。',
+        '超过 150 Mpx 上限），已停止生成。请减少题数，或去详情页重新框选。',
         inventory.guard,
       );
     }
@@ -441,7 +441,7 @@ class WordExportService {
         throw ExportGuardRejectException(
           '本次导出内容过重（实际栅格总量约 '
           '${actualGuard.totalRasterMpx.toStringAsFixed(1)} Mpx，'
-          '超过 150 Mpx 上限），已停止生成。请减少题数，或去详情页重拍裁切。',
+          '超过 150 Mpx 上限），已停止生成。请减少题数，或去详情页重新框选。',
           actualGuard,
         );
       }
@@ -531,7 +531,7 @@ class WordExportService {
       throw ExportGuardRejectException(
         '本次导出内容过重（实际栅格总量约 '
         '${actualGuardA.totalRasterMpx.toStringAsFixed(1)} Mpx，'
-        '超过 150 Mpx 上限），已停止生成。请减少题数，或去详情页重拍裁切。',
+        '超过 150 Mpx 上限），已停止生成。请减少题数，或去详情页重新框选。',
         actualGuardA,
       );
     }
@@ -937,7 +937,7 @@ class WordExportService {
     );
     if (!hashOk) {
       throw SnapshotIntegrityException(
-        '快照副本哈希不一致（临时副本与源切片不符），本次导出中止。',
+        '临时副本与源切片不一致，本次导出中止，请重试。',
       );
     }
     late final Uint8List bytes;
@@ -972,9 +972,9 @@ class WordExportService {
       return WordAPreparedQuestion(
         isSkipped: true,
         skipReason:
-            '清晰度低于门禁（有效分辨率约 ${dpi.toStringAsFixed(0)} DPI）',
+            '清晰度低于阈值（有效分辨率约 ${dpi.toStringAsFixed(0)} DPI）',
         warnings: [
-          '清晰度低于门禁（有效分辨率约 ${dpi.toStringAsFixed(0)} DPI）',
+          '清晰度低于阈值（有效分辨率约 ${dpi.toStringAsFixed(0)} DPI）',
         ],
         effectiveDpi: dpi,
         lowDpi: true,
@@ -1038,21 +1038,21 @@ class WordExportService {
       ]).timeout(
         kWordGenerationWatchdogTimeout,
         onTimeout: () =>
-            throw TimeoutException('生成超时，已中止，未产生文件'),
+            throw TimeoutException('Word 生成超时，已中止，未产生文件'),
       );
       if (reply['ok'] != true) {
-        throw StateError(reply['message'] as String? ?? '生成失败');
+        throw StateError(reply['message'] as String? ?? 'Word 生成失败');
       }
       final bytes = reply['bytes'] as Uint8List;
       if (bytes.isEmpty || !_startsWithDocxMagic(bytes)) {
-        throw StateError('生成的 Word 字节无效（为空或非 DOCX 内容）');
+        throw StateError('生成的 Word 文件无效（文件为空或内容不是 Word 文档），请重试。');
       }
       return bytes;
     } on TimeoutException {
       // 看门狗超时：kill 子 Isolate，明确报错；落盘在回包之后才做，
       // 超时前未产生任何文件。
       isolate?.kill(priority: Isolate.immediate);
-      throw StateError('生成超时，已中止，未产生文件');
+      throw StateError('Word 生成超时，已中止，未产生文件');
     } on ExportCancelledException {
       isolate?.kill(priority: Isolate.immediate);
       rethrow;
@@ -1097,7 +1097,7 @@ class WordExportService {
             warnings: List.of(entry.warnings),
             skipReason: entry.outcome == SnapshotOutcome.skipped
                 ? entry.skipReason
-                : '公式栅格化与原图裁剪均失败',
+                : '公式无法呈现',
           ),
         );
         continue;
@@ -1358,6 +1358,6 @@ Future<void> _wordExportIsolateEntry(Map<String, Object?> message) async {
     final bytes = await DocxExporter().exportToBytes(doc);
     reply.send(<String, Object?>{'ok': true, 'bytes': bytes});
   } catch (e) {
-    reply.send(<String, Object?>{'ok': false, 'message': '生成失败：$e'});
+    reply.send(<String, Object?>{'ok': false, 'message': 'Word 生成失败，请重试。'});
   }
 }

@@ -45,24 +45,6 @@ Question tq(
   sliceText: '题：$title',
 );
 
-CauseRecord trec(
-  String questionId,
-  String cause, {
-  String subjectId = 'math',
-  CauseStatus status = CauseStatus.pending,
-  int solvedCount = 0,
-  DateTime? lastCheck,
-  DateTime? joinedAt,
-}) => CauseRecord(
-  questionId: questionId,
-  cause: cause,
-  subjectId: subjectId,
-  status: status,
-  solvedCount: solvedCount,
-  lastCheck: lastCheck,
-  joinedAt: joinedAt ?? _today,
-);
-
 KnowledgePoint tkp(String id, String subjectId, String chapter, String name) =>
     KnowledgePoint(id: id, subjectId: subjectId, chapter: chapter, name: name);
 
@@ -90,7 +72,6 @@ AttemptData tatt(
 class FakeReportRepo extends QuestionRepository {
   FakeReportRepo({
     required this.questions,
-    required this.records,
     required this.kps,
     this.attemptsValue = const [],
     this.throwOnLoad = false,
@@ -99,7 +80,6 @@ class FakeReportRepo extends QuestionRepository {
        super(AppDatabase.instance);
 
   List<Question> questions;
-  List<CauseRecord> records;
   List<KnowledgePoint> kps;
   List<AttemptData> attemptsValue;
   bool throwOnLoad;
@@ -112,12 +92,6 @@ class FakeReportRepo extends QuestionRepository {
   Future<List<Question>> all({bool includeArchived = false}) async {
     if (throwOnLoad) throw StateError('db down');
     return List.of(questions);
-  }
-
-  @override
-  Future<List<CauseRecord>> causeRecords() async {
-    if (throwOnLoad) throw StateError('db down');
-    return List.of(records);
   }
 
   @override
@@ -195,26 +169,6 @@ FakeReportRepo reportRepo() {
       createdAt: today.subtract(const Duration(days: 40)),
     ),
   ];
-  final records = [
-    trec('q1', '概念不清'),
-    trec('q2', '方法不会'),
-    trec(
-      'q3',
-      '计算错误',
-      status: CauseStatus.inProgress,
-      solvedCount: 1,
-      lastCheck: today,
-    ),
-    trec(
-      'q4',
-      '概念不清',
-      subjectId: 'english',
-      status: CauseStatus.solved,
-      solvedCount: 2,
-      lastCheck: today,
-    ),
-    trec('q-old', '概念不清', joinedAt: today.subtract(const Duration(days: 40))),
-  ];
   final kps = [
     tkp('kp-limit', 'math', '函数与极限', '函数极限'),
     tkp('kp-derivative', 'math', '导数与微分', '导数应用'),
@@ -242,7 +196,6 @@ FakeReportRepo reportRepo() {
   ];
   return FakeReportRepo(
     questions: questions,
-    records: records,
     kps: kps,
     attemptsValue: attempts,
   );
@@ -261,6 +214,8 @@ Future<void> pumpReport(
   addTearDown(tester.view.resetDevicePixelRatio);
   final calls = <({String? subjectId, String? cause, String? kp})>[];
   var wentReview = false;
+  var wentCollect = false;
+  var wentWrongbook = false;
   await tester.pumpWidget(
     MaterialApp(
       theme: AppTheme.light(scale: scale),
@@ -278,6 +233,8 @@ Future<void> pumpReport(
                 key: UniqueKey(),
                 repo: repo ?? reportRepo(),
                 onGoReview: () => wentReview = true,
+                onGoCollect: () => wentCollect = true,
+                onGoWrongbook: () => wentWrongbook = true,
                 onOpenWrongbookFiltered:
                     ({
                       String? subjectId,
@@ -299,10 +256,14 @@ Future<void> pumpReport(
   // 回调记录供断言用（每次 pump 都重置）。
   _lastCalls = calls;
   _lastWentReview = () => wentReview;
+  _lastWentCollect = () => wentCollect;
+  _lastWentWrongbook = () => wentWrongbook;
 }
 
 List<({String? subjectId, String? cause, String? kp})> _lastCalls = [];
 bool Function() _lastWentReview = () => false;
+bool Function() _lastWentCollect = () => false;
+bool Function() _lastWentWrongbook = () => false;
 
 Future<void> tapSegment(WidgetTester tester, String label) async {
   final finder = find.text(label);
@@ -331,10 +292,10 @@ void main() {
       expect(find.text('正式复习答对'), findsOneWidget);
       expect(find.text('正式复习答错'), findsOneWidget);
       expect(find.text('正式复习答对率'), findsOneWidget);
-      expect(find.text('按作答次数计（正式复习）'), findsOneWidget);
-      expect(find.text('按题数计，同一题多次答错只算 1 道'), findsOneWidget);
+      expect(find.text('按作答次数计'), findsOneWidget);
+      expect(find.text('按题数计'), findsOneWidget);
       expect(
-        find.text('正式复习 10 次已判分，答对 4 次 · 客观答对率，与旧的自查通过率不是同一回事'),
+        find.text('正式复习 10 次已判分，答对 4 次 · 客观答对率'),
         findsOneWidget,
       );
     });
@@ -342,7 +303,6 @@ void main() {
     testWidgets('无已判分记录时答对率显示 —', (tester) async {
       final repo = FakeReportRepo(
         questions: [tq('q1', '题', errorTypes: ['概念不清'])],
-        records: [trec('q1', '概念不清')],
         kps: [],
         attemptsValue: [tatt('q1', ReviewMode.due, null, _nowMs)],
       );
@@ -351,14 +311,14 @@ void main() {
       expect(find.text('这段时间还没有已判分的正式复习作答'), findsOneWidget);
     });
 
-    testWidgets('范围说明：本周 · 周一 ~ 今天 · 数字按这个时间段算', (tester) async {
+    testWidgets('范围说明：本周 · 周一 ~ 今天', (tester) async {
       await pumpReport(tester);
       final today = _today;
       final monday = today.subtract(Duration(days: today.weekday - 1));
       expect(
         find.text(
           '本周 · ${monday.month}-${monday.day} ~ '
-          '${today.month}-${today.day} · 数字按这个时间段算',
+          '${today.month}-${today.day}',
         ),
         findsOneWidget,
       );
@@ -422,7 +382,6 @@ void main() {
         questions: [
           tq('q1', '函数极限', errorTypes: ['概念不清']),
         ],
-        records: [trec('q1', '概念不清')],
         kps: const [],
         attemptsValue: [
           tatt('q1', ReviewMode.due, 0, _nowMs, causeIds: ['概念不清']),
@@ -461,7 +420,9 @@ void main() {
       await tester.pumpAndSettle();
       // P3 入口 3：点行先进题目列表页，不再直接跳错题本。
       expect(_lastCalls, isEmpty);
-      expect(find.byKey(const Key('weak-list-title')), findsOneWidget);
+      // F2：正文大标题已去重，只留 AppBar 标题（英语 · 审题失误）。
+      expect(find.byKey(const Key('weak-list-title')), findsNothing);
+      expect(find.text('英语 · 审题失误'), findsOneWidget);
       expect(find.text('开始专项练习'), findsOneWidget);
       expect(find.text('加入复习'), findsOneWidget);
       // 列表页里的“在错题本中查看”仍走旧深链路（带学科 + 错因）。
@@ -483,7 +444,9 @@ void main() {
       await tester.pumpAndSettle();
       // P3 入口 3：点行先进题目列表页，不再直接跳错题本。
       expect(_lastCalls, isEmpty);
-      expect(find.byKey(const Key('weak-list-title')), findsOneWidget);
+      // F2：正文大标题已去重，只留 AppBar 标题（政治 · 矛盾观）。
+      expect(find.byKey(const Key('weak-list-title')), findsNothing);
+      expect(find.text('政治 · 矛盾观'), findsOneWidget);
       expect(find.text('开始专项练习'), findsOneWidget);
       // 列表页里的“在错题本中查看”仍走旧深链路（带学科 + 知识点）。
       await tester.tap(find.text('在错题本中查看'));
@@ -511,7 +474,6 @@ void main() {
             knowledgePointIds: ['kp-limit'],
           ),
         ],
-        records: [trec('qA', '概念不清'), trec('qB', '概念不清')],
         kps: [tkp('kp-limit', 'math', '函数与极限', '函数极限')],
         attemptsValue: [
           tatt('qA', ReviewMode.due, 0, _nowMs, causeIds: ['概念不清']),
@@ -547,7 +509,6 @@ void main() {
             isArchived: true,
           ),
         ],
-        records: [trec('q1', '概念不清')],
         kps: [tkp('kp-limit', 'math', '函数与极限', '函数极限')],
         attemptsValue: [
           tatt('q1', ReviewMode.due, 0, _nowMs, causeIds: ['概念不清']),
@@ -570,7 +531,7 @@ void main() {
       // 函数极限、矛盾观各 1 处。
       expect(find.text('2 道题'), findsNWidgets(3));
       expect(find.text('先解决数学的概念不清。'), findsOneWidget);
-      expect(find.text('全部时间 · 数字按这个时间段算'), findsOneWidget);
+      expect(find.text('全部时间'), findsOneWidget);
     });
 
     testWidgets('分布是范围内作答题数：本周数学 3 · 英语 2 · 政治 3', (tester) async {
@@ -601,17 +562,6 @@ void main() {
             '定积分',
             errorTypes: ['计算错误'],
             knowledgePointIds: ['kp-integral'],
-          ),
-        ],
-        records: [
-          trec('q1', '概念不清'),
-          trec('q2', '方法不会'),
-          trec(
-            'q3',
-            '计算错误',
-            status: CauseStatus.inProgress,
-            solvedCount: 1,
-            lastCheck: _today,
           ),
         ],
         kps: const [],
@@ -647,11 +597,19 @@ void main() {
     });
   });
 
-  group('空态与错误态', () {
-    testWidgets('没有任何记录：小伙伴 + 去复习', (tester) async {
-      final empty = FakeReportRepo(questions: [], records: [], kps: []);
-      await pumpReport(tester, repo: empty);
+  group('空态三态（包 6，V11）', () {
+    testWidgets('① 有题无正式作答：旧文案 + 去复习，不出“去收集”', (tester) async {
+      final repo = FakeReportRepo(
+        questions: [tq('q1', '题', errorTypes: ['概念不清'])],
+        kps: [],
+      );
+      await pumpReport(tester, repo: repo);
       expect(find.text('还没有复习记录，先去复习吧'), findsOneWidget);
+      expect(
+        find.text('在复习页按三步（看题、作答、核对）练几道题，回来这里就会告诉你弱在哪、有没有效果、接下来练什么。'),
+        findsOneWidget,
+      );
+      expect(find.widgetWithText(QmButton, '去收集'), findsNothing);
       final go = find.widgetWithText(QmButton, '去复习');
       expect(go, findsOneWidget);
       await tester.ensureVisible(go);
@@ -659,18 +617,71 @@ void main() {
       await tester.tap(go);
       await tester.pumpAndSettle();
       expect(_lastWentReview(), isTrue);
+      expect(_lastWentCollect(), isFalse);
     });
 
-    testWidgets('FSRS 口径迁移面 D：空态文案是三步（看题、作答、核对），不出现“四步”', (
+    testWidgets('FSRS 口径迁移面 D：① 的空态文案是三步（看题、作答、核对），不出现“四步”', (
       tester,
     ) async {
-      final empty = FakeReportRepo(questions: [], records: [], kps: []);
-      await pumpReport(tester, repo: empty);
+      final repo = FakeReportRepo(
+        questions: [tq('q1', '题', errorTypes: ['概念不清'])],
+        kps: [],
+      );
+      await pumpReport(tester, repo: repo);
       expect(
         find.text('在复习页按三步（看题、作答、核对）练几道题，回来这里就会告诉你弱在哪、有没有效果、接下来练什么。'),
         findsOneWidget,
       );
       expect(find.textContaining('四步'), findsNothing);
+    });
+
+    testWidgets('② 空库：新文案 + 去收集，不出“去复习”', (tester) async {
+      final empty = FakeReportRepo(questions: [], kps: []);
+      await pumpReport(tester, repo: empty);
+      expect(find.text('这里还没有题目，先去收集吧'), findsOneWidget);
+      expect(
+        find.text('去收集中心导入第一道题吧，回来这里就会告诉你弱在哪、有没有效果、接下来练什么。'),
+        findsOneWidget,
+      );
+      expect(find.text('还没有复习记录，先去复习吧'), findsNothing);
+      expect(find.widgetWithText(QmButton, '去复习'), findsNothing);
+      final go = find.widgetWithText(QmButton, '去收集');
+      expect(go, findsOneWidget);
+      await tester.ensureVisible(go);
+      await tester.pumpAndSettle();
+      await tester.tap(go);
+      await tester.pumpAndSettle();
+      expect(_lastWentCollect(), isTrue);
+      expect(_lastWentReview(), isFalse);
+    });
+
+    testWidgets('③ 题已删但有正式作答：不进空态，核心数照算（孤儿题数口径）', (
+      tester,
+    ) async {
+      // q-gone 已删：正式答对 1 次 + 正式答错 1 次（同题去重计 1 道）。
+      final repo = FakeReportRepo(
+        questions: [],
+        kps: [],
+        attemptsValue: [
+          tatt('q-gone', ReviewMode.due, 1, _nowMs),
+          tatt('q-gone', ReviewMode.due, 0, _nowMs, causeIds: ['概念不清'],
+              sessionId: 's2'),
+        ],
+      );
+      await pumpReport(tester, repo: repo);
+      expect(find.text('还没有复习记录，先去复习吧'), findsNothing);
+      expect(find.text('这里还没有题目，先去收集吧'), findsNothing);
+      expect(find.text('有没有效果'), findsOneWidget);
+      expect(_coreValue(tester, 'report-core-formal-correct'), '1');
+      expect(_coreValue(tester, 'report-core-formal-wrong'), '1');
+      expect(_coreValue(tester, 'report-core-formal-rate'), '50%');
+      // 孤儿不进错因组与分布（report_stats 头注）：错因组与知识点组
+      // 都是空文案，分布三科都是作答 0 道。
+      expect(find.text('这段时间正式复习还没有答错的题。'), findsOneWidget);
+      expect(find.text('这段时间没有带知识点的错题。'), findsOneWidget);
+      expect(find.text('数学 · 作答 0 道'), findsOneWidget);
+      expect(find.text('英语 · 作答 0 道'), findsOneWidget);
+      expect(find.text('政治 · 作答 0 道'), findsOneWidget);
     });
 
     testWidgets('加载失败：出错误横幅，可点“知道了”关闭', (tester) async {
@@ -680,6 +691,96 @@ void main() {
       await tester.tap(find.text('知道了'));
       await tester.pumpAndSettle();
       expect(find.text('报告数据读取失败，已显示上次成功加载的内容。可重启应用后重试。'), findsNothing);
+    });
+  });
+
+  group('空态收紧（跟进批 5）：④ 库里有题但无一可复习 → 去错题本', () {
+    const newTitle = '这些题还不能复习';
+    const newDescription =
+        '库里的题还没有整理、或已经归档了。去错题本把它们整理好、或取消归档，再去复习，回来这里就会告诉你弱在哪、有没有效果、接下来练什么。';
+
+    Future<void> expectNewBranch(WidgetTester tester) async {
+      expect(find.text(newTitle), findsOneWidget);
+      expect(find.text(newDescription), findsOneWidget);
+      // 不进①也不进②。
+      expect(find.text('还没有复习记录，先去复习吧'), findsNothing);
+      expect(find.text('这里还没有题目，先去收集吧'), findsNothing);
+      expect(find.widgetWithText(QmButton, '去复习'), findsNothing);
+      expect(find.widgetWithText(QmButton, '去收集'), findsNothing);
+      final go = find.widgetWithText(QmButton, '去错题本');
+      expect(go, findsOneWidget);
+      await tester.ensureVisible(go);
+      await tester.pumpAndSettle();
+      await tester.tap(go);
+      await tester.pumpAndSettle();
+      expect(_lastWentWrongbook(), isTrue);
+      expect(_lastWentReview(), isFalse);
+      expect(_lastWentCollect(), isFalse);
+    }
+
+    testWidgets('④ 全未整理：进新分支，不进②', (tester) async {
+      final repo = FakeReportRepo(
+        questions: [
+          tq('q1', '题一', isOrganized: false),
+          tq('q2', '题二', isOrganized: false),
+        ],
+        kps: [],
+      );
+      await pumpReport(tester, repo: repo);
+      await expectNewBranch(tester);
+    });
+
+    testWidgets('④ 全已归档：进新分支，不进②', (tester) async {
+      final repo = FakeReportRepo(
+        questions: [
+          tq('q1', '题一', isArchived: true),
+          tq('q2', '题二', isArchived: true),
+        ],
+        kps: [],
+      );
+      await pumpReport(tester, repo: repo);
+      await expectNewBranch(tester);
+    });
+
+    testWidgets('④ 混合（未整理 + 已归档）：进新分支，不进②', (tester) async {
+      final repo = FakeReportRepo(
+        questions: [
+          tq('q1', '未整理题', isOrganized: false),
+          tq('q2', '已归档题', isArchived: true),
+        ],
+        kps: [],
+      );
+      await pumpReport(tester, repo: repo);
+      await expectNewBranch(tester);
+    });
+
+    testWidgets('有一道已整理未归档的题：仍进①，不进新分支', (tester) async {
+      final repo = FakeReportRepo(
+        questions: [
+          tq('q1', '未整理题', isOrganized: false),
+          tq('q2', '已归档题', isArchived: true),
+          tq('q3', '可复习题'),
+        ],
+        kps: [],
+      );
+      await pumpReport(tester, repo: repo);
+      expect(find.text('还没有复习记录，先去复习吧'), findsOneWidget);
+      expect(find.text(newTitle), findsNothing);
+      expect(find.widgetWithText(QmButton, '去错题本'), findsNothing);
+      expect(find.widgetWithText(QmButton, '去复习'), findsOneWidget);
+    });
+
+    testWidgets('② 文案逐字不变：空库仍是旧标题、旧说明、去收集', (tester) async {
+      final empty = FakeReportRepo(questions: [], kps: []);
+      await pumpReport(tester, repo: empty);
+      expect(find.text('这里还没有题目，先去收集吧'), findsOneWidget);
+      expect(
+        find.text('去收集中心导入第一道题吧，回来这里就会告诉你弱在哪、有没有效果、接下来练什么。'),
+        findsOneWidget,
+      );
+      expect(find.text(newTitle), findsNothing);
+      expect(find.widgetWithText(QmButton, '去错题本'), findsNothing);
+      expect(find.widgetWithText(QmButton, '去收集'), findsOneWidget);
     });
   });
 

@@ -136,7 +136,6 @@ class SessionQuestionState {
   const SessionQuestionState({
     required this.questionId,
     required this.causes,
-    this.nonRoundCauses = const [],
     required this.answerVersionAtStart,
     required this.contentVersionAtStart,
     required this.questionSubmissionId,
@@ -154,13 +153,13 @@ class SessionQuestionState {
   /// 题 id。
   final String questionId;
 
-  /// 本轮要处理的错因名（到期复习：符合范围且到期的错因；专项练习：
-  /// 该题的全部错因，仅作上下文）。
+  /// 本轮错因快照（FSRS 全量迁移包2）：会话开始时取 `q.allCauses`
+  /// 锁定本轮错因清单；下一轮取最新。全部错因都进会话，不按治愈
+  /// 状态筛；错因清单全展示，复习按题作答，不按错因逐项打勾/判定；
+  /// 答题结果只属于题目（attempts 按题记对错，不按错因记）；
+  /// 空错因的题 causes 为空也可练。会话进行中改错因不重置 FSRS
+  /// 卡片状态与到期日、不影响本轮快照。
   final List<String> causes;
-
-  /// 非本轮错因名（折叠显示，标“未到期，下次复查 <日期>”或
-  /// “不在本次范围”；不接受 verdict、不推进进度）。
-  final List<String> nonRoundCauses;
 
   /// 会话开始时的答案 / 内容版本快照（M3-10）。
   final int answerVersionAtStart;
@@ -204,7 +203,6 @@ class SessionQuestionState {
 
   SessionQuestionState copyWith({
     List<String>? causes,
-    List<String>? nonRoundCauses,
     int? answerVersionAtStart,
     int? contentVersionAtStart,
     SessionStage? stage,
@@ -227,7 +225,6 @@ class SessionQuestionState {
     return SessionQuestionState(
       questionId: questionId,
       causes: causes ?? this.causes,
-      nonRoundCauses: nonRoundCauses ?? this.nonRoundCauses,
       answerVersionAtStart: answerVersionAtStart ?? this.answerVersionAtStart,
       contentVersionAtStart:
           contentVersionAtStart ?? this.contentVersionAtStart,
@@ -267,7 +264,6 @@ class SessionQuestionState {
   static SessionQuestionState fromJson(
     String questionId,
     List<String> causes,
-    List<String> nonRoundCauses,
     Map<String, Object?> json,
   ) {
     SessionStage stage = SessionStage.view;
@@ -289,7 +285,6 @@ class SessionQuestionState {
     return SessionQuestionState(
       questionId: questionId,
       causes: causes,
-      nonRoundCauses: nonRoundCauses,
       answerVersionAtStart:
           (json['answer_version_at_start'] as num?)?.toInt() ?? 0,
       contentVersionAtStart:
@@ -320,7 +315,8 @@ class CauseItem {
   final CauseRecord record;
 }
 
-/// 列表分组：学科 × 错因（HTML `causeGroups()` / `curedGroups()`）。
+/// 列表分组：学科 × 错因（一组里是该学科×错因的全部已加入题；
+/// FSRS 全量迁移包2：不再按治愈状态拆 pending/cured 两组）。
 class CauseGroup {
   CauseGroup({
     required this.subjectId,
@@ -332,20 +328,9 @@ class CauseGroup {
   final String cause;
   final List<CauseItem> items = [];
   DateTime firstJoined;
-
-  /// 组状态（HTML `revListHTML` 的 stTxt 口径）：全已解决 → 已解决；
-  /// 有待解决 → 待解决；其余 → 解决中。
-  CauseStatus get status {
-    if (items.every((it) => it.record.status == CauseStatus.solved)) {
-      return CauseStatus.solved;
-    }
-    if (items.any((it) => it.record.status == CauseStatus.pending)) {
-      return CauseStatus.pending;
-    }
-    return CauseStatus.inProgress;
-  }
-
-  bool get hasRecheck => items.any((it) => it.record.isRecheckDue);
+  // FSRS 全量迁移包 7：`hasRecheck`（读 `CauseRecord.isRecheckDue`）
+  // 已随旧治愈状态机删除——`CauseGroup` 本身无 `status` 字段
+  //（包 2 分组迁移时已去掉），此处无残留。
 }
 
 /// 会话块：一道题 + 它本轮要治的错因（M3 之前叫 CauseBlock；新会话
@@ -432,9 +417,7 @@ class ReviewState {
     this.subjects = const [],
     this.allQuestions = const [],
     this.groups = const [],
-    this.curedGroups = const [],
     this.notJoined = const [],
-    this.pendingByQ = const {},
     this.loading = true,
     this.loadError = false,
     this.errorDismissed = false,
@@ -511,14 +494,15 @@ class ReviewState {
 
   /// 全部已整理、未归档的题（专项练习选题池用）。
   final List<Question> allQuestions;
+
+  /// 复习列表分组：学科 × 错因（FSRS 全量迁移包2：不再按治愈状态
+  /// 拆 pending/cured 两组；一组里是该学科×错因的全部已加入题，
+  /// 错因取题面 `q.allCauses`，无记录的错因也进组）。
   final List<CauseGroup> groups;
-  final List<CauseGroup> curedGroups;
 
-  /// 还没加入复习、但真能加入的题（已整理、未归档、有错因）。
+  /// 还没加入复习的题（已整理、未归档；FSRS 全量迁移包2：
+  /// 无错因的题也可加入复习，不再要求有错因）。
   final List<Question> notJoined;
-
-  /// 每题待治的错因记录（按题内错因顺序），会话建块用。
-  final Map<String, List<CauseRecord>> pendingByQ;
 
   /// 首查进行中（原 `_loading`；初始 true，首帧先出加载圈）。
   final bool loading;
@@ -652,9 +636,7 @@ class ReviewState {
     List<Subject>? subjects,
     List<Question>? allQuestions,
     List<CauseGroup>? groups,
-    List<CauseGroup>? curedGroups,
     List<Question>? notJoined,
-    Map<String, List<CauseRecord>>? pendingByQ,
     bool? loading,
     bool? loadError,
     bool? errorDismissed,
@@ -717,9 +699,7 @@ class ReviewState {
       subjects: subjects ?? this.subjects,
       allQuestions: allQuestions ?? this.allQuestions,
       groups: groups ?? this.groups,
-      curedGroups: curedGroups ?? this.curedGroups,
       notJoined: notJoined ?? this.notJoined,
-      pendingByQ: pendingByQ ?? this.pendingByQ,
       loading: loading ?? this.loading,
       loadError: loadError ?? this.loadError,
       errorDismissed: errorDismissed ?? this.errorDismissed,
@@ -819,7 +799,7 @@ class ReviewState {
     for (final q in allQuestions) {
       if (q.id == questionId) return q;
     }
-    for (final g in [...groups, ...curedGroups]) {
+    for (final g in groups) {
       for (final it in g.items) {
         if (it.question.id == questionId) return it.question;
       }
@@ -841,34 +821,6 @@ class ReviewState {
       hasCurrentQuestion
           ? questionOf(currentSessionQuestion.questionId)
           : null;
-
-  /// 全部错因记录（分组两边之和：待治 + 已治愈；会话选题与恢复校验用）。
-  List<CauseRecord> get allCauseRecords {
-    final list = <CauseRecord>[];
-    for (final g in [...groups, ...curedGroups]) {
-      for (final it in g.items) {
-        list.add(it.record);
-      }
-    }
-    return list;
-  }
-
-  CauseRecord? recordOf(String questionId, String cause) {
-    final rs = pendingByQ[questionId];
-    if (rs != null) {
-      for (final r in rs) {
-        if (r.cause == cause) return r;
-      }
-    }
-    for (final g in curedGroups) {
-      for (final it in g.items) {
-        if (it.question.id == questionId && it.record.cause == cause) {
-          return it.record;
-        }
-      }
-    }
-    return null;
-  }
 
   List<CauseGroup> filterGroups(List<CauseGroup> groups) {
     var list = groups;
@@ -906,7 +858,7 @@ class ReviewState {
 
   List<String> get allCauses {
     final set = <String>{};
-    for (final g in [...groups, ...curedGroups]) {
+    for (final g in groups) {
       set.add(g.cause);
     }
     final fixed = ErrorTypes.fixed.where(set.contains).toList();
@@ -925,23 +877,11 @@ class ReviewState {
   }
 
   /// “开始复习”是否可用（只决定按钮可用性，不改变会话建队逻辑）：
-  /// FSRS 池非空时看到期 + 今日新题；池空（老数据回落）时看旧错因
-  /// 队列是否非空——池空时会话走 `_buildLegacyDueSessionQuestions`，
-  /// 按钮若只看 FSRS 数会把老数据的复习入口堵死。
-  bool get canStartDueSession {
-    if (fsrsPoolIds.isNotEmpty) {
-      return fsrsDueIds.isNotEmpty || fsrsTodaysNewIds.isNotEmpty;
-    }
-    final queue = buildDueQueue(
-      records: allCauseRecords,
-      joinedQuestionIds: {
-        for (final q in allQuestions)
-          if (q.reviewJoined && q.isOrganized && !q.isArchived) q.id,
-      },
-      questionsById: {for (final q in allQuestions) q.id: q},
-    );
-    return queue.isNotEmpty;
-  }
+  /// FSRS 池非空时看到期 + 今日新题；池空即无到期（FSRS 全量迁移
+  /// 包2：旧错因队列回落已删除，池空不再看旧队列）。
+  bool get canStartDueSession =>
+      fsrsPoolIds.isNotEmpty &&
+      (fsrsDueIds.isNotEmpty || fsrsTodaysNewIds.isNotEmpty);
 
   /// 空状态用（不过滤）：未到期与未开始的题数——已开始且下次到期
   /// 在明天 00:00 之后的题数，与尚未开始正式复习的题数（无卡的
@@ -951,7 +891,7 @@ class ReviewState {
     final seen = <String>{};
     var notDue = 0;
     var notStarted = 0;
-    for (final g in [...groups, ...curedGroups]) {
+    for (final g in groups) {
       for (final it in g.items) {
         if (!seen.add(it.question.id)) continue;
         switch (fsrsListBucketFor(fsrsCardStatus[it.question.id])) {
@@ -996,6 +936,12 @@ class ReviewState {
     if (causes.length == 1) return '错因「${causes.single}」';
     return '全部复习题';
   }
+
+  /// 从错因组进入会话的范围文案：直接用进来的那个组的学科·错因。
+  /// 不从会话题的错因并集推导——题内快照是全部错因，并集有多个
+  /// 错因时会退化为「学科这一科」（见 scopeLabelForSession）。
+  String scopeLabelForGroup(CauseGroup group) =>
+      '${subjectOf(group.subjectId).name} · ${group.cause}';
 
   /// 本轮题数与错因数（会话开场与小结用）。
   (int questions, int causes) get sessionTotals {
@@ -1075,51 +1021,46 @@ class ReviewNotifier extends Notifier<ReviewState> {
       for (final r in records) {
         (byQ[r.questionId] ??= []).add(r);
       }
-      final pendingByQ = <String, List<CauseRecord>>{};
-      final pendingGroups = <String, CauseGroup>{};
-      final curedGroups = <String, CauseGroup>{};
+      final groupsByKey = <String, CauseGroup>{};
       final notJoined = <Question>[];
       for (final q in questions) {
         // “还没加入复习的题”只列真能加进复习的题（SR-P2-39）：
-        // 未整理的题没有加入入口、无错因的题加不进（setReviewJoined
-        // 错因为空返回 false），列出来只会让人白跑一趟详情页。
-        if (!q.reviewJoined &&
-            q.isOrganized &&
-            !q.isArchived &&
-            q.allCauses.isNotEmpty) {
+        // 未整理的题没有加入入口。FSRS 全量迁移包2：无错因的题
+        // 也可加入复习（FSRS 按题，不按错因），不再要求有错因。
+        if (!q.reviewJoined && q.isOrganized && !q.isArchived) {
           notJoined.add(q);
         }
         // B6：复习主列表排除已归档题（与 HTML `qInReview` 口径一致；
         // 未加入列表上面一行已排除了归档）。归档题的解决记录保留在
         // 库里（不删），取消归档后重新出现。
         if (!q.reviewJoined || !q.isOrganized || q.isArchived) continue;
-        final rs = byQ[q.id];
-        if (rs == null || rs.isEmpty) continue;
-        // 题内错因按题目本身的错因顺序排。
-        final order = q.allCauses;
-        final sorted = [...rs]
-          ..sort((a, b) =>
-              order.indexOf(a.cause).compareTo(order.indexOf(b.cause)));
-        final pending = sorted
-            .where((r) => r.status != CauseStatus.solved || r.isRecheckDue)
-            .toList();
-        if (pending.isNotEmpty) pendingByQ[q.id] = pending;
-        for (final r in sorted) {
-          final key = '${q.subjectId}|${r.cause}';
-          final isPending =
-              r.status != CauseStatus.solved || r.isRecheckDue;
-          final target = isPending ? pendingGroups : curedGroups;
-          final g = target.putIfAbsent(
+        // FSRS 全量迁移包2：分组不再按治愈状态拆两组。错因取题面
+        // `q.allCauses`（全部错因进组，不筛）；组里的 CauseRecord
+        // 仍取库里已有的行（补救历史等冻结展示用），没有行时合成
+        // 一条内存记录（不写库；joinedAt 用题的创建时间作排序代理，
+        // 题本身没有加入时间戳字段）。
+        final recordByCause = {
+          for (final r in byQ[q.id] ?? const <CauseRecord>[]) r.cause: r,
+        };
+        for (final cause in q.allCauses) {
+          final key = '${q.subjectId}|$cause';
+          final record = recordByCause[cause] ?? CauseRecord(
+            questionId: q.id,
+            cause: cause,
+            subjectId: q.subjectId,
+            joinedAt: q.createdAt,
+          );
+          final g = groupsByKey.putIfAbsent(
             key,
             () => CauseGroup(
               subjectId: q.subjectId,
-              cause: r.cause,
-              firstJoined: r.joinedAt,
+              cause: cause,
+              firstJoined: record.joinedAt,
             ),
           );
-          g.items.add(CauseItem(question: q, record: r));
-          if (r.joinedAt.isBefore(g.firstJoined)) {
-            g.firstJoined = r.joinedAt;
+          g.items.add(CauseItem(question: q, record: record));
+          if (record.joinedAt.isBefore(g.firstJoined)) {
+            g.firstJoined = record.joinedAt;
           }
         }
       }
@@ -1136,14 +1077,12 @@ class ReviewNotifier extends Notifier<ReviewState> {
         return a.firstJoined.compareTo(b.firstJoined);
       }
 
-      final sortedPending = pendingGroups.values.toList()..sort(groupCompare);
-      final sortedCured = curedGroups.values.toList()..sort(groupCompare);
+      final sortedGroups = groupsByKey.values.toList()..sort(groupCompare);
 
       // 断点：校验保存的会话是否还有效（M3-10 恢复校验）。
       final resume = await _validateSavedSession(
         repo: repo,
         questions: questions,
-        recordsByQ: byQ,
       );
       if (_disposed) return;
       // SR2-34：错因筛选的当前值可能在详情页删题 / 归档后失效——选项
@@ -1151,7 +1090,7 @@ class ReviewNotifier extends Notifier<ReviewState> {
       // 不在选项里，直接喂给 DropdownButton 会断言。无效时回落到
       // “全部”；下拉处另有就地 effectiveValue 兜底。
       final allCauses = <String>{};
-      for (final g in [...sortedPending, ...sortedCured]) {
+      for (final g in sortedGroups) {
         allCauses.add(g.cause);
       }
       final causeFilter =
@@ -1166,11 +1105,9 @@ class ReviewNotifier extends Notifier<ReviewState> {
         pageSizeInitialized: true,
         subjects: subjectList,
         allQuestions: questions,
-        groups: sortedPending,
-        curedGroups: sortedCured,
+        groups: sortedGroups,
         causeFilter: causeFilter,
         notJoined: notJoined,
-        pendingByQ: pendingByQ,
         kpNames: {for (final kp in kps) kp.id: kp.name},
         resume: resume,
         resumeExpired: resume == null && _expiredSessionInThisLoad,
@@ -1255,15 +1192,16 @@ class ReviewNotifier extends Notifier<ReviewState> {
   /// 用一个内存标记（本次 load 内有效），不另存库。
   bool _expiredSessionInThisLoad = false;
 
-  /// 校验保存的会话快照（M3-10）：题目已删除、错因已删除/已治愈/
-  /// 已不在范围 → 该项安全移除；答案/内容版本变化按
+  /// 校验保存的会话快照（M3-10）：题目已删除、错因已从题上删除
+  /// → 该项安全移除；答案/内容版本变化按
   /// versionCheck 处理（未作答刷新快照、已提交移出会话）；
   /// 恢复以 attempts 的实际写入为准重建提交状态（P2：只认 attempts 行）。
+  /// 策略 A（FSRS 全量迁移包2）：旧会话按保存的错因快照完成，
+  /// 不按治愈状态剔除；下一轮起用新口径。
   /// 返回有效的 ResumeInfo；快照整体失效时清掉 review_state 并返回 null。
   Future<ResumeInfo?> _validateSavedSession({
     required QuestionRepository repo,
     required List<Question> questions,
-    required Map<String, List<CauseRecord>> recordsByQ,
   }) async {
     _expiredSessionInThisLoad = false;
     final saved = await repo.reviewState();
@@ -1291,14 +1229,12 @@ class ReviewNotifier extends Notifier<ReviewState> {
         removedAny = true;
         continue;
       }
-      final records = recordsByQ[qid] ?? const [];
-      final recordByCause = {for (final r in records) r.cause: r};
-      // 本轮错因：有 cause_records 行的按记录判；没有记录时，错因
-      // 仍在题自己身上（q.allCauses，如未加入复习的专项练习题）
-      // 就保留，两边都没有才删；到期复习里已治愈且未到复查日的
-      // 错因已不在范围，移除（只在记录存在时适用）。
+      // 策略 A（FSRS 全量迁移包2，Meng 已确认）：旧会话按旧快照完成，
+      // 不中途切换口径——保存的错因只要还在题身上（q.allCauses）就
+      // 原样保留，不论其治愈状态；只有从题上删掉的错因才移除。
+      // 下一轮起用新口径（建队时取 q.allCauses）。
       // 无错因占位符（kNoCauseQueueMarker）：本题在会话里就没有错因，
-      // 不查记录、不进错因数，按 causes 为空保留；只有占位符没有
+      // 不进错因数，按 causes 为空保留；只有占位符没有
       // 真错因时也不算“错因被删光”，本题不剔除。
       var hasNoCauseMarker = false;
       final causes = <String>[];
@@ -1307,36 +1243,20 @@ class ReviewNotifier extends Notifier<ReviewState> {
           hasNoCauseMarker = true;
           continue;
         }
-        final r = recordByCause[cause];
-        if (r == null) {
-          if (q.allCauses.contains(cause)) {
-            causes.add(cause);
-          } else {
-            removedAny = true;
-          }
-          continue;
-        }
-        if (mode == ReviewMode.due &&
-            r.status == CauseStatus.solved &&
-            !r.isRecheckDue) {
+        if (q.allCauses.contains(cause)) {
+          causes.add(cause);
+        } else {
           removedAny = true;
-          continue;
         }
-        causes.add(cause);
       }
       if (causes.isEmpty && !hasNoCauseMarker) {
         removedAny = true;
         continue;
       }
-      final nonRound = records
-          .map((r) => r.cause)
-          .where((c) => !causes.contains(c))
-          .toList();
       final savedState = saved.perQuestionState[qid];
       var sq = SessionQuestionState.fromJson(
         qid,
         causes,
-        nonRound,
         savedState ?? const {},
       );
       // 先从数据库重建真实提交状态，再做版本判定（十四批 M5 修复轮 3，
@@ -1480,31 +1400,29 @@ class ReviewNotifier extends Notifier<ReviewState> {
 
   // ---------- 会话：建队 ----------
 
-  /// 到期复习建队（P4：FSRS 队列替换旧错因队列）。
+  /// 到期复习建队（FSRS 全量迁移包2：只走 FSRS，不再回落旧错因队列）。
   ///
   /// 池里有 FSRS 卡时：到期题（getDueQuestions，已隔离未释放新卡）
   /// 在前、今日新题（释放计划：昨日遗留续接优先 + 今日已呈现 +
   /// 今天新释放，按每日上限与积压上限 10 截断）在后；每题的本轮
-  /// 错因仍按旧规则取（未解决 + 到期复查的已解决错因，见
-  /// _buildLegacyDueSessionQuestions 的注释），会话流程、核对提交、
-  /// 断点恢复都不变；数量仍按设置项“每会话错因数”截断（同一题的
-  /// 本轮错因完整处理）。一次加 60 道时，当天会话里新题最多只有
-  /// 默认 10 道，剩下的是“待开始”，不进会话。
+  /// 错因取 `q.allCauses` 快照（全部错因进会话，不按治愈状态筛；
+  /// 空错因的题也可练）；会话流程、核对提交、断点恢复都不变。
+  /// 数量按设置项“每次复习练几道题”截断（V2：按题数，到期题与
+  /// 今日新题共用一个上限；空错因题也占一名额；进行中的会话不受
+  /// 设置改动影响——limit 只在建队时读一次）。
+  /// 一次加 60 道时，当天会话里新题最多只有默认 10 道，剩下的是
+  /// “待开始”，不进会话。
   ///
-  /// 池里一张卡都没有（FSRS 之前的老数据、从未走过 P3 入口）时，
-  /// 回落旧错因队列（_buildLegacyDueSessionQuestions），老题不断练；
-  /// 池非空时不再回落——否则筛选后 FSRS 建队为空会把排队的“待开始”
-  /// 题绕过释放上限放进会话。
+  /// 池里一张卡都没有（FSRS 之前的老数据、从未走过 P3 入口）时
+  /// 无到期（canStartDueSession 同口径）；FSRS 建队抛错时返回空
+  /// 队列（读库失败也不炸会话）。旧回落已删除：v7→v8 重放已覆盖
+  /// 有正式作答的题；已加入但无卡的题须经 P3 入口重新入池建卡
+  /// （见 V5 核查，终版报告）。
   Future<List<SessionQuestionState>> _buildDueSessionQuestions({
     String? onlyCause,
     String? onlySubjectId,
   }) async {
-    if (state.fsrsPoolIds.isEmpty) {
-      return _buildLegacyDueSessionQuestions(
-        onlyCause: onlyCause,
-        onlySubjectId: onlySubjectId,
-      );
-    }
+    if (state.fsrsPoolIds.isEmpty) return const [];
     try {
       final repo = _repo;
       final scheduler = ref.read(reviewSchedulerProvider);
@@ -1520,7 +1438,7 @@ class ReviewNotifier extends Notifier<ReviewState> {
       final causeFilter = onlyCause ?? (state.causeFilter == '全部'
           ? null
           : state.causeFilter);
-      final limit = state.settings.causesPerSession;
+      final limit = state.settings.questionsPerSession;
       final result = <SessionQuestionState>[];
       var used = 0;
       for (final questionId in orderedIds) {
@@ -1533,33 +1451,16 @@ class ReviewNotifier extends Notifier<ReviewState> {
         }
         if (subjectFilter != null && q.subjectId != subjectFilter) continue;
         if (typeFilter != null && q.questionType != typeFilter) continue;
-        // 本轮错因：未解决的 + 到了复查时间的已解决错因（与旧队列同规则）。
-        final causes = state.allCauseRecords
-            .where((r) => r.questionId == questionId)
-            .where(
-              (r) => r.status != CauseStatus.solved || r.isRecheckDue,
-            )
-            .map((r) => r.cause)
-            .toList();
-        // 按题内错因顺序排（与 load() 的 pending 排序同口径）。
-        final order = q.allCauses;
-        causes.sort(
-          (a, b) => order.indexOf(a).compareTo(order.indexOf(b)),
-        );
-        if (causes.isEmpty) continue;
+        // 本轮错因快照：该题的全部错因（q.allCauses）；空错因的题
+        // causes 为空也可练，不跳过。
+        final causes = q.allCauses;
         if (causeFilter != null && !causes.contains(causeFilter)) continue;
         if (limit > 0 && used >= limit) break;
-        used += causes.length;
-        final nonRound = state.allCauseRecords
-            .where((r) => r.questionId == questionId)
-            .map((r) => r.cause)
-            .where((c) => !causes.contains(c))
-            .toList();
+        used++;
         result.add(
           SessionQuestionState(
             questionId: questionId,
             causes: causes,
-            nonRoundCauses: nonRound,
             answerVersionAtStart: q.answerVersion,
             contentVersionAtStart: q.contentVersion,
             questionSubmissionId: newReviewUuid('qs'),
@@ -1569,65 +1470,18 @@ class ReviewNotifier extends Notifier<ReviewState> {
       }
       return result;
     } catch (_) {
-      // FSRS 建队失败时不断练：回落旧错因队列（读库失败也不炸会话）。
-      return _buildLegacyDueSessionQuestions(
-        onlyCause: onlyCause,
-        onlySubjectId: onlySubjectId,
-      );
+      // FSRS 建队失败时返回空队列（读库失败也不炸会话）；旧回落已删除。
+      return const [];
     }
-  }
-
-  /// 到期复习建队（M3-2，旧错因队列）：先筛错因、再按题去重；排序逾期/
-  /// 到期优先；数量按设置项“每会话错因数”截断（同一题的本轮错因完整处理）。
-  /// P4 起只在两种情况用：池里一张 FSRS 卡都没有（老数据回落），
-  /// 或 FSRS 建队抛错（兜底不断练）。
-  List<SessionQuestionState> _buildLegacyDueSessionQuestions({
-    String? onlyCause,
-    String? onlySubjectId,
-  }) {
-    final questionsById = {for (final q in state.allQuestions) q.id: q};
-    final queue = buildDueQueue(
-      records: state.allCauseRecords,
-      joinedQuestionIds: {
-        for (final q in state.allQuestions)
-          if (q.reviewJoined && q.isOrganized && !q.isArchived) q.id,
-      },
-      subjectFilter: onlySubjectId ?? state.subjectFilter,
-      typeFilter: state.typeFilter,
-      causeFilter: onlyCause ?? (state.causeFilter == '全部'
-          ? null
-          : state.causeFilter),
-      questionsById: questionsById,
-      limit: state.settings.causesPerSession,
-    );
-    return queue.map((item) {
-      final q = questionsById[item.questionId]!;
-      final nonRound = state.allCauseRecords
-          .where((r) => r.questionId == item.questionId)
-          .map((r) => r.cause)
-          .where((c) => !item.causes.contains(c))
-          .toList();
-      return SessionQuestionState(
-        questionId: item.questionId,
-        causes: item.causes,
-        nonRoundCauses: nonRound,
-        answerVersionAtStart: q.answerVersion,
-        contentVersionAtStart: q.contentVersion,
-        questionSubmissionId: newReviewUuid('qs'),
-        attemptSubmissionId: newReviewUuid('attsub'),
-      );
-    }).toList();
   }
 
   /// 专项练习建队（M3-2）：范围自选；可含未到期、未开始、未加入复习题。
+  /// FSRS 全量迁移包2：错因直接读 `q.allCauses`——recordsByQ 传空，
+  /// 由 buildPracticeQueue 的“无记录回退题面错因”分支兜底。
   List<SessionQuestionState> _buildPracticeSessionQuestions() {
-    final recordsByQ = <String, List<CauseRecord>>{};
-    for (final r in state.allCauseRecords) {
-      (recordsByQ[r.questionId] ??= []).add(r);
-    }
     final queue = buildPracticeQueue(
       questions: state.allQuestions,
-      recordsByQ: recordsByQ,
+      recordsByQ: const {},
       subjectFilter: state.practiceSubjectFilter,
       typeFilter: state.practiceTypeFilter,
       causeFilter: state.practiceCauseFilter == '全部'
@@ -1641,7 +1495,6 @@ class ReviewNotifier extends Notifier<ReviewState> {
       return SessionQuestionState(
         questionId: item.questionId,
         causes: item.causes,
-        nonRoundCauses: const [],
         answerVersionAtStart: q.answerVersion,
         contentVersionAtStart: q.contentVersion,
         questionSubmissionId: newReviewUuid('qs'),
@@ -1838,7 +1691,7 @@ class ReviewNotifier extends Notifier<ReviewState> {
       mode: ReviewMode.due,
       startIndex: startIndex,
       scopeLabel: fromGroup != null
-          ? state.scopeLabelForSession(questions)
+          ? state.scopeLabelForGroup(fromGroup)
           : state.scopeLabelForFilters(),
     );
     // P4：首题进入“看题”步，今日新题记一次首次呈现（未显示的题不记）。
@@ -2010,25 +1863,18 @@ class ReviewNotifier extends Notifier<ReviewState> {
     return PracticeStartOutcome.started;
   }
 
-  /// 指定题单建队：错因取该题待治记录（无记录时取题面错因），
+  /// 指定题单建队（FSRS 全量迁移包2）：错因直接读该题的 `q.allCauses`
+  /// （全部错因进会话；空错因的题也可练），
   /// 顺序按调用方给定的题单（抽题/去重由 [pickPracticeQuestions] 定）。
   List<SessionQuestionState> _sessionQuestionsForIds(List<String> ids) {
-    final recordsByQ = <String, List<CauseRecord>>{};
-    for (final r in state.allCauseRecords) {
-      (recordsByQ[r.questionId] ??= []).add(r);
-    }
     final out = <SessionQuestionState>[];
     for (final id in ids) {
       final q = state.questionOf(id);
       if (q == null) continue;
-      final causes = recordsByQ[id]?.map((r) => r.cause).toList();
       out.add(
         SessionQuestionState(
           questionId: id,
-          causes: (causes == null || causes.isEmpty)
-              ? q.allCauses
-              : causes,
-          nonRoundCauses: const [],
+          causes: q.allCauses,
           answerVersionAtStart: q.answerVersion,
           contentVersionAtStart: q.contentVersion,
           questionSubmissionId: newReviewUuid('qs'),
@@ -2407,7 +2253,7 @@ class ReviewNotifier extends Notifier<ReviewState> {
   /// （只适用于当前尚未作答的题目本身的快照，不覆盖历史 attempts，
   /// 不改动其他已作答题目的快照）；不生成 attempt，不写
   /// review_history，不计入跳过次数；不让用户再经历一次
-  /// “继续上次会话/放弃重开”的选择。
+  /// “继续上次会话/放弃上次会话”的选择。
   Future<void> refreshAfterDetailVisit() async {
     if (!state.hasCurrentQuestion) return;
     final sq = state.currentSessionQuestion;
@@ -2437,20 +2283,27 @@ class ReviewNotifier extends Notifier<ReviewState> {
     await load();
   }
 
-  /// 专项练习“将此错因重新加入复习”（用户主动操作，只影响后续会话，
-  /// 不改变本次练习记录，不自动触发治疗状态变化）。
-  Future<void> rejoinCauseFromPractice(String cause) async {
+  /// 专项练习“将这道题重新加入复习”（用户主动操作，只影响后续会话，
+  /// 不改变本次练习记录）。FSRS 全量迁移包2（V3）：按题重入池——
+  /// 题不在 FSRS 池 → 入池建卡；题已在池 → 不重复建卡、不重置现有
+  /// FSRS 状态（[QuestionRepository.joinFsrsPool] 幂等）。重置 FSRS
+  /// 状态须是另一个明确操作，不在本批做。
+  Future<void> rejoinCauseFromPractice() async {
     if (!state.hasCurrentQuestion) return;
     final q = state.currentQuestion;
     if (q == null) return;
-    await _repo.rejoinCause(
-      questionId: q.id,
-      cause: cause,
-      subjectId: q.subjectId,
+    final scheduler = ref.read(reviewSchedulerProvider);
+    final result = await _repo.joinFsrsPool(
+      questions: [q],
+      scheduler: scheduler,
     );
     if (_disposed) return;
     state = state.copyWith(
-      rejoinNotice: '「$cause」已重新加入复习，下次到期复习时会练到它',
+      rejoinNotice: result.failed > 0
+          ? '重新加入复习失败，请重试'
+          : result.added > 0
+              ? '这道题已重新加入复习，下次到期复习时会练到它'
+              : '这道题已在复习中',
     );
     await load();
   }

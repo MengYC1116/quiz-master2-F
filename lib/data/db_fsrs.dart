@@ -874,6 +874,115 @@ Future<Map<String, Object?>> migrateFsrsV7ToV8IntoImpl(
   return result;
 }
 
+// ---------------------------------------------------------------------------
+// 跟进批第 1 项（2026-11-27，Meng 定）：V5 缺卡一次性补建（通用规则）
+// ---------------------------------------------------------------------------
+
+/// 一次性补建缺卡的迁移源（写进 fsrs_migration_log.source；跑完一次
+/// 写 completed 行，再次开库直接跳过）。
+const String backfillMissingCardsSource = 'v8-backfill-missing-cards';
+
+/// 一次性补建缺卡（通用规则，不只针对演示库）：所有
+/// `review_joined = 1` 且无 fsrs_cards 行的题，逐题调
+/// [FsrsReviewScheduler.initializeQuestion] 补一张新卡。
+///
+/// - 新卡是未开始新卡（firstReviewedAt 为空）：只走“今日新题”释放，
+///   不进到期队列（getDueQuestions 只认 firstReviewedAt 非空的卡）。
+/// - 已有卡的题一根指头都不碰：补建前先数好已在池的题
+///   （skippedWithCardCount），候选只取无卡的题；initializeQuestion
+///   本身遇已有卡也直接返回，不建第二张、不重置状态。
+/// - 幂等：先查 fsrs_migration_log 里有没有本源的 completed 行，
+///   有则直接返回 already_backfilled；跑完在同一事务里写 completed
+///   行 + audit_json（补了哪些题 id、跳过多少已有卡），失败则连卡
+///   带日志一起回滚，下次开库重跑。
+/// - 调度配置用 [migrationSchedulerConfig]（fuzzing 关，与 v7→v8
+///   重放一致；新卡 due 即 now，与生产配置建出的新卡一致）。
+/// 调用点：开库 onBeforeOpen，跑在 v7→v8 迁移之后（重放先建出有
+/// 正式作答记录的题的卡，补建只接手重放后仍无卡的已加入题）。
+/// 返回 {status, run_id, backfilledQuestionIds, backfilledCount,
+/// skippedWithCardCount}；已跑过时只返回 {status: 'already_backfilled'}。
+Future<Map<String, Object?>> backfillMissingFsrsCardsIntoImpl(
+  QuizDatabase db, {
+  DateTime? now,
+}) async {
+  final table = await db
+      .customSelect(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'fsrs_cards'",
+      )
+      .getSingleOrNull();
+  if (table == null) {
+    throw StateError('fsrs_cards 表不存在，无法做缺卡补建：请先完成 schema v8 建表/升级');
+  }
+  final done = await _countRows(
+    db,
+    "SELECT COUNT(*) FROM fsrs_migration_log WHERE source = ? AND status = 'completed'",
+    [Variable.withString(backfillMissingCardsSource)],
+  );
+  if (done > 0) {
+    return {'status': 'already_backfilled'};
+  }
+  final runId = newReviewUuid('bfill');
+  final runAt = (now ?? DateTime.now()).toUtc();
+  late Map<String, Object?> result;
+  await db.transaction(() async {
+    // 先数已有卡的已加入题（补建前快照；补建后这个数会变，不能事后数）。
+    final skippedWithCard = await _countRows(
+      db,
+      'SELECT COUNT(*) FROM questions q WHERE q.review_joined = 1 '
+      'AND q.id IN (SELECT question_id FROM fsrs_cards)',
+    );
+    final missing = await db
+        .customSelect(
+          'SELECT q.id AS question_id FROM questions q '
+          'WHERE q.review_joined = 1 '
+          'AND q.id NOT IN (SELECT question_id FROM fsrs_cards) '
+          'ORDER BY q.id ASC',
+        )
+        .get();
+    final scheduler = FsrsReviewScheduler(
+      config: migrationSchedulerConfig,
+      store: SqliteCardStore.forDatabase(db),
+    );
+    final backfilled = <String>[];
+    for (final row in missing) {
+      final questionId = row.data['question_id'] as String;
+      // initializeQuestion 遇已有卡直接返回：即使 SELECT 与建卡之间
+      // 有并发入池，也绝不建第二张、不重置状态。
+      await scheduler.initializeQuestion(questionId);
+      backfilled.add(questionId);
+    }
+    await db.customInsert(
+      'INSERT INTO fsrs_migration_log(run_id, source, run_at, status, audit_json, replayed_count, skipped_count) '
+      'VALUES (?, ?, ?, ?, ?, ?, ?)',
+      variables: [
+        Variable.withString(runId),
+        Variable.withString(backfillMissingCardsSource),
+        Variable.withInt(runAt.millisecondsSinceEpoch),
+        Variable.withString('completed'),
+        Variable.withString(
+          jsonEncode({
+            'backfilledQuestionIds': backfilled,
+            'backfilledCount': backfilled.length,
+            'skippedWithCardCount': skippedWithCard,
+            'migrationConfigId': migrationSchedulerConfig.configId,
+            'note': '一次性补建：reviewJoined=1 且无卡的题补一张未开始新卡；已有卡的题不动。',
+          }),
+        ),
+        Variable.withInt(backfilled.length),
+        Variable.withInt(skippedWithCard),
+      ],
+    );
+    result = {
+      'status': 'completed',
+      'run_id': runId,
+      'backfilledQuestionIds': backfilled,
+      'backfilledCount': backfilled.length,
+      'skippedWithCardCount': skippedWithCard,
+    };
+  });
+  return result;
+}
+
 /// attempts 事实与 fsrs_cards 状态核对一致（测试与排障用）。
 ///
 /// 适用范围：仅对确定性调度建出的卡有效（迁移重放、fuzzing 关的测试

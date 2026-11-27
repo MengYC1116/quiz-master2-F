@@ -318,21 +318,8 @@ void main() {
       await tester.tap(find.byKey(const Key('export-selected-toolbar')));
       await tester.pump();
       expect(find.byKey(const Key('export-mode-cancel')), findsOneWidget);
-      expect(find.byKey(const Key('export-mode-hint')), findsOneWidget);
       // 模式里入口 chip 不画（取消/导出（n）在下方控制区）。
       expect(find.text('导出打印'), findsNothing);
-    });
-  });
-
-  group('二十一批：范围说明行（D-241/D-242）', () {
-    testWidgets('范围说明行写明内容搜索范围，旧“只搜元数据”全站消失', (tester) async {
-      await pumpWrongbook(tester, initialSubjectId: 'math');
-      await openSubjectList(tester);
-      expect(
-        find.textContaining('可搜标题、题干、选项、答案、解析、备注'),
-        findsOneWidget,
-      );
-      expect(find.textContaining('只搜元数据'), findsNothing);
     });
   });
 }

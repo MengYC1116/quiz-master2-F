@@ -730,7 +730,7 @@ void main() {
       expect(result.report.skippedCount, 1);
       expect(
         result.report.skippedList.single.skipReason,
-        '公式栅格化与原图裁剪均失败',
+        '公式无法呈现',
       );
       expect(result.questionPages.length, 1);
     });

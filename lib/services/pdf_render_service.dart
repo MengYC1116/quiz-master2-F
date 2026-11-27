@@ -105,7 +105,7 @@ class _PdfrxDocument implements PdfEngineDocument {
     final longEdge =
         pdfPage.width > pdfPage.height ? pdfPage.width : pdfPage.height;
     if (longEdge <= 0) {
-      throw const PdfCorruptException('这页没有尺寸，渲不出来');
+      throw const PdfCorruptException('这页没有尺寸，无法渲染');
     }
     final scale = targetLongEdge / longEdge;
     final width = (pdfPage.width * scale).round().clamp(1, 10000);
@@ -157,7 +157,7 @@ Future<Uint8List> _bgraToPng(
   try {
     final data = await image.toByteData(format: ui.ImageByteFormat.png);
     if (data == null) {
-      throw const PdfCorruptException('页图转 PNG 失败');
+      throw const PdfCorruptException('页图转换失败');
     }
     return data.buffer.asUint8List();
   } finally {

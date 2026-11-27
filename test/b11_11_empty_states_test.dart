@@ -247,25 +247,6 @@ Question _wq(
       isArchived: isArchived,
     );
 
-CauseRecord _wrec(
-  String questionId,
-  String cause, {
-  CauseStatus status = CauseStatus.solved,
-}) =>
-    CauseRecord(
-      questionId: questionId,
-      cause: cause,
-      subjectId: 'math',
-      status: status,
-      solvedCount: status == CauseStatus.solved ? 2 : 0,
-      lastCheck: DateTime.now(),
-      // 已解决且复查日在未来：不算“到了复查时间”，状态就是已解决。
-      recheckDate: status == CauseStatus.solved
-          ? DateTime.now().add(const Duration(days: 7))
-          : null,
-      joinedAt: DateTime.now().subtract(const Duration(days: 1)),
-    );
-
 class _B11WrongbookRepo extends QuestionRepository {
   _B11WrongbookRepo({required this.questions, required this.records})
       : super(AppDatabase.instance);
@@ -434,34 +415,10 @@ void main() {
       expect(went, 1);
     });
 
-    testWidgets('错题本：全已解决时点“看看已解决的题”出现该题',
-        (tester) async {
-      await _pumpScaffold(
-        tester,
-        WrongbookPage(
-          repo: _B11WrongbookRepo(
-            questions: [_wq('q1', '函数极限')],
-            records: [_wrec('q1', '概念不清')],
-          ),
-          initialSubjectId: 'math',
-          onOpenHome: () {},
-          onOpenDetail: (_, __, {String? searchContext}) async {},
-          onGoReview: ({String? subjectId}) {},
-        ),
-      );
-      // 二十三批 D-250：只带学科落目录，点「全部题目」进列表
-      //（十九批 A5“直接落列表”已废）。
-      await _tapText(tester, '全部题目');
-      expect(find.text('这里的题错因都已解决'), findsOneWidget);
-      await _tapText(tester, '看看已解决的题');
-      // 十九批 A1：板子行标题常显，不用切视图。
-      // 二十一批 D-244：行标题改显示题干（'题：求极限'），不再显示标题。
-      expect(
-        find.textContaining('题：求极限', findRichText: true),
-        findsOneWidget,
-      );
-    });
-
+    // FSRS 全量迁移包 4（V6）：旧测试「错题本：全已解决时点“看看已解决
+    // 的题”出现该题」随空态分支删除而删除——默认隐藏取消后该空态
+    // 不可达；全已解决的题默认直接显示，见 wrongbook_page_test.dart
+    // 「范围有题但全已解决：默认直接显示」。
     testWidgets('错题本：搜不到时点“清除全部筛选”恢复列表', (tester) async {
       await _pumpScaffold(
         tester,
@@ -551,10 +508,6 @@ void main() {
           onGoSubjects: () => went++,
           yoloService: _B11StubYolo(),
         ),
-      );
-      expect(
-        find.text('还没有学科：先去「学科管理」添加一个，再回来导入。'),
-        findsOneWidget,
       );
       await _tapText(tester, '去学科管理');
       expect(went, 1);

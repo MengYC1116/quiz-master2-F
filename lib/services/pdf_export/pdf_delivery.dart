@@ -254,7 +254,7 @@ class PdfDeliveryService {
         status: FileDeliveryStatus.failed,
         version: version,
         fileName: fileName,
-        error: '当前平台暂不支持导出落盘（仅支持 Windows 与 Android）。',
+        error: '当前平台暂不支持保存导出文件（仅支持 Windows 与 Android）。',
       ),
     );
   }
@@ -372,7 +372,7 @@ class PdfDeliveryService {
         status: FileDeliveryStatus.failed,
         version: version,
         fileName: targetPath.split(Platform.pathSeparator).last,
-        error: '交付失败：$e',
+        error: '请重试。',
       );
     }
   }
@@ -418,7 +418,7 @@ class PdfDeliveryService {
           const ShareResult(outcome: ShareOutcome.unavailable),
       };
     } catch (e) {
-      return ShareResult(outcome: ShareOutcome.failed, error: '分享失败：$e');
+      return ShareResult(outcome: ShareOutcome.failed, error: '请重试');
     }
   }
 
@@ -459,13 +459,15 @@ class PdfDeliveryService {
           ),
           ResultType.error => OpenPdfResult(
             success: false,
+            // P15 修正：通道消息是插件提供的有界原因串，透传（b20_p7 断言
+            // contains('boom')）；P15 降级只针对原始 $e 插值。
             error: result.message.isEmpty
                 ? '打开 PDF 失败，请重试。'
                 : '打开 PDF 失败：${result.message}',
           ),
         };
       } catch (e) {
-        return OpenPdfResult(success: false, error: '打开 PDF 失败：$e');
+        return OpenPdfResult(success: false, error: '打开 PDF 失败，请重试。');
       }
     }
     try {
@@ -474,10 +476,10 @@ class PdfDeliveryService {
           ? const OpenPdfResult(success: true)
           : const OpenPdfResult(
               success: false,
-              error: '打开文件失败，请检查默认 PDF 阅读器。',
+              error: '打开 PDF 失败，请检查默认 PDF 阅读器。',
             );
     } catch (e) {
-      return OpenPdfResult(success: false, error: '打开文件失败：$e');
+      return OpenPdfResult(success: false, error: '打开 PDF 失败，请重试。');
     }
   }
 

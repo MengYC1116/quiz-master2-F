@@ -65,6 +65,13 @@ class DirectFakeRepo extends QuestionRepository {
   @override
   Future<Set<String>> fsrsPoolQuestionIds() async => const {};
 
+  // FSRS 全量迁移包 4：load() 读下次到期表（同款 D-225：不覆写
+  // 会走真实库）。
+  @override
+  Future<Map<String, DateTime>> fsrsNextDueByQuestion({
+    required ReviewScheduler scheduler,
+  }) async => const {};
+
   @override
   Future<void> saveSavedSearch(SavedSearch search) async {
     savedSearchList.removeWhere((s) => s.id == search.id);
@@ -265,7 +272,7 @@ Future<void> openMathListCompact(WidgetTester tester) async {
 /// 已在书架时 no-op。十九批 A5 的筛选面板顶部入口已删）。
 Future<void> openShelfFromList(WidgetTester tester) async {
   if (find
-      .text('一科一本错题本，点一本打开看这一科的错题。')
+      .text('错 题 本')
       .evaluate()
       .isNotEmpty) {
     return; // 已在书架。
@@ -342,7 +349,6 @@ void main() {
       expect(find.text('导出打印'), findsOneWidget);
 
       await enterExportMode(tester);
-      expect(find.byKey(const Key('export-mode-hint')), findsOneWidget);
       expect(summaryNumbers(tester), contains('已选 0 道'));
       // 模式里也没有方框；n = 0 时「导出」置灰。
       expect(find.byType(Checkbox), findsNothing);

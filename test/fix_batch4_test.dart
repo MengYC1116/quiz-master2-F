@@ -141,9 +141,11 @@ void main() {
       ).readAsStringSync();
       expect(guide, isNot(contains('addCauseCheckHistory / ensureCauseRecords')));
       expect(guide, contains('FR-30 已删'));
-      // syncCauseRecords 本身还在（是 deleteCauseRecordsForQuestion
-      // 删掉后剩下的那一行），对照表仍有它。
-      expect(guide, contains('`syncCauseRecords` | 不发'));
+      // FSRS 全量迁移包2：syncCauseRecords 与 ensureCauseRecords 已删，
+      // 对照表两行都标注已删，不再称“不发”/“仅测试播种用”。
+      expect(guide, contains('`syncCauseRecords` | —'));
+      expect(guide, contains('`ensureCauseRecords` | —'));
+      expect(guide, contains('FSRS 全量迁移包2已删'));
     });
   });
 

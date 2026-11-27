@@ -79,7 +79,7 @@ class _FlakyScheduler extends FsrsReviewScheduler {
 }
 
 /// 复习侧 Fake：P2 的 _FakeP2Repo + P3 入口要的覆写
-///（setReviewJoined / fsrsPoolQuestionIds / loadAllAttempts / archive）。
+///（setReviewJoinedFlag / fsrsPoolQuestionIds / loadAllAttempts / archive）。
 class _FakeP3Repo extends QuestionRepository {
   _FakeP3Repo({required this.questions, required this.records})
     : super(AppDatabase.instance);
@@ -193,8 +193,7 @@ class _FakeP3Repo extends QuestionRepository {
       attempts.values.where((a) => a.sessionId == sessionId).toList();
 
   @override
-  Future<bool> setReviewJoined(Question q, bool joined) async {
-    if (q.allCauses.isEmpty) return false;
+  Future<bool> setReviewJoinedFlag(Question q, bool joined) async {
     final i = questions.indexWhere((e) => e.id == q.id);
     if (i >= 0) questions[i] = q.copyWith(reviewJoined: joined);
     return true;
@@ -311,7 +310,7 @@ class _FakeP3WrongbookRepo extends QuestionRepository {
   ];
   List<CauseRecord> records = [
     _rec('q1'),
-    _rec('q2').copyWith(status: CauseStatus.solved),
+    _rec('q2'),
     _rec('q3', cause: '计算错误'),
   ];
   ReviewScheduler? scheduler;
@@ -358,8 +357,7 @@ class _FakeP3WrongbookRepo extends QuestionRepository {
   Future<List<SavedSearch>> savedSearches() async => const [];
 
   @override
-  Future<bool> setReviewJoined(Question q, bool joined) async {
-    if (q.allCauses.isEmpty) return false;
+  Future<bool> setReviewJoinedFlag(Question q, bool joined) async {
     final i = questions.indexWhere((e) => e.id == q.id);
     if (i >= 0) questions[i] = q.copyWith(reviewJoined: joined);
     return true;
@@ -519,7 +517,7 @@ void main() {
   });
 
   group('P3 入口 1：错题本批量勾选', () {
-    test('全选全部筛选结果：文案含数量与口径；已在池的跳过并计数', () async {
+    test('全选（仅复习）：文案含数量与口径；已在池的跳过并计数', () async {
       final repo = _FakeP3WrongbookRepo();
       final (notifier, container) = await _wrongbookContainer(repo);
       final scheduler = container.read(reviewSchedulerProvider);
@@ -530,13 +528,16 @@ void main() {
       notifier.selectReviewAllFiltered();
       expect(
         container.read(wrongbookProvider).reviewSelectionLabel(),
-        '已选 3 道（全部筛选结果）',
+        '已选 4 道（全部筛选结果）',
       );
       final result = await notifier.joinReviewFsrs();
-      expect(result.message, contains('新增 2 道'));
+      expect(result.message, contains('新增 3 道'));
       expect(result.message, contains('1 道已在复习，跳过'));
       expect(result.showReviewAction, isTrue);
-      expect(await scheduler.pooledQuestionIds(), {'q1', 'q3', 'q4'});
+      expect(
+        await scheduler.pooledQuestionIds(),
+        {'q1', 'q2', 'q3', 'q4'},
+      );
       // 做完清空选择。
       expect(
         container.read(wrongbookProvider).reviewSelectionLabel(),
@@ -544,7 +545,7 @@ void main() {
       );
     });
 
-    test('分页选择：勾选当前页只影响当页题；行内已在复习标记', () async {
+    test('分页选择：勾选当前页（仅复习）只影响当页题；行内已在复习标记', () async {
       final repo = _FakeP3WrongbookRepo();
       final (notifier, container) = await _wrongbookContainer(repo);
       final scheduler = container.read(reviewSchedulerProvider);
@@ -570,7 +571,7 @@ void main() {
       notifier.selectReviewAllFiltered();
       expect(
         container.read(wrongbookProvider).reviewSelectionLabel(),
-        '已选 3 道（全部筛选结果）',
+        '已选 4 道（全部筛选结果）',
       );
       // 筛选一变，_pruneReviewSelection 立即清空旧的全选（不留到确认时）。
       notifier.setFilterErrorType('计算错误');
@@ -713,6 +714,20 @@ void main() {
       final repo = _twoQRepo();
       final container = _reviewContainer(repo);
       final notifier = container.read(reviewProvider.notifier);
+      // FSRS 全量迁移包2：正式复习只走 FSRS——先给 q1、q2 建已到期卡
+      //（建卡 + 3 天前答对一次，Good 首间隔 2 天，到期日在昨天），
+      //否则池空、startSession() 开不出会话（旧回落已删）。
+      //注意：种子卡须在 load() 之前建——fsrsPoolIds 是 load 时的快照。
+      final scheduler = container.read(reviewSchedulerProvider);
+      for (final id in ['q1', 'q2']) {
+        await scheduler.initializeQuestion(id);
+        await scheduler.recordAnswer(
+          id,
+          ReviewResult.good,
+          DateTime.now().subtract(const Duration(days: 3)),
+          'evt-p3-$id',
+        );
+      }
       await notifier.load();
       await notifier.startSession();
       await notifier.pauseSession();
@@ -741,6 +756,20 @@ void main() {
       final repo = _twoQRepo();
       final container = _reviewContainer(repo);
       final notifier = container.read(reviewProvider.notifier);
+      // FSRS 全量迁移包2：正式复习只走 FSRS——先给 q1、q2 建已到期卡
+      //（建卡 + 3 天前答对一次，Good 首间隔 2 天，到期日在昨天），
+      //否则池空、startSession() 开不出会话（旧回落已删）。
+      //注意：种子卡须在 load() 之前建——fsrsPoolIds 是 load 时的快照。
+      final scheduler = container.read(reviewSchedulerProvider);
+      for (final id in ['q1', 'q2']) {
+        await scheduler.initializeQuestion(id);
+        await scheduler.recordAnswer(
+          id,
+          ReviewResult.good,
+          DateTime.now().subtract(const Duration(days: 3)),
+          'evt-p3-$id',
+        );
+      }
       await notifier.load();
       await notifier.startSession();
       final outcome = await notifier.startPracticeWithIds(['q1']);
@@ -884,7 +913,7 @@ void main() {
       final stats = state.weakStats(group);
       expect(stats.sparse, isTrue);
       expect(stats.errorRate, isNull);
-      expect(stats.label, contains('近期错误率 —'));
+      expect(stats.label, contains('错误率 —'));
     });
   });
 
@@ -943,7 +972,7 @@ void main() {
       }
 
       // 默认预选 10 道，全选 25 道。
-      expect(find.text('将练习 10 道（共可选 25 道）'), findsOneWidget);
+      expect(find.text('将练习 10 道（已选 25 道）'), findsOneWidget);
       expect(find.text('共 25 道 · 第 1 / 2 页'), findsOneWidget);
       expect(find.text('已在复习'), findsOneWidget); // q0 在池里
       // 分页：下一页。
@@ -951,16 +980,16 @@ void main() {
       expect(find.text('共 25 道 · 第 2 / 2 页'), findsOneWidget);
       // 数量预选“全部”。
       await tapText('全部');
-      expect(find.text('将练习 25 道（共可选 25 道）'), findsOneWidget);
+      expect(find.text('将练习 25 道（已选 25 道）'), findsOneWidget);
       // 自定义超可选数时自动限到可选数。
       final customField = find.byKey(const Key('weak-custom-count'));
       await tester.ensureVisible(customField);
       await tester.enterText(customField, '999');
       await tester.pumpAndSettle();
-      expect(find.text('将练习 25 道（共可选 25 道）'), findsOneWidget);
+      expect(find.text('将练习 25 道（已选 25 道）'), findsOneWidget);
       await tester.enterText(customField, '3');
       await tester.pumpAndSettle();
-      expect(find.text('将练习 3 道（共可选 25 道）'), findsOneWidget);
+      expect(find.text('将练习 3 道（已选 25 道）'), findsOneWidget);
       // 开始专项练习：传全部勾选题 + 数量。
       await tapText('开始专项练习');
       expect(startedIds, hasLength(25));
@@ -982,7 +1011,7 @@ void main() {
       await tester.ensureVisible(row);
       await tester.tap(row);
       await tester.pumpAndSettle();
-      expect(find.text('将练习 10 道（共可选 24 道）'), findsOneWidget);
+      expect(find.text('将练习 10 道（已选 24 道）'), findsOneWidget);
       final joinButton = find.text('加入复习');
       await tester.ensureVisible(joinButton);
       await tester.tap(joinButton);

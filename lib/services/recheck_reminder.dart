@@ -1,10 +1,11 @@
-/// B4.1：复查提醒（应用内、进入应用时一次）。
+/// B4.1：到期复习提醒（应用内、进入应用时一次）。
 ///
 /// 触发条件（四条全满足才弹）：
 /// 1. 通知开关开着（设置 #20 `notifyEnabled`）；
-/// 2. 有错因到了复查时间（已解决且复查日 ≤ 今天，见
-///    `CauseRecord.isRecheckDue`；计数见 `QuestionRepository
-///    .recheckDueCauseCount`）；
+/// 2. 有 FSRS 卡到期（已开始正式复习且下次到期时间 ≤ 今天，见
+///    `QuestionRepository.fsrsDueTotal`；FSRS 全量迁移包 3 起
+///    计数源由错因数换成到期题数，不含未开始新题——新释放走
+///    `previewNewRelease` 另一条路）；
 /// 3. 已到当日提醒时间（设置 #21 `notifyTime`，默认 20:00）——
 ///    进应用时若还没到点，不提醒，等下次进应用时再判断；
 ///    到点指 `now >= 今天 notifyTime`（含整点那一刻）；

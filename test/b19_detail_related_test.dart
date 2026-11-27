@@ -146,41 +146,30 @@ List<CauseRecord> b19Records() {
       questionId: 'q-math-1',
       cause: '概念不清',
       subjectId: 'math',
-      status: CauseStatus.inProgress,
-      solvedCount: 1,
       joinedAt: now.subtract(const Duration(days: 2)),
     ),
     CauseRecord(
       questionId: 'q-eng-1',
       cause: '概念不清',
       subjectId: 'english',
-      status: CauseStatus.pending,
       joinedAt: now.subtract(const Duration(days: 1)),
     ),
     CauseRecord(
       questionId: 'q-pol-2',
       cause: '概念不清',
       subjectId: 'politics',
-      status: CauseStatus.solved,
-      solvedCount: 2,
       joinedAt: now.subtract(const Duration(days: 1)),
-      recheckDate: now.add(const Duration(days: 7)),
     ),
     CauseRecord(
       questionId: 'q-eng-3',
       cause: '方法不会',
       subjectId: 'english',
-      status: CauseStatus.solved,
-      solvedCount: 2,
       joinedAt: now.subtract(const Duration(days: 1)),
-      recheckDate: now.add(const Duration(days: 7)),
     ),
     CauseRecord(
       questionId: 'q-pol-3',
       cause: '方法不会',
       subjectId: 'politics',
-      status: CauseStatus.inProgress,
-      solvedCount: 1,
       joinedAt: now.subtract(const Duration(days: 1)),
     ),
   ];
@@ -305,9 +294,6 @@ class _B19Repo extends QuestionRepository {
   Future<void> recordQuestionViewed(String questionId) async {}
 
   @override
-  Future<void> syncCauseRecords(Question q) async {}
-
-  @override
   Future<void> save(Question question, {SaveToken? token}) async {
     saved.add(question);
     final i = questions.indexWhere((x) => x.id == question.id);
@@ -334,8 +320,7 @@ class _B19Repo extends QuestionRepository {
   }
 
   @override
-  Future<bool> setReviewJoined(Question q, bool joined) async {
-    if (joined && q.allCauses.isEmpty) return false;
+  Future<bool> setReviewJoinedFlag(Question q, bool joined) async {
     await save(q.copyWith(reviewJoined: joined));
     return true;
   }
@@ -602,7 +587,7 @@ void main() {
       expect(find.text('同错因的其他题 · 概念不清'), findsOneWidget);
       expect(find.text('学术词汇辨析'), findsOneWidget);
       expect(
-        find.text('英语 · 正式复习答对 0 次 · 答错 1 次 · 也栽在「概念不清」上，可对照着看'),
+        find.text('英语 · 正式复习答对 0 次 · 答错 1 次 · 也有「概念不清」这个错因，可对照着看'),
         findsOneWidget,
       );
       expect(find.text('跳过去 ›'), findsOneWidget);

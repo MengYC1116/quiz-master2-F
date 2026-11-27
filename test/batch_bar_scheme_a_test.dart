@@ -19,11 +19,10 @@ import 'wrongbook_page_test.dart'
         tapBatchMenuItem,
         threeSubjectRepo;
 
-/// 内存版 setReviewJoined：FakeWrongbookRepo 的基类实现走真库
+/// 内存版 setReviewJoinedFlag：FakeWrongbookRepo 的基类实现走真库
 ///（AppDatabase.instance），在 testWidgets 的 fake-async 里等不到
-/// 完成，入池会卡在第一道题的播种上；这里用内存版（与 b11_6 的
-/// _B116Repo 同语义：翻 reviewJoined 标记 + 给缺失错因补记录，
-/// 无错因返回 false——只建卡、不播种）。
+/// 完成；这里只翻内存里的 reviewJoined 标记（与 b11_6 的 _B116Repo
+/// 同语义；FSRS 全量迁移包2：不再播种错因记录，无错因的题也可加）。
 class _MemoryJoinRepo extends FakeWrongbookRepo {
   _MemoryJoinRepo(FakeWrongbookRepo base)
       : super(
@@ -40,24 +39,9 @@ class _MemoryJoinRepo extends FakeWrongbookRepo {
         );
 
   @override
-  Future<bool> setReviewJoined(Question q, bool joined) async {
-    if (joined && q.allCauses.isEmpty) return false;
+  Future<bool> setReviewJoinedFlag(Question q, bool joined) async {
     final i = questions.indexWhere((x) => x.id == q.id);
     if (i >= 0) questions[i] = questions[i].copyWith(reviewJoined: joined);
-    if (joined) {
-      for (final c in q.allCauses) {
-        if (!records.any((r) => r.questionId == q.id && r.cause == c)) {
-          records.add(
-            CauseRecord(
-              questionId: q.id,
-              cause: c,
-              subjectId: q.subjectId,
-              joinedAt: DateTime.now(),
-            ),
-          );
-        }
-      }
-    }
     return true;
   }
 }
@@ -135,19 +119,23 @@ void main() {
       await tester.tap(find.text('批量操作'));
       await tester.pumpAndSettle();
       expect(find.text('已选 0 道'), findsOneWidget);
-      // 数学列表 3 道（q1/q2/q3；q7 已掌握不计入）全入池。
+      // 数学列表 4 道（q1/q2/q3/q7；包 4 默认隐藏取消后 q7 也显示）全入池。
       await tapBatchMenuItem(tester, 'batch-review-menu', '全部加入复习');
-      expect(find.text('新增 3 道'), findsOneWidget);
+      expect(find.text('新增 4 道'), findsOneWidget);
       expect(find.text('开始复习'), findsOneWidget);
-      expect(await scheduler.pooledQuestionIds(), {'q1', 'q2', 'q3'});
+      expect(await scheduler.pooledQuestionIds(), {'q1', 'q2', 'q3', 'q7'});
       await tester.tap(find.text('开始复习'));
       await tester.pumpAndSettle();
       expect(goReviewCalls, 1);
-      // 再点一次：3 道都已在池，全跳过，不再给开始复习入口。
+      // 再点一次：4 道都已在池，全跳过，不再给开始复习入口。
+      // 注意：页面“全部加入复习”走 joinReviewFsrsAll → fsrsBatchMessage，
+      // 跳过文案是「4 道已在复习，跳过」（不带“中”）；带“中”的是
+      // 另一条 joinReviewResultMessage（batchJoinReviewAll 内部用，
+      // 页面不走它）。
       await tapBatchMenuItem(tester, 'batch-review-menu', '全部加入复习');
-      expect(find.text('3 道已在复习，跳过'), findsOneWidget);
+      expect(find.text('4 道已在复习，跳过'), findsOneWidget);
       expect(find.text('开始复习'), findsNothing);
-      expect(await scheduler.pooledQuestionIds(), {'q1', 'q2', 'q3'});
+      expect(await scheduler.pooledQuestionIds(), {'q1', 'q2', 'q3', 'q7'});
     });
 
     testWidgets('选 1 道后复习菜单四项全可用', (tester) async {
@@ -165,24 +153,24 @@ void main() {
       expect(batchMenuItem(tester, '取消加入复习').onPressed, isNotNull);
     });
 
-    testWidgets('菜单项执行：整理菜单收藏 3 道；选择菜单清除选择',
+    testWidgets('菜单项执行：整理菜单收藏 4 道；选择菜单清除选择',
         (tester) async {
       final repo = threeSubjectRepo();
       await pumpWrongbook(tester, repo: repo);
       await openMathList(tester);
       await tester.tap(find.text('批量操作'));
       await tester.pumpAndSettle();
-      await tapBatchMenuItem(tester, 'batch-select-menu', '全选当前结果');
-      expect(find.text('已选 3 道'), findsOneWidget);
+      await tapBatchMenuItem(tester, 'batch-select-menu', '全选（整理、复习、删除）');
+      expect(find.text('已选 4 道'), findsOneWidget);
       // 点选项即执行并关菜单。
       await tapBatchMenuItem(tester, 'batch-organize-menu', '收藏');
-      expect(find.text('已收藏 3 道'), findsOneWidget);
+      expect(find.text('已收藏 4 道'), findsOneWidget);
       expect(find.text('收藏'), findsNothing);
       // 收藏执行完清空通用选择：整理与删除重新禁用。
       expect(batchBtn(tester, '整理').onPressed, isNull);
       expect(batchBtn(tester, '批量删除').onPressed, isNull);
       // 加题选择还在（收藏只清通用选择）：清除选择把它也清掉。
-      expect(find.text('已选 3 道'), findsOneWidget);
+      expect(find.text('已选 4 道'), findsOneWidget);
       await tapBatchMenuItem(tester, 'batch-select-menu', '清除选择');
       expect(find.text('已选 0 道'), findsOneWidget);
       expect(find.text('清除选择'), findsNothing);
@@ -218,7 +206,7 @@ void main() {
       await tester.tap(find.byKey(const Key('batch-select-menu')));
       await tester.pumpAndSettle();
       expect(find.text('批量删除'), findsOneWidget);
-      expect(find.text('全选当前结果'), findsOneWidget);
+      expect(find.text('全选（整理、复习、删除）'), findsOneWidget);
       // 关菜单，再点删除：重新待确认；第二下真正执行。
       await tester.tap(find.byKey(const Key('batch-select-menu')));
       await tester.pumpAndSettle();

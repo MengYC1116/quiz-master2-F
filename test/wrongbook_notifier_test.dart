@@ -12,7 +12,9 @@ import 'package:quiz_master2/data/database.dart';
 import 'package:quiz_master2/data/repository.dart';
 import 'package:quiz_master2/data/review_scheduler.dart';
 import 'package:quiz_master2/models/models.dart';
+import 'package:quiz_master2/state/detail_notifier.dart';
 import 'package:quiz_master2/state/repository_provider.dart';
+import 'package:quiz_master2/state/review_notifier.dart';
 import 'package:quiz_master2/state/wrongbook_notifier.dart';
 
 Question _wbq(
@@ -40,17 +42,10 @@ Question _wbq(
   sliceText: '题',
 );
 
-CauseRecord _rec(
-  String qid,
-  String cause, {
-  CauseStatus status = CauseStatus.pending,
-  DateTime? recheckDate,
-}) => CauseRecord(
+CauseRecord _rec(String qid, String cause) => CauseRecord(
   questionId: qid,
   cause: cause,
   subjectId: 'math',
-  status: status,
-  recheckDate: recheckDate,
   joinedAt: DateTime(2026, 11, 10),
 );
 
@@ -94,7 +89,7 @@ class FakeWrongbookNotifierRepo extends QuestionRepository {
   List<String> tagList = ['易错'];
   List<CauseRecord> records = [
     _rec('q1', '概念不清'),
-    _rec('q2', '概念不清', status: CauseStatus.solved),
+    _rec('q2', '概念不清'),
     _rec('q3', '计算错误'),
   ];
   Map<String, (int, int, int)> counts = {
@@ -176,8 +171,30 @@ class FakeWrongbookNotifierRepo extends QuestionRepository {
   Future<List<CauseRecord>> causeRecords() async => List.of(records);
 
   // P3 入口 1：池内标记（Fake 不碰真实数据库，默认空集）。
+  // FSRS 全量迁移包 4：_setUp 把内存调度器挂到 scheduler 上后，
+  // 池内标记与下次到期表都读该调度器（与生产 repo.fsrsPoolQuestionIds
+  // / fsrsNextDueByQuestion 同口径）；不挂时按空集 / 空表。
+  ReviewScheduler? scheduler;
+
   @override
-  Future<Set<String>> fsrsPoolQuestionIds() async => const {};
+  Future<Set<String>> fsrsPoolQuestionIds() async =>
+      scheduler == null ? const {} : scheduler!.pooledQuestionIds();
+
+  @override
+  Future<Map<String, DateTime>> fsrsNextDueByQuestion({
+    required ReviewScheduler scheduler,
+  }) async {
+    // 只读 _setUp 挂上的内存调度器；不挂时按空表——不碰传入的
+    // 真实调度器（它会开真库，单测里又慢又会触发 autoDispose
+    // 销毁重建的时序问题）。
+    final s = this.scheduler;
+    if (s == null) return const {};
+    final cards = await s.loadAllCards();
+    return {
+      for (final c in cards)
+        if (c.firstReviewedAt != null) c.questionId: c.card.due,
+    };
+  }
 
   @override
   Future<AppSettings> settings() async => settingsValue;
@@ -249,8 +266,8 @@ class FakeWrongbookNotifierRepo extends QuestionRepository {
   }
 
   @override
-  Future<bool> setReviewJoined(Question q, bool joined) async {
-    if (q.allCauses.isEmpty) return false;
+  Future<bool> setReviewJoinedFlag(Question q, bool joined) async {
+    // FSRS 全量迁移包2：无错因的题也可翻标志（旧空错因守门已删）。
     final i = questions.indexWhere((e) => e.id == q.id);
     if (i >= 0) questions[i] = q.copyWith(reviewJoined: joined);
     return true;
@@ -260,10 +277,20 @@ class FakeWrongbookNotifierRepo extends QuestionRepository {
 Future<(FakeWrongbookNotifierRepo, WrongbookNotifier, ProviderContainer)>
 _setUp({WrongbookInitial initial = const WrongbookInitial()}) async {
   final repo = FakeWrongbookNotifierRepo();
+  // FSRS 全量迁移包 4：确定性内存调度器（与 Fake 的池内标记 /
+  // 下次到期表同一实例，测试里可经它预置 FSRS 状态）。
+  final scheduler = FsrsReviewScheduler(
+    config: const SchedulerConfig(enableFuzzing: false),
+    store: InMemoryCardStore(),
+  );
+  repo.scheduler = scheduler;
   final container = ProviderContainer.test(
     overrides: [
       repositoryProvider.overrideWithValue(repo),
       wrongbookInitialProvider.overrideWithValue(initial),
+      // FSRS 全量迁移包2：批量加入复习读 reviewSchedulerProvider
+      //（确定性内存调度器，不碰真实库；测试里可经同一实例预置池）。
+      reviewSchedulerProvider.overrideWithValue(scheduler),
     ],
   );
   final notifier = container.read(wrongbookProvider.notifier);
@@ -367,28 +394,209 @@ void main() {
     expect(s.subjectId, 'math');
     expect(s.folderId, 'f1');
     final ids = s.filteredAll().map((q) => q.id).toSet();
-    // f1 里 q1 在、q2 已掌握默认隐藏、q5 已归档、q6 未整理；
+    // f1 里 q1、q2 都在（FSRS 全量迁移包 4：默认隐藏取消，q2 的
+    // 错因全已解决也不再隐藏）；q5 已归档、q6 未整理不进列表；
     // f2 的 q3 不在。
     expect(ids, contains('q1'));
-    expect(ids, isNot(contains('q2')));
+    expect(ids, contains('q2'));
     expect(ids, isNot(contains('q3')));
   });
 
-  test('列表过滤：已掌握默认隐藏，筛已解决才出现；归档/未整理不进列表', () async {
+  // FSRS 全量迁移包 4：默认隐藏取消——错因全部已解决的题（q2）
+  // 默认也显示；归档 / 未整理仍不进列表。旧测试「已掌握默认隐藏，
+  // 筛已解决才出现」随行为删除而重写，见下方 FSRS 筛选组。
+  test('列表过滤：默认显示全部已整理题（含已解决错因的题）；归档/未整理不进列表', () async {
     final (_, notifier, container) = await _setUp(
       initial: const WrongbookInitial(subjectId: 'math'),
     );
     addTearDown(container.dispose);
-    // q2 错因全部已解决 → 已掌握，默认隐藏；q5 已归档、q6 未整理不进。
+    // q2 错因全部已解决也不再隐藏；q5 已归档、q6 未整理不进。
     notifier.openList(subjectId: 'math', folderId: null);
     var ids = container.read(wrongbookProvider).filteredAll().map((q) => q.id);
-    expect(ids, containsAll(['q1', 'q3']));
-    expect(ids, isNot(contains('q2')));
+    expect(ids, containsAll(['q1', 'q2', 'q3']));
     expect(ids, isNot(contains('q5')));
     expect(ids, isNot(contains('q6')));
-    notifier.setFilterCauseStatus('solved');
+    // FSRS 状态筛选“未加入复习”：默认内存调度器里没有卡，全在。
+    notifier.setFilterReviewStatus('notJoined');
     ids = container.read(wrongbookProvider).filteredAll().map((q) => q.id);
-    expect(ids, contains('q2'));
+    expect(ids, containsAll(['q1', 'q2', 'q3']));
+  });
+
+  // FSRS 全量迁移包 4：复习状态筛选 / 到期排序 / 空态 / 旧条件丢弃。
+  group('FSRS 错题本迁移', () {
+    Future<(FakeWrongbookNotifierRepo, WrongbookNotifier, ProviderContainer)>
+    setUpWithFsrs({
+      WrongbookInitial initial = const WrongbookInitial(),
+    }) async {
+      final repo = FakeWrongbookNotifierRepo();
+      final scheduler = FsrsReviewScheduler(
+        config: const SchedulerConfig(enableFuzzing: false),
+        store: InMemoryCardStore(),
+      );
+      repo.scheduler = scheduler;
+      final now = DateTime.now();
+      // q1：30 天前答对一次 → 下次到期日在过去 → 已到期。
+      await scheduler.recordAnswer(
+        'q1',
+        ReviewResult.good,
+        now.subtract(const Duration(days: 30)),
+        'e-q1',
+      );
+      // q2：现在答对一次 → 下次到期日在未来 → 未到期。
+      await scheduler.recordAnswer(
+        'q2',
+        ReviewResult.good,
+        now,
+        'e-q2',
+      );
+      // q3：只建卡、未开始正式复习 → 未开始。
+      await scheduler.initializeQuestion('q3');
+      // q4：无卡 → 未加入复习。
+      final container = ProviderContainer.test(
+        overrides: [
+          repositoryProvider.overrideWithValue(repo),
+          wrongbookInitialProvider.overrideWithValue(initial),
+          reviewSchedulerProvider.overrideWithValue(scheduler),
+        ],
+      );
+      final notifier = container.read(wrongbookProvider.notifier);
+      await notifier.load();
+      return (repo, notifier, container);
+    }
+
+    test('FSRS 筛选：已到期 / 未到期 / 未开始 / 未加入复习各只剩对应题', () async {
+      final (_, notifier, container) = await setUpWithFsrs(
+        initial: const WrongbookInitial(subjectId: 'math'),
+      );
+      addTearDown(container.dispose);
+      notifier.openList(subjectId: 'math', folderId: null);
+      List<String> ids() => container
+          .read(wrongbookProvider)
+          .filteredAll()
+          .map((q) => q.id)
+          .toList();
+      expect(ids(), containsAll(['q1', 'q2', 'q3']));
+      notifier.setFilterReviewStatus('due');
+      expect(ids(), ['q1']);
+      notifier.setFilterReviewStatus('notDue');
+      expect(ids(), ['q2']);
+      notifier.setFilterReviewStatus('notStarted');
+      expect(ids(), ['q3']);
+      notifier.setFilterReviewStatus('notJoined');
+      expect(ids(), isEmpty);
+      // 英语范围：q4 无卡 → 未加入复习。
+      notifier.openList(subjectId: 'english', folderId: null);
+      notifier.setFilterReviewStatus('notJoined');
+      expect(ids(), ['q4']);
+      notifier.setFilterReviewStatus('due');
+      expect(ids(), isEmpty);
+    });
+
+    test('FSRS 状态键与 pill 文案：四态与详情页同口径', () async {
+      final (_, _, container) = await setUpWithFsrs(
+        initial: const WrongbookInitial(subjectId: 'math'),
+      );
+      addTearDown(container.dispose);
+      final s = container.read(wrongbookProvider);
+      Question q(String id) =>
+          s.questions.firstWhere((e) => e.id == id);
+      expect(s.fsrsStatusKeyOf(q('q1')), 'due');
+      expect(s.fsrsStatusKeyOf(q('q2')), 'notDue');
+      expect(s.fsrsStatusKeyOf(q('q3')), 'notStarted');
+      expect(s.fsrsStatusKeyOf(q('q4')), 'notJoined');
+      expect(reviewStatusPillLabel(s.fsrsReviewStatusOf(q('q1'))), '已到期');
+      expect(reviewStatusPillLabel(s.fsrsReviewStatusOf(q('q2'))), '未到期');
+      expect(reviewStatusPillLabel(s.fsrsReviewStatusOf(q('q3'))), '未开始');
+      expect(
+        reviewStatusPillLabel(s.fsrsReviewStatusOf(q('q4'))),
+        '未加入复习',
+      );
+      // 已到期 / 未到期有下次到期日文案，未开始 / 未加入复习没有。
+      expect(
+        reviewDueLabel(s.fsrsReviewStatusOf(q('q1'))),
+        startsWith('下次到期 '),
+      );
+      expect(reviewDueLabel(s.fsrsReviewStatusOf(q('q3'))), '未开始');
+      expect(reviewDueLabel(s.fsrsReviewStatusOf(q('q4'))), '未加入复习');
+    });
+
+    test('FSRS 排序：到期时间正序已到期优先，倒序反之，无到期日两向都排末尾', () async {
+      final (_, notifier, container) = await setUpWithFsrs(
+        initial: const WrongbookInitial(subjectId: 'math'),
+      );
+      addTearDown(container.dispose);
+      notifier.openList(subjectId: 'math', folderId: null);
+      List<String> ids() => container
+          .read(wrongbookProvider)
+          .filteredAll()
+          .map((q) => q.id)
+          .toList();
+      // 基线时间新→旧：q1（11/10）→ q2（11/9）→ q3（11/8）。
+      notifier.setSort('new');
+      expect(ids(), ['q1', 'q2', 'q3']);
+      notifier.setSort('due-asc');
+      // 最近到期在前：q1（已到期，约 27 天前）→ q2（约 3 天后）→
+      // q3（未开始，无到期日，排末尾）。
+      expect(ids(), ['q1', 'q2', 'q3']);
+      notifier.setSort('due-desc');
+      // 最晚到期在前：q2 → q1 → q3（无到期日，仍排末尾）。
+      expect(ids(), ['q2', 'q1', 'q3']);
+    });
+
+    test('V6：范围有题且无搜索无筛选时列表非空，旧空态分支不可达', () async {
+      final (_, notifier, container) = await _setUp(
+        initial: const WrongbookInitial(subjectId: 'math'),
+      );
+      addTearDown(container.dispose);
+      notifier.openList(subjectId: 'math', folderId: null);
+      final s = container.read(wrongbookProvider);
+      // 范围有题（scopeQuestionCount > 0）、无搜索无筛选：
+      // 列表必非空——旧“这里的题错因都已解决”空态无触发条件。
+      expect(s.scopeQuestionCount(), 3);
+      expect(s.search, '');
+      expect(s.activeFilterCount(), 0);
+      expect(s.filteredAll().map((q) => q.id), containsAll(['q1', 'q2', 'q3']));
+      expect(s.filteredAll(), hasLength(3));
+    });
+
+    test('V12：已存查找旧 causeStatus 值加载时丢弃为全部，不硬映射', () async {
+      // 归一化层：旧值直接丢弃，新值保留。
+      expect(normalizeConditions(const {'causeStatus': 'solved'}), isEmpty);
+      expect(normalizeConditions(const {'causeStatus': 'pending'}), isEmpty);
+      expect(normalizeConditions(const {'causeStatus': 'recheck'}), isEmpty);
+      expect(
+        normalizeConditions(const {'causeStatus': 'due'}),
+        {'causeStatus': 'due'},
+      );
+      // 应用层：带旧值的已存查找打开后筛选回到全部（条件变宽一次）。
+      final (_, notifier, container) = await _setUp();
+      addTearDown(container.dispose);
+      notifier.applySearchConditions(const {'causeStatus': 'solved'});
+      expect(
+        container.read(wrongbookProvider).filterReviewStatus,
+        'all',
+      );
+      notifier.applySearchConditions(const {'causeStatus': 'due'});
+      expect(
+        container.read(wrongbookProvider).filterReviewStatus,
+        'due',
+      );
+    });
+
+    test('仅逾期筛选走 FSRS 到期，不读复查日', () async {
+      final (_, notifier, container) = await setUpWithFsrs(
+        initial: const WrongbookInitial(subjectId: 'math'),
+      );
+      addTearDown(container.dispose);
+      notifier.openList(subjectId: 'math', folderId: null);
+      // q1 FSRS 已到期 → 仅逾期只剩 q1；q2 未到期、q3 未开始不在内。
+      // （旧口径下三题都没有到复查日的记录，会全被滤掉。）
+      notifier.toggleFilterOverdue();
+      expect(
+        container.read(wrongbookProvider).filteredAll().map((q) => q.id),
+        ['q1'],
+      );
+    });
   });
 
   // 十九批 A3（D-218）：保存查找的增删应用（notifier 层）。
@@ -437,7 +645,7 @@ void main() {
     expect(s.recentSearches.map((r) => r.name), isNot(contains('概念不清题')));
   });
 
-  test('文件夹范围：子树收题；目录计数只收已整理未归档未掌握', () async {
+  test('文件夹范围：子树收题；目录计数只收已整理未归档', () async {
     final (_, notifier, container) = await _setUp(
       initial: const WrongbookInitial(subjectId: 'math'),
     );
@@ -447,10 +655,12 @@ void main() {
         .read(wrongbookProvider)
         .filteredAll()
         .map((q) => q.id);
-    // f1 子树含 f1a；q1 在 f1，q2 在 f1 但已掌握默认隐藏。
+    // f1 子树含 f1a；q1、q2 都在 f1（FSRS 全量迁移包 4：q2 不再
+    // 因错因已解决被隐藏）；q3 在 f2，不在。
     expect(ids, contains('q1'));
+    expect(ids, contains('q2'));
     expect(ids, isNot(contains('q3')));
-    expect(container.read(wrongbookProvider).folderCount('f1'), 1);
+    expect(container.read(wrongbookProvider).folderCount('f1'), 2);
     expect(container.read(wrongbookProvider).folderCount('f2'), 1);
   });
 
@@ -476,11 +686,11 @@ void main() {
     addTearDown(container.dispose);
     notifier.openList(subjectId: 'math', folderId: null);
     notifier.setSearch('试卷');
-    notifier.setFilterCauseStatus('pending');
+    notifier.setFilterReviewStatus('due');
     notifier.resetFilters();
     final s = container.read(wrongbookProvider);
     expect(s.search, '');
-    expect(s.filterCauseStatus, 'all');
+    expect(s.filterReviewStatus, 'all');
     expect(s.sort, 'new');
     expect(s.activeFilterCount(), 0);
   });
@@ -548,19 +758,23 @@ void main() {
     expect(container.read(wrongbookProvider).selected, isEmpty);
   });
 
-  test('批量加入复习：只加未解决错因，汇总含开始复习入口', () async {
+  test('批量加入复习：不在池的加入、已在池的跳过，汇总含开始复习入口', () async {
     final (repo, notifier, container) = await _setUp(
       initial: const WrongbookInitial(subjectId: 'math'),
     );
     addTearDown(container.dispose);
     notifier.openList(subjectId: 'math', folderId: null);
     notifier.update((s) => s.copyWith(selected: {'q1', 'q2', 'q3'}));
-    // q1 待解决、q3 待解决可加入；q2 已解决跳过。
+    // FSRS 全量迁移包2：判定只看池——q2 预先入池（错因记录状态
+    // 不再影响判定）；q1、q3 不在池，加入。
+    final scheduler = container.read(reviewSchedulerProvider);
+    await scheduler.initializeQuestion('q2');
     final r = await notifier.batchJoinReviewSelected();
     expect(r.message, contains('已加入复习 2 道'));
-    expect(r.message, contains('1 道已无未解决错因，跳过'));
+    expect(r.message, contains('1 道已在复习中，跳过'));
     expect(r.showReviewAction, isTrue);
     expect(repo.questions.firstWhere((q) => q.id == 'q1').reviewJoined, isTrue);
+    expect(repo.questions.firstWhere((q) => q.id == 'q3').reviewJoined, isTrue);
     expect(
       repo.questions.firstWhere((q) => q.id == 'q2').reviewJoined,
       isFalse,
@@ -726,11 +940,14 @@ void main() {
     // 值相等的新实例：有 `==` 时 Riverpod 认为值没变（与
     // DetailInitial / ReviewInitial 同款）；即使没有 `==`，已挂载的
     // notifier 也不重建——initial 只在挂载时读一次。
+    // updateOverrides 的覆盖数须与 _setUp 一致，调度器覆盖一并带上。
+    final scheduler = container.read(reviewSchedulerProvider);
     container.updateOverrides([
       repositoryProvider.overrideWithValue(repo),
       wrongbookInitialProvider.overrideWithValue(
         const WrongbookInitial(subjectId: 'math', filterCause: '概念不清'),
       ),
+      reviewSchedulerProvider.overrideWithValue(scheduler),
     ]);
     final s2 = container.read(wrongbookProvider);
     expect(s2.view, WrongbookView.list);
@@ -741,6 +958,7 @@ void main() {
     container.updateOverrides([
       repositoryProvider.overrideWithValue(repo),
       wrongbookInitialProvider.overrideWithValue(const WrongbookInitial()),
+      reviewSchedulerProvider.overrideWithValue(scheduler),
     ]);
     final s3 = container.read(wrongbookProvider);
     expect(s3.view, WrongbookView.list);

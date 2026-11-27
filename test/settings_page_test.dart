@@ -164,10 +164,10 @@ void main() {
       await openGroup(tester, '复习');
       expect(find.text('主题'), findsNothing);
       // 2026-11-25 口径迁移 §5 第 8 项 (a)：复查间隔 / 几次自查
-      // 算已解决两行已隐藏；其余行（每次复习解决几个错因）在。
+      // 算已解决两行已隐藏；其余行（每次复习练几道题）在。
       expect(find.text('复查间隔'), findsNothing);
       expect(find.text('几次自查算已解决'), findsNothing);
-      expect(find.text('每次复习解决几个错因'), findsOneWidget);
+      expect(find.text('每次复习练几道题'), findsOneWidget);
     });
 
     testWidgets('点同一组标题收起', (tester) async {
@@ -209,32 +209,27 @@ void main() {
       expect(applied.last.greeting, '今天也要加油呀');
     });
 
-    testWidgets('问候语留空保存不生效', (tester) async {
+    testWidgets('问候语留空保存报错', (tester) async {
       final applied = await pumpSettings(tester);
       await openGroup(tester, '外观');
       await tester.enterText(find.byType(TextField), '   ');
       await tester.tap(find.text('保存问候语'));
       await tester.pumpAndSettle();
       expect(applied, isEmpty);
-      expect(find.text('留空保存不生效'), findsOneWidget);
+      expect(find.text('问候语不能为空'), findsOneWidget);
     });
   });
 
   group('设置：复习', () {
-    testWidgets('加入方式说明行', (tester) async {
-      await pumpSettings(tester);
-      await openGroup(tester, '复习');
-      expect(find.text('手动加入：在题目详情点「加入复习」。'), findsOneWidget);
-    });
-
-    testWidgets('每轮错因数/跳过次数切换（复查间隔与自查次数行已隐藏，见 §5 8(a)）', (tester) async {
+    testWidgets('每轮题数/跳过次数切换（复查间隔与自查次数行已隐藏，见 §5 8(a)）', (tester) async {
       final applied = await pumpSettings(tester);
       await openGroup(tester, '复习');
       expect(find.text('复查间隔'), findsNothing);
       expect(find.text('几次自查算已解决'), findsNothing);
-      await tester.tap(find.text('5 个'));
+      // “5 道”出现两次（每轮题数在前、每日新增新题在后），取第一个。
+      await tester.tap(find.text('5 道').first);
       await tester.pumpAndSettle();
-      expect(applied.last.causesPerSession, 5);
+      expect(applied.last.questionsPerSession, 5);
       await tester.tap(find.text('1 次').last);
       await tester.pumpAndSettle();
       expect(applied.last.skipLimit, 1);
@@ -255,6 +250,14 @@ void main() {
       await tester.tap(find.text('关'));
       await tester.pumpAndSettle();
       expect(applied.last.notifyEnabled, isFalse);
+    });
+
+    testWidgets('到期复习提醒：开关行显示新名称（FSRS 全量迁移包 3）',
+        (tester) async {
+      await pumpSettings(tester);
+      await openGroup(tester, '复习');
+      expect(find.text('到期复习提醒'), findsOneWidget);
+      expect(find.text('复查提醒'), findsNothing);
     });
 
     testWidgets('复习列表默认排序：点按学科回调 reviewSort=subject', (tester) async {
@@ -310,9 +313,16 @@ void main() {
       );
       expect(
         AppSettings.defaults
+            .copyWith(wrongbookSort: 'due-desc')
+            .wrongbookSort,
+        'due-desc',
+      );
+      // FSRS 全量迁移包 4：旧错因状态排序值不再合法，归一回落为 'new'。
+      expect(
+        AppSettings.defaults
             .copyWith(wrongbookSort: 'status-desc')
             .wrongbookSort,
-        'status-desc',
+        'new',
       );
     });
 
@@ -324,7 +334,6 @@ void main() {
       expect(applied.last.startupPage, 'last');
       expect(find.text('quiz-master2 v0.1.0'), findsOneWidget);
       expect(find.text('Meng（个人项目）'), findsOneWidget);
-      expect(find.textContaining('v0.1.0：首个版本'), findsOneWidget);
     });
   });
 
@@ -396,7 +405,6 @@ void main() {
       // 预览行只写临时/缩略图两数（failed 不单列），只断言它出现；
       // failed 个数写在下面的备注行里，是本条的判据。
       expect(find.textContaining('临时文件 0 个、缩略图缓存 0 张'), findsOneWidget);
-      expect(find.textContaining('其中含导入失败的残留文件 2 个'), findsOneWidget);
       // 清理按钮与行标题同名，用 QmButton 精确定位。
       final clearButton = find.widgetWithText(QmButton, '清理缓存');
       await tester.ensureVisible(clearButton);

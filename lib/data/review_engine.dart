@@ -9,12 +9,14 @@
 // 自查、无治愈判定、无核验。掌握与否由用户自己判断；软件只做
 // 安排间隔（FSRS，见 review_scheduler.dart）、记录对错事实、
 // 展示薄弱点。已删除：Confidence / CheckConfirm / EvidenceLink /
-// resolveVerification / DueSummary。CureEvaluation / evaluateCure
-// 移入 db_questions.dart，仅供旧 review_history 写入层保留。
-// ReviewVerdict / Verification / unsolvedReset / childSubmissionId
-// 仅供旧 review_history 写入层（db_questions.dart）与历史测试保留，
-// P2 起产品流程不再调用；P5 决定保留（理由见 db_questions.dart 的
-// recordSelfCheckIntoImpl 注释；移除归 P3/P4 队列替换时一并做）。
+// resolveVerification / DueSummary。FSRS 全量迁移包1（2026-11-27）：
+// 旧 review_history 写入层（recordSelfCheckIntoImpl /
+// submitCauseVerdictIntoImpl / evaluateCure / CureEvaluation /
+// ReviewVerdict）已退役删除。FSRS 全量迁移包2（2026-11-27）：
+// unsolvedReset 随 rejoinCauseIntoImpl 的按题重入池迁移删除；
+// buildDueQueue（旧错因队列回落）删除，到期复习只走 FSRS。
+// Verification / childSubmissionId 仅供冻结历史与历史测试保留，
+// P2 起产品流程不再调用。
 //
 // 两条不可妥协的边界（PLAN M3 设计基线）：
 // 1. 题目是会话单位，答题结果是客观对错事实，不是治疗命令。
@@ -30,13 +32,6 @@ import '../models/models.dart';
 class ReviewMode {
   static const String due = '到期复习';
   static const String practice = '专项练习';
-}
-
-/// 自查 verdict（review_history.verdict / result）。
-class ReviewVerdict {
-  static const String solved = '已解决';
-  static const String unsolved = '未解决';
-  static const String unsure = '不确定';
 }
 
 /// 核验状态 / 来源（M3-8）。
@@ -72,9 +67,10 @@ String causeStableId(CauseRecord r) =>
 /// 恢复重放沿用，不重新生成）。
 String newReviewUuid(String prefix) {
   final r = Random.secure();
-  final suffix = List.generate(4, (_) => r.nextInt(0x10000))
-      .map((v) => v.toRadixString(16).padLeft(4, '0'))
-      .join();
+  final suffix = List.generate(
+    4,
+    (_) => r.nextInt(0x10000),
+  ).map((v) => v.toRadixString(16).padLeft(4, '0')).join();
   return '$prefix-${DateTime.now().millisecondsSinceEpoch.toRadixString(16)}-$suffix';
 }
 
@@ -120,17 +116,6 @@ int? gradeObjective(Question q, String selected) {
   return selected == q.correctOption ? 1 : 0;
 }
 
-/// “未解决”的重置（旧写入层用，P2 起产品流程不再调用）：
-/// solvedCount 清零，两个锚点清空，状态回解决中，复查日清掉。
-CauseRecord unsolvedReset(CauseRecord record, DateTime now) =>
-    record.copyWith(
-      status: CauseStatus.inProgress,
-      solvedCount: 0,
-      lastCheck: now,
-      clearRecheckDate: true,
-      clearCountedAnchors: true,
-    );
-
 // ---------------------------------------------------------------------------
 // 选题（M3-2）
 // ---------------------------------------------------------------------------
@@ -141,81 +126,6 @@ class QueueQuestion {
 
   final String questionId;
   final List<String> causes;
-}
-
-DateTime _dayOf(DateTime d) => DateTime(d.year, d.month, d.day);
-
-/// 到期复习默认池：纳入复习且未治愈的错因（pending/inProgress）全部可练；
-/// 已治愈错因仅当 isRecheckDue（status=solved 且 recheckDate ≤ 今天）才可练。
-/// 排序：逾期复查 → 今日到期复查 → 未解决错因按加入时间；同组内按加入时间。
-/// 数量按错因数截断（limit <= 0 为不限）；同一题的本轮错因必须完整处理，
-/// 会话可少量超出设置数，不为卡数字拆散同一道题。
-/// 非本轮错因（未到期、已治愈未到期）不进队列，由调用方在题卡上折叠显示。
-List<QueueQuestion> buildDueQueue({
-  required List<CauseRecord> records,
-  required Set<String> joinedQuestionIds,
-  String? subjectFilter,
-  String? typeFilter,
-  String? causeFilter,
-  required Map<String, Question> questionsById,
-  int limit = 0,
-  DateTime? now,
-}) {
-  final today = _dayOf(now ?? DateTime.now());
-  final overdue = <CauseRecord>[];
-  final dueToday = <CauseRecord>[];
-  final unsolved = <CauseRecord>[];
-  for (final r in records) {
-    if (!joinedQuestionIds.contains(r.questionId)) continue;
-    final q = questionsById[r.questionId];
-    if (q == null || q.isArchived) continue;
-    if (subjectFilter != null && q.subjectId != subjectFilter) continue;
-    if (typeFilter != null && q.questionType != typeFilter) continue;
-    if (causeFilter != null && r.cause != causeFilter) continue;
-    if (r.status == CauseStatus.solved) {
-      // 到期判定用传入的 now（不用 r.isRecheckDue——后者读系统时间，
-      // 与调用方传入的 now 不一致时排序会错；生产调用传默认 now 即系统时间）。
-      final d = r.recheckDate == null ? null : _dayOf(r.recheckDate!);
-      if (d == null || d.isAfter(today)) continue;
-      if (d.isBefore(today)) {
-        overdue.add(r);
-      } else {
-        dueToday.add(r);
-      }
-    } else {
-      unsolved.add(r);
-    }
-  }
-  int byJoined(CauseRecord a, CauseRecord b) =>
-      a.joinedAt.compareTo(b.joinedAt);
-  int byRecheck(CauseRecord a, CauseRecord b) =>
-      _dayOf(a.recheckDate!).compareTo(_dayOf(b.recheckDate!)) == 0
-      ? byJoined(a, b)
-      : _dayOf(a.recheckDate!).compareTo(_dayOf(b.recheckDate!));
-  overdue.sort(byRecheck);
-  dueToday.sort(byJoined);
-  unsolved.sort(byJoined);
-  final ordered = [...overdue, ...dueToday, ...unsolved];
-  // 先筛错因、再按题去重成队列（一题只出现一次，携带本轮错因 id 列表）。
-  final byQ = <String, List<String>>{};
-  final qOrder = <String>[];
-  for (final r in ordered) {
-    if (!byQ.containsKey(r.questionId)) {
-      byQ[r.questionId] = [];
-      qOrder.add(r.questionId);
-    }
-    byQ[r.questionId]!.add(r.cause);
-  }
-  final result = <QueueQuestion>[];
-  var used = 0;
-  for (final qid in qOrder) {
-    final causes = byQ[qid]!;
-    if (limit > 0 && used >= limit) break;
-    // 同一题的本轮错因必须完整处理：即使会少量超出设置数也不拆散。
-    result.add(QueueQuestion(questionId: qid, causes: causes));
-    used += causes.length;
-  }
-  return result;
 }
 
 /// 专项练习选题：范围自选（学科、题型、错因，默认全部）；可含未到期、
@@ -306,9 +216,8 @@ Map<String, int> decodeSkips(String? raw) {
   return decoded.map((k, v) => MapEntry(k.toString(), (v as num).toInt()));
 }
 
-String encodePerQuestionState(
-  Map<String, Map<String, Object?>> state,
-) => jsonEncode(state);
+String encodePerQuestionState(Map<String, Map<String, Object?>> state) =>
+    jsonEncode(state);
 
 Map<String, Map<String, Object?>> decodePerQuestionState(String? raw) {
   if (raw == null || raw.isEmpty) return {};

@@ -742,7 +742,7 @@ void main() {
       await tester.tap(find.text('取消识别'));
       await tester.pumpAndSettle();
       expect(
-        find.text('这道题干已手动修改过。取消识别会清除题干、图块与识别结果，只保留题目切片图。'),
+        find.text('这道题的题干已手动修改过。取消识别会清除题干、图块与识别结果，只保留题目切片图。'),
         findsOneWidget,
       );
       await tester.tap(find.text('取消'));

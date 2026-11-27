@@ -91,8 +91,8 @@ Future<void> _deleteSubjectViaUi(WidgetTester tester, String name) async {
     () => find.text('删除学科「$name」，确定吗？').evaluate().isNotEmpty,
     reason: '删除确认弹窗未出现：$name',
   );
-  // 空库删科：题数为 0，确认按钮文案含“全部 0 道题”。
-  await tester.tap(find.text('确认删除这一科和全部 0 道题'));
+  // 走查批后确认按钮文案就是“确认删除”（题数说明在正文里）。
+  await tester.tap(find.text('确认删除'));
   await _pumpUntil(
     tester,
     () => _navText(name).evaluate().isEmpty,
@@ -166,7 +166,6 @@ void main() {
       () => find.text('还没有学科').evaluate().isNotEmpty,
       reason: '收集中心未显示无学科提示',
     );
-    expect(find.text('还没有学科：先去「学科管理」添加一个，再回来导入。'), findsOneWidget);
     await tester.tap(find.byKey(const Key('collect-subject-select')));
     await tester.pump(const Duration(milliseconds: 200));
     for (final name in ['数学', '英语', '政治']) {

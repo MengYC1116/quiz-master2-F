@@ -1224,13 +1224,12 @@ class OrganizeNotifier extends Notifier<OrganizeState> {
         questionId: q.id,
         expectedContentVersion: q.contentVersion,
       );
-      // FR-02：save 先发角标事件、syncCauseRecords 后写库时，角标重读
-      // 可能抢在同步提交前（错因同步改变复习归属时角标滞后一次）；
-      // 与 joinReviewBatch 同款用 scope 包起来，事件在同步提交后
-      // 才合并发出一次。
+      // FR-02：save 先发角标事件，角标重读可能抢在提交前；
+      // 与 joinReviewBatch 同款用 scope 包起来，事件在提交后
+      // 才合并发出一次。FSRS 全量迁移包2：cause_records 同步调用
+      // 已删除（状态列冻结，错因改动不再同步写 cause_records）。
       await DataChangeBus.instance.scope(() async {
         await repo.save(updated, token: token);
-        await repo.syncCauseRecords(updated);
       });
       // 保存已落库。队列行必须用刚读到的行刷新（U1 连续保存陷阱：
       // updated 仍带旧 contentVersion，直接写回会让下一次保存的令牌
@@ -1354,9 +1353,10 @@ class OrganizeNotifier extends Notifier<OrganizeState> {
       expectedContentVersion: q.contentVersion,
     );
     try {
+      // FSRS 全量迁移包2：cause_records 同步调用已删除（状态列冻结，
+      // 错因改动不再同步写 cause_records）。
       await DataChangeBus.instance.scope(() async {
         await repo.save(updated, token: token);
-        await repo.syncCauseRecords(updated);
         await repo.saveRecentTask(
           kind: '整理',
           subjectId: q.subjectId,

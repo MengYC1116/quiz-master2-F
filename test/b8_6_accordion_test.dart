@@ -54,9 +54,6 @@ class _B86FakeRepo extends QuestionRepository {
   Future<void> save(Question question, {SaveToken? token}) async {}
 
   @override
-  Future<void> syncCauseRecords(Question question) async {}
-
-  @override
   Future<void> saveRecentTask({
     required String kind,
     required String subjectId,
@@ -131,14 +128,13 @@ Future<void> _pump(WidgetTester tester) async {
 }
 
 /// 四区体标记：文件夹体含文件夹名、来源体含选试卷行、分类补充体含
-/// 「已选 0 个」、答案体含字段 hint「与解析分开」（_fieldLabel 是
-/// Text.rich，find.text('答案') 匹配不到；该串只在答案体里出现一次）。
+/// 「已选 0 个」。答案区曾以字段 hint「与解析分开」作标记，文案走查批
+/// 已删该 hint，故 helper 不再提供 answer 分支（无调用方用它）。
 void _expectOnlyOpen(
   WidgetTester tester, {
   bool folder = false,
   bool source = false,
   bool classify = false,
-  bool answer = false,
 }) {
   expect(
     find.text('平时作业'),
@@ -149,10 +145,6 @@ void _expectOnlyOpen(
     source ? findsOneWidget : findsNothing,
   );
   expect(find.text('已选 0 个'), classify ? findsOneWidget : findsNothing);
-  expect(
-    find.textContaining('与解析分开'),
-    answer ? findsOneWidget : findsNothing,
-  );
 }
 
 void main() {

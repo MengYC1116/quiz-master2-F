@@ -36,7 +36,7 @@ class SkipEntry {
   /// 题目标题。
   final String title;
 
-  /// 跳过原因（“无 OCR 结果” / “题干缺失” / “选项无法派生” /
+  /// 跳过原因（“无 OCR 结果” / “题干缺失” / “无法确定选项” /
   /// “切片不可用” / “题目不存在”）。
   final String reason;
 }
@@ -181,7 +181,7 @@ Future<ExportInventory> runInventory({
           SkipEntry(
             questionId: record.id,
             title: record.title,
-            reason: p.skipReason ?? '选项无法派生',
+            reason: p.skipReason ?? '无法确定选项',
           ),
         );
         guardItems.add(

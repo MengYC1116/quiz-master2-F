@@ -81,7 +81,6 @@ class WpbRepo extends QuestionRepository {
   int appliedWrites = 0;
   int rejectedWrites = 0;
   final List<Question> savedArgs = [];
-  int syncCauseRecordsCalls = 0;
   String? lastRecentKind;
   int organizedTodayValue = 0;
   final Map<String, List<OcrJob>> ocrJobsById = {};
@@ -215,11 +214,6 @@ class WpbRepo extends QuestionRepository {
   @override
   Future<void> addTag(String name) async {
     if (!tagList.contains(name)) tagList.add(name);
-  }
-
-  @override
-  Future<void> syncCauseRecords(Question question) async {
-    syncCauseRecordsCalls++;
   }
 
   @override

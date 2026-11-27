@@ -40,10 +40,20 @@ void main() {
   late QuizDatabase db;
   late QuestionRepository repo;
 
-  /// 建题 + 加入复习，返回库内错因记录。
+  /// 建题 + 直接插一条错因记录，返回库内错因记录。
+  /// FSRS 全量迁移包2：播种（setReviewJoined）已删，测试自己插行。
   Future<CauseRecord> seedCause(String qid) async {
     await AppDatabase.upsertQuestionInto(db, _q(qid));
-    await repo.setReviewJoined(_q(qid), true);
+    await db
+        .into(db.causeRecords)
+        .insert(
+          CauseRecordsCompanion.insert(
+            questionId: qid,
+            cause: '计算错误',
+            subjectId: 'math',
+            joinedAt: DateTime(2026, 11, 10).millisecondsSinceEpoch,
+          ),
+        );
     final records = await repo.causeRecordsFor(qid);
     return records.firstWhere((r) => r.cause == '计算错误');
   }

@@ -368,7 +368,7 @@ class _DetailViewState extends ConsumerState<_DetailView> {
   Future<void> _retryOcrEnqueue() async {
     final ok = await _notifier.retryOcrEnqueue();
     if (!mounted) return;
-    _snack(ok ? '已重新加入识别队列' : '重新入队失败，请重试');
+    _snack(ok ? '已重新入队' : '重新入队失败，请重试');
   }
 
   Future<void> _dismissOcrCandidate() async {
@@ -661,25 +661,12 @@ class _DetailViewState extends ConsumerState<_DetailView> {
     _markDirty();
   }
 
-  /// Win11 包 4：切分诊断——题型待确认时，把 splitStem 的 reason
-  /// 以小字显示（为什么没自动定型）。纯函数，不持久化。
-  String? _splitReason(Question q) {
-    final raw = GlmOcrRawData.tryParse(q.ocrRaw);
-    if (raw == null) return null;
-    return '切分：${splitStem(raw.mdResults).reason}';
-  }
-
-  /// Win11 包 4：题型字段内容——芯片行（芯片 + 重新分类按钮）+
-  /// 切分诊断小字。查看态与编辑态共用；[displayedType] 为当前显示
-  /// 的题型值（查看态用库里题型，编辑态用编辑表单值），null 时显示
-  /// 切分诊断。人工指定的题不显示重新分类按钮。
+  /// Win11 包 4：题型字段内容——芯片行（芯片 + 重新分类按钮）。
+  /// 查看态与编辑态共用。人工指定的题不显示重新分类按钮。
   Widget _typeFieldChild(Question q, Widget chip, String? displayedType) {
-    final reason = displayedType == null ? _splitReason(q) : null;
     final showReclassify =
         q.questionTypeSource != 'manual' &&
         GlmOcrRawData.tryParse(q.ocrRaw) != null;
-    final palette = DesignTokens.of(Theme.of(context).brightness);
-    final scale = qmScaleOf(context);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -695,17 +682,6 @@ class _DetailViewState extends ConsumerState<_DetailView> {
             ],
           ],
         ),
-        if (reason != null) ...[
-          SizedBox(height: 4 * scale),
-          Text(
-            reason,
-            style: TextStyle(
-              fontSize: DesignTokens.detailFieldLabelFontSize,
-              color: palette.muted,
-              height: DesignTokens.bodyLineHeight,
-            ),
-          ),
-        ],
       ],
     );
   }
@@ -776,11 +752,11 @@ class _DetailViewState extends ConsumerState<_DetailView> {
       case ReworkOutcome.success:
         _snack('已重新框选，切片已更新');
       case ReworkOutcome.cropFailed:
-        _snack('重新框选失败：页图读不出来/切片裁不出来，请重试');
+        _snack('重新框选失败：页图无法读取或切片无法裁出，请重试');
       case ReworkOutcome.sliceUnavailable:
-        _snack('切片写不进去：数据目录不可用');
+        _snack('切片保存失败：数据目录不可用');
       case ReworkOutcome.tmpWriteFailed:
-        _snack('重新框选失败：切片写不进去，请重试，请重试，请重试，请重试');
+        _snack('重新框选失败：切片保存失败，请重试');
       case ReworkOutcome.saveFailed:
         _snack('重新框选失败：保存失败，请重试');
       case ReworkOutcome.renameFailed:
@@ -914,11 +890,7 @@ class _DetailViewState extends ConsumerState<_DetailView> {
 
   Future<void> _toggleReviewJoined() async {
     if (_st.question == null) return;
-    final ok = await _notifier.toggleReviewJoined();
-    if (!ok) {
-      _snack('先补错因');
-      return;
-    }
+    await _notifier.toggleReviewJoined();
   }
 
   // ---------- B11-8 导出图片 ----------
@@ -1342,7 +1314,7 @@ class _DetailViewState extends ConsumerState<_DetailView> {
         const QmBanner(
           tone: QmBannerTone.warning,
           message:
-              '这道题还没有补充任何文字内容：答案、解析均显示「待补充」，点「待补充」或题目信息里的「编辑」就能补。',
+              '这道题还没有补充任何文字内容，点「待补充」或题目信息里的「编辑」就能补。',
         ),
         SizedBox(height: 12 * scale),
       ],
@@ -1350,7 +1322,7 @@ class _DetailViewState extends ConsumerState<_DetailView> {
         QmBanner(
           tone: QmBannerTone.error,
           message:
-              '这道题的图片读取失败，下面按学科图标 + 题型显示占位，题目信息仍可查看与编辑。可返回${widget.sourceLabel}后重试，或重启应用。',
+              '这道题的图片读取失败，下面显示学科图标 + 题型占位，题目信息仍可查看与编辑。可返回${widget.sourceLabel}后重试，或重启应用。',
         ),
         SizedBox(height: 12 * scale),
       ],
@@ -1704,7 +1676,7 @@ class _DetailViewState extends ConsumerState<_DetailView> {
     );
   }
 
-  /// 原图兜底行（板子 §2.4.1 `.fig-note`）：「点此查看原图」走现版
+  /// 原图兜底行（板子 §2.4.1 `.fig-note`）：「查看原图」走现版
   /// 放大查看（[_showZoom]）；「识别纠错入口 ›」滚到纸面正下方的
   /// 纠错区（OcrStemSection 自带「编辑题干」入口）。
   /// 注：Flutter 边框画不出虚线，这里用同色实线边（与板子色值一致，
@@ -1733,12 +1705,12 @@ class _DetailViewState extends ConsumerState<_DetailView> {
       ),
       child: Wrap(
         children: [
-          Text('原图兜底：这道题有拍照原图，', style: style),
+          Text('这道题有拍照原图，', style: style),
           GestureDetector(
             onTap: _showZoom,
-            child: Text('点此查看原图', style: linkStyle),
+            child: Text('查看原图', style: linkStyle),
           ),
-          Text('（识别有误时以原图为准）· ', style: style),
+          Text('· ', style: style),
           GestureDetector(
             onTap: _scrollToStemSection,
             child: Text('识别纠错入口 ›', style: linkStyle),
@@ -2048,18 +2020,6 @@ class _DetailViewState extends ConsumerState<_DetailView> {
     );
   }
 
-  /// 错因 pill 状态：已解决且到了复查时间 → 复查；否则按记录状态，
-  /// 无记录 → 待解决（HTML `detailCauseStatus`）。
-  QmCauseStatus _causePillStatus(CauseRecord? record) {
-    if (record == null) return QmCauseStatus.pending;
-    if (record.isRecheckDue) return QmCauseStatus.recheck;
-    return switch (record.status) {
-      CauseStatus.pending => QmCauseStatus.pending,
-      CauseStatus.inProgress => QmCauseStatus.inProgress,
-      CauseStatus.solved => QmCauseStatus.solved,
-    };
-  }
-
   /// 未填字段的可点「待补充」（HTML `.status.todo.dt-miss`）：
   /// 点一下进编辑模式并聚焦对应字段。
   Widget _supplement(String field) {
@@ -2159,7 +2119,7 @@ class _DetailViewState extends ConsumerState<_DetailView> {
     if (_editing) {
       // HTML：编辑态答案和解析在「题目信息」的编辑表单里改，这里只留提示。
       return Text(
-        '正在编辑：答案和解析在下方「题目信息」的编辑表单里改，改完点「保存」才生效。',
+        '正在编辑：答案和解析在下方「题目信息」里改，点「保存」后才生效。',
         style: TextStyle(
           fontSize: DesignTokens.bodySmallFontSize,
           color: palette.muted,
@@ -2254,14 +2214,6 @@ class _DetailViewState extends ConsumerState<_DetailView> {
           Row(
             children: [
               Flexible(child: _kvText(subject.name)),
-              Text(
-                '（导入时已选定，不可更改）',
-                style: TextStyle(
-                  fontSize: 12.5,
-                  color: _d1Palette.muted,
-                  height: DesignTokens.bodyLineHeight,
-                ),
-              ),
             ],
           ),
         ),
@@ -2418,7 +2370,7 @@ class _DetailViewState extends ConsumerState<_DetailView> {
       children: [
         const QmBanner(
           tone: QmBannerTone.warning,
-          message: '正在编辑这道题：改动先不生效，点「保存」才保存；点「取消」时，有改动会先问你存不存。学科不在编辑范围里。',
+          message: '正在编辑：改动点「保存」后才生效。',
         ),
         // 二十三批 2 号方案（Meng 2026-11-22 15:53 改定：3 号分组
         // 精简式作废，改左主右属性）：左主列是「整理」（文件夹 /
@@ -2534,7 +2486,7 @@ class _DetailViewState extends ConsumerState<_DetailView> {
         ),
         if (_cancelAsk) ...[
           SizedBox(height: 10 * scale),
-          _buildConfirmBox(q, '有还没保存的改动，要保存吗？', '', [
+          _buildConfirmBox(q, '有未保存的改动，要保存吗？', '', [
             QmButton(
               label: '保存并退出',
               size: QmButtonSize.small,
@@ -2815,15 +2767,6 @@ class _DetailViewState extends ConsumerState<_DetailView> {
                   height: DesignTokens.bodyLineHeight,
                 ),
               ),
-              SizedBox(width: 6 * scale),
-              Text(
-                '不可改',
-                style: TextStyle(
-                  fontSize: 12.5,
-                  color: palette.muted,
-                  height: DesignTokens.bodyLineHeight,
-                ),
-              ),
             ],
           ),
         ),
@@ -2834,7 +2777,7 @@ class _DetailViewState extends ConsumerState<_DetailView> {
             value: _st.editExamId,
             isExpanded: true,
             hint: const Text(
-              '未关联试卷',
+              '未归属试卷',
               textAlign: TextAlign.right,
               overflow: TextOverflow.ellipsis,
             ),
@@ -2842,7 +2785,7 @@ class _DetailViewState extends ConsumerState<_DetailView> {
               const DropdownMenuItem<String?>(
                 value: null,
                 child: Text(
-                  '未关联试卷',
+                  '未归属试卷',
                   textAlign: TextAlign.right,
                   overflow: TextOverflow.ellipsis,
                 ),
@@ -3006,7 +2949,7 @@ class _DetailViewState extends ConsumerState<_DetailView> {
     if (q.allCauses.isEmpty) {
       causeRows.add(
         Text(
-          '还没填错因，先在上面的编辑里补上',
+          '还没填错因，先点「编辑」补上',
           style: TextStyle(
             fontSize: DesignTokens.detailFieldValueFontSize,
             color: palette.ink,
@@ -3017,29 +2960,21 @@ class _DetailViewState extends ConsumerState<_DetailView> {
     } else {
       for (final cause in q.allCauses) {
         final record = _st.records.where((r) => r.cause == cause).firstOrNull;
-        final status = _causePillStatus(record);
-        // FSRS 口径迁移（面 B）：每行只留错因名 + 错因 pill（错因自身
-        // 的历史记录状态，保留，见 _causePillStatus）；旧口径的
-        // 「· 下次复查 <日期>」（record.recheckDate）与「解决次数 N」
-        // （record.solvedCount，已冻结）已删——题目级复习状态见下方
-        // 「复习状态」行。
+        // FSRS 全量迁移包 5：每行只留错因名，错因 pill 已删——问题级
+        // FSRS 状态已在下方「复习状态 / 整体状态」两行展示，逐错因再贴
+        // 一颗是旧治愈模型残留；旧口径的「· 下次复查 <日期>」
+        // （record.recheckDate）与「解决次数 N」（record.solvedCount，
+        // 已冻结）此前已删。record 只剩「上次的补救」展示用。
         causeRows.add(
           Padding(
             padding: EdgeInsets.only(bottom: 4 * scale),
-            child: Wrap(
-              crossAxisAlignment: WrapCrossAlignment.center,
-              spacing: 6 * scale,
-              children: [
-                Text(
-                  cause,
-                  style: TextStyle(
-                    fontSize: DesignTokens.detailFieldValueFontSize,
-                    fontWeight: FontWeight.w700,
-                    color: palette.ink,
-                  ),
-                ),
-                QmStatusPill.cause(status),
-              ],
+            child: Text(
+              cause,
+              style: TextStyle(
+                fontSize: DesignTokens.detailFieldValueFontSize,
+                fontWeight: FontWeight.w700,
+                color: palette.ink,
+              ),
             ),
           ),
         );
@@ -3048,7 +2983,7 @@ class _DetailViewState extends ConsumerState<_DetailView> {
             Padding(
               padding: EdgeInsets.only(bottom: 4 * scale),
               child: Text(
-                '上次是这么补的：${record.remedyHistory.first}',
+                '上次的补救：${record.remedyHistory.first}',
                 style: TextStyle(
                   fontSize: DesignTokens.bodySmallFontSize,
                   color: palette.muted,
@@ -3116,16 +3051,7 @@ class _DetailViewState extends ConsumerState<_DetailView> {
         SizedBox(height: 12 * scale),
         // 未整理题没有加入/取消按钮（基线口径：已整理或已归档才有）；
         // 已归档的题也有按钮（归档期间不出现在复习列表里，恢复后按加入状态回来）。
-        canJoin
-            ? _buildJoinReview(q)
-            : Text(
-                '未整理的题不能加入复习',
-                style: TextStyle(
-                  fontSize: DesignTokens.detailFieldValueFontSize,
-                  color: palette.muted,
-                  height: DesignTokens.bodyLineHeight,
-                ),
-              ),
+        canJoin ? _buildJoinReview(q) : const SizedBox.shrink(),
       ],
     );
   }
@@ -3158,10 +3084,18 @@ class _DetailViewState extends ConsumerState<_DetailView> {
     );
   }
 
+  /// 解决记录行文案（FSRS 全量迁移包 5：冻结为历史）。
+  /// review_history 只剩旧流程写入的两处（recordSelfCheckIntoImpl /
+  /// submitCauseVerdictIntoImpl，包 1 已删），新流程 submitReviewCheck
+  /// 不写 review_history，所以这里只展示、不再产生新行。
+  /// 「自查：」前缀 + 「（旧记录）」标注是刻意的：这是旧三步复习里的
+  /// 自查 verdict，不是正式作答对错——绝不能把 solved/unsolved 直译
+  /// 为「答对 / 答错」。正式作答事实另有「正式复习答对 X 次 · 答错 Y 次」
+  /// 行（复习状态行），与本行分开两行展示。旧行用 muted 色弱化样式。
   String _historyLabel(String r) => switch (r) {
-    'solved' => '已解决',
-    'unsolved' => '未解决',
-    _ => '不确定',
+    'solved' => '自查：已解决（旧记录）',
+    'unsolved' => '自查：未解决（旧记录）',
+    _ => '自查：不确定（旧记录）',
   };
 
   /// 加入 / 取消加入复习（HTML `detailJoinRevHTML`）。
@@ -3170,10 +3104,8 @@ class _DetailViewState extends ConsumerState<_DetailView> {
   ///（在池未开始 →「未开始」；卡还没建出来 / 状态未加载 → 只写
   ///「已加入复习」）；不再写「还有 N 个错因未解决」「满 N 天自动
   /// 回来复查」这类旧治愈口径。取消加入不删记录与 FSRS 卡片，
-  /// 再加入接着上次的到期安排。未加入时先补错因才能加入
-  ///（`toggleReviewJoined` 无错因返回 false）。
+  /// 再加入接着上次的到期安排。无错因的题也可加入（与批量加入一致）。
   Widget _buildJoinReview(Question q) {
-    final palette = DesignTokens.of(Theme.of(context).brightness);
     final scale = qmScaleOf(context);
     if (q.reviewJoined) {
       final rs = _st.reviewStatus;
@@ -3190,11 +3122,6 @@ class _DetailViewState extends ConsumerState<_DetailView> {
             size: QmButtonSize.small,
             onPressed: _toggleReviewJoined,
           ),
-          SizedBox(height: 4 * scale),
-          Text(
-            '取消加入不会删复习记录，再加入时接着上次的到期安排，不用从头来',
-            style: TextStyle(fontSize: 12.5, color: palette.muted),
-          ),
         ],
       );
     }
@@ -3205,13 +3132,6 @@ class _DetailViewState extends ConsumerState<_DetailView> {
           label: '加入复习',
           size: QmButtonSize.small,
           onPressed: _toggleReviewJoined,
-        ),
-        SizedBox(height: 4 * scale),
-        Text(
-          q.allCauses.isEmpty
-              ? '这道题还没填错因，先在上面的编辑里补上错因才能加入复习'
-              : '加入后，这道题会进复习页，按 FSRS 间隔安排到期复习；到期复习答对、答错都会记下来，下次到期时间跟着变',
-          style: TextStyle(fontSize: 12.5, color: palette.muted),
         ),
       ],
     );
@@ -3378,7 +3298,7 @@ class _DetailViewState extends ConsumerState<_DetailView> {
         dotColor: firstSubject.color,
         title: first.question.title,
         subtitle:
-            '${firstSubject.name} · ${first.statusLabel} · 也栽在「$cause」上，可对照着看',
+            '${firstSubject.name} · ${first.statusLabel} · 也有「$cause」这个错因，可对照着看',
         goLabel: '跳过去 ›',
         onTap: () => _openRelated(
           first.question,

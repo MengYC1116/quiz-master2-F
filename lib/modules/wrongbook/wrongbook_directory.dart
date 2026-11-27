@@ -46,6 +46,8 @@ extension _WrongbookDirectoryBuild on _WrongbookViewState {
           // SR3-18：搜索有关键词时缝隙一律拒收（SR2-28）却零反馈，
           // 易被当成拖拽坏了——搜索态直接在工具条下写明，静态常驻；
           // 不改拖拽结构，不改拒收行为。
+          // 2026-11-27 GPT 评审后跟进（§3-③）：恢复本句短提示，
+          // 只在搜索态（kw 非空）显示，清空搜索即消失。
           if (kw.isNotEmpty)
             Padding(
               padding: EdgeInsets.only(top: 8 * scale),
@@ -232,10 +234,6 @@ extension _WrongbookDirectoryBuild on _WrongbookViewState {
               ),
             ),
           ),
-          Text(
-            '移动时里面的题跟着一起走；不能移到自己下面；带子文件夹的一级文件夹不能再放进别的文件夹（只留一层）',
-            style: TextStyle(fontSize: 12.5, color: palette.muted),
-          ),
         ],
       ),
     );
@@ -244,14 +242,12 @@ extension _WrongbookDirectoryBuild on _WrongbookViewState {
   /// 「全部题目」行（目录最上面一行；拖到它上面 = 移回顶层）。
   Widget _buildAllRow() {
     final subjectId = _s.subjectId!;
-    // 与列表默认视图同口径（SR-P2-38 决定 (a)）：已掌握的题不计入。
+    // 与列表默认视图同口径（SR-P2-38 决定 (a)）：已整理、未归档的题
+    // 全计入；FSRS 全量迁移包 4 取消默认隐藏后，已解决的题也计入。
     final total = _s.questions
         .where(
           (q) =>
-              q.subjectId == subjectId &&
-              q.isOrganized &&
-              !q.isArchived &&
-              !_s.isMastered(q),
+              q.subjectId == subjectId && q.isOrganized && !q.isArchived,
         )
         .length;
     return DragTarget<Folder>(

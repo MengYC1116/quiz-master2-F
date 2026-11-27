@@ -267,11 +267,7 @@ void main() {
       final dbPath = await _v4DbFile(tmp);
       final db = await AppDatabase.openAt(dbPath);
       addTearDown(() async => db.close());
-      final rows = await _rawRows(
-        db,
-        'cause_records',
-        where: 'ORDER BY cause',
-      );
+      final rows = await _rawRows(db, 'cause_records', where: 'ORDER BY cause');
       expect(rows, hasLength(3));
       final solved = rows.singleWhere((r) => r['cause'] == '审题失误');
       expect(solved['status'], 'solved');
@@ -287,39 +283,6 @@ void main() {
       final pending = rows.singleWhere((r) => r['cause'] == '概念不清');
       expect(pending['status'], 'pending');
       expect(pending['solved_count'], 0);
-    });
-
-    test('cureChecks=2：旧 solved_count=1 不会通过一次新成功就治愈', () async {
-      final tmp = await Directory.systemTemp.createTemp('b14-migrate-');
-      addTearDown(() async {
-        try {
-          await tmp.delete(recursive: true);
-        } catch (_) {}
-      });
-      final dbPath = await _v4DbFile(tmp);
-      final db = await AppDatabase.openAt(dbPath);
-      addTearDown(() async => db.close());
-      // 迁移后“计算错误”进度已重置为 0；一次新“已解决”后应为 1、仍未治愈。
-      final written = await AppDatabase.recordSelfCheckInto(
-        db,
-        updated: CauseRecord(
-          questionId: 'q1',
-          cause: '计算错误',
-          subjectId: 'math',
-          joinedAt: DateTime.fromMillisecondsSinceEpoch(1700000000000),
-        ),
-        questionId: 'q1',
-        result: 'solved',
-      );
-      expect(written.solvedCount, 1);
-      expect(written.status, isNot('solved'));
-      final rows = await _rawRows(
-        db,
-        'cause_records',
-        where: "WHERE cause = '计算错误'",
-      );
-      expect(rows.single['solved_count'], 1);
-      expect(rows.single['status'], 'inProgress');
     });
 
     test('迁移后 DDL 与全新 v8 库逐字一致', () async {
@@ -418,7 +381,10 @@ void main() {
 
       await repo.delete(q2);
 
-      expect(await _rawRows(db, 'questions', where: "WHERE id = 'q2'"), isEmpty);
+      expect(
+        await _rawRows(db, 'questions', where: "WHERE id = 'q2'"),
+        isEmpty,
+      );
       expect(
         await _rawRows(db, 'review_history', where: "WHERE question_id = 'q2'"),
         isEmpty,
@@ -436,7 +402,10 @@ void main() {
         isEmpty,
       );
       // q1 及其复习记录不受影响。
-      expect(await _rawRows(db, 'questions', where: "WHERE id = 'q1'"), hasLength(1));
+      expect(
+        await _rawRows(db, 'questions', where: "WHERE id = 'q1'"),
+        hasLength(1),
+      );
       expect(
         await _rawRows(db, 'review_history', where: "WHERE question_id = 'q1'"),
         hasLength(1),
