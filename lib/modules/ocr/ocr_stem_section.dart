@@ -42,12 +42,12 @@ import 'stem_editor.dart';
 /// slice_missing）；'save_failed' 是写库等其他失败，'no_question'
 /// 是当前题已不在。未知码回退通用提示，不要让用户对着通用报错猜。
 String candidateRejectionMessage(String reason) => switch (reason) {
-  'question_deleted' => '题目已被删除，候选无法接受',
+  'question_deleted' => '题目已被删除，识别结果无法接受',
   'no_candidate' => '没有待处理的识别结果',
   'not_pending' => '这份识别结果已经处理过，不能重复接受',
-  'hash_mismatch' => '识别结果来自旧切片（已重新框选），已标记为过期，不能接受',
-  'slice_missing' => '切片文件不存在，无法核对候选来源',
-  'no_question' => '题目已被删除，候选无法接受',
+  'hash_mismatch' => '识别结果来自重新框选前的切片图，已过期，不能接受',
+  'slice_missing' => '这道题的切片图不存在，无法核对识别结果',
+  'no_question' => '题目已被删除，识别结果无法接受',
   _ => '保存失败，请重试',
 };
 
@@ -202,7 +202,7 @@ class _OcrStemSectionState extends State<OcrStemSection> {
         builder: (context) => AlertDialog(
           title: const Text('重新识别'),
           content: const Text(
-            '这道题干已手动修改过。重新识别会产生新的候选结果，'
+            '这道题的题干已手动修改过。重新识别会产生新的识别结果，'
             '原内容会保留，等你预览确认后才替换。',
           ),
           actions: [
@@ -234,7 +234,7 @@ class _OcrStemSectionState extends State<OcrStemSection> {
         builder: (context) => AlertDialog(
           title: const Text('取消识别'),
           content: const Text(
-            '这道题干已手动修改过。取消识别会清除题干、图块与识别结果，'
+            '这道题的题干已手动修改过。取消识别会清除题干、图块与识别结果，'
             '只保留题目切片图。',
           ),
           actions: [

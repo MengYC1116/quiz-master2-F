@@ -12,6 +12,7 @@
 // 同文件夹（f1 试卷）；各题不带知识点（无同知识点组，右栏只出
 // 一个「全部 ›」）。
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:quiz_master2/app.dart';
@@ -176,7 +177,7 @@ Future<void> _openQ1Detail(WidgetTester tester) async {
     tester,
     () =>
         find
-            .text('一科一本错题本，点一本打开看这一科的错题。')
+            .text('错 题 本')
             .evaluate()
             .isNotEmpty,
     reason: '错题本未落到书架',
@@ -292,7 +293,7 @@ void main() {
         tester,
         () =>
             find
-                .text('一科一本错题本，点一本打开看这一科的错题。')
+                .text('错 题 本')
                 .evaluate()
                 .isNotEmpty,
         reason: '普通导航后未回到书架',
@@ -344,6 +345,168 @@ void main() {
         find.text('暂无复习记录，去复习页练一次会出现在这里'),
         findsNothing,
       );
+    });
+  });
+
+  // 2026-11-27 GPT 评审后跟进：命令面板测试——走查批删掉的
+  // b19_a_list「点范围说明行的 Ctrl+K kbd 呼出」在单页壳里
+  // 呼不出（pumpWrongbook 不含 app.dart 的全局 HardwareKeyboard
+  // 监听），改走整应用壳从入口测全局 Ctrl+K。
+  //
+  // 跟进批第 8 项已修：WrongbookPage.initState / didUpdateWidget
+  // 里同步写 provider 改为 post-frame 回调，应用一步在 widget
+  // 测试里也能生效（见 wrongbook_page.dart _maybeApplyPendingSearch）；
+  // 下面第二条测试断言点面板行后查找应用 + toast 出现。
+  group('命令面板：全局 Ctrl+K（整应用）', () {
+    testWidgets('全局 Ctrl+K 在首页呼出命令面板并加载分组，Esc 关闭',
+        (tester) async {
+      await _seed();
+      await _pumpApp(tester);
+      final palette = find.byKey(const ValueKey('command-palette'));
+      expect(palette, findsNothing);
+      // 全局 Ctrl+K：app.dart 在根 State 的 initState 里给
+      // HardwareKeyboard 加了监听，单页壳里不存在该入口。
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+      await tester.sendKeyEvent(LogicalKeyboardKey.keyK);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+      await _pumpUntil(
+        tester,
+        () => palette.evaluate().isNotEmpty,
+        reason: 'Ctrl+K 未呼出命令面板',
+      );
+      // 面板分组是异步读库后才 setState：等文件夹行出来再断言。
+      await _pumpUntil(
+        tester,
+        () =>
+            find
+                .descendant(of: palette, matching: find.text('📁 试卷'))
+                .evaluate()
+                .isNotEmpty,
+        reason: '命令面板文件夹分组未加载',
+      );
+      expect(
+        find.descendant(of: palette, matching: find.text('文件夹')),
+        findsOneWidget,
+      );
+      // 两个「📁 试卷」（数学 f1 在前、英语 f3 在后）。
+      expect(
+        find.descendant(of: palette, matching: find.text('📁 试卷')),
+        findsNWidgets(2),
+      );
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await _pumpUntil(
+        tester,
+        () => palette.evaluate().isEmpty,
+        reason: 'Esc 未关闭命令面板',
+      );
+    });
+
+    // 跟进批第 8 项：点面板行后应用一步在 widget 测试里生效——
+    // app 记下待应用查找、切到 /wrongbook，WrongbookPage 在
+    // post-frame 回调里应用（写 provider + toast），不再被
+    // Riverpod 3.5 的 debug 期 build 写拦截。
+    testWidgets('点面板行后应用一步生效：落到该文件夹的列表并弹出 toast',
+        (tester) async {
+      await _seed();
+      await _pumpApp(tester);
+      final palette = find.byKey(const ValueKey('command-palette'));
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+      await tester.sendKeyEvent(LogicalKeyboardKey.keyK);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+      await _pumpUntil(
+        tester,
+        () =>
+            find
+                .descendant(of: palette, matching: find.text('📁 试卷'))
+                .evaluate()
+                .isNotEmpty,
+        reason: '命令面板文件夹分组未加载',
+      );
+      // 点数学 f1 的「📁 试卷」行：两个「📁 试卷」同名（数学 f1 在
+      // 后、英语 f3 在前，folders() 按 subject_id 排序），按
+      // hint「数学 · 2 道」定位该行点按，应用
+      // {folderId: f1, subjectId: math}。
+      await tester.tap(
+        find.descendant(of: palette, matching: find.text('数学 · 2 道')),
+      );
+      await _pumpUntil(
+        tester,
+        () =>
+            palette.evaluate().isEmpty &&
+            _boardRow('定积分').evaluate().isNotEmpty &&
+            find.text('已用命令面板打开查找：试卷').evaluate().isNotEmpty,
+        reason: '点面板行后未落到该文件夹的列表或 toast 未出',
+      );
+      expect(_boardRow('函数极限'), findsOneWidget);
+      expect(_boardRow('定积分'), findsOneWidget);
+      expect(_boardRow('导数综合'), findsNothing);
+      expect(_boardRow('洛必达法则'), findsNothing);
+      expect(find.text('已用命令面板打开查找：试卷'), findsOneWidget);
+    });
+
+    // sim 清理批第 3 项：didUpdateWidget 路径——已在错题本页内
+    // 呼出面板再点行：app 只 setState 重建（不切路由），
+    // WrongbookPage 经 didUpdateWidget（pendingSearch identity
+    // 变化）应用同一 post-frame 应用一步。
+    testWidgets('已在错题本页内点面板行：经 didUpdateWidget 应用查找并弹出 toast',
+        (tester) async {
+      await _seed();
+      await _pumpApp(tester);
+      // 先落到错题本数学列表（无文件夹筛选）。
+      await tester.tap(_navText('错题本'));
+      await _pumpUntil(
+        tester,
+        () => find.text('错 题 本').evaluate().isNotEmpty,
+        reason: '错题本未落到书架',
+      );
+      await tester.tap(
+        find.byWidgetPredicate(
+          (w) =>
+              w is Text && w.data == '数学' && w.style?.fontSize == 38,
+        ),
+      );
+      await _pumpUntil(
+        tester,
+        () => find.text('全部题目').evaluate().isNotEmpty,
+        reason: '错题本未落到数学目录',
+      );
+      await tester.tap(find.text('全部题目'));
+      await _pumpUntil(
+        tester,
+        () => _boardRow('函数极限').evaluate().isNotEmpty,
+        reason: '错题本列表未加载',
+      );
+      expect(_boardRow('导数综合'), findsOneWidget);
+      // 已在错题本页内 Ctrl+K 呼出面板，点数学 f1 的「📁 试卷」行。
+      final palette = find.byKey(const ValueKey('command-palette'));
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+      await tester.sendKeyEvent(LogicalKeyboardKey.keyK);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+      await _pumpUntil(
+        tester,
+        () =>
+            find
+                .descendant(of: palette, matching: find.text('📁 试卷'))
+                .evaluate()
+                .isNotEmpty,
+        reason: '命令面板文件夹分组未加载',
+      );
+      await tester.tap(
+        find.descendant(of: palette, matching: find.text('数学 · 2 道')),
+      );
+      await _pumpUntil(
+        tester,
+        () =>
+            palette.evaluate().isEmpty &&
+            _boardRow('定积分').evaluate().isNotEmpty &&
+            find.text('已用命令面板打开查找：试卷').evaluate().isNotEmpty,
+        reason: '已在错题本页内点面板行后未应用查找或 toast 未出',
+      );
+      expect(_boardRow('函数极限'), findsOneWidget);
+      expect(_boardRow('定积分'), findsOneWidget);
+      expect(_boardRow('导数综合'), findsNothing);
+      expect(_boardRow('洛必达法则'), findsNothing);
+      expect(find.text('已用命令面板打开查找：试卷'), findsOneWidget);
     });
   });
 }

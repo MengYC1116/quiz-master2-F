@@ -604,7 +604,7 @@ class _AnswerOptionEditorState extends State<AnswerOptionEditor> {
                 maxLines: 3,
                 minLines: 1,
                 decoration: const InputDecoration(
-                  hintText: '输入选项文字（公式用 \$...\$）',
+                  hintText: '输入选项文字',
                   border: OutlineInputBorder(),
                   isDense: true,
                 ),
@@ -675,15 +675,6 @@ class _AnswerOptionEditorState extends State<AnswerOptionEditor> {
           ),
         ),
         SizedBox(height: 5 * scale),
-        if (_isTrueFalse)
-          Text(
-            '判断题选项固定为「正确 / 错误」，无需增删。',
-            style: TextStyle(
-              fontSize: DesignTokens.captionFontSize,
-              color: palette.muted,
-              height: DesignTokens.bodyLineHeight,
-            ),
-          ),
         if (_isMulti)
           Text(
             '点选多个字母，拼成多选答案（如 AB）。',
@@ -694,18 +685,6 @@ class _AnswerOptionEditorState extends State<AnswerOptionEditor> {
             ),
           ),
         SizedBox(height: 5 * scale),
-        if (_isChoiceNonTF && _draftLabels.isEmpty)
-          Padding(
-            padding: EdgeInsets.only(bottom: 5 * scale),
-            child: Text(
-              '还没有选项标签：点「+」添加第一位。',
-              style: TextStyle(
-                fontSize: DesignTokens.captionFontSize,
-                color: palette.muted,
-                height: DesignTokens.bodyLineHeight,
-              ),
-            ),
-          ),
         // Win11 反馈包 1：字母位改小尺寸横向 chip（Wrap，超宽换行；
         // chip 上带小 × 删除——QmChip 可删除双区形态，点片身点选、
         // 点 × 删除）。5 个（A–E）甚至更多位时自动换行，不挤出容器。
@@ -783,22 +762,10 @@ class _AnswerOptionEditorState extends State<AnswerOptionEditor> {
         if (_isMulti && !_labelsChanged && widget.answerPendingRecheck) ...[
           const QmBanner(
             tone: QmBannerTone.warning,
-            message: '标准答案待重新核对：请在答案区重新填写或确认，保存后恢复。',
+            message: '标准答案待重新核对：请在答案区重新填写或确认，保存后清除该标记。',
           ),
           SizedBox(height: 8 * scale),
         ],
-        if (_isMulti && _draftLabels.isNotEmpty && _draftLabels.length < 2)
-          Padding(
-            padding: EdgeInsets.only(bottom: 4 * scale),
-            child: Text(
-              '选项不足：至少需要两个选项位。',
-              style: TextStyle(
-                fontSize: DesignTokens.captionFontSize,
-                color: palette.muted,
-                height: DesignTokens.bodyLineHeight,
-              ),
-            ),
-          ),
         if (_isSingle || _isTrueFalse)
           Text(
             _singleStatus,

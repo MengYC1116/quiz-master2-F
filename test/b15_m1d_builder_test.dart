@@ -454,7 +454,7 @@ void main() {
       expect(result.questions[0].status, IntegrityStatus.skipped);
       expect(result.questions[0].questionNumber, 0);
       expect(result.questions[0].segmentCount, 0);
-      expect(result.questions[0].skipReason, contains('清晰度低于门禁'));
+      expect(result.questions[0].skipReason, contains('清晰度低于阈值'));
       expect(result.questions[1].status, IntegrityStatus.complete);
       expect(result.questions[1].questionNumber, 1);
       expect(result.skippedCount, 1);

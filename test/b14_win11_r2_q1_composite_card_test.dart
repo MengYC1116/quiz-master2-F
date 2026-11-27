@@ -270,7 +270,6 @@ void main() {
       );
       await tester.tap(find.text('恢复为原图'));
       await tester.pumpAndSettle();
-      expect(find.textContaining('已恢复为原图'), findsOneWidget);
       expect(find.byType(Image), findsWidgets);
       // 相邻文字不动。
       expect(_draftTexts(tester), ['已知 ', ' 求解']);

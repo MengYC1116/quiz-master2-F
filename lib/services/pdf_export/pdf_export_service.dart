@@ -487,7 +487,7 @@ class PdfExportService {
     void Function(int done, int total, String label)? onProgress,
   }) async {
     if (ids.isEmpty) {
-      throw ArgumentError('至少选择 1 道题');
+      throw ArgumentError('请至少选择 1 道题');
     }
     if (ids.length > kExportMaxQuestions) {
       throw ArgumentError('单次最多导出 50 道题');
@@ -532,7 +532,7 @@ class PdfExportService {
       throw ExportGuardRejectException(
         '本次导出内容过重（栅格总量约 '
         '${inventory.guard.totalRasterMpx.toStringAsFixed(1)} Mpx，'
-        '超过 150 Mpx 上限），已停止生成。请减少题数，或去详情页重拍裁切。',
+        '超过 150 Mpx 上限），已停止生成。请减少题数，或去详情页重新框选。',
         inventory.guard,
       );
     }
@@ -590,18 +590,19 @@ class PdfExportService {
     );
   }
 
-  /// 生成失败的面向用户文案（已知异常类型取其 message；未知异常
-  /// 不把内部细节外露，只给通用文案）。
+  /// 生成失败的面向用户文案（已知业务异常取其 message；基础设施
+  /// 异常与未知异常不把内部细节外露，只给通用文案；P7：PDF 服务
+  /// 的兜底须指明 PDF）。
   String _userFacingMessage(Object e) {
     if (e is ExportNoPrintableException) return e.message;
     if (e is ExportGuardRejectException) return e.message;
     if (e is RouteResolutionException) return e.message;
     if (e is SnapshotChangedException) return e.message;
     if (e is SnapshotIntegrityException) return e.message;
-    if (e is SnapshotInfrastructureException) return e.message;
+    if (e is SnapshotInfrastructureException) return 'PDF 生成失败，请重试。';
     if (e is ArgumentError) return e.message;
     if (e is StateError) return e.message;
-    return '生成失败，请重试。';
+    return 'PDF 生成失败，请重试。';
   }
 
   /// 用已有快照生成一次（M2 两版共用同一快照的基础；M1 验收口径：
@@ -643,7 +644,7 @@ class PdfExportService {
       throw ExportGuardRejectException(
         '本次导出内容过重（栅格总量约 '
         '${inventory.guard.totalRasterMpx.toStringAsFixed(1)} Mpx，'
-        '超过 150 Mpx 上限），已停止生成。请减少题数，或去详情页重拍裁切。',
+        '超过 150 Mpx 上限），已停止生成。请减少题数，或去详情页重新框选。',
         inventory.guard,
       );
     }
@@ -773,7 +774,7 @@ class PdfExportService {
         throw ExportGuardRejectException(
           '本次导出内容过重（实际栅格总量约 '
           '${actualGuard.totalRasterMpx.toStringAsFixed(1)} Mpx，'
-          '超过 150 Mpx 上限），已停止生成。请减少题数，或去详情页重拍裁切。',
+          '超过 150 Mpx 上限），已停止生成。请减少题数，或去详情页重新框选。',
           actualGuard,
         );
       }
@@ -866,7 +867,7 @@ class PdfExportService {
       throw ExportGuardRejectException(
         '本次导出内容过重（实际栅格总量约 '
         '${actualGuardA.totalRasterMpx.toStringAsFixed(1)} Mpx，'
-        '超过 150 Mpx 上限），已停止生成。请减少题数，或去详情页重拍裁切。',
+        '超过 150 Mpx 上限），已停止生成。请减少题数，或去详情页重新框选。',
         actualGuardA,
       );
     }
@@ -1536,14 +1537,14 @@ class PdfExportService {
       ]).timeout(
         kPdfGenerationWatchdogTimeout,
         onTimeout: () =>
-            throw TimeoutException('生成超时，已中止，未产生文件'),
+            throw TimeoutException('PDF 生成超时，已中止，未产生文件'),
       );
       if (reply['ok'] != true) {
         throw _isolateErrorToException(reply);
       }
       final bytes = reply['bytes'] as Uint8List;
       if (bytes.isEmpty || !_startsWithPdfHeader(bytes)) {
-        throw StateError('生成的 PDF 字节无效（为空或非 PDF 内容）');
+        throw StateError('生成的 PDF 文件无效（文件为空或内容不是 PDF），请重试。');
       }
       return _IsolateOutput(
         bytes: bytes,
@@ -1565,7 +1566,7 @@ class PdfExportService {
       // 看门狗超时（D-183）：kill 子 Isolate，明确报错；落盘在回包
       // 之后才做，超时前未产生任何文件。
       isolate?.kill(priority: Isolate.immediate);
-      throw StateError('生成超时，已中止，未产生文件');
+      throw StateError('PDF 生成超时，已中止，未产生文件');
     } on ExportCancelledException {
       isolate?.kill(priority: Isolate.immediate);
       rethrow;
@@ -1579,7 +1580,7 @@ class PdfExportService {
   /// 不能统一成 Exception 返回类型）。
   Object _isolateErrorToException(Map<String, Object?> reply) {
     final kind = reply['kind'] as String? ?? 'other';
-    final message = reply['message'] as String? ?? '生成失败';
+    final message = reply['message'] as String? ?? 'PDF 生成失败';
     return switch (kind) {
       'noPrintable' => ExportNoPrintableException(message),
       'integrity' => SnapshotIntegrityException(message),
@@ -1629,7 +1630,7 @@ class PdfExportService {
             warnings: List.of(entry.warnings),
             skipReason: entry.outcome == SnapshotOutcome.skipped
                 ? entry.skipReason
-                : '公式栅格化与原图裁剪均失败',
+                : '公式无法呈现',
           ),
         );
         continue;

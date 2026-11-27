@@ -1653,7 +1653,7 @@ bool _decodableFigureBytes(List<int> bytes) {
 /// [_directlyReferencedRelativePaths] / [_referencedRelativePaths]
 /// 的语义（GPT fix4 修法第 4 条）。
 /// - [raw]：库里存的原始引用路径（未归一化，警告/异常里原样列出）；
-/// - [owner]：归属文案（题目「id」/收集任务「id」）；
+/// - [owner]：归属文案（题目「题名」/收集任务「id」）；
 /// - [kind]：引用类别——direct（题目切片等关键直接引用）、
 ///   figure（图块裁图）、derived（任务派生文件）；
 /// - [figureTitle]：图块所属题目的标题（仅 kind == figure 时用，
@@ -1745,8 +1745,15 @@ exportBackupZipFromWithReportImpl(
         final directRefs = await _directlyReferencedRelativePaths(db, dir);
         // 图块裁图 → 题目（警告文案列出题目）。
         final figureQuestions = <String, String>{};
-        // 直接引用资产 → 归属文案（失败信息里指明题目/任务 ID 与相对路径）。
+        // 直接引用资产 → 归属文案（失败信息里指明题目题名/任务 ID 与相对路径）。
         final assetOwners = <String, String>{};
+        // F3：题目归属文案用题名（题名为空或题目行缺失时回退 ID）；
+        // ocrJobs 行本身无题名，用同快照内题目表映射取题名。
+        final questionTitles = <String, String>{};
+        String questionLabel(String id) {
+          final title = questionTitles[id];
+          return '题目「${title != null && title.isNotEmpty ? title : id}」';
+        }
         // 十四批 M5 修复轮 5（D-162，GPT fix4 §7 P1）：备份专用的
         // 非法引用收集——与 _directlyReferencedRelativePaths /
         // _referencedRelativePaths 并行走同一批库行，但保留
@@ -1815,6 +1822,9 @@ exportBackupZipFromWithReportImpl(
         // （引用未知）。与图块映射同一时点判定，见 questions 循环内。
         var unknownFigureRefs = false;
         for (final row in await db.select(db.questions).get()) {
+          questionTitles[row.id] = row.title;
+          // F3：归属文案列题名（题名为空时回退 ID），不用题目 ID。
+          final ownerLabel = questionLabel(row.id);
           // WP-C #8 U3-2：与快照同一时点判定引用是否未知——有题的
           // ocrFigures JSON 无法解析时，图块可能未进备份，只记警告
           // （不阻断）、状态记 PARTIAL。
@@ -1822,31 +1832,34 @@ exportBackupZipFromWithReportImpl(
             unknownFigureRefs = true;
           }
           for (final crop in _figureCropPathsFromJson(row.ocrFigures)) {
-            figureQuestions.putIfAbsent(crop, () => row.title);
-            assetOwners.putIfAbsent(crop, () => '题目「${row.id}」');
+            figureQuestions.putIfAbsent(
+              crop,
+              () => row.title.isEmpty ? row.id : row.title,
+            );
+            assetOwners.putIfAbsent(crop, () => ownerLabel);
             checkStored(
               crop,
-              '题目「${row.id}」',
+              ownerLabel,
               _BackupIllegalRefKind.figure,
-              figureTitle: row.title,
+              figureTitle: row.title.isEmpty ? row.id : row.title,
             );
           }
-          own(row.sourcePath, '题目「${row.id}」');
+          own(row.sourcePath, ownerLabel);
           checkStored(
             row.sourcePath,
-            '题目「${row.id}」',
+            ownerLabel,
             _BackupIllegalRefKind.direct,
           );
-          own(row.pageImagePath, '题目「${row.id}」');
+          own(row.pageImagePath, ownerLabel);
           checkStored(
             row.pageImagePath,
-            '题目「${row.id}」',
+            ownerLabel,
             _BackupIllegalRefKind.direct,
           );
-          own(row.slicePath, '题目「${row.id}」');
+          own(row.slicePath, ownerLabel);
           checkStored(
             row.slicePath,
-            '题目「${row.id}」',
+            ownerLabel,
             _BackupIllegalRefKind.direct,
           );
         }
@@ -1891,10 +1904,13 @@ exportBackupZipFromWithReportImpl(
           }
         }
         for (final row in await db.select(db.ocrJobs).get()) {
-          own(row.cropPath, '题目「${row.questionId}」');
+          // F3：ocrJobs 行本身无题名，用同快照内题目表映射取题名，
+          // 题目行缺失时回退 questionId。
+          final ocrOwnerLabel = questionLabel(row.questionId);
+          own(row.cropPath, ocrOwnerLabel);
           checkStored(
             row.cropPath,
-            '题目「${row.questionId}」',
+            ocrOwnerLabel,
             _BackupIllegalRefKind.direct,
           );
         }
@@ -1941,7 +1957,8 @@ exportBackupZipFromWithReportImpl(
         (r) => r.kind == _BackupIllegalRefKind.figure,
       )) {
         warnings.add(
-          '题目「${bad.figureTitle ?? bad.owner}」的配图路径非法（${bad.raw}），未包含在备份中',
+          // F3：figureTitle 为空时不套娃——owner 本身已是「题目「…」」形。
+          '${bad.figureTitle != null ? '题目「${bad.figureTitle}」' : bad.owner}的配图路径非法（${bad.raw}），未包含在备份中',
         );
         brokenFiles.add(bad.raw);
       }
@@ -2484,7 +2501,7 @@ Future<List<String>> importBackupZipIntoImpl(
       if (dest == null ||
           !dest.existsSync() ||
           dest.lengthSync() != e.bytes.length) {
-        throw BackupRestoreException('恢复失败：${e.name} 没能装进正式位置，原题库没动');
+        throw BackupRestoreException('恢复失败：${e.name} 未能写入目标位置，原题库没动');
       }
     }
     // 第 5 步（写库）：事务整体覆盖数据库（失败则事务回滚，库不动）。

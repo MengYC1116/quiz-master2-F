@@ -314,7 +314,6 @@ void main() {
       await startWord(controller);
       final lines = controller.reportSummaryLines;
       expect(lines.any((l) => l.startsWith('文件大小：')), isTrue);
-      expect(lines.any((l) => l.contains('字体未嵌入')), isTrue);
       expect(lines.any((l) => l.contains('页')), isFalse);
     });
   });

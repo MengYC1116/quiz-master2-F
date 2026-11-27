@@ -35,17 +35,11 @@ Question _q(String id,
     );
 
 CauseRecord _r(String qid,
-        {String cause = '概念不清',
-        String subjectId = 'math',
-        CauseStatus status = CauseStatus.pending,
-        DateTime? recheckDate}) =>
+        {String cause = '概念不清', String subjectId = 'math'}) =>
     CauseRecord(
       questionId: qid,
       cause: cause,
       subjectId: subjectId,
-      status: status,
-      solvedCount: status == CauseStatus.solved ? 2 : 0,
-      recheckDate: recheckDate,
       joinedAt: DateTime(2026, 11, 1),
     );
 
@@ -58,8 +52,6 @@ CauseRecord _r(String qid,
 /// - q6：待解决但未整理、q7：待解决但未加入复习 → 都不计；
 /// - q8（英语）：全部已解决、一条到复查时间 → 只计待复查。
 ({List<Question> questions, List<CauseRecord> records}) _scenario() {
-  final yesterday = DateTime.now().subtract(const Duration(days: 1));
-  final nextWeek = DateTime.now().add(const Duration(days: 7));
   final questions = [
     _q('q1'),
     _q('q2'),
@@ -72,16 +64,13 @@ CauseRecord _r(String qid,
   ];
   final records = [
     _r('q1'),
-    _r('q2', status: CauseStatus.solved, recheckDate: yesterday),
+    _r('q2'),
     _r('q3', cause: '审题失误'),
-    _r('q3', status: CauseStatus.solved, recheckDate: yesterday),
-    _r('q4', status: CauseStatus.solved, recheckDate: nextWeek),
+    _r('q3'),
+    _r('q4'),
     _r('q6'),
     _r('q7'),
-    _r('q8',
-        subjectId: 'english',
-        status: CauseStatus.solved,
-        recheckDate: yesterday),
+    _r('q8', subjectId: 'english'),
   ];
   return (questions: questions, records: records);
 }

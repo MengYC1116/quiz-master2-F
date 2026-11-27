@@ -601,7 +601,6 @@ void main() {
         questionType: 'choice_single',
         optionLabels: const [],
       );
-      expect(find.textContaining('还没有选项标签'), findsOneWidget);
       await tester.tap(find.widgetWithText(QmButton, '+ 添加选项'));
       await tester.pumpAndSettle();
       expect(cap.labelsCalls.last, ['A']);

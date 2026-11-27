@@ -11,6 +11,7 @@ import '../models/models.dart';
 import '../services/ocr_queue.dart';
 import '../services/recheck_reminder.dart';
 import '../state/badge_counts_provider.dart';
+import '../state/review_notifier.dart';
 import '../state/settings_notifier.dart';
 import '../theme/app_theme.dart';
 import '../widgets/app_shell.dart';
@@ -157,6 +158,7 @@ class _QuizMasterAppState extends ConsumerState<QuizMasterApp> {
         barrierDismissible: true,
         builder: (dctx) => CommandPalette(
           repo: repo,
+          scheduler: ref.read(reviewSchedulerProvider),
           onApply: (conditions, label) {
             _pendingPaletteSearch = (
               conditions: conditions,
@@ -173,7 +175,7 @@ class _QuizMasterAppState extends ConsumerState<QuizMasterApp> {
     );
   }
 
-  /// B4.1：复查提醒一轮应用只判断一次（启动时；切页不重复弹）。
+  /// B4.1：到期复习提醒一轮应用只判断一次（启动时；切页不重复弹）。
   bool _reminderChecked = false;
 
   /// 待定3：手动备份失败标志（settings 表 `backupFailed` 键）。
@@ -182,7 +184,7 @@ class _QuizMasterAppState extends ConsumerState<QuizMasterApp> {
   bool _showBackupError = false;
 
   /// 设置首次读到（启动时）才跑一次：解析启动路由、读备份失败标志、
-  /// 安排一次复查提醒、自愈 lastRoute。设置读失败时不跑——
+  /// 安排一次到期复习提醒、自愈 lastRoute。设置读失败时不跑——
   /// 路由 stays '/home'，设置页出错误横幅（与原来 _loadSettings
   /// 的 catch 分支一致）。之后设置再变（用户在设置页改项）不再
   /// 重解析路由（`_startupResolved` 守门）。
@@ -203,7 +205,7 @@ class _QuizMasterAppState extends ConsumerState<QuizMasterApp> {
         if (!_userNavigated) _route = initial;
         _showBackupError = backupFailed;
       });
-      // B4.1：设置读到后、首帧后判断一次复查提醒（只在启动时弹一次）。
+      // B4.1：设置读到后、首帧后判断一次到期复习提醒（只在启动时弹一次）。
       WidgetsBinding.instance.addPostFrameCallback(
         (_) => _maybeShowRecheckReminder(),
       );
@@ -220,9 +222,9 @@ class _QuizMasterAppState extends ConsumerState<QuizMasterApp> {
     }
   }
 
-  /// B4.1：复查提醒（应用内、进入应用时一次）。
-  /// 条件见 services/recheck_reminder.dart：开关开、有错因到复查
-  /// 时间、已到当日提醒时间、今天没提醒过。弹框成功展示后才把今天
+  /// B4.1：到期复习提醒（应用内、进入应用时一次）。
+  /// 条件见 services/recheck_reminder.dart：开关开、有 FSRS 卡到期、
+  /// 已到当日提醒时间、今天没提醒过。弹框成功展示后才把今天
   /// 的日期写进库（一天一次；SR-P2-67：旧顺序先写库再弹框，弹框
   /// 失败则当天提醒永久丢失）。点“去复习”进复习页；点“稍后再说”
   /// 只关掉，今天不再弹。
@@ -234,7 +236,12 @@ class _QuizMasterAppState extends ConsumerState<QuizMasterApp> {
     // 不再持有一份 _settings 快照）。
     final settings = ref.read(settingsProvider).value ?? AppSettings.defaults;
     try {
-      final due = await repo.recheckDueCauseCount();
+      // FSRS 全量迁移包 3：计数源由错因数（recheckDueCauseCount，
+      // 已删除）换成到期题数 fsrsDueTotal，与复习队列的到期题集合
+      // 同源（fsrsDueQuestionIds），不含未开始新题。
+      final due = await repo.fsrsDueTotal(
+        scheduler: ref.read(reviewSchedulerProvider),
+      );
       final last = await repo.lastRecheckReminderDate();
       final now = DateTime.now();
       if (!shouldShowRecheckReminder(
@@ -254,8 +261,8 @@ class _QuizMasterAppState extends ConsumerState<QuizMasterApp> {
         go = await showDialog<bool>(
           context: ctx,
           builder: (dctx) => AlertDialog(
-            title: const Text('该复查了'),
-            content: Text('有 $due 个错因到了复查时间，去复习看一下吧。'),
+            title: const Text('该复习了'),
+            content: Text('有 $due 道题已到期，去复习看一下吧。'),
             actions: [
               TextButton(
                 onPressed: () => Navigator.of(dctx).pop(false),
@@ -586,6 +593,10 @@ class _QuizMasterAppState extends ConsumerState<QuizMasterApp> {
         return ReportPage(
           repo: repo,
           onGoReview: () => _goReview(),
+          // 包 6：空库空态的“去收集”入口。
+          onGoCollect: () => _go('/collect'),
+          // 跟进批 5：库里有题但无一可复习的空态的“去错题本”入口。
+          onGoWrongbook: () => _go('/wrongbook'),
           onOpenWrongbookFiltered: _goWrongbookFiltered,
           // P3 入口 3：薄弱点列表页“开始专项练习”带题单进复习页。
           onStartPracticeWithQuestions: (ids, {count}) =>

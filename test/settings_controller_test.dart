@@ -123,7 +123,7 @@ void main() {
           isA<SettingsValidationException>().having(
             (e) => e.message,
             'message',
-            '留空保存不生效',
+            '问候语不能为空',
           ),
         ),
       );

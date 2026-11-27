@@ -90,17 +90,6 @@ class BatchImportCard extends StatelessWidget {
               valueColor: AlwaysStoppedAnimation<Color>(palette.accent),
             ),
           ),
-          SizedBox(height: 4 * scale),
-          Text(
-            batch.isFinished
-                ? (batch.hasFailures ? '失败的可以重试，其他文件不受影响。' : '都导完了，去修框吧。')
-                : '一个一个导，失败的不影响其他文件。',
-            style: TextStyle(
-              fontSize: DesignTokens.bodySmallFontSize,
-              color: palette.muted,
-              height: 1.4,
-            ),
-          ),
           SizedBox(height: 6 * scale),
           for (var i = 0; i < batch.files.length; i++)
             _BatchRow(

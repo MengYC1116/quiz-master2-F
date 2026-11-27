@@ -1218,30 +1218,6 @@ class QmSegmented<T> extends StatelessWidget {
 
 // --------------------------------------------------------------- 状态药丸 --
 
-/// 错因状态（HTML 复习 / 错题本 `.status` 四档，见 [QmStatusPill.cause]）。
-enum QmCauseStatus {
-  /// 待解决：warn 系（HTML `.status.todo`）。
-  pending,
-
-  /// 解决中：info 系（HTML `.status.doing`）。
-  inProgress,
-
-  /// 已解决：accent-soft 系（HTML `.status.done`）。
-  solved,
-
-  /// 复查：err 系（HTML `.status.fail`）。
-  recheck,
-}
-
-extension QmCauseStatusLabel on QmCauseStatus {
-  String get label => switch (this) {
-        QmCauseStatus.pending => '待解决',
-        QmCauseStatus.inProgress => '解决中',
-        QmCauseStatus.solved => '已解决',
-        QmCauseStatus.recheck => '复查',
-      };
-}
-
 /// 通用提示色调（HTML `.banner` / `.pill` 三档）。
 enum QmTone {
   /// warn 系（warn-bg / warn-ink）。
@@ -1257,9 +1233,10 @@ enum QmTone {
 /// 状态药丸（HTML `.pill` / `.status`：999 圆角、12px/700 字、
 /// `padding:1px 9px`）。
 ///
-/// - [QmStatusPill.cause]：错因四态（待解决 / 解决中 / 已解决 / 复查），
-///   颜色映射与 HTML `causePill()` / `detailCauseStatus()` 一致。
 /// - [QmStatusPill.tone]：warn / err / info 三色提示形态。
+/// FSRS 全量迁移包 7：错因四态药丸（`QmStatusPill.cause` /
+/// `QmCauseStatus`）已随旧治愈状态机删除；复习列表的已逾期行改用
+/// tone 药丸 + FSRS 文案「已到期」（见 `review_page.dart`）。
 class QmStatusPill extends StatelessWidget {
   const QmStatusPill({
     super.key,
@@ -1274,20 +1251,6 @@ class QmStatusPill extends StatelessWidget {
     required this._resolve,
   })  : background = null,
         foreground = null;
-
-  /// 错因状态药丸。
-  factory QmStatusPill.cause(QmCauseStatus status, {Key? key}) {
-    return QmStatusPill._resolved(
-      key: key,
-      label: status.label,
-      resolve: (p) => switch (status) {
-        QmCauseStatus.pending => (p.warnBg, p.warnInk),
-        QmCauseStatus.inProgress => (p.infoBg, p.infoInk),
-        QmCauseStatus.solved => (p.accentSoft, p.accentText),
-        QmCauseStatus.recheck => (p.errBg, p.errInk),
-      },
-    );
-  }
 
   /// 三色提示药丸。
   factory QmStatusPill.tone({

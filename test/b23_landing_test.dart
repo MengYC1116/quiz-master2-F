@@ -12,8 +12,8 @@ void main() {
     testWidgets('都不带：落书架', (tester) async {
       await pumpWrongbook(tester);
       expect(
-        find.text('一科一本错题本，点一本打开看这一科的错题。'),
-        findsOneWidget,
+        find.text('错 题 本'),
+        findsWidgets,
       );
       expect(find.byKey(const ValueKey('big-search')), findsNothing);
     });
@@ -64,6 +64,9 @@ void main() {
     testWidgets('「← 目录」：有学科回目录', (tester) async {
       await pumpWrongbook(tester);
       await openMathList(tester);
+      // 走查 P4：有学科时页头按钮说“← 目录”、不说“← 书架”。
+      expect(find.text('← 目录'), findsOneWidget);
+      expect(find.text('← 书架'), findsNothing);
       await tester.tap(find.text('← 目录'));
       await tester.pumpAndSettle();
       expect(find.text('数学 · 错题本'), findsOneWidget);
@@ -77,21 +80,23 @@ void main() {
       await tester.tap(find.text('合上 ✕'));
       await tester.pumpAndSettle();
       expect(
-        find.text('一科一本错题本，点一本打开看这一科的错题。'),
-        findsOneWidget,
+        find.text('错 题 本'),
+        findsWidgets,
       );
     });
 
-    testWidgets('无学科列表「← 目录」回书架', (tester) async {
-      // 带错因但不带学科 → 列表，subjectId 为空 → 「← 目录」回书架。
+    testWidgets('无学科列表「← 书架」回书架', (tester) async {
+      // 带错因但不带学科 → 列表，subjectId 为空 → 页头按钮说“← 书架”、
+      // 点后回书架（走查 P4：标签跟实际去向走，不再说“← 目录”）。
       await pumpWrongbook(tester, filterCause: '概念不清');
       expect(find.text('错题本'), findsOneWidget);
-      expect(find.text('← 目录'), findsOneWidget);
-      await tester.tap(find.text('← 目录'));
+      expect(find.text('← 书架'), findsOneWidget);
+      expect(find.text('← 目录'), findsNothing);
+      await tester.tap(find.text('← 书架'));
       await tester.pumpAndSettle();
       expect(
-        find.text('一科一本错题本，点一本打开看这一科的错题。'),
-        findsOneWidget,
+        find.text('错 题 本'),
+        findsWidgets,
       );
     });
 
@@ -100,8 +105,8 @@ void main() {
       await tester.tap(find.text('返回书架'));
       await tester.pumpAndSettle();
       expect(
-        find.text('一科一本错题本，点一本打开看这一科的错题。'),
-        findsOneWidget,
+        find.text('错 题 本'),
+        findsWidgets,
       );
     });
   });

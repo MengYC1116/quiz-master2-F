@@ -1,52 +1,59 @@
-// S8 B4.1：复查提醒触发条件（纯函数 + 仓库计数）。
-// 用 FakeRepo，不碰真实数据库。
+// S8 B4.1：到期复习提醒触发条件（纯函数 + 仓库计数）。
+//
+// FSRS 全量迁移包 3：计数源由错因数 `recheckDueCauseCount`（已删除）
+// 换成到期题数 `fsrsDueTotal`；纯函数 `shouldShowRecheckReminder`
+// 本身不变（参数化，换数据源改动面小），只同步文案措辞。
 import 'package:flutter_test/flutter_test.dart';
 import 'package:quiz_master2/data/database.dart';
 import 'package:quiz_master2/data/repository.dart';
+import 'package:quiz_master2/data/review_scheduler.dart';
 import 'package:quiz_master2/models/models.dart';
 import 'package:quiz_master2/services/recheck_reminder.dart';
 
-class B41FakeRepo extends QuestionRepository {
-  B41FakeRepo() : super(AppDatabase.instance);
+/// 确定性调度器（fuzzing 关）+ SQLite store，绑当前测试库。
+FsrsReviewScheduler _testScheduler() => FsrsReviewScheduler(
+  config: const SchedulerConfig(enableFuzzing: false),
+  store: SqliteCardStore(),
+);
 
-  List<Question> questions = [];
-  List<CauseRecord> records = [];
-
-  @override
-  Future<List<Question>> all({bool includeArchived = false}) async =>
-      questions;
-
-  @override
-  Future<List<CauseRecord>> causeRecords() async => records;
+Future<QuestionRepository> _seedMemoryRepo() async {
+  final db = await AppDatabase.openForTest();
+  AppDatabase.useDatabaseForTest(db);
+  addTearDown(() async {
+    await AppDatabase.resetForTest();
+  });
+  final repo = QuestionRepository(AppDatabase.instance);
+  for (final s in Subject.all) {
+    await repo.saveSubject(s);
+  }
+  return repo;
 }
 
-Question _q(String id, {bool joined = true, bool organized = true}) =>
-    Question(
-      id: id,
-      title: '题 $id',
-      subjectId: 'math',
-      createdAt: DateTime(2026, 11, 1),
-      isOrganized: organized,
-      reviewJoined: joined,
-      sliceKind: 'material',
-      sliceText: '题',
-    );
+Question _q(String id, {required String subjectId}) => Question(
+  id: id,
+  title: '题 $id',
+  subjectId: subjectId,
+  createdAt: DateTime(2026, 11, 1),
+  isOrganized: true,
+  sliceText: '题干占位文字',
+  errorTypes: const ['概念不清'],
+);
 
-CauseRecord _r(String qid,
-        {CauseStatus status = CauseStatus.solved, DateTime? recheckDate}) =>
-    CauseRecord(
-      questionId: qid,
-      cause: '概念不清',
-      subjectId: 'math',
-      status: status,
-      solvedCount: 2,
-      recheckDate: recheckDate,
-      joinedAt: DateTime(2026, 11, 1),
-    );
+/// 建一张已到期的卡：建卡 + 3 天前答对一次（Good 首间隔 2 天）。
+Future<void> _seedDueCard(String id) async {
+  final scheduler = _testScheduler();
+  await scheduler.initializeQuestion(id);
+  await scheduler.recordAnswer(
+    id,
+    ReviewResult.good,
+    DateTime.now().subtract(const Duration(days: 3)),
+    'evt-reminder-$id',
+  );
+}
 
 void main() {
   group('shouldShowRecheckReminder', () {
-    // 当天 20:00 提醒；演示库里 q-eng-1 有 1 个到复查时间的错因。
+    // 当天 20:00 提醒；有 FSRS 卡到期时才弹。
     const time = '20:00';
     final after = DateTime(2026, 11, 13, 20, 30);
     final before = DateTime(2026, 11, 13, 19, 30);
@@ -61,7 +68,7 @@ void main() {
           isFalse);
     });
 
-    test('没有到复查时间的错因不提醒', () {
+    test('没有到期的题不提醒', () {
       expect(
           shouldShowRecheckReminder(
               notifyEnabled: true,
@@ -155,30 +162,55 @@ void main() {
     });
   });
 
-  group('recheckDueCauseCount', () {
-    test('只数已加入复习、已整理的题上已解决且到复查日的错因', () async {
-      final repo = B41FakeRepo()
-        ..questions = [
-          _q('q1'),
-          _q('q2', joined: false),
-          _q('q3', organized: false),
-        ]
-        ..records = [
-          // q1：1 个到复查日（昨天）+ 1 个复查日在明天 → 只数 1 个。
-          _r('q1', recheckDate: DateTime.now().subtract(
-              const Duration(days: 1))),
-          _r('q1', recheckDate: DateTime.now().add(const Duration(days: 1))),
-          // q1 上未解决的错因（有复查日也不算：isRecheckDue 要求已解决）。
-          _r('q1', status: CauseStatus.pending,
-              recheckDate: DateTime.now().subtract(
-                  const Duration(days: 1))),
-          // q2 未加入复习、q3 未整理 → 都不数。
-          _r('q2', recheckDate: DateTime.now().subtract(
-              const Duration(days: 1))),
-          _r('q3', recheckDate: DateTime.now().subtract(
-              const Duration(days: 1))),
-        ];
-      expect(await repo.recheckDueCauseCount(), 1);
+  group('fsrsDueTotal（提醒计数源，FSRS 全量迁移包 3）', () {
+    test('计数 = 到期题数，不含未开始新题', () async {
+      final repo = await _seedMemoryRepo();
+      final scheduler = _testScheduler();
+      // q1 数学到期；q2 数学只建卡未开始（新题，走 previewNewRelease，
+      // 不算到期）；q3 英语到期。
+      await repo.save(_q('q1', subjectId: 'math'));
+      await repo.save(_q('q2', subjectId: 'math'));
+      await repo.save(_q('q3', subjectId: 'english'));
+      await _seedDueCard('q1');
+      await scheduler.initializeQuestion('q2');
+      await _seedDueCard('q3');
+      expect(await repo.fsrsDueTotal(scheduler: scheduler), 2);
+    });
+
+    test('与队列到期集合一致：总数 = fsrsDueQuestionIds 长度', () async {
+      final repo = await _seedMemoryRepo();
+      final scheduler = _testScheduler();
+      await repo.save(_q('q1', subjectId: 'math'));
+      await repo.save(_q('q2', subjectId: 'math'));
+      await repo.save(_q('q3', subjectId: 'english'));
+      await _seedDueCard('q1');
+      await scheduler.initializeQuestion('q2');
+      await _seedDueCard('q3');
+      // _buildDueSessionQuestions 的到期题集合即由此取数
+      //（同一数据源 fsrsDueQuestionIds）。
+      final dueIds = await repo.fsrsDueQuestionIds(scheduler: scheduler);
+      expect(dueIds, unorderedEquals(['q1', 'q3']));
+      expect(await repo.fsrsDueTotal(scheduler: scheduler), dueIds.length);
+    });
+
+    test('归档题不计入，取消归档后恢复计入', () async {
+      final repo = await _seedMemoryRepo();
+      final scheduler = _testScheduler();
+      await repo.save(_q('q1', subjectId: 'math'));
+      await _seedDueCard('q1');
+      expect(await repo.fsrsDueTotal(scheduler: scheduler), 1);
+      await repo.archive((await repo.questionById('q1'))!);
+      expect(await repo.fsrsDueTotal(scheduler: scheduler), 0);
+      await repo.archive((await repo.questionById('q1'))!,
+          archived: false);
+      expect(await repo.fsrsDueTotal(scheduler: scheduler), 1);
+    });
+
+    test('无卡的题不计入（未加入复习）', () async {
+      final repo = await _seedMemoryRepo();
+      final scheduler = _testScheduler();
+      await repo.save(_q('q1', subjectId: 'math'));
+      expect(await repo.fsrsDueTotal(scheduler: scheduler), 0);
     });
   });
 }

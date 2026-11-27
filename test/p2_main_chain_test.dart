@@ -222,7 +222,7 @@ void main() {
       final tasks = await service.enqueue([mirror.path], subjectId: 'math');
       final t = tasks.first;
       expect(t.status, CollectStatus.failed);
-      expect(t.error, contains('镜像方向（EXIF 2）'));
+      expect(t.error, contains('镜像方向'));
       // B2 B-NEW-10/B-NEW-12：镜像方向失败走 _failAndClean，只清
       // 派生文件、保留原图；失败行 sourcePath 指向真实文件、可重试。
       expect(t.sourcePath, ImportService.originalRelative(t.id, 'jpg'));

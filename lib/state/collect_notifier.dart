@@ -108,7 +108,7 @@ class BoxEditorPrep {
   /// 当前页的检测结果（已按草稿已存的旋转角度做坐标变换；有草稿时为空）。
   final List<QuestionBox> detected;
 
-  /// 检测不可用时的提示（模型失败不落占位框，只提示手动框选）。
+  /// 自动框不可用时的提示（模型失败不落占位框，只提示手动框选）。
   final String? detectError;
 }
 
@@ -557,7 +557,7 @@ class CollectNotifier extends Notifier<CollectState> {
           .where((p) => !dedup.withinBatchDropped.contains(p))
           .toList();
       onNotice?.call(
-        '其中 ${dedup.withinBatchDropped.length} 个文件与本批另一文件内容相同，已只导一份',
+        '其中 ${dedup.withinBatchDropped.length} 个文件与本批另一文件内容相同，只导入了一份',
       );
     }
     if (effective.isEmpty) return;
@@ -800,9 +800,9 @@ class CollectNotifier extends Notifier<CollectState> {
       _emitBatch(batch);
       if (!file.existsSync()) {
         if (batchIndex >= 0) {
-          batch!.markFailed(batchIndex, '文件损坏：找不到这个文件');
+          batch!.markFailed(batchIndex, '找不到这个文件');
         }
-        await _failTask(repo, name, subjectId, '文件损坏：找不到这个文件');
+        await _failTask(repo, name, subjectId, '找不到这个文件');
         _emitBatch(batch);
         continue;
       }
@@ -998,7 +998,7 @@ class CollectNotifier extends Notifier<CollectState> {
       );
       if (result.usedFallback) {
         // §1.3：模型失败不落占位框，只提示手动框选，原有框保持不动。
-        detectError = result.error ?? '自动检测不可用，请手动框选';
+        detectError = result.error ?? '自动框不可用，请手动框选';
       } else {
         detected = result.boxes
             .map((b) => rotateBoxToRotatedPage(b, pageRotation))
@@ -1325,7 +1325,7 @@ class CollectNotifier extends Notifier<CollectState> {
         ? '已生成 $total 道题去整理，还有 ${unboxedPages.length} 页没框留在任务里'
         : '已生成 $total 道题，去整理吧';
     final message = ocrMissed > 0
-        ? '$base。其中 $ocrMissed 道题 OCR 未入队，可在详情页重新识别。'
+        ? '$base。其中 $ocrMissed 道题还没识别，可在详情页重新识别。'
         : base;
     return ConfirmSplitOutcome.done(message);
   }

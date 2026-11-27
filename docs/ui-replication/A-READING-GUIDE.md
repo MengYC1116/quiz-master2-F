@@ -204,12 +204,12 @@ Riverpod 自身的失效语义处理并发重查，未另写代次号（方案 �
 | `saveBackupFailed` | `{settings}` |  |
 | `importBackupJson` / `importBackupZip` / `importBackupZipFile` | 一次含全部六种 kind，题 id 为空 | `importBackupZipFile` 转调 `importBackupZip`，不另发；D-94：恢复覆盖最近查看表，`recentlyViewed` 也在内 |
 | `recordQuestionViewed`（→ `AppDatabase.recordQuestionViewed` 扩展方法，D-94） | `{recentlyViewed}` + 题 id | 仅写库成功后发；写库抛错不发；可单测版 `recordQuestionViewedIntoImpl` 不发（纯写库） |
-| `syncCauseRecords` | 不发 | 调用方的 `save` 覆盖角标 |
+| `syncCauseRecords` | — | FSRS 全量迁移包2已删（状态列冻结，错因改动不再同步写 cause_records）；调用方的 `save` 覆盖角标 |
 | `saveDraftBoxes` | 不发 | 草稿框不影响角标 |
 | `saveReviewState` / `clearReviewState` | 不发 | 仅复习会话内 |
 | `saveLastRoute` / `saveLastRecheckReminderDate` / `saveRecentTask` / `saveSetting` | 不发 | 路由记忆 / 提醒日期 / 最近任务标记 |
 | `migrateToDirectory` / `setCustomDataDirectory` / `cleanOrphans` | 不发 | 无数据内容变化 / 仅文件操作 |
-| `ensureCauseRecords` | 不发 | 仅测试播种用（`test/p2_json_fields_test.dart`），Repository 不暴露、生产不调用；`recordSelfCheckTxn` 事务内写历史不经过它；FR-30 已删 `addCauseCheckHistory` / `deleteCauseRecordsForQuestion` / `deleteCauseRecord`（全仓零调用的死代码） |
+| `ensureCauseRecords` | — | FSRS 全量迁移包2已删（播种已删；旧：仅测试播种用（`test/p2_json_fields_test.dart`），Repository 不暴露、生产不调用；`recordSelfCheckTxn` 事务内写历史不经过它）；FR-30 已删 `addCauseCheckHistory` / `deleteCauseRecordsForQuestion` / `deleteCauseRecord`（全仓零调用的死代码） |
 | `bumpOrganizedToday`（今日小结计数） | 不另发 | 搭在 `upsertQuestion` 的写路径内，随 `{badges, questions}` 事件一起发出；计数本身不影响角标 |
 
 收尾核对（2026-11-16，D-44）：全仓 30 处 `emit` 逐处核对，

@@ -874,8 +874,9 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
     return ok == true;
   }
 
-  /// 设置行：标题 + 一行短说明 + 右侧控件；窄屏时控件换到下一行。
-  Widget _row(String title, String desc, Widget control) {
+  /// 设置行：标题 + 右侧控件；窄屏时控件换到下一行。
+  /// 少数行仍带一行状态/数字说明（desc），只在 desc 非空时显示。
+  Widget _row(String title, Widget control, {String? desc}) {
     final scale = qmScaleOf(context);
     final palette = DesignTokens.of(Theme.of(context).brightness);
     final text = Expanded(
@@ -889,14 +890,16 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
               fontWeight: FontWeight.w700,
             ),
           ),
-          SizedBox(height: 2 * scale),
-          Text(
-            desc,
-            style: TextStyle(
-              fontSize: R10Tokens.settingsRowDescFontSize,
-              color: palette.muted,
+          if (desc != null) ...[
+            SizedBox(height: 2 * scale),
+            Text(
+              desc,
+              style: TextStyle(
+                fontSize: R10Tokens.settingsRowDescFontSize,
+                color: palette.muted,
+              ),
             ),
-          ),
+          ],
         ],
       ),
     );
@@ -953,7 +956,6 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
       children: [
         _row(
           '主题',
-          '跟随系统，或手动选浅色 / 深色。',
           _segmented<String>(
             value: _s.themeMode,
             options: const [
@@ -966,7 +968,6 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
         ),
         _row(
           '字体大小',
-          '标题、按钮和正文一起放大。',
           _segmented<String>(
             value: _s.fontSize,
             options: const [
@@ -979,7 +980,6 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
         ),
         _row(
           '首页问候语',
-          '首页顶部显示的一句话，最长 40 字。',
           SizedBox(
             width: 400 * scale,
             child: Row(
@@ -1016,27 +1016,27 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
   Widget _buildReview() {
     return Column(
       children: [
-        _row('加入方式', '手动加入：在题目详情点「加入复习」。', const SizedBox.shrink()),
+        _row('加入方式', const SizedBox.shrink()),
         // 2026-11-25 口径迁移 §5 第 8 项 (a)：「复查间隔」
         //（recheckIntervalDays）与「几次自查算已解决」（cureChecks）
-        // 两行已隐藏——新流程不读这两个设置，留着会误导。字段、
-        // copyWith 与存储逻辑全部保留，只断界面展示。
+        // 两行已隐藏——新流程不读这两个设置，留着会误导。
+        // FSRS 全量迁移包 7：两字段已从 `AppSettings` 删除
+        //（toMap / fromMap / copyWith 均不再读写，设置 KV 里的旧键
+        // 忽略即可），此处只留隐藏说明，不再说“存储逻辑保留”。
         _row(
-          '每次复习解决几个错因',
-          '一次解决几个，解决完出总结。',
+          '每次复习练几道题',
           _segmented<int>(
-            value: _s.causesPerSession,
+            value: _s.questionsPerSession,
             options: const [
-              QmSegmentOption(value: 5, label: '5 个'),
-              QmSegmentOption(value: 10, label: '10 个'),
+              QmSegmentOption(value: 5, label: '5 道'),
+              QmSegmentOption(value: 10, label: '10 道'),
               QmSegmentOption(value: 0, label: '不限'),
             ],
-            onChanged: (v) => _apply(_s.copyWith(causesPerSession: v)),
+            onChanged: (v) => _apply(_s.copyWith(questionsPerSession: v)),
           ),
         ),
         _row(
           '跳过几次留到下次',
-          '第一次跳过放队尾，达到次数留到下次。',
           _segmented<int>(
             value: _s.skipLimit,
             options: const [
@@ -1048,7 +1048,6 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
         ),
         _row(
           '重做时答案默认',
-          '重做时答案藏着还是显示。',
           _segmented<bool>(
             value: _s.redoAnswerHidden,
             options: const [
@@ -1059,8 +1058,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
           ),
         ),
         _row(
-          '复查提醒',
-          '到复查时间时提醒，关了就不提醒。',
+          '到期复习提醒',
           _segmented<bool>(
             value: _s.notifyEnabled,
             options: const [
@@ -1072,7 +1070,6 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
         ),
         _row(
           '提醒时间',
-          '到复查那天，几点提醒。',
           QmButton(
             label: _s.notifyTime,
             variant: QmButtonVariant.secondary,
@@ -1082,7 +1079,6 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
         ),
         _row(
           '复习列表默认排序',
-          '列表先按什么排。',
           _segmented<String>(
             value: _s.reviewSort,
             options: const [
@@ -1096,7 +1092,6 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
         //（测试窗口内“复习列表默认排序”仍在可点区域）。
         _row(
           '每日新增新题',
-          '每天最多首次呈现几道新题（默认 10，最多 50）；已释放未完成的先续接，待完成新题满 10 道暂停释放。',
           _segmented<int>(
             value: _s.dailyNewQuestions,
             options: const [
@@ -1117,7 +1112,6 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
       children: [
         _row(
           '默认视图',
-          '打开错题本时先显示哪种样子。',
           _segmented<String>(
             value: _s.wrongbookView,
             options: const [
@@ -1129,7 +1123,6 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
         ),
         _row(
           '默认排序',
-          '打开错题本时先按什么排。',
           _segmented<String>(
             value: _s.wrongbookSort,
             options: const [
@@ -1143,7 +1136,6 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
         ),
         _row(
           '每页显示数量',
-          '错题本和复习列表每页显示几道题。',
           _segmented<int>(
             value: _s.pageSize,
             options: const [
@@ -1168,11 +1160,8 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        _noteText('这里的考试只用来在首页倒计时，不关联任何试卷。'),
-        SizedBox(height: 8 * scale),
         _row(
           '加一场考试',
-          '填个名字、选个日期，首页就会显示倒计时。',
           SizedBox(
             width: 460 * scale,
             child: Row(
@@ -1288,7 +1277,6 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
       children: [
         _row(
           '备份',
-          '把题库导出为一个备份文件（.qm2backup，含题目图片），换电脑时用备份文件恢复。此备份仅新版可恢复。',
           QmButton(
             label: '备份题库',
             size: QmButtonSize.small,
@@ -1297,7 +1285,6 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
         ),
         _row(
           '恢复',
-          '恢复会覆盖当前题库，选完文件先确认。',
           QmButton(
             label: '选择备份文件…',
             variant: QmButtonVariant.secondary,
@@ -1307,7 +1294,6 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
         ),
         _row(
           '数据库位置',
-          '数据库文件 quiz-master2.db 就放在这个文件夹里，全部题和设置都存在里面。改完位置，要重启软件才生效。',
           SizedBox(
             width: 320 * scale,
             child: Column(
@@ -1333,7 +1319,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
           _noteText(
             _dbMigrated
                 ? '新位置已保存：题库已迁过去，重启后彻底生效。'
-                : '新位置已保存：要重启软件才生效——重启后才会改用新位置存数据库，重启前还是用现在这个位置。',
+                : '新位置已保存：重启后生效，重启前仍用现在的位置存数据库。',
           ),
         if (_migrating)
           _noteText(
@@ -1348,21 +1334,16 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
           ),
         _row(
           '空间占用',
-          _storageUsage == null
+          const SizedBox.shrink(),
+          desc: _storageUsage == null
               ? '正在统计…'
               : '题图与原图共占 ${ImportService.formatBytes(storageTotal!)}'
                     '（原图 ${ImportService.formatBytes(_storageUsage!.importsBytes)}、'
                     '切片 ${ImportService.formatBytes(_storageUsage!.slicesBytes)}），上限 2GB。',
-          const SizedBox.shrink(),
         ),
         if (storageWarning != null) _noteText(storageWarning),
         _row(
           '无用文件清理',
-          orphanScan == null
-              ? '正在扫描无用文件…'
-              : orphanScan.files.isEmpty
-              ? '没有无用文件（所有图片都有题目在用）。'
-              : '发现 ${orphanScan.count} 个无用文件，共约 ${ImportService.formatBytes(orphanScan.totalBytes)}：删题、删学科后留下的旧图片。清理只删这些没人用的文件，题目图片不会动。',
           QmButton(
             label: '清理无用文件',
             size: QmButtonSize.small,
@@ -1370,16 +1351,14 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                 ? null
                 : () => _askOrphanCleanup(),
           ),
+          desc: orphanScan == null
+              ? '正在扫描无用文件…'
+              : orphanScan.files.isEmpty
+              ? '没有无用文件（所有图片都有题目在用）。'
+              : '发现 ${orphanScan.count} 个无用文件，共约 ${ImportService.formatBytes(orphanScan.totalBytes)}：删题、删学科后留下的旧图片。清理只删这些没人用的文件，题目图片不会动。',
         ),
         _row(
           '清理缓存',
-          preview == null
-              ? '正在扫描缓存…'
-              : _cacheCleanedMb != null
-              ? '已清理完成，释放 ${_cacheCleanedMb!} MB，题目和数据未动。'
-              : preview.totalCount == 0
-              ? '现在没有可清理的缓存。'
-              : '临时文件 ${preview.tempCount} 个、缩略图缓存 ${preview.thumbCount} 张，共约 ${preview.mb} MB；清理不影响题目和数据。',
           QmButton(
             label: _cacheCleanedMb != null ? '重新扫描' : '清理缓存',
             size: QmButtonSize.small,
@@ -1391,15 +1370,14 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                 ? null
                 : () => _clearCache(),
           ),
+          desc: preview == null
+              ? '正在扫描缓存…'
+              : _cacheCleanedMb != null
+              ? '已清理完成，释放 ${_cacheCleanedMb!} MB，题目和数据未动。'
+              : preview.totalCount == 0
+              ? '现在没有可清理的缓存。'
+              : '临时文件 ${preview.tempCount} 个、缩略图缓存 ${preview.thumbCount} 张，共约 ${preview.mb} MB；清理不影响题目和数据。',
         ),
-        if (preview != null &&
-            preview.totalCount > 0 &&
-            _cacheCleanedMb == null)
-          _noteText(
-            preview.failedCount > 0
-                ? '其中含导入失败的残留文件 ${preview.failedCount} 个，缩略图之后用到时会自动重新生成。'
-                : '缩略图之后用到时会自动重新生成。',
-          ),
         // M6：BigModel key（OCR 服务凭据）。放数据组：它是 OCR 服务的
         // 凭据，与备份/数据库位置同属“数据”范畴；其他组（外观/复习/
         // 错题本/考试/启动与关于）都不贴切。输入框密码式遮蔽，平时
@@ -1407,7 +1385,6 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
         // 永不显示（本页不调用 getApiKey）。
         _row(
           'BigModel API Key',
-          'OCR 识别用的 BigModel API Key，只存在本机安全存储，不进题库、不进备份。保存后排队的识别任务会立即开始，不用等。',
           SizedBox(
             width: 460 * scale,
             child: Row(
@@ -1495,7 +1472,6 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
       children: [
         _row(
           '启动页',
-          '打开应用时先到哪一页。',
           _segmented<String>(
             value: _s.startupPage,
             options: const [
@@ -1505,13 +1481,9 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
             onChanged: (v) => _apply(_s.copyWith(startupPage: v)),
           ),
         ),
-        _row('关于', '版本与更新说明。', const SizedBox.shrink()),
+        _row('关于', const SizedBox.shrink()),
         _kvRow('版本', 'quiz-master2 v0.1.0'),
         _kvRow('作者', 'Meng（个人项目）'),
-        _kvRow(
-          '更新说明',
-          'v0.1.0：首个版本。错题收集 → 整理 → 按错因复习的主流程；学科管理定稿：学科 / 知识点树 / 标签 / 试卷可增删改，删学科删题，改名同步到题；文件夹只在错题本目录页管，删知识点 / 标签 / 试卷只让题上对应项变空（待补充）；主题默认跟随系统、可手动选亮 / 深，字体标准 / 大 / 特大三档；错题本目录页可增删改查文件夹，题可单个 / 批量移入其他文件夹。',
-        ),
       ],
     );
   }

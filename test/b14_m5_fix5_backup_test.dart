@@ -143,7 +143,11 @@ void main() {
         reason: '越界切片引用被引用集排除时，备份仍须失败，不能返回不完整 ZIP',
       );
       final message = (caught as BackupRestoreException).message;
-      expect(message, contains('题目「q1」'), reason: '失败信息须指明归属题目');
+      expect(
+        message,
+        contains('题目「题 q1」'),
+        reason: '失败信息须指明归属题目（F3：列题名，不列题目 ID）',
+      );
       expect(message, contains('../escape.png'), reason: '失败信息须列出原始路径');
       expect(message, contains('路径非法'));
       expect(message, contains('备份失败'));
@@ -160,7 +164,7 @@ void main() {
       }
       expect(caught, isA<BackupRestoreException>());
       final message = (caught as BackupRestoreException).message;
-      expect(message, contains('题目「q1」'));
+      expect(message, contains('题目「题 q1」'));
       expect(message, contains('slices/../../escape.png'));
       expect(message, contains('路径非法'));
       expectNoStagingLeft();

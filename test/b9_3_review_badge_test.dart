@@ -7,8 +7,9 @@
 // 只计 1。B9-4（Meng 2026-11-15 ~19:43 裁决：统一按题数）：复习页顶
 // 三数也按题数计（见 test/b9_4_review_header_count_test.dart），
 // 与角标 / 首页同一口径；B9-3 当时锁死的“页顶按条数计”已作废。
-// 复习页顶分组本身仍是旧错因口径（§5 第 10 项定：不进本批），本文件
-// 末尾进复习页的断言仍按旧分组写，只锁角标与首页的 FSRS 新口径。
+// 复习页顶分组已随 FSRS 全量迁移包2改为 FSRS 卡片状态分组（已逾期 →
+// 今日到期 → 未到期 → 未开始），本文件末尾进复习页的断言锁 FSRS 页顶
+//（“到期 2 道”+“已逾期”组）与旧文案不出。
 //
 // 两层用例：
 // - A 组：纯展示组件 `AppNavBar`（参数驱动，不读库）：N 显示、
@@ -170,9 +171,35 @@ Future<void> _seedTwoDue(QuestionRepository repo) async {
   final q2 = _joinedQuestion('q2', errorTypes: ['审题失误']);
   await repo.save(q1);
   await repo.save(q2);
-  // 加入复习：每错因建一条待解决记录（q1 两条、q2 一条）。
-  expect(await repo.setReviewJoined(q1, true), isTrue);
-  expect(await repo.setReviewJoined(q2, true), isTrue);
+  // 加入复习：只翻 review_joined 标志（FSRS 全量迁移包2，不播种错因记录）。
+  expect(await repo.setReviewJoinedFlag(q1, true), isTrue);
+  expect(await repo.setReviewJoinedFlag(q2, true), isTrue);
+  // 错因记录改由测试直接写行（本用例的前提是“q1 有 2 个待解决错因”）。
+  final joinedAt = DateTime(2026, 11, 14);
+  await repo.saveCauseRecord(
+    CauseRecord(
+      questionId: 'q1',
+      cause: '概念不清',
+      subjectId: 'math',
+      joinedAt: joinedAt,
+    ),
+  );
+  await repo.saveCauseRecord(
+    CauseRecord(
+      questionId: 'q1',
+      cause: '计算错误',
+      subjectId: 'math',
+      joinedAt: joinedAt,
+    ),
+  );
+  await repo.saveCauseRecord(
+    CauseRecord(
+      questionId: 'q2',
+      cause: '审题失误',
+      subjectId: 'math',
+      joinedAt: joinedAt,
+    ),
+  );
   // FSRS 口径：两题各建一张已到期的卡，角标才计 2。
   await _seedDueCard('q1');
   await _seedDueCard('q2');
@@ -290,7 +317,9 @@ void main() {
       );
       final q1Records = await _recordsFor(repo, 'q1');
       expect(q1Records.length, 2);
-      expect(q1Records.where((r) => r.status != CauseStatus.solved).length, 2);
+      // FSRS 全量迁移包 7：CauseRecord 已无状态列；角标口径是 FSRS
+      // 数题（本用例上面已断言 due == [q1, q2]、总数 2），此处只
+      // 断言 q1 的错因记录数。
       final q2Records = await _recordsFor(repo, 'q2');
       expect(q2Records.length, 1);
 

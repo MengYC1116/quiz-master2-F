@@ -16,7 +16,7 @@ import 'package:quiz_master2/widgets/widgets.dart';
 
 import 'collect_page_test.dart' show FakeRepo, pumpCollect;
 import 'report_page_test.dart'
-    show FakeReportRepo, pumpReport, tatt, tq, trec;
+    show FakeReportRepo, pumpReport, tatt, tq;
 import 'review_page_test.dart'
     show FakeReviewRepo, pumpReview, rec, rq;
 import 'wrongbook_page_test.dart'
@@ -261,12 +261,9 @@ void main() {
               errorTypes: const ['概念不清'],
               createdAt: day),
         ],
-        records: [
-          trec('q-c1', '概念不清',
-              subjectId: 'subject-chem', joinedAt: day),
-          trec('q-c2', '概念不清',
-              subjectId: 'subject-chem', joinedAt: day),
-        ],
+        // 包 6 遗留同步（包 7 补）：报告页不再读错因记录
+        //（FakeReportRepo 已无 records 字段），此处删 records
+        // 夹具；弱点归因只看 attempts 的 cause_ids（下面已补）。
         kps: const [],
         attemptsValue: [
           tatt('q-c1', ReviewMode.due, 0,

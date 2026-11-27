@@ -730,7 +730,7 @@ class AContentBuilder {
     );
     if (!hashOk) {
       throw SnapshotIntegrityException(
-        '快照副本哈希不一致（临时副本与源切片不符），本次导出中止。',
+        '临时副本与源切片不一致，本次导出中止，请重试。',
       );
     }
     late final Uint8List bytes;
@@ -767,9 +767,9 @@ class AContentBuilder {
         entry: entry,
         isSkipped: true,
         skipReason:
-            '清晰度低于门禁（有效分辨率约 ${dpi.toStringAsFixed(0)} DPI）',
+            '清晰度低于阈值（有效分辨率约 ${dpi.toStringAsFixed(0)} DPI）',
         warnings: [
-          '清晰度低于门禁（有效分辨率约 ${dpi.toStringAsFixed(0)} DPI）',
+          '清晰度低于阈值（有效分辨率约 ${dpi.toStringAsFixed(0)} DPI）',
         ],
         enhance: enhance,
         effectiveDpi: dpi,

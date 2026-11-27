@@ -72,7 +72,7 @@ class CPrintability {
   final bool printable;
 
   /// 不可印原因（printable 为 false 时非空，如“无 OCR 结果” /
-  /// “题干缺失” / “选项无法派生”）。
+  /// “题干缺失” / “无法确定选项”）。
   final String? skipReason;
 
   /// 选项状态（判定过程的中间结论，供快照组装与报告用）。
@@ -97,7 +97,7 @@ enum OptionsState {
   /// 异常），标可疑 `optionSplitUncertain`，走纠错入口。
   uncertain,
 
-  /// 选项无法派生（NULL 情形 (b)/(c)）：不可印。
+  /// 无法确定选项（NULL 情形 (b)/(c)）：不可印。
   unavailable,
 }
 
@@ -146,7 +146,7 @@ CPrintability assessCPrintability(ExportQuestionRecord record) {
     }
     return const CPrintability(
       printable: false,
-      skipReason: '选项无法派生',
+      skipReason: '无法确定选项',
       optionsState: OptionsState.unavailable,
     );
   }
@@ -156,7 +156,7 @@ CPrintability assessCPrintability(ExportQuestionRecord record) {
   if (version != null && !kKnownOptionParserVersions.contains(version)) {
     return CPrintability(
       printable: false,
-      skipReason: '选项无法派生',
+      skipReason: '无法确定选项',
       optionsState: OptionsState.unavailable,
       suspiciousFlags: const ['unknownParserVersion'],
     );
@@ -166,7 +166,7 @@ CPrintability assessCPrintability(ExportQuestionRecord record) {
     // 情形 (c)：JSON 损坏。
     return CPrintability(
       printable: false,
-      skipReason: '选项无法派生',
+      skipReason: '无法确定选项',
       optionsState: OptionsState.unavailable,
       suspiciousFlags: const ['optionContentsCorrupt'],
     );
@@ -177,7 +177,7 @@ CPrintability assessCPrintability(ExportQuestionRecord record) {
     // 无可用选项文字：按规则 (3) 的“至少 2 个非空槽”判不可印。
     return const CPrintability(
       printable: false,
-      skipReason: '选项无法派生',
+      skipReason: '无法确定选项',
       optionsState: OptionsState.unavailable,
     );
   }

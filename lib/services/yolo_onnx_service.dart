@@ -14,7 +14,7 @@ import 'question_order.dart';
 /// - 成功：`boxes` 是检出的框，`usedFallback` 为 false；
 /// - 页图缺失 / 模型缺失 / 加载失败 / 推理异常：`boxes` 为空，
 ///   `usedFallback` 为 true，`error` 是给用户看的原因；
-///   调用方显示“自动检测不可用，请手动框选”，原有框保持不动，
+///   调用方显示“自动框不可用，请手动框选”，原有框保持不动，
 ///   绝不自动写入占位框（只有用户明确手动画框时才落库）。
 class DetectionResult {
   const DetectionResult({
@@ -194,7 +194,7 @@ class YoloOnnxService {
           return const DetectionResult(
             boxes: [],
             usedFallback: true,
-            error: '自动检测不可用，请手动框选',
+            error: '自动框不可用，请手动框选',
           );
         }
         final sw = Stopwatch()..start();
@@ -208,7 +208,7 @@ class YoloOnnxService {
       return const DetectionResult(
         boxes: [],
         usedFallback: true,
-        error: '自动检测不可用，请手动框选',
+        error: '自动框不可用，请手动框选',
       );
     }
   }
@@ -216,7 +216,7 @@ class YoloOnnxService {
   /// 加载失败不锁死（SR-P1-16）：成功后缓存复用，不再重复加载模型；
   /// 失败时下次检测重新尝试加载（例如运行中补放模型文件后无需重启
   /// 即可恢复）。模型确实缺失时每次检测只走一次廉价的 asset 加载
-  /// 失败并返回同一个 fallback 结果——自动检测路径失败时静默，
+  /// 失败并返回同一个 fallback 结果——自动框路径失败时静默，
   /// 仅用户主动点“恢复自动框”时才弹一次提示，不反复打扰用户。
   Future<bool> _ensureLoaded() async {
     if (_loadOk) return true;
@@ -483,7 +483,7 @@ class YoloOnnxService {
         y: src.y1 / pageH,
         w: (src.x2 - src.x1) / pageW,
         h: (src.y2 - src.y1) / pageH,
-        // §1.2(c) 小项-1：检测框填置信度与来源；手画框为 NULL/'manual'。
+        // §1.2(c) 小项-1：自动框填置信度与来源；手画框为 NULL/'manual'。
         confidence: d.score,
         origin: 'yolo',
       ),

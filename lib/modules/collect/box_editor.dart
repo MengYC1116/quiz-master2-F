@@ -378,7 +378,7 @@ class _BoxEditorDialogState extends State<_BoxEditorDialog> {
   /// uuid8 用 Random.secure() 8 位十六进制，不引入 uuid 包）。
   String _newBoxId() => AppDatabase.newBoxId(widget.taskId, _currentPage);
 
-  /// 检测框的 id 持久化：检测服务给的 `box-q1` 这种 id 会跨页/
+  /// 自动框的 id 持久化：检测服务给的 `box-q1` 这种 id 会跨页/
   /// 跨任务撞主键，进库前换成持久 id；已是持久格式的
   /// （含 `-p<页>-`，如草稿/重框加载的框）原样保留。
   String _persistedId(QuestionBox b, int page) {
@@ -473,7 +473,7 @@ class _BoxEditorDialogState extends State<_BoxEditorDialog> {
       _pageImageFailed = false;
     });
     // 多页任务：切到新页先换底图尺寸，再看这页有没有框——
-    // 空页自动检测一次（与首页面打开时的检测同一条路），
+    // 空页自动框一次（与首页面打开时的检测同一条路），
     // 失败不弹、不落占位，用户仍可手动框选或点“恢复自动框”。
     _loadPageImageSize();
     await _autoDetectIfEmpty(page);
@@ -500,7 +500,7 @@ class _BoxEditorDialogState extends State<_BoxEditorDialog> {
 
   /// 恢复自动框（§1.5）：按作用域替换，不要追加。
   /// - 草稿模式：替换本页框；本页已有手改过的框时先弹确认；
-  /// - 重框模式：只替换目标题的框（与当前框重叠度最大的检测框，
+  /// - 重框模式：只替换目标题的框（与当前框重叠度最大的自动框，
   ///   找不到时提示手动框选）。
   /// 检测在原页上跑、结果是原页坐标：本页已旋转时先做坐标变换
   /// 再进框列表（P2 实施注意 1）。模型失败时不替换、不写占位框，
@@ -520,7 +520,7 @@ class _BoxEditorDialogState extends State<_BoxEditorDialog> {
         context: context,
         builder: (ctx) => AlertDialog(
           title: const Text('用自动框替换当前页的手动框？'),
-          content: const Text('当前页的框会被 YOLO 重新检测出的框替换，手动改过的框就没了。'),
+          content: const Text('当前页的框会被自动框替换，手动改过的框就没了。'),
           actions: [
             TextButton(
               onPressed: () => Navigator.of(ctx).pop(false),
@@ -543,7 +543,7 @@ class _BoxEditorDialogState extends State<_BoxEditorDialog> {
     if (result.usedFallback) {
       ScaffoldMessenger.of(
         context,
-      ).showSnackBar(SnackBar(content: Text(result.error ?? '自动检测不可用，请手动框选')));
+      ).showSnackBar(SnackBar(content: Text(result.error ?? '自动框不可用，请手动框选')));
       return;
     }
     setState(() {
@@ -559,8 +559,13 @@ class _BoxEditorDialogState extends State<_BoxEditorDialog> {
   Future<void> _restoreAutoBoxForRework() async {
     final layer1 = List.of(_boxes);
     if (layer1.isEmpty) {
-      ScaffoldMessenger.of(context)
-          .showSnackBar(const SnackBar(content: Text('这道题还没有框，请手动框选')));
+      // P6(b)：early-return 保留（IoU 认领需要既有框做 anchor，
+      // 空框时结构上不可恢复）；提示改为与空框横幅一致的右键拖框指引。
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('没框到题，请用鼠标右键在图上拖出一个框，松开就能继续，或取消放弃本次修改'),
+        ),
+      );
       return;
     }
     // SR2-20：reworkQuestionId 是题 id（详情页传 q.id），永不等于框 id，
@@ -581,15 +586,15 @@ class _BoxEditorDialogState extends State<_BoxEditorDialog> {
     if (result.usedFallback) {
       ScaffoldMessenger.of(
         context,
-      ).showSnackBar(SnackBar(content: Text(result.error ?? '自动检测不可用，请手动框选')));
+      ).showSnackBar(SnackBar(content: Text(result.error ?? '自动框不可用，请手动框选')));
       return;
     }
-    // 逐个目标框做 IoU 匹配：与当前框重叠度最大的检测框才是这道题。
-    // 全部候选按 IoU 从大到小贪心认领，每个检测框只用一次，避免两道
-    // 题抢到同一个检测框；IoU ≤ 0.3 的不认领（找不到就手动框选）。
+    // 逐个目标框做 IoU 匹配：与当前框重叠度最大的自动框才是这道题。
+    // 全部候选按 IoU 从大到小贪心认领，每个自动框只用一次，避免两道
+    // 题抢到同一个自动框；IoU ≤ 0.3 的不认领（找不到就手动框选）。
     // SR3-13：阈值从 0.05 提到 0.3——0.05 时角上轻微搭边的邻题检测
     // 框就能把目标框拽到邻题位置上；另把候选池里中心落在同页其他题
-    // 只读框内的检测框排除（那是邻题的框，重框模式下邻题不是 target，
+    // 只读框内的自动框排除（那是邻题的框，重框模式下邻题不是 target，
     // 不参与认领，池子也不应对它开放）。
     final readOnlyLayer1 = List.of(widget.readOnlyBoxes);
     bool centerInReadOnly(QuestionBox b) {
@@ -619,7 +624,7 @@ class _BoxEditorDialogState extends State<_BoxEditorDialog> {
     }
     if (matches.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('没找到对应的检测框，请手动框选')),
+        const SnackBar(content: Text('没找到对应的自动框，请手动调整框的位置')),
       );
       return;
     }
@@ -640,13 +645,13 @@ class _BoxEditorDialogState extends State<_BoxEditorDialog> {
       _selectedId = null;
       _pendingBox = null;
     });
-    // 有的目标框没找到对应的检测框：已恢复的照常生效，没恢复的留在原位，
+    // 有的目标框没找到对应的自动框：已恢复的照常生效，没恢复的留在原位，
     // 提示用户手动框选（而不是整单报“没找到”让用户以为全没恢复）。
     final missed = targets.length - matches.length;
     if (missed > 0 && mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('有 $missed 道框没找到对应的检测框，已恢复其余框，请手动框选'),
+          content: Text('有 $missed 个框没找到对应的自动框，已恢复其余框，请手动调整剩下的框'),
         ),
       );
     }
@@ -888,13 +893,20 @@ class _BoxEditorDialogState extends State<_BoxEditorDialog> {
   /// 永远是画新框。触摸 / 主按键画框仍走原来的拦下（起点在框内不画）。
   /// FR-04(a)：重框模式禁画新框——只允许移动/缩放既有框，画框入口
   /// 在这里统一拦下（右键拖动与触摸/主按键画框都走这里）。
+  /// P6(b) 空框例外：当前页还没有框时放开（_boxes.isEmpty），
+  /// 画出第一只框后立即重新拦下。
   void _onDrawStart(
     Offset pos,
     double pw,
     double ph, {
     bool fromRightDrag = false,
   }) {
-    if (widget.mode == BoxEditorMode.rework) return;
+    // P6(b)：多指防护——绘制中第二笔不得覆盖 _pendingStart：已有
+    // 未结束的待画框时直接 return，不接受第二次开始。
+    if (_pendingBox != null) return;
+    // FR-04(a)：重框模式禁画新框；P6(b) 空框例外——当前页还没有框
+    // 时放开手动框选，画出第一只框后 gate 立即重新关闭（自闭合）。
+    if (widget.mode == BoxEditorMode.rework && _boxes.isNotEmpty) return;
     // 正在拖旋转/缩放柄时不画框（柄在框外，按下会同时命中画布层）。
     if (_suppressDraw) return;
     if (!fromRightDrag) {
@@ -995,7 +1007,7 @@ class _BoxEditorDialogState extends State<_BoxEditorDialog> {
     final confirmLabel = widget.mode == BoxEditorMode.rework
         ? '确认重新框选'
         : total > 1
-        ? '确认修框，拆成 $total 个待整理任务'
+        ? '确认修框，拆成 $total 道题去整理'
         : '确认修框，去整理';
     return Dialog(
       insetPadding: const EdgeInsets.all(24),
@@ -1028,7 +1040,7 @@ class _BoxEditorDialogState extends State<_BoxEditorDialog> {
                   ),
                   Flexible(
                     child: Text(
-                      '学科：${widget.subjectName}（导入时已选定，这里不能改）',
+                      '学科：${widget.subjectName}',
                       overflow: TextOverflow.ellipsis,
                       style: TextStyle(
                         fontSize: DesignTokens.captionFontSize,
@@ -1046,9 +1058,13 @@ class _BoxEditorDialogState extends State<_BoxEditorDialog> {
                 onToggle: () => setState(() => _helpOpen = !_helpOpen),
                 child: Text(
                   // FR-04(a)：重框模式的操作说明不写画新框（禁画新框）。
+                  // P6(b) 空框例外：还没有框时可以右键拖出一个框，
+                  // 画出框后就不能再画新框；非空文案一字不动。
                   widget.mode == BoxEditorMode.rework
-                      ? '点一下选这道题的框 · 拖框移动 · 拖边/角缩放 · 框只能拖动/缩放，不旋转，也不能再画新框 · 改乱了点「恢复自动框」回到 YOLO 原框 · 两道题的框重叠时确认会被拦下，先调开再确认 · 滚轮在图上以指针为中心缩放（不滚动）、在图外滚动 · 左键拖动平移图片 · 确认只点下方「确认重新框选」按钮'
-                      : '点一下选题级框 · 拖框移动 · 拖边/角缩放 · 框只能拖动/缩放，不旋转 · 改乱了点「恢复自动框」回到 YOLO 原框 · 「旋转整页」把整页图片转 90°（框跟着转） · 框的边界按本页图片的实际大小算：图片有多大，画框就多大，拖动 / 缩放 / 新画框都不能超出这张图，框大小不限 · 切页不丢框：每页的框都留着，切回来还在，点「确认修框」才一起提交 · 两道题的框重叠时确认会被拦下，先调开再确认 · 滚轮在图上以指针为中心缩放（不滚动）、在图外滚动 · 左键拖动平移图片 · 右键拖出新框（起点落在框上也能画，不拖框），松开即生成题级框、右键单击取消 · 确认只点下方「确认修框」按钮',
+                      ? _boxes.isEmpty
+                          ? '点一下选这道题的框 · 拖框移动 · 拖边/角缩放 · 框只能拖动/缩放，不旋转，还没有框时可以右键拖出一个框，画出框后就不能再画新框 · 改乱了点「恢复自动框」回到原来的自动框 · 两道题的框重叠时确认会被拦下，先调开再确认 · 滚轮在图上以指针为中心缩放（不滚动）、在图外滚动 · 左键拖动平移图片 · 确认时只点下方「确认重新框选」按钮'
+                          : '点一下选这道题的框 · 拖框移动 · 拖边/角缩放 · 框只能拖动/缩放，不旋转，也不能再画新框 · 改乱了点「恢复自动框」回到原来的自动框 · 两道题的框重叠时确认会被拦下，先调开再确认 · 滚轮在图上以指针为中心缩放（不滚动）、在图外滚动 · 左键拖动平移图片 · 确认时只点下方「确认重新框选」按钮'
+                      : '点一下选题级框 · 拖框移动 · 拖边/角缩放 · 框只能拖动/缩放，不旋转 · 改乱了点「恢复自动框」回到原来的自动框 · 「旋转整页」把整页图片转 90°（框跟着转） · 框的边界按本页图片的实际大小算：图片有多大，画框就多大，拖动 / 缩放 / 新画框都不能超出这张图，框大小不限 · 切页不丢框：每页的框都留着，切回来还在，点「确认修框」才一起提交 · 两道题的框重叠时确认会被拦下，先调开再确认 · 滚轮在图上以指针为中心缩放（不滚动）、在图外滚动 · 左键拖动平移图片 · 右键拖出新框（起点落在框上也能画，不拖框），松开即生成题级框、右键单击取消 · 确认时只点下方「确认修框」按钮',
                   style: TextStyle(
                     fontSize: DesignTokens.bodySmallFontSize,
                     color: palette.ink2,
@@ -1066,8 +1082,8 @@ class _BoxEditorDialogState extends State<_BoxEditorDialog> {
               if (widget.detectError != null)
                 QmBanner(
                   tone: QmBannerTone.warning,
-                  title: '自动检测不可用',
-                  message: '${widget.detectError}，请手动框选：在画布空白处按住拖出一个框，松开就能继续。',
+                  title: '自动框不可用',
+                  message: '${widget.detectError}：在画布空白处按住拖出一个框，松开就能继续。',
                 ),
               if (_pageImageFailed)
                 const QmBanner(
@@ -1081,9 +1097,11 @@ class _BoxEditorDialogState extends State<_BoxEditorDialog> {
                   title: '没框到题',
                   // FR-04(a)：重框模式禁画新框，空框时指去「恢复自动框」
                   // 而不是右键画框（草稿模式保持原提示）。
+                  // P6(b)：重框空框时恢复是 early-return 空转，写它就是
+                  // 误导，改指右键拖框；非空重框文案一字不动。
                   message: widget.mode == BoxEditorMode.rework
-                      ? '没框到题，请点「恢复自动框」找回检测框，或取消放弃本次修改'
-                      : '没框到题，请用鼠标右键拖一个框：在画布空白处按住拖出一个框，松开就能继续，不用重新导入',
+                      ? '没框到题，请用鼠标右键在图上拖出一个框，松开就能继续，或取消放弃本次修改'
+                      : '没框到题，请用鼠标右键在画布空白处拖出一个框，松开就能继续，不用重新导入',
                 ),
               // D-102：框重叠横幅已移出流式布局，悬浮在下方画布顶部
               //（见 Expanded 里的 Stack），出现/消失不再挤压画布。
@@ -1247,9 +1265,12 @@ class _BoxEditorDialogState extends State<_BoxEditorDialog> {
         Expanded(
           child: Text(
             // FR-04(a)：重框模式禁画新框，工具条不再写“右键拖出新框”。
+            // P6(b)：重框空框时指引右键画框；非空文案一字不动。
             widget.mode == BoxEditorMode.rework
-                ? '重框模式：只能拖动 / 缩放这道题的框，不能再画新框；左键拖动平移图片'
-                : '新增框：右键在图片内空白处拖出框，拖出图片也会夹回图内，松开即生成题级框；左键拖动平移图片',
+                ? _boxes.isEmpty
+                    ? '重框模式：还没有框，用鼠标右键在图上拖出一个框；画出框后只能拖动 / 缩放，不能再画新框；左键拖动平移图片'
+                    : '重框模式：只能拖动 / 缩放这道题的框，不能再画新框；左键拖动平移图片'
+                : '新增框：右键在图片内空白处拖出框，超出图片的部分会自动收回图内，松开即生成题级框；左键拖动平移图片',
             style: TextStyle(
               fontSize: DesignTokens.bodySmallFontSize,
               color: palette.ink2,
@@ -1342,7 +1363,10 @@ class _BoxEditorDialogState extends State<_BoxEditorDialog> {
         if (isMouse && event.buttons == kSecondaryMouseButton) {
           // FR-04(a)：重框模式禁画新框，右键按下不记坐标（_onDrawStart
           // 里还有一道拦下，这里是不让右键拖动进画框状态）。
-          if (widget.mode == BoxEditorMode.rework) return;
+          // P6(b) 空框例外：当前页还没有框时放开，与 Gate 1 同条件。
+          if (widget.mode == BoxEditorMode.rework && _boxes.isNotEmpty) {
+            return;
+          }
           // 右键：先只记按下坐标，拖出距离才算画框，
           // 抬起时没拖过就是单击（取消），见 onPointerUp。
           _rightDownLocal = local;
@@ -1472,14 +1496,6 @@ class _BoxEditorDialogState extends State<_BoxEditorDialog> {
                                                   color: palette.paperInk,
                                                 ),
                                               ),
-                                            Text(
-                                              '框按页面百分比存，框只能在这张图里面',
-                                              style: TextStyle(
-                                                fontSize: 11,
-                                                fontWeight: FontWeight.w700,
-                                                color: palette.paperInk,
-                                              ),
-                                            ),
                                           ],
                                         ),
                                       ),
@@ -1652,8 +1668,9 @@ class _BoxEditorDialogState extends State<_BoxEditorDialog> {
               : '当前选中：题级框 ${_boxes.indexWhere((b) => b.id == _selectedId) + 1} · 右键拖动可直接再画一个新框'
         : _boxes.isEmpty
         ? isRework
-              ? '没框到题，请点「恢复自动框」找回检测框，或取消'
-              : '没框到题，请用鼠标右键拖一个框：在图上拖出框，松开鼠标就能继续'
+              // P6(b)：与空框横幅同款措辞；非空分支一字不动。
+              ? '没框到题，请用鼠标右键在图上拖出一个框，松开就能继续，或取消放弃本次修改'
+              : '没框到题，请用鼠标右键在图上拖出一个框，松开鼠标就能继续'
         : isRework
         ? '本页已框 ${_boxes.length} 道题 · 点框可选中拖动 / 缩放 · 不能再画新框'
         : '本页已框 ${_boxes.length} 道题 · 点框可选中拖动 / 缩放 · 右键拖动可再画新框';
@@ -1814,11 +1831,6 @@ class _BoxEditorDialogState extends State<_BoxEditorDialog> {
               ),
             ],
           ),
-        ),
-        SizedBox(height: 2 * scale),
-        Text(
-          '每张缩略图下面是页码，点哪页修哪页，打勾只是本次打开的标记：不保存草稿、也不参与确认，切页或取消后标记消失 · 切页不丢框：每页没确认的框都留着，切回来还在，确认后才一起提交',
-          style: TextStyle(fontSize: 11.5, color: palette.muted, height: 1.4),
         ),
       ],
     );

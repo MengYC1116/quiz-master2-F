@@ -447,28 +447,19 @@ class _CollectViewState extends ConsumerState<_CollectView> {
                 height: 1.2,
               ),
             ),
-            SizedBox(height: 3 * scale),
-            Text(
-              '把纸变成题：导入 → 自动框题 → 修框 → 去整理 · 框好后自动识别题干与选项，整理时核对补全',
-              style: TextStyle(
-                fontSize: DesignTokens.bodySmallFontSize,
-                color: palette.muted,
-                height: DesignTokens.bodyLineHeight,
-              ),
-            ),
             SizedBox(height: DesignTokens.homeSubtitleMarginBottom * scale),
             if (failed.isNotEmpty && !_hideErrorBanner)
               QmBanner(
                 tone: QmBannerTone.error,
                 message:
-                    '有 ${failed.length} 个任务导入失败：${failed.map((t) => '文件「${t.fileName}」是${t.error ?? '导入失败'}').join('；')}。请自行检查自己的文件，其余任务不受影响。',
+                    '有 ${failed.length} 个任务导入失败：${failed.map((t) => '「${t.fileName}」${t.error ?? '导入失败'}').join('；')}。请检查文件，其余任务不受影响。',
                 onDismiss: () => setState(() => _hideErrorBanner = true),
               ),
             if (s.pendingImport != null) ...[
               if (s.pendingImport!.duplicateNames.isNotEmpty)
                 QmBanner(
                   tone: QmBannerTone.warning,
-                  title: '这个文件已经导入过。',
+                  title: '这个文件已经导入过',
                   message:
                       '列表里已有「${s.pendingImport!.duplicateNames.join('、')}」的任务，再导一份会多出一组重复任务。要再导一份吗？',
                   actions: [
@@ -485,12 +476,12 @@ class _CollectViewState extends ConsumerState<_CollectView> {
               if (s.pendingImport!.oversizeHints.isNotEmpty)
                 QmBanner(
                   tone: QmBannerTone.warning,
-                  title: '文件超过大小上限，导入会失败。',
+                  title: '文件超过大小上限，导入会失败',
                   message:
                       '${s.pendingImport!.oversizeHints.join(' ')}可以先压缩再重新选；如果仍要导入，超限的文件会记为失败任务，其他文件正常导入。',
                   actions: [
                     QmBannerAction(
-                      label: '仍然再导一份',
+                      label: '仍要导入',
                       onPressed: _confirmPendingImport,
                     ),
                     QmBannerAction(
@@ -503,22 +494,13 @@ class _CollectViewState extends ConsumerState<_CollectView> {
             if (_noSubjectWarning)
               QmBanner(
                 tone: QmBannerTone.warning,
-                title: '先选学科。',
+                title: '先选学科',
                 message: '每次导入都自己选：不默认上次选的，也不默认数学，没选学科不能导入。',
                 onDismiss: () => setState(() => _noSubjectWarning = false),
               ),
             _importRow(scale, palette, s),
             SizedBox(height: 10 * scale),
             _dropZone(scale, palette),
-            SizedBox(height: 10 * scale),
-            Text(
-              '手机拍完用微信 / QQ / 局域网传到电脑，再选文件导入即可——传过来的就是文件，不用单独的拍照入口。',
-              style: TextStyle(
-                fontSize: DesignTokens.captionFontSize,
-                color: palette.muted,
-                height: 1.55,
-              ),
-            ),
             if (s.stagedPaths != null) ...[
               SizedBox(height: 10 * scale),
               _stagedCard(scale, palette, s),
@@ -560,15 +542,6 @@ class _CollectViewState extends ConsumerState<_CollectView> {
               ],
             ),
             SizedBox(height: 4 * scale),
-            Text(
-              '未完成在前、已整理在后，各按导入时间新的在上',
-              style: TextStyle(
-                fontSize: DesignTokens.bodySmallFontSize,
-                color: palette.muted,
-                height: DesignTokens.bodyLineHeight,
-              ),
-            ),
-            SizedBox(height: 2 * scale),
             _filterChips(scale, s),
             SizedBox(height: 6 * scale),
             if (s.tasks.isEmpty)
@@ -705,18 +678,6 @@ class _CollectViewState extends ConsumerState<_CollectView> {
             ),
           ],
         ),
-        SizedBox(height: 4 * scale),
-        Text(
-          // B8-1：学科删空时说明去处，不留一个打不开的空下拉。
-          s.subjects.isEmpty
-              ? '还没有学科：先去「学科管理」添加一个，再回来导入。'
-              : '每次导入都自己选：不默认上次选的，也不默认数学，没选学科不能导入。',
-          style: TextStyle(
-            fontSize: DesignTokens.captionFontSize,
-            color: palette.muted,
-            height: 1.4,
-          ),
-        ),
         // B11-2：按文件名猜学科的建议提示（只建议，用户随时可改下拉）。
         if (s.subjectGuessHint != null) ...[
           SizedBox(height: 4 * scale),
@@ -783,26 +744,6 @@ class _CollectViewState extends ConsumerState<_CollectView> {
                     fontWeight: FontWeight.w800,
                     color: palette.ink,
                     height: 1.2,
-                  ),
-                ),
-                SizedBox(height: 4 * scale),
-                Text(
-                  'PDF 与 JPG / PNG 照片都能导（Word 先导出成 PDF 再导入）',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(
-                    fontSize: DesignTokens.bodySmallFontSize,
-                    color: palette.muted,
-                    height: 1.4,
-                  ),
-                ),
-                SizedBox(height: 4 * scale),
-                Text(
-                  '单个 PDF 不超过 50MB、20 页，超了进失败任务并提示分批导入 · 图片不超过 20MB · 一份卷子会按页逐页框题 · 一次拖进来多个文件会排队逐个导入，进度在下面可见，失败的可以重试',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(
-                    fontSize: DesignTokens.bodySmallFontSize,
-                    color: palette.muted,
-                    height: 1.4,
                   ),
                 ),
                 SizedBox(height: 16 * scale),
